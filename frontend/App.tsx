@@ -5,7 +5,7 @@ import { DeepReadWorkbench } from './components/DeepReadWorkbench';
 import { FusionGrid } from './components/FusionGrid';
 import { KnowledgeNexus } from './components/KnowledgeNexus';
 import { UserGuide } from './components/UserGuide';
-import { AuthModal } from './components/AuthModal';
+import { AuthModal } from '@/components/AuthModal';
 import { BrainCircuit } from 'lucide-react';
 
 const App: React.FC = () => {
