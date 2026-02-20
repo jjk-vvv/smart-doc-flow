@@ -1,0 +1,18 @@
+'Log files:
+D:\Intelligent_Document_Fusion&Decision_System\.npm-cache\_logs\2026-02-17T10_16_07_213Z-debug-0.log
+
+# npm resolution error report
+
+While resolving: a23:-maoa-insight-system@0.0.0
+Found: react@19.2.4
+node_modules/react
+  react@"^19.2.4" from the root project
+
+Could not resolve dependency:
+peer react@"^16.5.1 || ^17.0.0 || ^18.0.0" from lucide-react@0.292.0
+node_modules/lucide-react
+  lucide-react@"0.292.0" from the root project
+
+Fix the upstream dependency conflict, or retry
+this command with --force or --legacy-peer-deps
+to accept an incorrect (and potentially broken) dependency resolution.
