@@ -1,417 +1,380 @@
-import React, { useState, useEffect, useRef } from 'react';
-import {
-    X,
-    Phone,
-    ArrowRight,
-    LayoutGrid,
-    FileSearch,
-    Database,
-    GitGraph,
-    CheckSquare,
-    MessageSquare,
-} from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Mail, Lock, User, Phone, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import LogoImage from '../image.png';
 
 function cn(...inputs: ClassValue[]) {
-    return twMerge(clsx(inputs));
-}
-
-// WeChat JS SDK type declaration
-declare global {
-    interface Window {
-        WxLogin: new (config: {
-            self_redirect?: boolean;
-            id: string;
-            appid: string;
-            scope: string;
-            redirect_uri: string;
-            state?: string;
-            style?: string;
-            href?: string;
-            onReady?: (isReady: boolean) => void;
-        }) => void;
-    }
+  return twMerge(clsx(inputs));
 }
 
 interface AuthModalProps {
-    show: boolean;
-    onClose: () => void;
-    onLoginSuccess: (user: { name: string; email: string }) => void;
-    isDark: boolean;
+  show: boolean;
+  onClose: () => void;
+  onLoginSuccess: (user: { name: string; email: string }) => void;
+  isDark: boolean;
 }
 
-// Platform features for the brand panel
-const features = [
-    { icon: LayoutGrid, label: '智能指挥控制台' },
-    { icon: FileSearch, label: '深度文档解析' },
-    { icon: Database, label: '多源数据融合' },
-    { icon: GitGraph, label: '全域知识图谱' },
-];
-
-// Custom CSS to inject into the WxLogin iframe to hide the default border/text
-// and match our styling. This is loaded via the `href` parameter of WxLogin.
-const WX_CUSTOM_CSS_URL = '';
-
 export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onLoginSuccess, isDark }) => {
-    const [loginMode, setLoginMode] = useState<'wechat' | 'phone'>('wechat');
-    const [phoneNumber, setPhoneNumber] = useState('');
-    const [verifyCode, setVerifyCode] = useState('');
-    const [countdown, setCountdown] = useState(0);
-    const [agreed, setAgreed] = useState(false);
-    const [error, setError] = useState('');
-    const [wxStatus, setWxStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [authView, setAuthView] = useState<'login' | 'register' | 'forgot'>('login');
 
-    // WeChat config from environment variables (set in .env.local)
-    const wxAppId = (import.meta as any).env?.VITE_WX_APPID || '';
-    const wxRedirectUri = encodeURIComponent(
-        (import.meta as any).env?.VITE_WX_REDIRECT_URI || window.location.origin + '/api/wechat/callback'
-    );
+  // Form States
+  const [loginForm, setLoginForm] = useState({ account: '', password: '' });
+  const [registerForm, setRegisterForm] = useState({ name: '', email: '', phone: '', password: '', confirmPassword: '' });
+  const [forgotForm, setForgotForm] = useState({ contact: '', code: '', newPassword: '' });
+  const [verificationSent, setVerificationSent] = useState(false);
+  const [registerError, setRegisterError] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [isNewUser, setIsNewUser] = useState(false);
 
-    // Initialize WeChat QR when switching to wechat mode
-    useEffect(() => {
-        if (!show || loginMode !== 'wechat') return;
+  useEffect(() => {
+    if (show) {
+      setAuthView('login');
+      setLoginForm({ account: '', password: '' });
+      setRegisterForm({ name: '', email: '', phone: '', password: '', confirmPassword: '' });
+      setForgotForm({ contact: '', code: '', newPassword: '' });
+      setRegisterError('');
+      setLoginError('');
+      setVerificationSent(false);
+      setIsNewUser(false);
+    }
+  }, [show]);
 
-        // Generate random state for CSRF protection
-        const wxState = Math.random().toString(36).substring(2, 15);
+  if (!show) return null;
 
-        const initWxLogin = () => {
-            const container = document.getElementById('wx_login_container');
-            if (!container) return;
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        onLoginSuccess(data.user);
+        onClose();
+      } else {
+        setLoginError(data.error || 'Login failed');
+      }
+    } catch (err) {
+      setLoginError('Network error');
+    }
+  };
 
-            // Clear any previous iframe
-            container.innerHTML = '';
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRegisterError('');
+    if (registerForm.password !== registerForm.confirmPassword) {
+      setRegisterError('Passwords do not match');
+      return;
+    }
+    try {
+      const res = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: registerForm.name,
+          email: registerForm.email,
+          phone: registerForm.phone,
+          password: registerForm.password
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setIsNewUser(true);
+        setTimeout(() => {
+          setAuthView('login');
+          setIsNewUser(false);
+        }, 2000);
+      } else {
+        setRegisterError(data.error || 'Registration failed');
+      }
+    } catch (err) {
+      setRegisterError('Network error');
+    }
+  };
 
-            if (!wxAppId) {
-                // No AppID configured — show configuration hint
-                setWxStatus('error');
-                return;
-            }
+  const handleSendCode = async () => {
+    // Mock send code
+    setVerificationSent(true);
+    alert(`Verification code sent to ${forgotForm.contact}`);
+  };
 
-            if (typeof window.WxLogin !== 'function') {
-                console.warn('WxLogin SDK not loaded');
-                setWxStatus('error');
-                return;
-            }
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    // Mock reset
+    alert('Password reset successful');
+    setAuthView('login');
+  };
 
-            try {
-                setWxStatus('loading');
-                new window.WxLogin({
-                    self_redirect: false,
-                    id: 'wx_login_container',
-                    appid: wxAppId,
-                    scope: 'snsapi_login',
-                    redirect_uri: wxRedirectUri,
-                    state: wxState,
-                    style: '',
-                    href: WX_CUSTOM_CSS_URL,
-                    onReady: (isReady: boolean) => {
-                        setWxStatus(isReady ? 'ready' : 'error');
-                    },
-                });
-            } catch (e) {
-                console.warn('WeChat QR init failed:', e);
-                setWxStatus('error');
-            }
-        };
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-300 border border-slate-200 dark:border-slate-800 relative">
+        
+        {/* Close Button */}
+        <button 
+          onClick={onClose}
+          className="absolute top-4 right-4 p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors z-10"
+        >
+          <X size={20} className="text-slate-500" />
+        </button>
 
-        // Small delay to ensure DOM container is mounted
-        const timer = setTimeout(initWxLogin, 300);
-        return () => clearTimeout(timer);
-    }, [show, loginMode, wxAppId]);
+        <div className="p-8">
+          <div className="text-center mb-8">
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
+              {authView === 'login' && '欢迎回来'}
+              {authView === 'register' && '创建账号'}
+              {authView === 'forgot' && '重置密码'}
+            </h2>
+            <p className="text-slate-500 text-sm">
+              {authView === 'login' && '登录您的账户以继续使用'}
+              {authView === 'register' && '填写以下信息完成注册'}
+              {authView === 'forgot' && '验证身份以设置新密码'}
+            </p>
+          </div>
 
-    // Countdown timer for verification code
-    useEffect(() => {
-        if (countdown > 0) {
-            timerRef.current = setInterval(() => {
-                setCountdown(prev => {
-                    if (prev <= 1) {
-                        if (timerRef.current) clearInterval(timerRef.current);
-                        return 0;
-                    }
-                    return prev - 1;
-                });
-            }, 1000);
-        }
-        return () => {
-            if (timerRef.current) clearInterval(timerRef.current);
-        };
-    }, [countdown]);
-
-    // Reset state on close
-    useEffect(() => {
-        if (!show) {
-            setError('');
-            setPhoneNumber('');
-            setVerifyCode('');
-            setCountdown(0);
-            setLoginMode('wechat');
-            setWxStatus('loading');
-        }
-    }, [show]);
-
-    const handleSendCode = async () => {
-        if (!phoneNumber || phoneNumber.length < 11) {
-            setError('请输入正确的手机号');
-            return;
-        }
-        setError('');
-        try {
-            const res = await fetch('/api/send-code', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ phone: phoneNumber }),
-            });
-            if (res.ok) {
-                setCountdown(60);
-            } else {
-                setError('发送验证码失败，请稍后重试');
-            }
-        } catch {
-            // For demo, start countdown anyway
-            setCountdown(60);
-        }
-    };
-
-    const handlePhoneLogin = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!agreed) {
-            setError('请先阅读并同意服务条款');
-            return;
-        }
-        if (!phoneNumber || !verifyCode) {
-            setError('请填写手机号和验证码');
-            return;
-        }
-        setError('');
-        try {
-            const res = await fetch('/api/login/phone', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ phone: phoneNumber, code: verifyCode }),
-            });
-            if (res.ok) {
-                const data = await res.json();
-                onLoginSuccess(data.user);
-                onClose();
-            } else {
-                setError('验证码错误或已过期');
-            }
-        } catch {
-            setError('网络错误，请稍后重试');
-        }
-    };
-
-    if (!show) return null;
-
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="w-full max-w-[720px] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200/50 dark:border-slate-700/50 overflow-hidden relative animate-in zoom-in-95 duration-300 flex">
-
-                {/* ===== Left Brand Panel ===== */}
-                <div className="w-[220px] shrink-0 bg-gradient-to-b from-blue-600 via-blue-700 to-indigo-800 dark:from-blue-800 dark:via-indigo-900 dark:to-slate-950 p-6 flex flex-col text-white relative overflow-hidden">
-                    {/* Decorative diagonal stripe */}
-                    <div className="absolute top-0 right-0 w-20 h-full bg-white/5 -skew-x-12 translate-x-6" />
-                    <div className="absolute top-0 right-6 w-10 h-full bg-white/5 -skew-x-12 translate-x-4" />
-
-                    {/* Logo & Title */}
-                    <div className="relative z-10 mb-8">
-                        <div className="w-12 h-12 rounded-xl bg-white/15 backdrop-blur-sm border border-white/20 flex items-center justify-center mb-3 shadow-lg">
-                            <img src={LogoImage} alt="Logo" className="w-8 h-8 object-contain" />
-                        </div>
-                        <h2 className="font-['Microsoft_YaHei'] font-bold text-lg leading-tight tracking-wide">
-                            智能文档流转平台
-                        </h2>
-                        <p className="text-[11px] text-white/60 mt-1 font-medium">Intelligent Document Fusion</p>
-                    </div>
-
-                    {/* Feature list */}
-                    <div className="relative z-10 flex-1 flex flex-col gap-3">
-                        {features.map((ft, i) => {
-                            return (
-                                <div key={i} className="flex items-center gap-2.5 group">
-                                    <div className="w-5 h-5 rounded flex items-center justify-center bg-white/10 group-hover:bg-white/20 transition-colors">
-                                        <CheckSquare size={12} className="text-white/80" />
-                                    </div>
-                                    <span className="text-[13px] font-medium text-white/90 group-hover:text-white transition-colors whitespace-nowrap">
-                                        {ft.label}
-                                    </span>
-                                </div>
-                            );
-                        })}
-                    </div>
-
-                    {/* Bottom decorative */}
-                    <div className="relative z-10 mt-6 pt-4 border-t border-white/10">
-                        <p className="text-[10px] text-white/40 leading-relaxed">
-                            AI 驱动 · 企业级平台
-                        </p>
-                    </div>
-                </div>
-
-                {/* ===== Right Content Panel ===== */}
-                <div className="flex-1 flex flex-col relative">
-                    {/* Close button */}
-                    <button
-                        onClick={onClose}
-                        className="absolute top-3 right-3 z-20 p-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                    >
-                        <X size={18} />
-                    </button>
-
-                    {/* Mode switch button */}
-                    <div className="px-6 pt-5 pb-0 flex justify-end pr-12">
-                        <button
-                            onClick={() => {
-                                setLoginMode(loginMode === 'wechat' ? 'phone' : 'wechat');
-                                setError('');
-                            }}
-                            className="text-xs px-3 py-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/5 dark:hover:bg-primary/10 transition-all font-bold flex items-center gap-1.5"
-                        >
-                            {loginMode === 'wechat' ? (
-                                <>
-                                    <Phone size={13} />
-                                    切换为手机号登录
-                                </>
-                            ) : (
-                                <>
-                                    <MessageSquare size={13} />
-                                    切换为微信登录
-                                </>
-                            )}
-                        </button>
-                    </div>
-
-                    {/* Content Area */}
-                    <div className="flex-1 px-8 pb-4 flex flex-col items-center justify-center">
-                        {/* ---- WeChat QR Login ---- */}
-                        {loginMode === 'wechat' && (
-                            <div className="flex flex-col items-center gap-3 animate-in fade-in duration-300 w-full">
-                                <h3 className="text-xl font-bold font-['Microsoft_YaHei'] text-foreground">微信扫码登录</h3>
-
-                                {/*
-                                  WeChat WxLogin SDK renders an iframe into this div.
-                                  The iframe default size is ~300x400px. We constrain it
-                                  and let the iframe scale inside.
-                                  Per docs: https://developers.weixin.qq.com/doc/oplatform/Website_App/WeChat_Login/Wechat_Login.html
-                                */}
-                                <div
-                                    id="wx_login_container"
-                                    className="w-[300px] h-[300px] flex items-center justify-center overflow-hidden rounded-lg"
-                                    style={{
-                                        /* Ensure the iframe fills the container */
-                                        position: 'relative',
-                                    }}
-                                />
-
-                                {/* Show config hint when no AppID */}
-                                {wxStatus === 'error' && !wxAppId && (
-                                    <div className="text-center px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-xl max-w-[300px]">
-                                        <p className="text-xs text-amber-700 dark:text-amber-400 font-medium leading-relaxed">
-                                            请在 <code className="bg-amber-100 dark:bg-amber-900/40 px-1 py-0.5 rounded text-[10px]">.env.local</code> 中配置微信 AppID：
-                                        </p>
-                                        <pre className="mt-2 text-[10px] text-left bg-slate-100 dark:bg-slate-800 p-2 rounded-lg font-mono text-slate-600 dark:text-slate-400 leading-relaxed">
-                                            {`VITE_WX_APPID=你的AppID
-VITE_WX_REDIRECT_URI=回调地址`}
-                                        </pre>
-                                    </div>
-                                )}
-
-                                {/* Loading indicator */}
-                                {wxStatus === 'loading' && wxAppId && (
-                                    <p className="text-xs text-muted-foreground animate-pulse">正在加载二维码...</p>
-                                )}
-                            </div>
-                        )}
-
-                        {/* ---- Phone Login ---- */}
-                        {loginMode === 'phone' && (
-                            <form onSubmit={handlePhoneLogin} className="flex flex-col items-center gap-5 animate-in fade-in duration-300 w-full max-w-[320px]">
-                                <h3 className="text-xl font-bold font-['Microsoft_YaHei'] text-foreground">手机号码登录</h3>
-
-                                {/* Phone number */}
-                                <div className="w-full">
-                                    <input
-                                        type="tel"
-                                        value={phoneNumber}
-                                        onChange={e => setPhoneNumber(e.target.value.replace(/\D/g, '').slice(0, 11))}
-                                        className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium text-foreground placeholder:text-muted-foreground/50"
-                                        placeholder="请输入手机号"
-                                    />
-                                </div>
-
-                                {/* Verification code + send button */}
-                                <div className="w-full flex gap-2.5">
-                                    <input
-                                        type="text"
-                                        value={verifyCode}
-                                        onChange={e => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                                        className="flex-1 px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium text-foreground placeholder:text-muted-foreground/50"
-                                        placeholder="请输入验证码"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={handleSendCode}
-                                        disabled={countdown > 0}
-                                        className={cn(
-                                            "shrink-0 px-4 py-3 rounded-xl text-sm font-bold transition-all whitespace-nowrap",
-                                            countdown > 0
-                                                ? "bg-slate-100 dark:bg-slate-800 text-muted-foreground cursor-not-allowed"
-                                                : "bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30"
-                                        )}
-                                    >
-                                        {countdown > 0 ? `${countdown}s` : '获取验证码'}
-                                    </button>
-                                </div>
-
-                                {error && (
-                                    <div className="w-full text-xs text-red-500 font-bold text-center bg-red-50 dark:bg-red-900/20 p-2 rounded-lg border border-red-200 dark:border-red-800 animate-in fade-in slide-in-from-top-1">
-                                        {error}
-                                    </div>
-                                )}
-
-                                {/* Login button */}
-                                <button
-                                    type="submit"
-                                    className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary to-blue-600 dark:from-primary dark:to-blue-500 hover:from-blue-600 hover:to-blue-700 dark:hover:from-blue-500 dark:hover:to-blue-600 text-white font-bold shadow-lg shadow-blue-500/25 hover:shadow-blue-500/40 hover:-translate-y-0.5 active:translate-y-0 transition-all duration-300 flex items-center justify-center gap-2 group"
-                                >
-                                    <span>登录</span>
-                                    <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />
-                                </button>
-                            </form>
-                        )}
-                    </div>
-
-                    {/* Bottom: Terms agreement */}
-                    <div className="px-8 pb-5 flex items-center justify-center gap-2">
-                        <button
-                            type="button"
-                            onClick={() => setAgreed(!agreed)}
-                            className={cn(
-                                "w-4 h-4 rounded border-2 flex items-center justify-center transition-all shrink-0",
-                                agreed
-                                    ? "bg-primary border-primary text-white"
-                                    : "border-slate-300 dark:border-slate-600 hover:border-primary/50"
-                            )}
-                        >
-                            {agreed && (
-                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                                    <path d="M2 5L4 7L8 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                                </svg>
-                            )}
-                        </button>
-                        <p className="text-[11px] text-muted-foreground">
-                            登录即视为同意
-                            <a href="#" className="text-primary hover:underline font-medium">服务与条款</a>
-                            、
-                            <a href="#" className="text-primary hover:underline font-medium">隐私政策</a>
-                            。
-                        </p>
-                    </div>
-                </div>
+          {/* New User Success Message */}
+          {isNewUser && (
+            <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl flex items-center gap-3 text-green-700 dark:text-green-400 animate-in slide-in-from-top-2">
+              <CheckCircle2 size={20} />
+              <div className="text-sm font-medium">注册成功！正在跳转登录...</div>
             </div>
+          )}
+
+          {authView === 'login' && (
+            <form onSubmit={handleLogin} className="space-y-4">
+              {loginError && (
+                <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm rounded-lg border border-red-100 dark:border-red-800">
+                  {loginError}
+                </div>
+              )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">账号</label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="text"
+                    placeholder="邮箱 / 手机号"
+                    value={loginForm.account}
+                    onChange={e => setLoginForm({ ...loginForm, account: e.target.value })}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-300">密码</label>
+                  <button
+                    type="button"
+                    onClick={() => setAuthView('forgot')}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    忘记密码?
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="password"
+                    placeholder="请输入密码"
+                    value={loginForm.password}
+                    onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    required
+                  />
+                </div>
+              </div>
+              <button
+                type="submit"
+                className="w-full py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl font-bold shadow-lg shadow-blue-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+              >
+                <span>立即登录</span>
+                <ArrowRight size={18} />
+              </button>
+              <div className="text-center text-sm text-slate-500 mt-4">
+                还没有账号?{' '}
+                <button
+                  type="button"
+                  onClick={() => setAuthView('register')}
+                  className="text-primary font-bold hover:underline"
+                >
+                  立即注册
+                </button>
+              </div>
+            </form>
+          )}
+
+          {authView === 'register' && (
+            <form onSubmit={handleRegister} className="space-y-4">
+              {registerError && (
+                <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm rounded-lg border border-red-100 dark:border-red-800">
+                  {registerError}
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-300">用户名</label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <input
+                      type="text"
+                      placeholder="您的昵称"
+                      value={registerForm.name}
+                      onChange={e => setRegisterForm({ ...registerForm, name: e.target.value })}
+                      className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all text-sm"
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-300">手机号</label>
+                  <div className="relative">
+                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <input
+                      type="tel"
+                      placeholder="手机号码"
+                      value={registerForm.phone}
+                      onChange={e => setRegisterForm({ ...registerForm, phone: e.target.value })}
+                      className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all text-sm"
+                      required
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">邮箱</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="email"
+                    placeholder="example@email.com"
+                    value={registerForm.email}
+                    onChange={e => setRegisterForm({ ...registerForm, email: e.target.value })}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">密码</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="password"
+                    placeholder="设置登录密码"
+                    value={registerForm.password}
+                    onChange={e => setRegisterForm({ ...registerForm, password: e.target.value })}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">确认密码</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="password"
+                    placeholder="再次输入密码"
+                    value={registerForm.confirmPassword}
+                    onChange={e => setRegisterForm({ ...registerForm, confirmPassword: e.target.value })}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    required
+                  />
+                </div>
+              </div>
+              <button
+                type="submit"
+                className="w-full py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl font-bold shadow-lg shadow-blue-500/20 transition-all active:scale-[0.98]"
+              >
+                创建账号
+              </button>
+              <div className="text-center text-sm text-slate-500 mt-4">
+                已有账号?{' '}
+                <button
+                  type="button"
+                  onClick={() => setAuthView('login')}
+                  className="text-primary font-bold hover:underline"
+                >
+                  直接登录
+                </button>
+              </div>
+            </form>
+          )}
+
+          {authView === 'forgot' && (
+            <form onSubmit={handleResetPassword} className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">联系方式</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="text"
+                    placeholder="注册邮箱 / 手机号"
+                    value={forgotForm.contact}
+                    onChange={e => setForgotForm({ ...forgotForm, contact: e.target.value })}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">验证码</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="输入验证码"
+                    value={forgotForm.code}
+                    onChange={e => setForgotForm({ ...forgotForm, code: e.target.value })}
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSendCode}
+                    disabled={verificationSent}
+                    className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors text-sm font-medium whitespace-nowrap disabled:opacity-50"
+                  >
+                    {verificationSent ? '已发送' : '获取验证码'}
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">新密码</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="password"
+                    placeholder="设置新密码"
+                    value={forgotForm.newPassword}
+                    onChange={e => setForgotForm({ ...forgotForm, newPassword: e.target.value })}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    required
+                  />
+                </div>
+              </div>
+              <button
+                type="submit"
+                className="w-full py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl font-bold shadow-lg shadow-blue-500/20 transition-all active:scale-[0.98]"
+              >
+                重置密码
+              </button>
+              <div className="text-center text-sm text-slate-500 mt-4">
+                <button
+                  type="button"
+                  onClick={() => setAuthView('login')}
+                  className="text-slate-500 hover:text-foreground transition-colors"
+                >
+                  返回登录
+                </button>
+              </div>
+            </form>
+          )}
+
         </div>
-    );
+      </div>
+    </div>
+  );
 };
