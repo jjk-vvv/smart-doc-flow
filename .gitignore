@@ -17,6 +17,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Tooling caches
+.npm-cache/
+.trae/
+frontend/.npm-cache/
+backend/auth/node_modules/
+
 # IDE
 .vscode/
 .idea/
@@ -35,6 +41,15 @@ instance/
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local
+
+# Exclude benchmark samples and local docs
+cts15-selected_ancillary_compounds-r-final-rev.pdf
+中华人民共和国2024年国民经济和社会发展统计公报.pdf
+核燃料后处理工学.pdf
+数据库操作步骤优化方案.md
+
+# Module2 local cache artifacts
+backend/module2/.cache/
 
 # Exclude specific documents
 数据库操作步骤优化方案.md

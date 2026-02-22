@@ -186,6 +186,7 @@ class ExtractionStorage:
         records: List[Tuple[Any, ...]],
         columns: List[str],
     ) -> None:
+        fail_on_partial = os.getenv("MODULE2_FAIL_ON_STAGING_PARTIAL", "true").lower() in {"1", "true", "yes"}
         try:
             await conn.copy_records_to_table(
                 table_name,
@@ -199,14 +200,20 @@ class ExtractionStorage:
             placeholders = ", ".join(f"${idx}" for idx in range(1, len(columns) + 1))
             insert_sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders})"
             inserted = 0
+            failed = 0
             for row in records:
                 try:
                     await conn.execute(insert_sql, *row)
                     inserted += 1
                 except Exception:
+                    failed += 1
                     continue
             if inserted == 0:
                 raise
+            if failed > 0 and fail_on_partial:
+                raise RuntimeError(
+                    f"Partial insert into {table_name}: inserted={inserted}, failed={failed}, total={len(records)}"
+                )
 
     async def _init_schema(self) -> None:
         if not self._pool:

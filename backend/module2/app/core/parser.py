@@ -1,16 +1,29 @@
 ﻿from __future__ import annotations
 
+import base64
 import io
+import json
+import math
 import os
 import re
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from html import escape
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pypdf import PdfReader
 
+from app.core.layout_mineru import MineruLayoutExtractor
+from app.core.roi_cropper import RoiCropper
+from app.core.vision_extractor import GeminiVisionExtractor
+
 
 TableBlocks = List[Dict[str, Any]]
+FigureBlocks = List[Dict[str, Any]]
+TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
 
 class NativeDocumentParser:
@@ -19,6 +32,8 @@ class NativeDocumentParser:
     _ocr_engine = None
 
     def __init__(self, max_pages: int | None = None) -> None:
+        self._runtime_page_count = 0
+        self._last_figure_blocks: FigureBlocks = []
         self.max_pages = max_pages or max(1, int(os.getenv("MODULE2_MAX_PARSE_PAGES", "120")))
         self.max_pages_visual = max(
             self.max_pages,
@@ -60,6 +75,7 @@ class NativeDocumentParser:
         )
         self.ocr_max_scan_pages = max(1, int(os.getenv("MODULE2_OCR_MAX_SCAN_PAGES", "96")))
         self.ocr_min_scan_pages = max(1, int(os.getenv("MODULE2_OCR_MIN_SCAN_PAGES", "28")))
+        self.ocr_front_scan_pages = max(0, int(os.getenv("MODULE2_OCR_FRONT_SCAN_PAGES", "72")))
         self.ocr_large_doc_page_threshold = max(50, int(os.getenv("MODULE2_OCR_LARGE_DOC_PAGE_THRESHOLD", "220")))
         self.ocr_large_doc_dpi = max(72, int(os.getenv("MODULE2_OCR_LARGE_DOC_DPI", "96")))
         self.ocr_low_priority_dpi = max(72, int(os.getenv("MODULE2_OCR_LOW_PRIORITY_DPI", "84")))
@@ -71,6 +87,10 @@ class NativeDocumentParser:
             int(os.getenv("MODULE2_OCR_MAX_ATTEMPT_PAGES_MID_CUE", "84")),
         )
         self.ocr_dynamic_neighbor_pages = max(0, int(os.getenv("MODULE2_OCR_DYNAMIC_NEIGHBOR_PAGES", "0")))
+        self.ocr_dynamic_neighbor_auto_enable = (
+            os.getenv("MODULE2_OCR_DYNAMIC_NEIGHBOR_AUTO_ENABLE", "true").lower() in {"1", "true", "yes"}
+        )
+        self.ocr_dynamic_neighbor_auto_max = max(0, int(os.getenv("MODULE2_OCR_DYNAMIC_NEIGHBOR_AUTO_MAX", "8")))
         self.ocr_dynamic_early_stop_enable = (
             os.getenv("MODULE2_OCR_DYNAMIC_EARLY_STOP_ENABLE", "true").lower() in {"1", "true", "yes"}
         )
@@ -148,6 +168,125 @@ class NativeDocumentParser:
             0.3,
             min(1.0, float(os.getenv("MODULE2_TABLE_MERGE_COL_OVERLAP_THRESHOLD", "0.55"))),
         )
+        self.enable_gemini_vision_enhance = (
+            os.getenv("MODULE2_ENABLE_GEMINI_VISION_ENHANCE", "true").lower() in {"1", "true", "yes"}
+        )
+        self.gemini_vision_model = os.getenv("MODULE2_GEMINI_VISION_MODEL", "gemini-2.5-flash")
+        self.gemini_vision_timeout_sec = max(5.0, float(os.getenv("MODULE2_GEMINI_VISION_TIMEOUT_SEC", "25")))
+        self.gemini_vision_dpi = max(96, int(os.getenv("MODULE2_GEMINI_VISION_DPI", "150")))
+        self.gemini_vision_max_side_px = max(768, int(os.getenv("MODULE2_GEMINI_VISION_MAX_SIDE_PX", "1800")))
+        self.gemini_vision_max_pages = max(0, int(os.getenv("MODULE2_GEMINI_VISION_MAX_PAGES", "24")))
+        self.gemini_vision_max_tables_per_page = max(
+            1,
+            int(os.getenv("MODULE2_GEMINI_VISION_MAX_TABLES_PER_PAGE", "5")),
+        )
+        self.gemini_vision_max_figures_per_page = max(
+            0,
+            int(os.getenv("MODULE2_GEMINI_VISION_MAX_FIGURES_PER_PAGE", "8")),
+        )
+        self.gemini_vision_enable_figures = (
+            os.getenv("MODULE2_GEMINI_VISION_ENABLE_FIGURES", "true").lower() in {"1", "true", "yes"}
+        )
+        self.gemini_vision_min_table_quality = max(
+            0.1,
+            min(1.0, float(os.getenv("MODULE2_GEMINI_VISION_MIN_TABLE_QUALITY", "0.72"))),
+        )
+        self.gemini_vision_min_figure_quality = max(
+            0.1,
+            min(1.0, float(os.getenv("MODULE2_GEMINI_VISION_MIN_FIGURE_QUALITY", "0.56"))),
+        )
+        self.gemini_vision_max_output_tokens = max(
+            512,
+            int(os.getenv("MODULE2_GEMINI_VISION_MAX_OUTPUT_TOKENS", "4096")),
+        )
+        self.gemini_vision_consecutive_fail_stop = max(
+            1,
+            int(os.getenv("MODULE2_GEMINI_VISION_CONSECUTIVE_FAIL_STOP", "2")),
+        )
+        self.pipeline_mode = (os.getenv("MODULE2_PIPELINE_MODE", "hybrid") or "hybrid").strip().lower()
+        if self.pipeline_mode not in {"legacy", "hybrid", "visual_first"}:
+            self.pipeline_mode = "hybrid"
+        self.enable_mineru_layout = (
+            os.getenv("MODULE2_ENABLE_MINERU_LAYOUT", "true").lower() in {"1", "true", "yes"}
+        )
+        self.visual_first_allow_legacy_fallback = (
+            os.getenv("MODULE2_VISUAL_FIRST_ALLOW_LEGACY_FALLBACK", "true").lower() in {"1", "true", "yes"}
+        )
+        self.visual_first_max_pages = max(
+            1,
+            int(os.getenv("MODULE2_VISUAL_FIRST_MAX_PAGES", str(self.max_pages_visual))),
+        )
+        self.visual_first_max_pages_scanned = max(
+            1,
+            int(os.getenv("MODULE2_VISUAL_FIRST_MAX_PAGES_SCANNED", "72")),
+        )
+        self.visual_max_objects = max(8, int(os.getenv("MODULE2_VISUAL_MAX_OBJECTS", "220")))
+        self.visual_table_max_per_page = max(
+            1,
+            int(os.getenv("MODULE2_VISUAL_TABLE_MAX_PER_PAGE", "6")),
+        )
+        self.visual_figure_max_per_page = max(
+            0,
+            int(os.getenv("MODULE2_VISUAL_FIGURE_MAX_PER_PAGE", "8")),
+        )
+        self.visual_table_min_confidence = max(
+            0.0,
+            min(1.0, float(os.getenv("MODULE2_VISUAL_TABLE_MIN_CONFIDENCE", "0.45"))),
+        )
+        self.visual_figure_min_confidence = max(
+            0.0,
+            min(1.0, float(os.getenv("MODULE2_VISUAL_FIGURE_MIN_CONFIDENCE", "0.35"))),
+        )
+        self.visual_context_max_chars = max(600, int(os.getenv("MODULE2_VISUAL_CONTEXT_MAX_CHARS", "2400")))
+        self.visual_use_table_html_fallback = (
+            os.getenv("MODULE2_VISUAL_USE_TABLE_HTML_FALLBACK", "true").lower() in {"1", "true", "yes"}
+        )
+        self.mineru_backend = os.getenv("MODULE2_MINERU_BACKEND", "pipeline")
+        self.mineru_method = os.getenv("MODULE2_MINERU_METHOD", "txt")
+        self.mineru_scanned_method = os.getenv("MODULE2_MINERU_SCANNED_METHOD", self.mineru_method)
+        self.mineru_timeout_sec = max(120, int(os.getenv("MODULE2_MINERU_TIMEOUT_SEC", "3600")))
+        self.mineru_cache_dir = os.getenv(
+            "MODULE2_MINERU_CACHE_DIR",
+            "backend/module2/.cache/mineru",
+        )
+        self.mineru_enable_cache = os.getenv("MODULE2_MINERU_ENABLE_CACHE", "true").lower() in {"1", "true", "yes"}
+        self.mineru_enable_formula = os.getenv("MODULE2_MINERU_ENABLE_FORMULA", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        self.mineru_enable_table = os.getenv("MODULE2_MINERU_ENABLE_TABLE", "true").lower() in {"1", "true", "yes"}
+        self.visual_crop_table_dpi = max(120, int(os.getenv("MODULE2_VISUAL_TABLE_CROP_DPI", "260")))
+        self.visual_crop_figure_dpi = max(120, int(os.getenv("MODULE2_VISUAL_FIGURE_CROP_DPI", "220")))
+        self.visual_crop_expand_ratio = max(
+            0.0,
+            min(0.2, float(os.getenv("MODULE2_VISUAL_CROP_EXPAND_RATIO", "0.03"))),
+        )
+        self.visual_crop_max_side_px = max(1200, int(os.getenv("MODULE2_VISUAL_CROP_MAX_SIDE_PX", "2800")))
+        self.visual_vision_retry_count = max(0, int(os.getenv("MODULE2_VISUAL_VISION_RETRY_COUNT", "1")))
+        self.gemini_cache_dir = os.getenv(
+            "MODULE2_GEMINI_CACHE_DIR",
+            "backend/module2/.cache/gemini",
+        )
+        self.gemini_cache_enable = os.getenv("MODULE2_GEMINI_CACHE_ENABLE", "true").lower() in {"1", "true", "yes"}
+        self._mineru_layout_extractor: Optional[MineruLayoutExtractor] = None
+        self._roi_cropper: Optional[RoiCropper] = None
+        self._gemini_visual_extractor: Optional[GeminiVisionExtractor] = None
+
+    @staticmethod
+    def _visual_backend_available() -> Tuple[bool, str]:
+        missing: List[str] = []
+        try:
+            import fitz  # noqa: F401
+        except Exception:
+            missing.append("pymupdf")
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+        except Exception:
+            missing.append("rapidocr-onnxruntime")
+        if missing:
+            return False, ", ".join(missing)
+        return True, ""
 
     def parse_document(
         self,
@@ -155,14 +294,59 @@ class NativeDocumentParser:
         file_bytes: bytes,
         track: str = "FastTrack",
     ) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
+        self._last_figure_blocks = []
         name = (file_name or "unknown").lower()
-        if name.endswith(".pdf"):
+        _, ext = os.path.splitext(name)
+        if ext == ".pdf":
             return self._parse_pdf(file_name, file_bytes, track)
-        if name.endswith(".docx"):
+        if ext == ".docx":
             return self._parse_docx(file_bytes)
-        if name.endswith(".xlsx"):
+        if ext == ".xlsx":
             return self._parse_xlsx(file_bytes)
-        return self._parse_plain(file_bytes)
+        if ext in TEXT_EXTENSIONS:
+            return self._parse_plain(file_bytes)
+        if ext in IMAGE_EXTENSIONS:
+            return self._parse_image(file_name, file_bytes)
+        raise ValueError(f"Unsupported file type: {ext or 'unknown'}")
+
+    def get_last_figure_blocks(self) -> FigureBlocks:
+        return [dict(item) for item in self._last_figure_blocks]
+
+    def _get_mineru_layout_extractor(self) -> MineruLayoutExtractor:
+        if self._mineru_layout_extractor is None:
+            self._mineru_layout_extractor = MineruLayoutExtractor(
+                backend=self.mineru_backend,
+                method=self.mineru_method,
+                timeout_sec=self.mineru_timeout_sec,
+                cache_dir=self.mineru_cache_dir,
+                enable_cache=self.mineru_enable_cache,
+                enable_formula=self.mineru_enable_formula,
+                enable_table=self.mineru_enable_table,
+            )
+        return self._mineru_layout_extractor
+
+    def _get_roi_cropper(self) -> RoiCropper:
+        if self._roi_cropper is None:
+            self._roi_cropper = RoiCropper(
+                table_dpi=self.visual_crop_table_dpi,
+                figure_dpi=self.visual_crop_figure_dpi,
+                expand_ratio=self.visual_crop_expand_ratio,
+                max_side_px=self.visual_crop_max_side_px,
+            )
+        return self._roi_cropper
+
+    def _get_visual_vision_extractor(self) -> GeminiVisionExtractor:
+        if self._gemini_visual_extractor is None:
+            self._gemini_visual_extractor = GeminiVisionExtractor(
+                api_key=os.getenv("GOOGLE_API_KEY", "").strip(),
+                model=self.gemini_vision_model,
+                timeout_sec=self.gemini_vision_timeout_sec,
+                max_output_tokens=self.gemini_vision_max_output_tokens,
+                retry_count=self.visual_vision_retry_count,
+                cache_dir=self.gemini_cache_dir,
+                enable_cache=self.gemini_cache_enable,
+            )
+        return self._gemini_visual_extractor
 
     def _parse_pdf(
         self,
@@ -172,8 +356,34 @@ class NativeDocumentParser:
     ) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
         reader = PdfReader(io.BytesIO(file_bytes))
         total_pages = len(reader.pages)
+        self._runtime_page_count = total_pages
         if total_pages == 0:
             raise ValueError(f"PDF has no pages: {file_name}")
+
+        if (
+            track == "VisualTrack"
+            and self.enable_mineru_layout
+            and self.pipeline_mode in {"visual_first", "hybrid"}
+        ):
+            visual_page_count = min(total_pages, self.visual_first_max_pages)
+            visual_error: Exception | None = None
+            try:
+                visual_result = self._parse_pdf_visual_first(
+                    file_name=file_name,
+                    file_bytes=file_bytes,
+                    reader=reader,
+                    page_count=visual_page_count,
+                )
+            except Exception as exc:
+                visual_error = exc
+                visual_result = None
+            if visual_result is not None:
+                return visual_result
+            if self.pipeline_mode == "visual_first" and not self.visual_first_allow_legacy_fallback:
+                if visual_error is not None:
+                    raise visual_error
+                raise ValueError("Visual-first pipeline returned no usable result.")
+        visual_backend_ready, _ = self._visual_backend_available()
 
         cue_pages: List[int] = []
         visual_page_count = min(total_pages, self.max_pages_visual)
@@ -188,7 +398,8 @@ class NativeDocumentParser:
                 page = reader.pages[page_idx]
                 probe_chars += len(self._normalize_text(page.extract_text() or ""))
             if probe_chars < self.native_text_threshold:
-                return self._parse_pdf_with_ocr(file_bytes, visual_page_count, cue_pages=cue_pages)
+                if visual_backend_ready:
+                    return self._parse_pdf_with_ocr(file_bytes, visual_page_count, cue_pages=cue_pages)
 
         page_count = min(total_pages, self.max_pages)
 
@@ -217,26 +428,747 @@ class NativeDocumentParser:
                 parts.append(f'<ref id="{ref_id}">{escape(chunk)}</ref>')
                 bbox_map[ref_id] = [page_no, 0.0, 0.0, 1.0, 1.0]
 
-        if track == "VisualTrack" and total_chars < self.native_text_threshold:
+        if track == "VisualTrack" and total_chars < self.native_text_threshold and visual_backend_ready:
             return self._parse_pdf_with_ocr(file_bytes, page_count, cue_pages=cue_pages)
 
-        table_blocks: TableBlocks = []
+        native_page_lines: Dict[int, List[str]] = {}
+        for idx, text in enumerate(page_texts, start=1):
+            lines = [self._normalize_text(line) for line in text.splitlines()]
+            lines = [line for line in lines if line]
+            if lines:
+                native_page_lines[idx] = lines
+
+        fitz_tables: TableBlocks = []
         if self.enable_fitz_table:
-            table_blocks = self._extract_pdf_tables_with_fitz(file_bytes, page_count, parts, bbox_map)
-        if not table_blocks:
-            table_blocks = self._infer_pdf_tables(page_texts, parts, bbox_map, source="pdf_native")
+            fitz_tables = self._extract_pdf_tables_with_fitz(file_bytes, page_count, parts, bbox_map)
+        if fitz_tables:
+            weak_fitz = self._is_weak_native_table_result(fitz_tables, cue_pages)
+            if weak_fitz:
+                line_page_lines = self._select_line_augmentation_pages(native_page_lines, fitz_tables, cue_pages=cue_pages)
+                line_tables = self._infer_tables_from_page_lines(line_page_lines, parts, bbox_map, source="pdf_native")
+            else:
+                line_tables = []
+        else:
+            line_tables = self._infer_tables_from_page_lines(native_page_lines, parts, bbox_map, source="pdf_native")
+        if fitz_tables and line_tables:
+            table_blocks = self._augment_with_line_tables(fitz_tables, line_tables)
+        elif fitz_tables:
+            table_blocks = fitz_tables
+        else:
+            table_blocks = line_tables
         if table_blocks and self.table_merge_enable:
             table_blocks = self._merge_same_page_tables(table_blocks)
             table_blocks = self._merge_cross_page_tables(table_blocks)
 
+        weak_native_tables = self._is_weak_native_table_result(table_blocks, cue_pages)
         if (
             track == "VisualTrack"
             and self.visual_force_ocr_on_weak_native
-            and self._is_weak_native_table_result(table_blocks, cue_pages)
+            and weak_native_tables
+            and visual_backend_ready
         ):
             return self._parse_pdf_with_ocr(file_bytes, visual_page_count, cue_pages=cue_pages)
 
+        figure_blocks: FigureBlocks = self._infer_figures_from_page_lines(
+            page_lines=native_page_lines,
+            parts=parts,
+            bbox_map=bbox_map,
+            source_prefix="pdf_caption",
+        )
+
+        should_run_native_vision = (
+            track == "VisualTrack"
+            and (
+                (not visual_backend_ready)
+                or weak_native_tables
+                or (self.gemini_vision_enable_figures and page_count >= 20)
+            )
+        )
+        if should_run_native_vision:
+            vision_page_lines = dict(native_page_lines)
+            for idx in range(1, page_count + 1):
+                if idx not in vision_page_lines:
+                    vision_page_lines[idx] = [f"[Page {idx}] vision probe"]
+            table_blocks, vision_figures = self._enhance_low_quality_pages_with_gemini_vision(
+                file_bytes=file_bytes,
+                filetype="pdf",
+                page_lines=vision_page_lines,
+                table_blocks=table_blocks,
+                parts=parts,
+                bbox_map=bbox_map,
+                source_prefix="pdf_gemini_vision_native",
+            )
+            if vision_figures:
+                figure_blocks = self._merge_figure_blocks(figure_blocks, vision_figures)
+
+        table_blocks = self._prune_fragment_tables(table_blocks)
+        self._last_figure_blocks = figure_blocks
         return "\n".join(parts), bbox_map, table_blocks
+
+    def _parse_pdf_visual_first(
+        self,
+        *,
+        file_name: str,
+        file_bytes: bytes,
+        reader: PdfReader,
+        page_count: int,
+    ) -> Optional[Tuple[str, Dict[str, List[float]], TableBlocks]]:
+        if page_count <= 0:
+            return None
+
+        vision = self._get_visual_vision_extractor()
+        if not vision.ready:
+            return None
+
+        probe_pages = min(page_count, max(3, self.visual_probe_pages))
+        probe_chars = 0
+        for page_idx in range(probe_pages):
+            try:
+                probe_chars += len(self._normalize_text(reader.pages[page_idx].extract_text() or ""))
+            except Exception:
+                continue
+        mineru_method = self.mineru_method
+        if probe_chars < self.native_text_threshold:
+            mineru_method = self.mineru_scanned_method or self.mineru_method
+            page_count = min(page_count, self.visual_first_max_pages_scanned)
+
+        layout = self._get_mineru_layout_extractor()
+        objects, mineru_page_lines = layout.extract_layout(
+            pdf_bytes=file_bytes,
+            file_name=file_name,
+            start_page=1,
+            end_page=page_count,
+            method=mineru_method,
+        )
+        if not objects:
+            return None
+
+        parts: List[str] = []
+        bbox_map: Dict[str, List[float]] = {}
+        native_page_lines: Dict[int, List[str]] = {}
+        for page_idx in range(page_count):
+            page_no = page_idx + 1
+            try:
+                raw_text = reader.pages[page_idx].extract_text() or ""
+            except Exception:
+                raw_text = ""
+            text = self._normalize_text(raw_text)
+            chunks = self._split_page_text(text)
+            if chunks:
+                for chunk_idx, chunk in enumerate(chunks, start=1):
+                    ref_id = f"p{page_no}_c{chunk_idx}"
+                    self._append_ref(parts, bbox_map, ref_id, chunk, [float(page_no), 0.0, 0.0, 1.0, 1.0])
+            else:
+                ref_id = f"p{page_no}_c1"
+                placeholder = f"[Page {page_no}] No extractable native text."
+                self._append_ref(parts, bbox_map, ref_id, placeholder, [float(page_no), 0.0, 0.0, 1.0, 1.0])
+
+            lines = [self._normalize_text(x) for x in raw_text.splitlines()]
+            lines = [x for x in lines if x]
+            if lines:
+                native_page_lines[page_no] = lines[:120]
+
+        page_lines = self._merge_page_line_context(native_page_lines, mineru_page_lines)
+        page_dims = self._build_page_dimensions(reader=reader, page_count=page_count)
+        selected_objects = self._prioritize_layout_objects(objects, page_count=page_count)
+        if not selected_objects:
+            return None
+
+        cropper = self._get_roi_cropper()
+        table_blocks: TableBlocks = []
+        figure_blocks: FigureBlocks = []
+        table_count_by_page: Dict[int, int] = {}
+        figure_count_by_page: Dict[int, int] = {}
+        table_idx = 1
+        figure_idx = 1
+        emitted_cells = 0
+
+        for item in selected_objects:
+            obj_type = str(item.get("object_type", "") or "")
+            page_no = int(item.get("page", 0) or 0)
+            if page_no <= 0:
+                continue
+
+            if obj_type == "table":
+                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0)
+                if table_count_by_page[page_no] >= self.visual_table_max_per_page:
+                    continue
+                if emitted_cells >= self.table_cell_cap:
+                    break
+
+                roi_bytes, roi_mime, _ = cropper.load_or_crop(item=item, pdf_bytes=file_bytes, is_table=True)
+                if not roi_bytes:
+                    continue
+                context = self._build_visual_object_context(
+                    file_name=file_name,
+                    page_no=page_no,
+                    object_type="table",
+                    item=item,
+                    page_lines=page_lines,
+                )
+                table_payload = vision.extract_table(
+                    image_bytes=roi_bytes,
+                    mime_type=roi_mime,
+                    context=context,
+                )
+                table_id = f"pdf_mineru_gemini_t{table_idx}"
+                built_table, emitted_cells = self._build_table_from_visual_payload(
+                    table_id=table_id,
+                    page_no=page_no,
+                    payload=table_payload or {},
+                    item=item,
+                    parts=parts,
+                    bbox_map=bbox_map,
+                    page_dims=page_dims,
+                    emitted_cells=emitted_cells,
+                )
+                if built_table is None:
+                    continue
+                try:
+                    quality_val = float(built_table.get("quality", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    quality_val = 0.0
+                if quality_val < self.visual_table_min_confidence:
+                    continue
+                table_blocks.append(built_table)
+                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0) + 1
+                table_idx += 1
+                continue
+
+            if obj_type == "image" and self.gemini_vision_enable_figures and self.visual_figure_max_per_page > 0:
+                figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0)
+                if figure_count_by_page[page_no] >= self.visual_figure_max_per_page:
+                    continue
+
+                roi_bytes, roi_mime, _ = cropper.load_or_crop(item=item, pdf_bytes=file_bytes, is_table=False)
+                if not roi_bytes:
+                    continue
+                context = self._build_visual_object_context(
+                    file_name=file_name,
+                    page_no=page_no,
+                    object_type="figure",
+                    item=item,
+                    page_lines=page_lines,
+                )
+                figure_payload = vision.extract_figure(
+                    image_bytes=roi_bytes,
+                    mime_type=roi_mime,
+                    context=context,
+                )
+                figure_id = f"pdf_mineru_gemini_f{figure_idx}"
+                built_figure = self._build_figure_from_visual_payload(
+                    figure_id=figure_id,
+                    page_no=page_no,
+                    payload=figure_payload or {},
+                    item=item,
+                    parts=parts,
+                    bbox_map=bbox_map,
+                    page_dims=page_dims,
+                )
+                if built_figure is None:
+                    continue
+                try:
+                    quality_val = float(built_figure.get("quality", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    quality_val = 0.0
+                if quality_val < self.visual_figure_min_confidence:
+                    continue
+                figure_blocks.append(built_figure)
+                figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0) + 1
+                figure_idx += 1
+
+        if not table_blocks and not figure_blocks:
+            return None
+
+        if table_blocks and self.table_merge_enable:
+            table_blocks = self._merge_same_page_tables(table_blocks)
+            table_blocks = self._merge_cross_page_tables(table_blocks)
+        table_blocks = self._prune_fragment_tables(table_blocks)
+        figure_blocks = self._merge_figure_blocks([], figure_blocks)
+        self._last_figure_blocks = figure_blocks
+        return "\n".join(parts), bbox_map, table_blocks
+
+    @staticmethod
+    def _merge_page_line_context(
+        native_lines: Dict[int, List[str]],
+        mineru_lines: Dict[int, List[str]],
+    ) -> Dict[int, List[str]]:
+        merged: Dict[int, List[str]] = {}
+        pages = set(native_lines.keys()) | set(mineru_lines.keys())
+        for page_no in pages:
+            out: List[str] = []
+            seen = set()
+            for source in (native_lines.get(page_no, []), mineru_lines.get(page_no, [])):
+                for line in source:
+                    text = " ".join(str(line or "").split())
+                    if not text:
+                        continue
+                    key = text[:220].lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(text)
+                    if len(out) >= 160:
+                        break
+                if len(out) >= 160:
+                    break
+            if out:
+                merged[page_no] = out
+        return merged
+
+    def _prioritize_layout_objects(
+        self,
+        objects: List[Dict[str, Any]],
+        *,
+        page_count: int,
+    ) -> List[Dict[str, Any]]:
+        if not objects:
+            return []
+        cleaned = []
+        for item in objects:
+            obj_type = str(item.get("object_type", "") or "")
+            if obj_type not in {"table", "image"}:
+                continue
+            page_no = int(item.get("page", 0) or 0)
+            if page_no <= 0 or page_no > page_count:
+                continue
+            area = 0.0
+            try:
+                area = float(item.get("area", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                area = 0.0
+            cap_len = len(item.get("caption", [])) if isinstance(item.get("caption"), list) else 0
+            cleaned.append((item, page_no, obj_type, cap_len, area))
+        if not cleaned:
+            return []
+
+        cleaned.sort(
+            key=lambda x: (
+                x[1],
+                0 if x[2] == "table" else 1,
+                -x[3],
+                -x[4],
+            )
+        )
+
+        selected: List[Dict[str, Any]] = []
+        table_count_by_page: Dict[int, int] = {}
+        figure_count_by_page: Dict[int, int] = {}
+        for item, page_no, obj_type, _, _ in cleaned:
+            if len(selected) >= self.visual_max_objects:
+                break
+            if obj_type == "table":
+                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0)
+                if table_count_by_page[page_no] >= self.visual_table_max_per_page:
+                    continue
+                table_count_by_page[page_no] += 1
+            else:
+                if not self.gemini_vision_enable_figures or self.visual_figure_max_per_page <= 0:
+                    continue
+                figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0)
+                if figure_count_by_page[page_no] >= self.visual_figure_max_per_page:
+                    continue
+                figure_count_by_page[page_no] += 1
+            selected.append(item)
+        return selected
+
+    def _build_visual_object_context(
+        self,
+        *,
+        file_name: str,
+        page_no: int,
+        object_type: str,
+        item: Dict[str, Any],
+        page_lines: Dict[int, List[str]],
+    ) -> Dict[str, Any]:
+        caption = self._normalize_text(" ".join(self._safe_text_list(item.get("caption"), max_items=4, max_len=200)))
+        page_text = " ".join(page_lines.get(page_no, [])[:90]).strip()
+        if len(page_text) > self.visual_context_max_chars:
+            page_text = page_text[: self.visual_context_max_chars]
+        domain_hints = self._infer_domain_hints(f"{file_name} {caption} {page_text[:900]}")
+        return {
+            "doc_name": file_name,
+            "page": page_no,
+            "object_type": object_type,
+            "caption_hint": caption,
+            "footnote_hint": self._safe_text_list(item.get("footnote"), max_items=4, max_len=180),
+            "nearby_text": page_text,
+            "domain_hints": domain_hints,
+        }
+
+    def _infer_domain_hints(self, text: str) -> List[str]:
+        probe = self._normalize_text(text).lower()
+        hints = [
+            "Preserve table hierarchy and merged-header semantics.",
+            "Do not fabricate missing cell values.",
+            "Keep number formats and units exactly as shown.",
+        ]
+        if any(k in probe for k in ["compound", "chem", "cts", "reagent"]):
+            hints.extend(
+                [
+                    "Keep chemical formulas verbatim, including parentheses and charge notation.",
+                    "Do not split element symbols from subscripts/superscripts.",
+                ]
+            )
+        if any(k in probe for k in ["nuclear", "fuel", "reactor", "isotope"]):
+            hints.extend(
+                [
+                    "Preserve nuclide and isotope notation exactly.",
+                    "Keep engineering symbols and scientific notation unchanged.",
+                ]
+            )
+        if any(k in probe for k in ["gdp", "economic", "statistical", "bulletin"]):
+            hints.extend(
+                [
+                    "Treat percentage, year-over-year, and unit columns as structured numeric fields.",
+                    "Keep Chinese unit markers such as %, 万, 亿, 吨 when present.",
+                ]
+            )
+        return hints[:10]
+
+    @staticmethod
+    def _append_ref(
+        parts: List[str],
+        bbox_map: Dict[str, List[float]],
+        ref_id: str,
+        text: str,
+        bbox: List[float],
+    ) -> None:
+        if not ref_id or ref_id in bbox_map:
+            return
+        parts.append(f'<ref id="{ref_id}">{escape(str(text or ""))}</ref>')
+        bbox_map[ref_id] = [float(x) for x in bbox[:5]]
+
+    @staticmethod
+    def _build_page_dimensions(reader: PdfReader, page_count: int) -> Dict[int, Tuple[float, float]]:
+        out: Dict[int, Tuple[float, float]] = {}
+        for idx in range(page_count):
+            page_no = idx + 1
+            try:
+                page = reader.pages[idx]
+                width = float(page.mediabox.width)
+                height = float(page.mediabox.height)
+            except Exception:
+                width = 1.0
+                height = 1.0
+            out[page_no] = (max(width, 1.0), max(height, 1.0))
+        return out
+
+    def _layout_bbox_to_ref_bbox(
+        self,
+        *,
+        page_no: int,
+        raw_bbox: Any,
+        page_dims: Dict[int, Tuple[float, float]],
+    ) -> List[float]:
+        width, height = page_dims.get(page_no, (1.0, 1.0))
+        if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) < 4:
+            return [float(page_no), 0.0, 0.0, 1.0, 1.0]
+        try:
+            x1, y1, x2, y2 = [float(raw_bbox[i]) for i in range(4)]
+        except Exception:
+            return [float(page_no), 0.0, 0.0, 1.0, 1.0]
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+
+        if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
+            x1 *= width
+            x2 *= width
+            y1 *= height
+            y2 *= height
+        else:
+            sx = 1.0
+            sy = 1.0
+            if x2 > width * 1.2 and x2 > 1:
+                sx = width / float(x2)
+            if y2 > height * 1.2 and y2 > 1:
+                sy = height / float(y2)
+            x1 *= sx
+            x2 *= sx
+            y1 *= sy
+            y2 *= sy
+
+        x1 = max(0.0, min(width, x1))
+        x2 = max(0.0, min(width, x2))
+        y1 = max(0.0, min(height, y1))
+        y2 = max(0.0, min(height, y2))
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        nx = x1 / width
+        ny = y1 / height
+        nw = max(0.0, (x2 - x1) / width)
+        nh = max(0.0, (y2 - y1) / height)
+        return [float(page_no), nx, ny, nw, nh]
+
+    def _build_table_from_visual_payload(
+        self,
+        *,
+        table_id: str,
+        page_no: int,
+        payload: Dict[str, Any],
+        item: Dict[str, Any],
+        parts: List[str],
+        bbox_map: Dict[str, List[float]],
+        page_dims: Dict[int, Tuple[float, float]],
+        emitted_cells: int,
+    ) -> Tuple[Optional[Dict[str, Any]], int]:
+        headers = self._extract_headers_from_table_payload(payload)
+        rows = self._extract_rows_from_table_payload(payload)
+        if not rows and self.visual_use_table_html_fallback:
+            rows = self._matrix_from_html_table(str(item.get("table_body_html", "") or ""))
+        if not headers and len(rows) >= 2:
+            headers = rows[0]
+            rows = rows[1:]
+        if not headers and rows:
+            max_cols = max(len(r) for r in rows)
+            headers = [f"col_{i}" for i in range(1, max_cols + 1)]
+        headers = [self._normalize_text(x) or f"col_{i}" for i, x in enumerate(headers, start=1)]
+        if not headers or not rows:
+            return None, emitted_cells
+
+        col_count = min(
+            self.table_max_cols,
+            max(len(headers), max((len(r) for r in rows), default=0)),
+        )
+        headers = (headers + [f"col_{i}" for i in range(len(headers) + 1, col_count + 1)])[:col_count]
+        row_bbox = self._layout_bbox_to_ref_bbox(page_no=page_no, raw_bbox=item.get("bbox"), page_dims=page_dims)
+
+        raw_rows_payload: List[Dict[str, Any]] = []
+        row_index = 1
+        for raw_row in rows[: self.table_max_rows]:
+            cells_payload: List[Dict[str, Any]] = []
+            for col_idx in range(1, col_count + 1):
+                if emitted_cells >= self.table_cell_cap:
+                    break
+                text = self._normalize_text(str(raw_row[col_idx - 1] if col_idx - 1 < len(raw_row) else ""))
+                if not text:
+                    continue
+                ref_id = f"{table_id}_r{row_index}_c{col_idx}"
+                self._append_ref(parts, bbox_map, ref_id, text, row_bbox)
+                cells_payload.append(
+                    {
+                        "col_index": col_idx,
+                        "text": text,
+                        "ref_id": ref_id,
+                        "bbox": row_bbox,
+                    }
+                )
+                emitted_cells += 1
+            if cells_payload:
+                raw_rows_payload.append({"row_index": row_index, "cells": cells_payload})
+                row_index += 1
+            if emitted_cells >= self.table_cell_cap:
+                break
+
+        if not raw_rows_payload:
+            return None, emitted_cells
+        data_rows = self._decorate_rows_with_meta(raw_rows_payload, headers)
+        if len(data_rows) < self.ocr_table_min_rows:
+            if len(data_rows) != 1:
+                return None, emitted_cells
+            first_cells = data_rows[0].get("cells", [])
+            numeric_hits = sum(
+                1
+                for c in first_cells
+                if c.get("numeric_value") is not None or re.search(r"\d", str(c.get("text", "")))
+            )
+            if len(first_cells) < 3 or numeric_hits < 2:
+                return None, emitted_cells
+        if self._looks_like_false_table(headers, data_rows):
+            return None, emitted_cells
+
+        confidence = self._to_float_or_none(payload.get("confidence"))
+        if confidence is None:
+            confidence = 0.72
+        confidence = max(0.1, min(1.0, float(confidence)))
+        caption = self._normalize_text(
+            str(payload.get("caption") or payload.get("title") or " ".join(self._safe_text_list(item.get("caption")))
+            )
+        )
+        notes = self._safe_text_list(payload.get("notes"), max_items=6, max_len=180)
+        if not notes:
+            notes = self._safe_text_list(item.get("footnote"), max_items=6, max_len=180)
+
+        if caption:
+            self._append_ref(parts, bbox_map, f"{table_id}_caption", caption, row_bbox)
+        for idx, note in enumerate(notes[:4], start=1):
+            self._append_ref(parts, bbox_map, f"{table_id}_note{idx}", note, row_bbox)
+
+        table = {
+            "table_id": table_id,
+            "source": "pdf_mineru_gemini",
+            "page": page_no,
+            "headers": headers,
+            "header_meta": self._build_header_meta(headers),
+            "rows": data_rows,
+            "row_count": len(data_rows),
+            "col_count": max((len(r.get("cells", [])) for r in data_rows), default=0),
+            "quality": round(confidence, 4),
+            "caption": caption,
+            "notes": notes,
+            "bbox_raw": item.get("bbox"),
+            "bbox_norm": row_bbox,
+            "image_path": str(item.get("img_path", "") or ""),
+            "extraction_mode": "visual_first",
+        }
+        return table, emitted_cells
+
+    def _build_figure_from_visual_payload(
+        self,
+        *,
+        figure_id: str,
+        page_no: int,
+        payload: Dict[str, Any],
+        item: Dict[str, Any],
+        parts: List[str],
+        bbox_map: Dict[str, List[float]],
+        page_dims: Dict[int, Tuple[float, float]],
+    ) -> Optional[Dict[str, Any]]:
+        caption = self._normalize_text(
+            str(payload.get("caption") or payload.get("title") or " ".join(self._safe_text_list(item.get("caption"))))
+        )
+        figure_type = self._normalize_text(str(payload.get("type", "") or ""))
+        if figure_type not in {"chart", "diagram", "photo", "other"}:
+            figure_type = self._infer_figure_type_from_text(f"{caption} {figure_type}")
+        axes = payload.get("axes")
+        x_axis = ""
+        y_axis = ""
+        if isinstance(axes, dict):
+            x_axis = self._normalize_text(str(axes.get("x", "") or ""))
+            y_axis = self._normalize_text(str(axes.get("y", "") or ""))
+        legend = self._safe_text_list(payload.get("legend"), max_items=8, max_len=120)
+        insights = self._safe_text_list(payload.get("insights"), max_items=8, max_len=180)
+        key_values = payload.get("key_values")
+        if isinstance(key_values, list):
+            for item_raw in key_values[:6]:
+                if not isinstance(item_raw, dict):
+                    continue
+                name = self._normalize_text(str(item_raw.get("name", "") or ""))
+                value = self._normalize_text(str(item_raw.get("value", "") or ""))
+                unit = self._normalize_text(str(item_raw.get("unit", "") or ""))
+                if not name and not value:
+                    continue
+                if unit:
+                    insights.append(f"{name}: {value} {unit}".strip())
+                else:
+                    insights.append(f"{name}: {value}".strip())
+        if x_axis:
+            insights.append(f"x-axis: {x_axis}")
+        if y_axis:
+            insights.append(f"y-axis: {y_axis}")
+        for lg in legend[:4]:
+            insights.append(f"legend: {lg}")
+        insights = [self._normalize_text(x) for x in insights if self._normalize_text(x)]
+        if len(insights) > 8:
+            insights = insights[:8]
+
+        if not caption and not insights:
+            return None
+        confidence = self._to_float_or_none(payload.get("confidence"))
+        if confidence is None:
+            confidence = 0.68
+        confidence = max(0.1, min(1.0, float(confidence)))
+
+        figure_bbox = self._layout_bbox_to_ref_bbox(page_no=page_no, raw_bbox=item.get("bbox"), page_dims=page_dims)
+        ref_ids: List[str] = []
+        if caption:
+            cap_ref = f"{figure_id}_caption"
+            self._append_ref(parts, bbox_map, cap_ref, caption, figure_bbox)
+            ref_ids.append(cap_ref)
+        for idx, insight in enumerate(insights[:6], start=1):
+            ref_id = f"{figure_id}_k{idx}"
+            self._append_ref(parts, bbox_map, ref_id, insight, figure_bbox)
+            ref_ids.append(ref_id)
+        return {
+            "figure_id": figure_id,
+            "source": "pdf_mineru_gemini",
+            "page": page_no,
+            "figure_type": figure_type or "other",
+            "caption": caption,
+            "insights": insights[:6],
+            "quality": round(confidence, 4),
+            "ref_ids": ref_ids,
+            "bbox_raw": item.get("bbox"),
+            "bbox_norm": figure_bbox,
+            "image_path": str(item.get("img_path", "") or ""),
+            "extraction_mode": "visual_first",
+        }
+
+    def _extract_headers_from_table_payload(self, payload: Dict[str, Any]) -> List[str]:
+        headers = self._safe_text_list(payload.get("headers"), max_items=self.table_max_cols, max_len=200)
+        if headers:
+            return headers
+        header_rows_raw = payload.get("header_rows")
+        if not isinstance(header_rows_raw, list):
+            return []
+        header_rows: List[List[str]] = []
+        for row in header_rows_raw[:4]:
+            if not isinstance(row, list):
+                continue
+            vals = [self._normalize_text(str(x or "")) for x in row[: self.table_max_cols]]
+            if any(vals):
+                header_rows.append(vals)
+        if not header_rows:
+            return []
+        max_cols = max(len(r) for r in header_rows)
+        merged: List[str] = []
+        for col_idx in range(max_cols):
+            parts: List[str] = []
+            seen = set()
+            for row in header_rows:
+                val = self._normalize_text(str(row[col_idx] if col_idx < len(row) else ""))
+                if not val:
+                    continue
+                key = self._normalize_token_for_compare(val)
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                parts.append(val)
+            merged.append(" / ".join(parts))
+        return [h for h in merged if h]
+
+    def _extract_rows_from_table_payload(self, payload: Dict[str, Any]) -> List[List[str]]:
+        rows_raw = payload.get("rows")
+        if not isinstance(rows_raw, list):
+            return []
+        matrix: List[List[str]] = []
+        for row in rows_raw[: self.table_max_rows]:
+            vals: List[str] = []
+            if isinstance(row, list):
+                vals = [self._normalize_text(str(x or "")) for x in row[: self.table_max_cols]]
+            elif isinstance(row, dict):
+                row_cells = row.get("cells")
+                if isinstance(row_cells, list):
+                    vals = [self._normalize_text(str(x or "")) for x in row_cells[: self.table_max_cols]]
+                else:
+                    keys = [k for k in row.keys() if str(k).lower() not in {"row_index", "id"}]
+                    keys.sort()
+                    vals = [self._normalize_text(str(row.get(k) or "")) for k in keys[: self.table_max_cols]]
+            if any(vals):
+                matrix.append(vals)
+        return matrix
+
+    def _matrix_from_html_table(self, table_html: str) -> List[List[str]]:
+        html = str(table_html or "")
+        if not html:
+            return []
+        row_chunks = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html, flags=re.IGNORECASE)
+        matrix: List[List[str]] = []
+        for row_chunk in row_chunks[: self.table_max_rows + 1]:
+            cell_chunks = re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", row_chunk, flags=re.IGNORECASE)
+            vals: List[str] = []
+            for cell in cell_chunks[: self.table_max_cols]:
+                text = re.sub(r"<[^>]+>", " ", str(cell or ""))
+                text = self._normalize_text(text)
+                vals.append(text)
+            if any(vals):
+                matrix.append(vals)
+        return matrix
 
     def _collect_table_cue_pages(self, reader: PdfReader, page_count: int) -> List[int]:
         limit = min(max(page_count, 0), len(reader.pages))
@@ -303,7 +1235,7 @@ class NativeDocumentParser:
         avg_quality = (sum(quality_vals) / float(len(quality_vals))) if quality_vals else 0.0
 
         weak_by_count = table_count < self.visual_weak_table_min
-        weak_by_quality = avg_quality <= self.visual_weak_table_quality
+        weak_by_quality = bool(quality_vals) and (avg_quality <= self.visual_weak_table_quality)
         fitz_only = bool(sources) and all(src == "pdf_fitz" for src in sources)
 
         if cue_count >= 20 and table_count <= max(2, self.visual_weak_table_min):
@@ -442,7 +1374,7 @@ class NativeDocumentParser:
         continuation = self._table_has_continuation_marker(prev) or self._table_has_continuation_marker(curr)
         tiny_fragment = self._table_row_count(prev) <= 2 or self._table_row_count(curr) <= 2
 
-        if col_overlap >= 0.86 and gap <= 0.035:
+        if col_overlap >= 0.86 and gap <= 0.035 and (h_sim >= 0.16 or continuation or tiny_fragment):
             return True
         if col_overlap >= 0.74 and gap <= 0.06 and (h_sim >= 0.32 or continuation or tiny_fragment):
             return True
@@ -544,6 +1476,13 @@ class NativeDocumentParser:
         merged = dict(prev)
         prev_rows = prev.get("rows", []) if isinstance(prev.get("rows", []), list) else []
         curr_rows = curr.get("rows", []) if isinstance(curr.get("rows", []), list) else []
+        p_page = int(prev.get("page", 0) or 0)
+        c_page = int(curr.get("page", 0) or 0)
+
+        if p_page > 0 and c_page > 0 and p_page != c_page:
+            prev_headers = [str(h) for h in prev.get("headers", [])]
+            if prev_headers:
+                curr_rows = self._drop_redundant_header_like_rows(curr_rows, prev_headers)
 
         out_rows: List[Dict[str, Any]] = []
         row_idx = 1
@@ -580,8 +1519,6 @@ class NativeDocumentParser:
         if (q_prev > 0.0) or (q_curr > 0.0):
             merged["quality"] = round((q_prev + q_curr) / 2.0, 4)
 
-        p_page = int(prev.get("page", 0) or 0)
-        c_page = int(curr.get("page", 0) or 0)
         start = min(x for x in [p_page, c_page] if x > 0) if (p_page > 0 or c_page > 0) else 0
         end = max(p_page, c_page)
         if start > 0 and end >= start:
@@ -637,6 +1574,7 @@ class NativeDocumentParser:
             ) from exc
 
         base_dpi = max(96, int(os.getenv("MODULE2_OCR_DPI", "120")))
+        self._runtime_page_count = page_count
         dpi = min(base_dpi, self.ocr_large_doc_dpi) if page_count >= self.ocr_large_doc_page_threshold else base_dpi
         low_dpi = min(dpi, self.ocr_low_priority_dpi)
         min_conf = float(os.getenv("MODULE2_OCR_MIN_CONF", "0.45"))
@@ -670,6 +1608,17 @@ class NativeDocumentParser:
             max_attempt_pages = min(len(queue), self.ocr_max_attempt_pages_dense_cue)
         elif cue_count >= max(40, self.ocr_dense_cue_threshold // 2):
             max_attempt_pages = min(len(queue), self.ocr_max_attempt_pages_mid_cue)
+        dynamic_neighbor_budget = self.ocr_dynamic_neighbor_pages
+        if dynamic_neighbor_budget <= 0 and self.ocr_dynamic_neighbor_auto_enable and self.ocr_dynamic_neighbor_auto_max > 0:
+            if cue_count <= 0:
+                if len(queue) <= 72:
+                    dynamic_neighbor_budget = min(self.ocr_dynamic_neighbor_auto_max, 8)
+                elif len(queue) <= 110:
+                    dynamic_neighbor_budget = min(self.ocr_dynamic_neighbor_auto_max, 6)
+                else:
+                    dynamic_neighbor_budget = min(self.ocr_dynamic_neighbor_auto_max, 4)
+            elif cue_count < max(10, self.ocr_dense_cue_threshold // 12):
+                dynamic_neighbor_budget = min(self.ocr_dynamic_neighbor_auto_max, 4)
         base_min_pages_before_budget = max(self.ocr_min_pages_before_budget, 3)
         if len(queue) >= 60:
             if cue_count <= 0:
@@ -697,6 +1646,11 @@ class NativeDocumentParser:
         elif cue_count >= 40:
             base_min_pages_before_budget = max(base_min_pages_before_budget, 26)
         min_pages_before_budget = min(len(queue), base_min_pages_before_budget)
+        if cue_count <= 0 and self.ocr_front_scan_pages > 0:
+            min_pages_before_budget = max(
+                min_pages_before_budget,
+                min(len(queue), self.ocr_front_scan_pages),
+            )
         adaptive_budget = min(
             self.ocr_time_budget_max_sec,
             max(self.ocr_time_budget_sec, len(queue) * self.ocr_time_budget_per_page),
@@ -792,11 +1746,11 @@ class NativeDocumentParser:
                         if numeric_row_hits >= 3:
                             break
                     has_numeric_table_rows = numeric_row_hits >= 3
-                    if self.ocr_dynamic_neighbor_pages > 0 and dynamic_added < self.ocr_dynamic_neighbor_pages:
+                    if dynamic_neighbor_budget > 0 and dynamic_added < dynamic_neighbor_budget:
                         cells_cur = page_cells.get(page_no, [])
                         top_dense = sum(1 for c in cells_cur if float(c.get("y_center", 0.0)) <= 0.14) >= 3
                         bottom_dense = sum(1 for c in cells_cur if float(c.get("y_center", 0.0)) >= 0.86) >= 3
-                        if has_table_cue or top_dense or bottom_dense:
+                        if has_table_cue or has_numeric_table_rows or top_dense or bottom_dense:
                             neighbor_order: List[int] = []
                             if bottom_dense:
                                 neighbor_order.append(page_idx + 1)
@@ -805,7 +1759,7 @@ class NativeDocumentParser:
                             if not neighbor_order:
                                 neighbor_order = [page_idx + 1, page_idx - 1]
                             for cand in neighbor_order:
-                                if dynamic_added >= self.ocr_dynamic_neighbor_pages:
+                                if dynamic_added >= dynamic_neighbor_budget:
                                     break
                                 if 0 <= cand < len(doc) and cand not in queued and cand not in processed_idx:
                                     queue.append(cand)
@@ -881,6 +1835,27 @@ class NativeDocumentParser:
                     source="pdf_ocr_line_extra",
                 )
                 table_blocks = self._augment_with_line_tables(table_blocks, uncovered_tables)
+
+        figure_blocks = self._infer_figures_from_page_lines(
+            page_lines=page_lines,
+            parts=parts,
+            bbox_map=bbox_map,
+            source_prefix="pdf_ocr_caption",
+        )
+
+        table_blocks, vision_figures = self._enhance_low_quality_pages_with_gemini_vision(
+            file_bytes=file_bytes,
+            filetype="pdf",
+            page_lines=page_lines,
+            table_blocks=table_blocks,
+            parts=parts,
+            bbox_map=bbox_map,
+            source_prefix="pdf_gemini_vision",
+        )
+        if vision_figures:
+            figure_blocks = self._merge_figure_blocks(figure_blocks, vision_figures)
+        table_blocks = self._prune_fragment_tables(table_blocks)
+        self._last_figure_blocks = figure_blocks
         return "\n".join(parts), bbox_map, table_blocks
 
     @classmethod
@@ -1051,6 +2026,1207 @@ class NativeDocumentParser:
             raise ValueError("XLSX contains no extractable rows.")
         return "\n".join(parts), bbox_map, table_blocks
 
+    def _parse_image(self, file_name: str, file_bytes: bytes) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
+        visual_backend_ready, visual_backend_missing = self._visual_backend_available()
+        vision_api_ready = bool(os.getenv("GOOGLE_API_KEY", "").strip()) and self.enable_gemini_vision_enhance
+        if not visual_backend_ready and not vision_api_ready:
+            raise ValueError(
+                "Image OCR backend is unavailable. "
+                f"Please install: {visual_backend_missing}"
+            )
+
+        try:
+            import fitz  # pymupdf
+        except Exception as exc:
+            raise ValueError(
+                "Image OCR backend is unavailable. Install pymupdf and rapidocr-onnxruntime."
+            ) from exc
+        np = None
+        if visual_backend_ready:
+            try:
+                import numpy as np  # type: ignore
+            except Exception as exc:
+                raise ValueError(
+                    "Image OCR backend is unavailable. Install pymupdf and rapidocr-onnxruntime."
+                ) from exc
+
+        ext = os.path.splitext((file_name or "").lower())[1].lstrip(".")
+        filetype_candidates = [x for x in [ext, "png", "jpeg"] if x]
+        doc = None
+        open_error: Exception | None = None
+        for filetype in filetype_candidates:
+            try:
+                doc = fitz.open(stream=file_bytes, filetype=filetype)
+                break
+            except Exception as exc:  # pragma: no cover - backend-specific decode fallback
+                open_error = exc
+                continue
+        if doc is None:
+            raise ValueError(f"Unsupported or corrupted image payload: {file_name}") from open_error
+
+        min_conf = float(os.getenv("MODULE2_OCR_MIN_CONF", "0.45"))
+        dpi = max(96, int(os.getenv("MODULE2_IMAGE_OCR_DPI", "180")))
+        mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+        engine = self._get_ocr_engine() if visual_backend_ready else None
+
+        parts: List[str] = []
+        bbox_map: Dict[str, List[float]] = {}
+        page_lines: Dict[int, List[str]] = {}
+        page_cells: Dict[int, List[Dict[str, Any]]] = {}
+
+        try:
+            page_count = min(len(doc), self.max_pages_visual)
+            self._runtime_page_count = page_count
+            for page_idx in range(page_count):
+                page_no = page_idx + 1
+                page = doc.load_page(page_idx)
+                if not visual_backend_ready:
+                    ref_id = f"img_p{page_no}_vision_probe"
+                    placeholder = f"[Image page {page_no}] OCR backend unavailable, trying Gemini Vision."
+                    parts.append(f'<ref id="{ref_id}">{escape(placeholder)}</ref>')
+                    bbox_map[ref_id] = [float(page_no), 0.0, 0.0, 1.0, 1.0]
+                    page_lines[page_no] = [placeholder]
+                    continue
+
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                raw = np.frombuffer(pix.samples, dtype=np.uint8)
+                if pix.n == 1:
+                    image = raw.reshape(pix.height, pix.width)
+                else:
+                    image = raw.reshape(pix.height, pix.width, pix.n)
+                    if pix.n > 3:
+                        image = image[:, :, :3]
+
+                ocr_result, _ = engine(image)
+                if not ocr_result:
+                    ref_id = f"img_p{page_no}_ocr1"
+                    placeholder = f"[Image page {page_no}] OCR found no text."
+                    parts.append(f'<ref id="{ref_id}">{escape(placeholder)}</ref>')
+                    bbox_map[ref_id] = [float(page_no), 0.0, 0.0, 1.0, 1.0]
+                    continue
+
+                lines: List[str] = []
+                item_idx = 1
+                for item in ocr_result:
+                    if not isinstance(item, (list, tuple)) or len(item) < 3:
+                        continue
+                    box, text, score = item[0], str(item[1]).strip(), float(item[2] or 0.0)
+                    if not text or score < min_conf:
+                        continue
+                    normalized = self._normalize_text(text)
+                    if not normalized:
+                        continue
+
+                    ref_id = f"img_p{page_no}_ocr{item_idx}"
+                    parts.append(f'<ref id="{ref_id}">{escape(normalized)}</ref>')
+                    x, y, w, h = self._normalize_box(box, pix.width, pix.height)
+                    bbox_map[ref_id] = [float(page_no), x, y, w, h]
+                    lines.append(normalized)
+                    page_cells.setdefault(page_no, []).append(
+                        {
+                            "ref_id": ref_id,
+                            "text": normalized,
+                            "bbox": [float(page_no), x, y, w, h],
+                            "x_center": x + (w / 2.0),
+                            "y_center": y + (h / 2.0),
+                        }
+                    )
+                    item_idx += 1
+                if lines:
+                    page_lines[page_no] = lines
+        finally:
+            doc.close()
+
+        if visual_backend_ready and not parts:
+            raise ValueError(
+                "Image OCR completed but no text was extracted."
+            )
+
+        table_blocks: TableBlocks = []
+        if visual_backend_ready:
+            table_blocks = self._infer_tables_from_ocr_cells(page_cells)
+        if visual_backend_ready and not table_blocks and page_lines:
+            table_blocks = self._infer_tables_from_page_lines(
+                page_lines,
+                parts,
+                bbox_map,
+                source="image_ocr_line",
+            )
+
+        figure_blocks = self._infer_figures_from_page_lines(
+            page_lines=page_lines,
+            parts=parts,
+            bbox_map=bbox_map,
+            source_prefix="image_caption",
+        )
+
+        table_blocks, vision_figures = self._enhance_low_quality_pages_with_gemini_vision(
+            file_bytes=file_bytes,
+            filetype=ext or "png",
+            page_lines=page_lines,
+            table_blocks=table_blocks,
+            parts=parts,
+            bbox_map=bbox_map,
+            source_prefix="image_gemini_vision",
+        )
+        if vision_figures:
+            figure_blocks = self._merge_figure_blocks(figure_blocks, vision_figures)
+
+        table_blocks = self._prune_fragment_tables(table_blocks)
+        self._last_figure_blocks = figure_blocks
+        return "\n".join(parts), bbox_map, table_blocks
+
+    def _enhance_low_quality_pages_with_gemini_vision(
+        self,
+        file_bytes: bytes,
+        filetype: str,
+        page_lines: Dict[int, List[str]],
+        table_blocks: TableBlocks,
+        parts: List[str],
+        bbox_map: Dict[str, List[float]],
+        source_prefix: str,
+    ) -> Tuple[TableBlocks, FigureBlocks]:
+        if not self.enable_gemini_vision_enhance or self.gemini_vision_max_pages <= 0:
+            return table_blocks, []
+
+        api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+        if not api_key:
+            return table_blocks, []
+        if not page_lines:
+            return table_blocks, []
+
+        candidate_pages = self._select_low_quality_pages_for_vision(
+            page_lines=page_lines,
+            table_blocks=table_blocks,
+        )
+        if not candidate_pages:
+            return table_blocks, []
+
+        try:
+            import fitz  # pymupdf
+        except Exception:
+            return table_blocks, []
+
+        try:
+            doc = fitz.open(stream=file_bytes, filetype=filetype)
+        except Exception:
+            return table_blocks, []
+
+        try:
+            table_idx = self._next_table_index(table_blocks, f"{source_prefix}_t")
+            figure_idx = self._next_figure_index(self._last_figure_blocks, f"{source_prefix}_f")
+            vision_tables: TableBlocks = []
+            vision_figures: FigureBlocks = []
+            consecutive_empty_payload = 0
+            for page_no in candidate_pages:
+                page_idx = page_no - 1
+                if page_idx < 0 or page_idx >= len(doc):
+                    continue
+                try:
+                    page = doc.load_page(page_idx)
+                except Exception:
+                    continue
+                image_png = self._render_page_png_for_vision(page)
+                if not image_png:
+                    continue
+
+                payload = self._gemini_vision_extract_payload(image_png)
+                if not payload:
+                    consecutive_empty_payload += 1
+                    if consecutive_empty_payload >= self.gemini_vision_consecutive_fail_stop:
+                        break
+                    continue
+                consecutive_empty_payload = 0
+
+                insight_refs = self._extract_vision_insights(payload, page_no, bbox_map)
+                for ref_id, text in insight_refs:
+                    if ref_id in bbox_map:
+                        continue
+                    parts.append(f'<ref id="{ref_id}">{escape(text)}</ref>')
+                    bbox_map[ref_id] = [float(page_no), 0.0, 0.0, 1.0, 1.0]
+
+                built, table_idx = self._build_tables_from_vision_payload(
+                    payload=payload,
+                    page_no=page_no,
+                    table_idx=table_idx,
+                    parts=parts,
+                    bbox_map=bbox_map,
+                    source_prefix=source_prefix,
+                )
+                if built:
+                    vision_tables.extend(built)
+                built_figures, figure_idx = self._build_figures_from_vision_payload(
+                    payload=payload,
+                    page_no=page_no,
+                    figure_idx=figure_idx,
+                    parts=parts,
+                    bbox_map=bbox_map,
+                    source_prefix=source_prefix,
+                )
+                if built_figures:
+                    vision_figures.extend(built_figures)
+        finally:
+            doc.close()
+
+        if not vision_tables:
+            return table_blocks, self._merge_figure_blocks([], vision_figures)
+        if table_blocks:
+            merged = self._augment_with_line_tables(table_blocks, vision_tables)
+            return merged, self._merge_figure_blocks([], vision_figures)
+        return vision_tables, self._merge_figure_blocks([], vision_figures)
+
+    def _select_low_quality_pages_for_vision(
+        self,
+        page_lines: Dict[int, List[str]],
+        table_blocks: TableBlocks,
+    ) -> List[int]:
+        if not page_lines or self.gemini_vision_max_pages <= 0:
+            return []
+
+        pages = sorted(page_lines.keys())
+        if not pages:
+            return []
+        vision_cap = self.gemini_vision_max_pages
+        probe_like_pages = 0
+        for p in pages:
+            lines = page_lines.get(p, [])
+            joined = " ".join(lines[:3]).lower()
+            if ("vision probe" in joined) or ("no extractable native text" in joined) or ("ocr found no text" in joined):
+                probe_like_pages += 1
+        if pages and (probe_like_pages / float(len(pages))) >= 0.55:
+            vision_cap = min(len(pages), max(vision_cap, min(48, len(pages))))
+        elif self.gemini_vision_enable_figures and len(pages) <= 60:
+            vision_cap = min(len(pages), max(vision_cap, min(36, len(pages))))
+
+        quality_by_page: Dict[int, float] = {}
+        for table in table_blocks:
+            page_no = int(table.get("page", 0) or 0)
+            if page_no <= 0:
+                continue
+            try:
+                quality = float(table.get("quality"))
+            except (TypeError, ValueError):
+                quality = 0.66
+            prev = quality_by_page.get(page_no)
+            if prev is None:
+                quality_by_page[page_no] = quality
+            else:
+                quality_by_page[page_no] = min(prev, quality)
+
+        ranked: List[Tuple[int, int, int]] = []
+        page_signal: Dict[int, int] = {}
+        for page_no in pages:
+            lines = page_lines.get(page_no, [])
+            if not lines:
+                continue
+            cue_text = " ".join(lines[:40])
+            cue_hit = 1 if self._looks_like_table_cue_text(cue_text) else 0
+            figure_hit = 1 if self._looks_like_figure_cue_text(cue_text) else 0
+            numeric_lines = 0
+            for line in lines[:80]:
+                if sum(1 for ch in line if ch.isdigit()) >= 3:
+                    numeric_lines += 1
+            table_signal = (4 if cue_hit else 0) + min(7, numeric_lines)
+            figure_signal = (5 if figure_hit else 0) + min(
+                4,
+                sum(1 for line in lines[:50] if self._contains_figure_marker(line)),
+            )
+            combined_signal = table_signal + figure_signal
+            page_signal[page_no] = combined_signal
+            qv = quality_by_page.get(page_no)
+
+            if qv is not None and qv < self.gemini_vision_min_table_quality:
+                # Primary targets: pages with weak existing tables.
+                ranked.append((0, -combined_signal, page_no))
+                continue
+
+            if qv is None and table_signal >= 3:
+                # No table yet but strong tabular signal.
+                ranked.append((1, -combined_signal, page_no))
+                continue
+
+            if figure_signal >= 4:
+                # Figure-heavy pages are also valuable for Vision enrichment.
+                ranked.append((2, -combined_signal, page_no))
+                continue
+
+            if qv is not None and qv < (self.gemini_vision_min_table_quality + 0.10) and combined_signal >= 2:
+                # Borderline quality pages with moderate signal.
+                ranked.append((3, -combined_signal, page_no))
+
+        if not ranked and len(table_blocks) < 2:
+            for page_no in pages:
+                lines = page_lines.get(page_no, [])
+                numeric_lines = 0
+                for line in lines[:80]:
+                    if sum(1 for ch in line if ch.isdigit()) >= 3:
+                        numeric_lines += 1
+                fig_lines = sum(1 for line in lines[:50] if self._contains_figure_marker(line))
+                signal = numeric_lines + (fig_lines * 2)
+                if signal >= 3:
+                    ranked.append((4, -signal, page_no))
+
+        if not ranked:
+            if len(table_blocks) == 0:
+                if len(pages) <= vision_cap:
+                    return pages
+            if vision_cap == 1:
+                return [pages[len(pages) // 2]]
+            step = (len(pages) - 1) / float(vision_cap - 1)
+            sampled = [pages[int(round(i * step))] for i in range(vision_cap)]
+            return sorted(set(sampled))
+            return []
+
+        ranked.sort()
+        selected: List[int] = []
+        selected_set = set()
+
+        def _pick(page_no: int) -> None:
+            if page_no in selected_set:
+                return
+            selected.append(page_no)
+            selected_set.add(page_no)
+
+        primary_cap = max(1, int(round(vision_cap * 0.55)))
+        for _, _, page_no in ranked:
+            _pick(page_no)
+            if len(selected) >= primary_cap:
+                break
+
+        # Keep cross-document coverage to avoid only hitting early pages.
+        if len(selected) < vision_cap and len(pages) >= 8:
+            seg_count = min(vision_cap, 8)
+            for seg in range(seg_count):
+                start = int(round((len(pages) * seg) / float(seg_count)))
+                end = int(round((len(pages) * (seg + 1)) / float(seg_count)))
+                seg_pages = pages[start:end] if end > start else []
+                if not seg_pages:
+                    continue
+                best_page = max(seg_pages, key=lambda p: page_signal.get(p, 0))
+                _pick(best_page)
+                if len(selected) >= vision_cap:
+                    break
+
+        # Tail-biased fallback for long docs (common missed tables/figures in appendices).
+        if len(selected) < vision_cap and len(pages) >= 40:
+            tail_len = max(10, len(pages) // 5)
+            tail_pages = pages[-tail_len:]
+            for page_no in sorted(tail_pages, key=lambda p: page_signal.get(p, 0), reverse=True):
+                _pick(page_no)
+                if len(selected) >= vision_cap:
+                    break
+
+        if len(selected) < vision_cap:
+            for page_no in list(selected):
+                for cand in (page_no - 1, page_no + 1):
+                    if cand in page_lines and page_signal.get(cand, 0) >= 2:
+                        _pick(cand)
+                        if len(selected) >= vision_cap:
+                            break
+                if len(selected) >= vision_cap:
+                    break
+
+        if len(selected) < vision_cap:
+            for _, _, page_no in ranked:
+                _pick(page_no)
+                if len(selected) >= vision_cap:
+                    break
+
+        if len(selected) < vision_cap:
+            for page_no in pages:
+                _pick(page_no)
+                if len(selected) >= vision_cap:
+                    break
+
+        return selected
+
+    @staticmethod
+    def _next_table_index(table_blocks: TableBlocks, prefix: str) -> int:
+        max_idx = 0
+        for table in table_blocks:
+            table_id = str(table.get("table_id", ""))
+            if not table_id.startswith(prefix):
+                continue
+            m = re.search(r"(\d+)$", table_id)
+            if not m:
+                continue
+            try:
+                max_idx = max(max_idx, int(m.group(1)))
+            except ValueError:
+                continue
+        return max_idx + 1
+
+    @staticmethod
+    def _next_figure_index(figure_blocks: FigureBlocks, prefix: str) -> int:
+        max_idx = 0
+        for figure in figure_blocks:
+            figure_id = str(figure.get("figure_id", ""))
+            if not figure_id.startswith(prefix):
+                continue
+            m = re.search(r"(\d+)$", figure_id)
+            if not m:
+                continue
+            try:
+                max_idx = max(max_idx, int(m.group(1)))
+            except ValueError:
+                continue
+        return max_idx + 1
+
+    def _looks_like_figure_cue_text(self, text: str) -> bool:
+        t = self._normalize_text(str(text or ""))
+        if not t:
+            return False
+        lower = t.lower()
+        if self._contains_figure_marker(t):
+            return True
+        if any(
+            kw in lower
+            for kw in [
+                "figure ",
+                "chart",
+                "diagram",
+                "plot",
+                "curve",
+                "spectrum",
+                "flowchart",
+                "histogram",
+            ]
+        ):
+            return True
+        if any(kw in t for kw in ["图表", "示意图", "流程图", "曲线", "趋势图", "柱状图", "折线图", "饼图"]):
+            return True
+        return False
+
+    def _extract_figure_captions_from_lines(self, lines: List[str]) -> List[str]:
+        captions: List[str] = []
+        if not lines:
+            return captions
+
+        n = len(lines)
+        for idx, raw in enumerate(lines):
+            line = self._normalize_text(raw)
+            if not line:
+                continue
+
+            lower = line.lower()
+            if re.search(r"^\s*table\b", lower) or re.search(r"^\s*表\s*[0-9A-Za-z一二三四五六七八九十.\-]+", line):
+                continue
+
+            marker_match = re.match(
+                r"^\s*((?:fig(?:ure)?\.?\s*[A-Za-z0-9.\-]+|图\s*[0-9A-Za-z一二三四五六七八九十百千.\-]+))\s*[:：\-]?\s*(.*)$",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if not marker_match:
+                continue
+            if re.search(r"\.{3,}\s*\d{1,4}\s*$", line):
+                # Skip table-of-contents style entries like "Figure 3 .... 27".
+                continue
+
+            marker = self._normalize_text(marker_match.group(1))
+            suffix = self._normalize_text(marker_match.group(2))
+            caption = suffix
+            if not caption and idx + 1 < n:
+                nxt = self._normalize_text(lines[idx + 1])
+                if nxt and not self._contains_figure_marker(nxt):
+                    caption = nxt
+
+            full = marker if not caption else f"{marker}: {caption}"
+            full = self._normalize_text(full)
+            if len(full) < 4:
+                continue
+            if len(full) > 220:
+                full = full[:220]
+            captions.append(full)
+
+        deduped: List[str] = []
+        seen = set()
+        for cap in captions:
+            key = self._normalize_token_for_compare(cap)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(cap)
+        return deduped
+
+    def _infer_figure_type_from_text(self, text: str) -> str:
+        t = self._normalize_text(text).lower()
+        if not t:
+            return "other"
+        if any(kw in t for kw in ["diagram", "flow", "scheme", "示意", "流程", "框图"]):
+            return "diagram"
+        if any(
+            kw in t
+            for kw in [
+                "chart",
+                "curve",
+                "plot",
+                "trend",
+                "histogram",
+                "bar",
+                "line",
+                "pie",
+                "曲线",
+                "趋势",
+                "柱状",
+                "折线",
+                "饼图",
+                "分布",
+            ]
+        ):
+            return "chart"
+        if any(kw in t for kw in ["photo", "image", "照片", "图片"]):
+            return "photo"
+        return "other"
+
+    @staticmethod
+    def _safe_text_list(values: Any, max_items: int = 8, max_len: int = 180) -> List[str]:
+        if not isinstance(values, list):
+            return []
+        out: List[str] = []
+        for item in values[:max_items]:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if len(text) > max_len:
+                text = text[:max_len]
+            out.append(text)
+        return out
+
+    def _infer_figures_from_page_lines(
+        self,
+        page_lines: Dict[int, List[str]],
+        parts: List[str],
+        bbox_map: Dict[str, List[float]],
+        source_prefix: str,
+    ) -> FigureBlocks:
+        if not page_lines:
+            return []
+        figure_idx = self._next_figure_index(self._last_figure_blocks, f"{source_prefix}_f")
+        figures: FigureBlocks = []
+        for page_no in sorted(page_lines.keys()):
+            lines = page_lines.get(page_no, [])
+            page_probe = self._normalize_text(" ".join(lines[:24]))
+            lower_probe = page_probe.lower()
+            if (
+                self._contains_catalog_marker(page_probe)
+                or "list of figures" in lower_probe
+                or "list of tables" in lower_probe
+                or "table of contents" in lower_probe
+            ):
+                continue
+
+            captions = self._extract_figure_captions_from_lines(lines)
+            for caption in captions[:4]:
+                figure_id = f"{source_prefix}_f{figure_idx}"
+                figure_idx += 1
+                ref_id = f"{figure_id}_caption"
+                bbox = [float(page_no), 0.0, 0.0, 1.0, 1.0]
+                if ref_id not in bbox_map:
+                    parts.append(f'<ref id="{ref_id}">{escape(caption)}</ref>')
+                    bbox_map[ref_id] = bbox
+                figures.append(
+                    {
+                        "figure_id": figure_id,
+                        "source": source_prefix,
+                        "page": page_no,
+                        "figure_type": self._infer_figure_type_from_text(caption),
+                        "caption": caption,
+                        "insights": [],
+                        "quality": 0.58,
+                        "ref_ids": [ref_id],
+                    }
+                )
+        return self._merge_figure_blocks([], figures)
+
+    def _build_figures_from_vision_payload(
+        self,
+        payload: Dict[str, Any],
+        page_no: int,
+        figure_idx: int,
+        parts: List[str],
+        bbox_map: Dict[str, List[float]],
+        source_prefix: str,
+    ) -> Tuple[FigureBlocks, int]:
+        if not self.gemini_vision_enable_figures or self.gemini_vision_max_figures_per_page <= 0:
+            return [], figure_idx
+        figures_raw = payload.get("figures", [])
+        if not isinstance(figures_raw, list):
+            return [], figure_idx
+
+        built: FigureBlocks = []
+        for figure_raw in figures_raw[: self.gemini_vision_max_figures_per_page]:
+            if not isinstance(figure_raw, dict):
+                continue
+            title = self._normalize_text(str(figure_raw.get("title", "") or ""))
+            caption = self._normalize_text(str(figure_raw.get("caption", "") or ""))
+            if not caption:
+                caption = title
+            kind = self._normalize_text(str(figure_raw.get("type", "") or "")) or self._infer_figure_type_from_text(caption)
+            if kind not in {"chart", "diagram", "photo", "other"}:
+                kind = self._infer_figure_type_from_text(kind)
+
+            key_points = self._safe_text_list(figure_raw.get("key_points"), max_items=8, max_len=180)
+            legend_items = self._safe_text_list(figure_raw.get("legend"), max_items=8, max_len=80)
+            axes = figure_raw.get("axes")
+            if isinstance(axes, dict):
+                x_axis = self._normalize_text(str(axes.get("x", "") or ""))
+                y_axis = self._normalize_text(str(axes.get("y", "") or ""))
+            else:
+                x_axis = ""
+                y_axis = ""
+
+            insights: List[str] = []
+            if x_axis:
+                insights.append(f"x-axis: {x_axis}")
+            if y_axis:
+                insights.append(f"y-axis: {y_axis}")
+            for item in legend_items:
+                insights.append(f"legend: {self._normalize_text(item)}")
+            for item in key_points:
+                insights.append(self._normalize_text(item))
+            insights = [x for x in insights if x]
+
+            if not caption and not insights:
+                continue
+
+            confidence = self._to_float_or_none(figure_raw.get("confidence"))
+            if confidence is None:
+                confidence = 0.72
+            confidence = max(0.1, min(1.0, float(confidence)))
+            if confidence < self.gemini_vision_min_figure_quality and not caption:
+                continue
+
+            figure_id = f"{source_prefix}_f{figure_idx}"
+            figure_idx += 1
+            bbox = [float(page_no), 0.0, 0.0, 1.0, 1.0]
+            ref_ids: List[str] = []
+            if caption:
+                cap_ref = f"{figure_id}_caption"
+                if cap_ref not in bbox_map:
+                    parts.append(f'<ref id="{cap_ref}">{escape(caption)}</ref>')
+                    bbox_map[cap_ref] = bbox
+                ref_ids.append(cap_ref)
+            for i, insight in enumerate(insights[:6], start=1):
+                insight_ref = f"{figure_id}_k{i}"
+                if insight_ref not in bbox_map:
+                    parts.append(f'<ref id="{insight_ref}">{escape(insight)}</ref>')
+                    bbox_map[insight_ref] = bbox
+                ref_ids.append(insight_ref)
+
+            built.append(
+                {
+                    "figure_id": figure_id,
+                    "source": source_prefix,
+                    "page": page_no,
+                    "figure_type": kind or "other",
+                    "caption": caption,
+                    "insights": insights[:6],
+                    "quality": round(confidence, 4),
+                    "ref_ids": ref_ids,
+                }
+            )
+        return built, figure_idx
+
+    def _merge_figure_blocks(self, left: FigureBlocks, right: FigureBlocks) -> FigureBlocks:
+        if not left and not right:
+            return []
+        merged: Dict[Tuple[int, str], Dict[str, Any]] = {}
+        passthrough: List[Dict[str, Any]] = []
+        for figure in list(left) + list(right):
+            page_no = int(figure.get("page", 0) or 0)
+            caption = self._normalize_text(str(figure.get("caption", "") or ""))
+            key_norm = self._normalize_token_for_compare(caption)
+            if key_norm:
+                key = (page_no, key_norm[:96])
+                prev = merged.get(key)
+                if prev:
+                    try:
+                        prev_q = float(prev.get("quality", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        prev_q = 0.0
+                else:
+                    prev_q = -1.0
+                try:
+                    cur_q = float(figure.get("quality", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    cur_q = 0.0
+                if prev is None or cur_q >= prev_q:
+                    merged[key] = dict(figure)
+                continue
+            passthrough.append(dict(figure))
+
+        out = list(merged.values()) + passthrough
+        by_page: Dict[int, List[Dict[str, Any]]] = {}
+        for item in out:
+            page_no = int(item.get("page", 0) or 0)
+            by_page.setdefault(page_no, []).append(item)
+
+        pruned: List[Dict[str, Any]] = []
+        for page_no in sorted(by_page.keys()):
+            items = by_page.get(page_no, [])
+            caption_items = [x for x in items if "_caption" in str(x.get("source", ""))]
+            if caption_items:
+                # OCR/native caption items are generally more stable on scanned pages;
+                # avoid double-counting with additional vision figures on the same page.
+                pruned.extend(caption_items)
+                continue
+            pruned.extend(items)
+        pruned.sort(key=lambda x: (int(x.get("page", 0) or 0), str(x.get("figure_id", ""))))
+        return pruned
+
+    def _render_page_png_for_vision(self, page: Any) -> bytes:
+        try:
+            import fitz  # pymupdf
+        except Exception:
+            return b""
+
+        scale = self.gemini_vision_dpi / 72.0
+        matrix = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        max_side = max(pix.width, pix.height)
+        if max_side > self.gemini_vision_max_side_px:
+            shrink = self.gemini_vision_max_side_px / float(max_side)
+            matrix = fitz.Matrix(scale * shrink, scale * shrink)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+        try:
+            return pix.tobytes("png")
+        except Exception:
+            return b""
+
+    def _gemini_vision_extract_payload(self, image_png: bytes) -> Optional[Dict[str, Any]]:
+        text = self._gemini_vision_generate(image_png)
+        if not text:
+            return None
+        return self._extract_json_object(text)
+
+    def _gemini_vision_generate(self, image_png: bytes) -> str:
+        api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+        if not api_key:
+            return ""
+
+        prompt = (
+            "Extract visible structured information from this page image. "
+            "Return strict JSON only with shape: "
+            "{\"tables\":[{\"title\":\"\",\"headers\":[\"...\"],\"rows\":[[\"...\"],...],\"confidence\":0.0}],"
+            "\"figures\":[{\"title\":\"\",\"type\":\"chart|diagram|photo|other\",\"caption\":\"\",\"key_points\":[\"...\"],"
+            "\"axes\":{\"x\":\"\",\"y\":\"\"},\"legend\":[\"...\"],\"confidence\":0.0}],"
+            "\"insights\":[\"...\"]}. "
+            "Use empty arrays when absent. "
+            "Do not include markdown fences."
+        )
+        model = self.gemini_vision_model.strip() or "gemini-2.5-flash"
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{urllib.parse.quote(model, safe='')}:generateContent"
+            f"?key={urllib.parse.quote(api_key, safe='')}"
+        )
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/png",
+                                "data": base64.b64encode(image_png).decode("ascii"),
+                            }
+                        },
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.0,
+                "maxOutputTokens": self.gemini_vision_max_output_tokens,
+                "responseMimeType": "application/json",
+            },
+        }
+
+        def _post_json(payload_obj: Dict[str, Any]) -> str:
+            req = urllib.request.Request(
+                url=url,
+                data=json.dumps(payload_obj, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=self.gemini_vision_timeout_sec) as resp:
+                return resp.read().decode("utf-8", errors="ignore")
+
+        try:
+            raw = _post_json(payload)
+        except urllib.error.HTTPError as http_exc:
+            status = int(getattr(http_exc, "code", 0) or 0)
+            if status != 400:
+                return ""
+            # Fallback for endpoints/models that reject responseMimeType.
+            cfg = dict(payload.get("generationConfig", {}))
+            cfg.pop("responseMimeType", None)
+            payload_retry = dict(payload)
+            payload_retry["generationConfig"] = cfg
+            try:
+                raw = _post_json(payload_retry)
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+
+        texts: List[str] = []
+        for candidate in obj.get("candidates", []):
+            content = candidate.get("content", {})
+            for part in content.get("parts", []):
+                txt = part.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    texts.append(txt.strip())
+        return "\n".join(texts)
+
+    @staticmethod
+    def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+
+        fence = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", raw, flags=re.IGNORECASE)
+        if fence:
+            raw = fence.group(1).strip()
+
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+
+        starts = [idx for idx, ch in enumerate(raw) if ch == "{"]
+        ends = [idx for idx, ch in enumerate(raw) if ch == "}"]
+        for s in starts:
+            for e in reversed(ends):
+                if e <= s:
+                    continue
+                chunk = raw[s : e + 1]
+                try:
+                    payload = json.loads(chunk)
+                    if isinstance(payload, dict):
+                        return payload
+                except json.JSONDecodeError:
+                    continue
+        return None
+
+    def _extract_vision_insights(
+        self,
+        payload: Dict[str, Any],
+        page_no: int,
+        bbox_map: Dict[str, List[float]],
+    ) -> List[Tuple[str, str]]:
+        insights_raw = payload.get("insights", [])
+        if not isinstance(insights_raw, list):
+            return []
+
+        existing = set(bbox_map.keys())
+        out: List[Tuple[str, str]] = []
+        max_insights = 4
+        for idx, item in enumerate(insights_raw[:max_insights], start=1):
+            text = self._normalize_text(str(item or ""))
+            if not text:
+                continue
+            ref_id = f"gv_p{page_no}_s{idx}"
+            if ref_id in existing:
+                continue
+            out.append((ref_id, text))
+        return out
+
+    def _build_tables_from_vision_payload(
+        self,
+        payload: Dict[str, Any],
+        page_no: int,
+        table_idx: int,
+        parts: List[str],
+        bbox_map: Dict[str, List[float]],
+        source_prefix: str,
+    ) -> Tuple[TableBlocks, int]:
+        tables_raw = payload.get("tables", [])
+        if not isinstance(tables_raw, list):
+            return [], table_idx
+
+        built: TableBlocks = []
+        for table_raw in tables_raw[: self.gemini_vision_max_tables_per_page]:
+            matrix = self._vision_table_to_matrix(table_raw)
+            if len(matrix) < 2:
+                continue
+
+            table_id = f"{source_prefix}_t{table_idx}"
+            table_idx += 1
+            raw_rows_payload: List[Dict[str, Any]] = []
+            for row_idx, row_vals in enumerate(matrix[: self.table_max_rows + 1], start=1):
+                cells_payload: List[Dict[str, Any]] = []
+                for col_idx, cell in enumerate(row_vals[: self.table_max_cols], start=1):
+                    text = self._normalize_text(str(cell or ""))
+                    if not text:
+                        continue
+                    ref_id = f"{table_id}_r{row_idx}_c{col_idx}"
+                    if ref_id in bbox_map:
+                        continue
+                    parts.append(f'<ref id="{ref_id}">{escape(text)}</ref>')
+                    bbox = [float(page_no), 0.0, 0.0, 1.0, 1.0]
+                    bbox_map[ref_id] = bbox
+                    cells_payload.append(
+                        {
+                            "col_index": col_idx,
+                            "text": text,
+                            "ref_id": ref_id,
+                            "bbox": bbox,
+                        }
+                    )
+                if cells_payload:
+                    raw_rows_payload.append({"row_index": row_idx, "cells": cells_payload})
+            if len(raw_rows_payload) < 2:
+                continue
+
+            headers, data_rows = self._infer_headers_and_data_rows(raw_rows_payload)
+            data_rows = self._drop_redundant_header_like_rows(data_rows, headers)
+            data_rows = self._decorate_rows_with_meta(data_rows, headers)
+            if len(data_rows) < self.ocr_table_min_rows:
+                continue
+            if self._looks_like_false_table(headers, data_rows):
+                continue
+
+            confidence = self._to_float_or_none(table_raw.get("confidence")) if isinstance(table_raw, dict) else None
+            if confidence is None:
+                confidence = 0.74
+            confidence = max(0.1, min(1.0, float(confidence)))
+            built.append(
+                {
+                    "table_id": table_id,
+                    "source": source_prefix,
+                    "page": page_no,
+                    "headers": headers,
+                    "header_meta": self._build_header_meta(headers),
+                    "rows": data_rows,
+                    "row_count": len(data_rows),
+                    "col_count": max((len(r.get("cells", [])) for r in data_rows), default=0),
+                    "quality": round(confidence, 4),
+                }
+            )
+        return built, table_idx
+
+    def _vision_table_to_matrix(self, table_raw: Any) -> List[List[str]]:
+        if not isinstance(table_raw, dict):
+            return []
+
+        matrix: List[List[str]] = []
+        headers_raw = table_raw.get("headers", [])
+        if isinstance(headers_raw, list):
+            header_row = [self._normalize_text(str(x or "")) for x in headers_raw[: self.table_max_cols]]
+            if any(header_row):
+                matrix.append(header_row)
+
+        rows_raw = table_raw.get("rows", [])
+        if isinstance(rows_raw, list):
+            for row in rows_raw[: self.table_max_rows]:
+                vals: List[str] = []
+                if isinstance(row, list):
+                    vals = [self._normalize_text(str(x or "")) for x in row[: self.table_max_cols]]
+                elif isinstance(row, dict):
+                    row_cells = row.get("cells")
+                    if isinstance(row_cells, list):
+                        vals = [self._normalize_text(str(x or "")) for x in row_cells[: self.table_max_cols]]
+                    else:
+                        keys = sorted(k for k in row.keys() if str(k).lower() not in {"row_index"})
+                        for key in keys[: self.table_max_cols]:
+                            vals.append(self._normalize_text(str(row.get(key) or "")))
+                if any(vals):
+                    matrix.append(vals)
+
+        return matrix
+
+    @staticmethod
+    def _to_float_or_none(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned:
+                return None
+            cleaned = re.sub(r"[,\s%\uFF05]", "", cleaned)
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+        return None
+
+    def _prune_fragment_tables(self, table_blocks: TableBlocks) -> TableBlocks:
+        if not table_blocks:
+            return table_blocks
+
+        robust_by_page: Dict[int, int] = {}
+        robust_total = 0
+        for table in table_blocks:
+            rows = int(table.get("row_count", 0) or 0)
+            cols = int(table.get("col_count", 0) or 0)
+            if rows >= 2 and cols >= 2:
+                robust_total += 1
+                page_no = int(table.get("page", 0) or 0)
+                if page_no > 0:
+                    robust_by_page[page_no] = robust_by_page.get(page_no, 0) + 1
+
+        if robust_total == 0:
+            return table_blocks
+
+        pruned: TableBlocks = []
+        for table in table_blocks:
+            rows = int(table.get("row_count", 0) or 0)
+            cols = int(table.get("col_count", 0) or 0)
+            page_no = int(table.get("page", 0) or 0)
+            source = str(table.get("source", "") or "")
+            cells = [
+                cell
+                for row in table.get("rows", [])
+                for cell in row.get("cells", [])
+                if isinstance(cell, dict)
+            ]
+            cell_count = len(cells)
+            numeric_cells = sum(1 for cell in cells if re.search(r"\d", str(cell.get("text", ""))))
+            same_page_has_robust = robust_by_page.get(page_no, 0) > 0
+
+            if source == "pdf_ocr_layout":
+                numeric_ratio = numeric_cells / float(max(cell_count, 1))
+                section_cell_hits = sum(
+                    1
+                    for cell in cells
+                    if self._contains_section_marker(str(cell.get("text", "")))
+                )
+                section_cell_ratio = section_cell_hits / float(max(cell_count, 1))
+                headers = [self._normalize_text(str(h or "")) for h in table.get("headers", [])]
+                headers = [h for h in headers if h]
+                generic_headers = sum(1 for h in headers if self._header_token_is_generic(h))
+                generic_ratio = (generic_headers / float(max(len(headers), 1))) if headers else 0.0
+                if rows <= 3 and cols <= 3 and numeric_cells < 6:
+                    continue
+                if rows >= 10 and cols <= 3 and numeric_ratio < 0.45:
+                    continue
+                if rows >= 10 and cols >= 6 and numeric_ratio < 0.2 and section_cell_ratio >= 0.03:
+                    continue
+                if rows >= 8 and section_cell_ratio >= 0.04 and numeric_ratio < 0.35:
+                    continue
+                if generic_ratio >= 0.6 and numeric_ratio < 0.38:
+                    continue
+
+            if rows <= 1:
+                keep_sparse_row = cols >= 4 and cell_count >= 4 and numeric_cells >= 3 and robust_total <= 1
+                if keep_sparse_row and not same_page_has_robust:
+                    pruned.append(table)
+                continue
+            if cols > 1:
+                pruned.append(table)
+                continue
+
+            keep_long_single_column = rows >= 6 and cell_count >= 6 and numeric_cells >= 2
+            keep_gemini_signal = source.startswith("pdf_gemini_vision") and rows >= 3 and cell_count >= 3
+            if keep_long_single_column or keep_gemini_signal:
+                pruned.append(table)
+                continue
+
+            if same_page_has_robust or robust_total >= 2:
+                continue
+
+            # Keep only if this is the sole evidence and has some numeric signal.
+            if numeric_cells >= 2 and rows >= 3:
+                pruned.append(table)
+
+        out = pruned if pruned else table_blocks
+        out = self._prune_ocr_layout_density(out)
+        return self._prune_gemini_native_tables_per_page(out)
+
+    def _prune_ocr_layout_density(self, table_blocks: TableBlocks) -> TableBlocks:
+        if not table_blocks:
+            return table_blocks
+        by_page: Dict[int, List[Dict[str, Any]]] = {}
+        for table in table_blocks:
+            page_no = int(table.get("page", 0) or 0)
+            by_page.setdefault(page_no, []).append(table)
+
+        pruned: TableBlocks = []
+        for page_no in sorted(by_page.keys()):
+            page_tables = by_page.get(page_no, [])
+            non_ocr = [t for t in page_tables if str(t.get("source", "")) != "pdf_ocr_layout"]
+            ocr = [t for t in page_tables if str(t.get("source", "")) == "pdf_ocr_layout"]
+            pruned.extend(non_ocr)
+            if not ocr:
+                continue
+
+            candidates: List[Dict[str, Any]] = []
+            for t in ocr:
+                rows = int(t.get("row_count", 0) or 0)
+                cols = int(t.get("col_count", 0) or 0)
+                cells = [
+                    c
+                    for r in t.get("rows", [])
+                    for c in r.get("cells", [])
+                    if isinstance(c, dict)
+                ]
+                cell_count = len(cells)
+                numeric_cells = sum(
+                    1
+                    for c in cells
+                    if c.get("numeric_value") is not None or re.search(r"\d", str(c.get("text", "")))
+                )
+                numeric_ratio = numeric_cells / float(max(cell_count, 1))
+                if cols <= 2 and numeric_ratio < 0.75:
+                    continue
+                if cols <= 3 and rows >= 8 and numeric_ratio < 0.65:
+                    continue
+                if cols <= 4 and rows <= 4 and numeric_ratio < 0.65:
+                    continue
+                candidates.append(t)
+
+            if not candidates:
+                continue
+            candidates.sort(
+                key=lambda x: (
+                    float(x.get("quality", 0.0) or 0.0),
+                    int(x.get("row_count", 0) or 0) * int(x.get("col_count", 0) or 0),
+                ),
+                reverse=True,
+            )
+            pruned.append(candidates[0])
+
+        pruned.sort(key=lambda x: (int(x.get("page", 0) or 0), str(x.get("table_id", ""))))
+        return pruned if pruned else table_blocks
+
+    def _prune_gemini_native_tables_per_page(self, table_blocks: TableBlocks) -> TableBlocks:
+        if not table_blocks:
+            return table_blocks
+        by_page: Dict[int, List[Dict[str, Any]]] = {}
+        for table in table_blocks:
+            page_no = int(table.get("page", 0) or 0)
+            by_page.setdefault(page_no, []).append(table)
+
+        out: TableBlocks = []
+        for page_no in sorted(by_page.keys()):
+            tables = by_page.get(page_no, [])
+            native_vision = [t for t in tables if str(t.get("source", "")) == "pdf_gemini_vision_native"]
+            others = [t for t in tables if str(t.get("source", "")) != "pdf_gemini_vision_native"]
+            out.extend(others)
+            if not native_vision:
+                continue
+            native_vision.sort(
+                key=lambda x: (
+                    float(x.get("quality", 0.0) or 0.0),
+                    int(x.get("row_count", 0) or 0) * int(x.get("col_count", 0) or 0),
+                ),
+                reverse=True,
+            )
+            out.append(native_vision[0])
+
+        out.sort(key=lambda x: (int(x.get("page", 0) or 0), str(x.get("table_id", ""))))
+        return out if out else table_blocks
+
     def _parse_plain(self, file_bytes: bytes) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
         text = file_bytes.decode("utf-8", errors="ignore")
         text = self._normalize_text(text)
@@ -1136,7 +3312,15 @@ class NativeDocumentParser:
                     if len(rows_cleaned) < 2:
                         continue
 
-                    headers = [h for h in rows_cleaned[0] if h]
+                    header_width = min(
+                        self.table_max_cols,
+                        max(len(rows_cleaned[0]), max((len(r) for r in rows_cleaned[1:]), default=0)),
+                    )
+                    header_seed = rows_cleaned[0] + ([""] * max(0, header_width - len(rows_cleaned[0])))
+                    headers = [
+                        (self._normalize_text(raw_h) or f"col_{idx}")
+                        for idx, raw_h in enumerate(header_seed[:header_width], start=1)
+                    ]
                     data_rows = rows_cleaned[1:]
                     table_id = f"pdf_fitz_t{table_idx}"
                     table_bbox = self._normalize_table_bbox(getattr(table, "bbox", None), page.rect.width, page.rect.height)
@@ -1241,6 +3425,17 @@ class NativeDocumentParser:
                         if len(rows_payload) > (header_start + 2)
                         else rows_payload[header_start + 1 :]
                     )
+            elif len(rows_payload) >= (header_start + 4) and self._should_merge_hierarchical_header_rows(
+                row1, row2, col_count
+            ):
+                merged = self._merge_header_rows(row1, row2, col_count)
+                if any(merged):
+                    headers = merged
+                    data_rows = (
+                        rows_payload[header_start + 2 :]
+                        if len(rows_payload) > (header_start + 2)
+                        else rows_payload[header_start + 1 :]
+                    )
 
         if not self._looks_like_header_row(headers):
             if len(rows_payload) >= (header_start + 2):
@@ -1261,6 +3456,39 @@ class NativeDocumentParser:
 
         headers = [h if h else f"col_{i+1}" for i, h in enumerate(headers)]
         return headers, data_rows
+
+    def _should_merge_hierarchical_header_rows(self, row1: List[str], row2: List[str], col_count: int) -> bool:
+        if col_count < 4:
+            return False
+        if int(getattr(self, "_runtime_page_count", 0) or 0) > 120:
+            return False
+        vals1 = [self._normalize_text(v) for v in row1 if self._normalize_text(v)]
+        vals2 = [self._normalize_text(v) for v in row2 if self._normalize_text(v)]
+        if not vals1 or not vals2:
+            return False
+        if self._is_unit_row(row2):
+            return False
+        if self._contains_figure_marker(" ".join(vals1 + vals2)):
+            return False
+        if not self._looks_like_header_row(row2):
+            return False
+
+        fill1 = len(vals1) / float(max(col_count, 1))
+        fill2 = len(vals2) / float(max(col_count, 1))
+        numeric_like2 = sum(
+            1
+            for v in vals2
+            if re.search(r"\d", v) and not re.search(r"[A-Za-z\u4e00-\u9fa5]", v)
+        )
+        numeric_ratio2 = numeric_like2 / float(max(len(vals2), 1))
+
+        if numeric_ratio2 > 0.45:
+            return False
+        if fill1 <= 0.6 and fill2 >= 0.55 and len(vals2) >= 2:
+            return True
+        if fill1 <= 0.5 and len(vals2) >= 3:
+            return True
+        return False
 
     def _is_caption_like_header_row(self, values: List[str], col_count: int) -> bool:
         non_empty = [self._normalize_text(v) for v in values if self._normalize_text(v)]
@@ -1476,6 +3704,8 @@ class NativeDocumentParser:
             return out_local
 
         first_span = min(page_count, self.ocr_max_pages)
+        if not cue_pages and self.ocr_front_scan_pages > first_span:
+            first_span = min(page_count, self.ocr_front_scan_pages)
         first_indices: List[int] = list(range(first_span))
         base_extra_indices: List[int] = []
         remaining = list(range(first_span, page_count))
@@ -1628,7 +3858,15 @@ class NativeDocumentParser:
             if self._looks_like_table_cue_text(" ".join(lines[:18]))
         ]
         if cue_text_pages and self.ocr_line_aug_max_extra_cue_pages > 0:
-            for p in cue_text_pages[: self.ocr_line_aug_max_extra_cue_pages]:
+            if len(cue_text_pages) > self.ocr_line_aug_max_extra_cue_pages:
+                step = (len(cue_text_pages) - 1) / float(max(self.ocr_line_aug_max_extra_cue_pages - 1, 1))
+                cue_text_pages = sorted(
+                    {
+                        cue_text_pages[int(round(i * step))]
+                        for i in range(self.ocr_line_aug_max_extra_cue_pages)
+                    }
+                )
+            for p in cue_text_pages:
                 focus_pages.add(p)
 
         valid = sorted(p for p in focus_pages if p in page_lines)
@@ -1657,10 +3895,22 @@ class NativeDocumentParser:
             for t in base_tables
             if int(t.get("page", 0) or 0) > 0
         }
+        total_page_count = max(len(page_lines), 1)
+        coverage_ratio = len(covered_pages) / float(total_page_count)
         min_table_line_hits = 2 if aggressive else 3
         min_numeric_line_hits = 1 if aggressive else 2
         min_score = 6 if aggressive else 9
+        if coverage_ratio < 0.22:
+            min_score = max(5 if aggressive else 8, min_score - 1)
         max_pages = self.ocr_uncovered_line_aug_pages + (4 if aggressive else 0)
+        if coverage_ratio < 0.22:
+            max_pages += 2
+        if aggressive and total_page_count >= 80:
+            max_pages += min(6, total_page_count // 40)
+        max_pages = max(
+            self.ocr_uncovered_line_aug_pages,
+            min(max_pages, max(12, self.ocr_uncovered_line_aug_pages * 3)),
+        )
         candidates: List[Tuple[int, int]] = []
         for page_no, lines in page_lines.items():
             if page_no in covered_pages:
@@ -1670,6 +3920,10 @@ class NativeDocumentParser:
 
             score = 0
             if self._looks_like_table_cue_text(" ".join(lines[:24])):
+                score += 2
+            if (page_no - 1) in covered_pages or (page_no + 1) in covered_pages:
+                score += 2
+            if re.search(r"\btable\b|^\s*\u8868\s*[0-9A-Za-z\u4e00-\u9fa5.\-]*", " ".join(lines[:20]), re.IGNORECASE):
                 score += 2
 
             table_line_hits = 0
@@ -1874,8 +4128,51 @@ class NativeDocumentParser:
                 data_rows = self._drop_redundant_header_like_rows(data_rows, headers)
                 data_rows = self._decorate_rows_with_meta(data_rows, headers)
                 if len(data_rows) < self.ocr_table_min_rows:
-                    continue
+                    if not (
+                        len(data_rows) == 1
+                        and int(getattr(self, "_runtime_page_count", 0) or 0) <= 120
+                        and len(data_rows[0].get("cells", [])) >= 3
+                        and sum(
+                            1
+                            for c in data_rows[0].get("cells", [])
+                            if c.get("numeric_value") is not None or re.search(r"\d", str(c.get("text", "")))
+                        )
+                        >= 2
+                    ):
+                        continue
                 if self._looks_like_false_table(headers, data_rows):
+                    continue
+                col_count = max((len(r.get("cells", [])) for r in data_rows), default=0)
+                numeric_dense_rows = 0
+                section_like_rows = 0
+                edge_page_rows = 0
+                for row in data_rows[:80]:
+                    cells = row.get("cells", [])
+                    numeric_hits = sum(
+                        1
+                        for c in cells
+                        if c.get("numeric_value") is not None or re.search(r"\d", str(c.get("text", "")))
+                    )
+                    if numeric_hits >= 2:
+                        numeric_dense_rows += 1
+                    row_values = [self._normalize_text(str(c.get("text", ""))) for c in cells if c.get("text")]
+                    row_text = " ".join(row_values)
+                    if self._contains_section_marker(row_text):
+                        section_like_rows += 1
+                    if row_values:
+                        if self._is_page_number_token(row_values[0]) or self._is_page_number_token(row_values[-1]):
+                            edge_page_rows += 1
+                section_ratio = section_like_rows / float(max(len(data_rows[:80]), 1))
+                edge_page_ratio = edge_page_rows / float(max(len(data_rows[:80]), 1))
+                if col_count <= 2 and len(data_rows) <= 3 and numeric_dense_rows < 2:
+                    continue
+                if col_count <= 3 and len(data_rows) >= 8 and numeric_dense_rows < 2:
+                    continue
+                if col_count <= 3 and len(data_rows) >= 8 and section_ratio >= 0.18 and edge_page_ratio >= 0.35:
+                    continue
+                if col_count <= 3 and len(data_rows) >= 12 and edge_page_ratio >= 0.45 and numeric_dense_rows < 4:
+                    continue
+                if col_count <= 3 and len(data_rows) >= 12 and section_ratio >= 0.2 and numeric_dense_rows < 3:
                     continue
 
                 page_tables.append(
@@ -1887,7 +4184,7 @@ class NativeDocumentParser:
                         "header_meta": self._build_header_meta(headers),
                         "rows": data_rows,
                         "row_count": len(data_rows),
-                        "col_count": max((len(r.get("cells", [])) for r in data_rows), default=0),
+                        "col_count": col_count,
                         "quality": round(quality, 4),
                     }
                 )
@@ -2144,6 +4441,20 @@ class NativeDocumentParser:
         return "list of tables" in t or "table of contents" in t or "contents" == t
 
     @staticmethod
+    def _contains_figure_marker(text: str) -> bool:
+        t = str(text or "").strip()
+        if not t:
+            return False
+        lower = t.lower()
+        if re.search(r"\bfig(?:ure)?\.?\s*\d+", lower):
+            return True
+        if re.search(r"^\s*图\s*[0-9A-Za-z一二三四五六七八九十.\-]+", t):
+            return True
+        if re.search(r"[\s(（]图\s*[0-9A-Za-z一二三四五六七八九十.\-]+", t):
+            return True
+        return False
+
+    @staticmethod
     def _is_sentence_like_text(text: str) -> bool:
         t = str(text or "").strip()
         if len(t) < 24:
@@ -2166,6 +4477,7 @@ class NativeDocumentParser:
         catalog_hits = sum(1 for h in cleaned_headers if self._contains_catalog_marker(h))
         page_hits = sum(1 for h in cleaned_headers if self._is_page_number_token(h))
         equation_hits = sum(1 for h in cleaned_headers if self._contains_equation_marker(h))
+        figure_hits = sum(1 for h in cleaned_headers if self._contains_figure_marker(h))
 
         flat_cells: List[Dict[str, Any]] = []
         for row in data_rows:
@@ -2213,11 +4525,39 @@ class NativeDocumentParser:
             if data_rows
             else 0.0
         )
+        row_end_page_hits = 0
+        section_row_hits = 0
+        catalog_row_hits = 0
+        inspected_toc_rows = 0
+        for row in data_rows[:100]:
+            cells = sorted(row.get("cells", []), key=lambda c: int(c.get("col_index", 0) or 0))
+            vals = [self._normalize_text(str(c.get("text", ""))) for c in cells if c.get("text")]
+            if not vals:
+                continue
+            inspected_toc_rows += 1
+            if self._is_page_number_token(vals[-1]) or self._is_page_number_token(vals[0]):
+                row_end_page_hits += 1
+            if any(self._contains_section_marker(v) for v in vals[:2]):
+                section_row_hits += 1
+            if self._contains_catalog_marker(" ".join(vals)):
+                catalog_row_hits += 1
+        row_end_page_ratio = row_end_page_hits / float(max(inspected_toc_rows, 1))
+        section_row_ratio = section_row_hits / float(max(inspected_toc_rows, 1))
+        catalog_row_ratio = catalog_row_hits / float(max(inspected_toc_rows, 1))
 
         # Keep large, consistently tabular blocks to avoid over-filtering text-heavy technical tables.
         if len(data_rows) >= 14 and avg_cols >= 3.2 and sentence_like_ratio <= 0.45:
             return False
 
+        if (
+            len(data_rows) >= 8
+            and avg_cols <= 3.4
+            and row_end_page_ratio >= 0.55
+            and section_row_ratio >= 0.18
+        ):
+            return True
+        if catalog_row_ratio >= 0.12 and row_end_page_ratio >= 0.4 and avg_cols <= 4.2:
+            return True
         if (
             chapter_hits > 0
             and page_hits > 0
@@ -2225,6 +4565,13 @@ class NativeDocumentParser:
             and (numeric_ratio < 0.35 or len(data_rows) <= 6)
         ):
             return True
+        if figure_hits > 0 and int(getattr(self, "_runtime_page_count", 0) or 0) <= 120:
+            has_year_span = any(re.search(r"20\d{2}\s*[-—~至]\s*20\d{2}", h) for h in cleaned_headers)
+            growth_label = any(("增长速度" in h) or ("增速" in h) for h in cleaned_headers)
+            if has_year_span and len(data_rows) <= 3 and avg_cols <= 6.2:
+                return True
+            if growth_label and sentence_like_ratio <= 0.22 and len(data_rows) <= 3 and avg_cols <= 6.2:
+                return True
         if catalog_hits > 0 and len(cleaned_headers) <= 5 and len(data_rows) <= 10:
             return True
         if catalog_hits > 0 and avg_cols <= 4.5 and numeric_ratio < 0.55:
@@ -2250,6 +4597,10 @@ class NativeDocumentParser:
         if sentence_like_ratio >= 0.62 and avg_cols <= 3.0 and numeric_ratio < 0.2:
             return True
         if sentence_like_ratio >= 0.5 and avg_cols <= 2.2 and numeric_ratio < 0.28:
+            return True
+        if len(data_rows) <= 6 and avg_cols >= 5.0 and sentence_like_ratio >= 0.25 and numeric_ratio < 0.45:
+            return True
+        if len(data_rows) <= 5 and avg_cols >= 4.0 and long_ratio >= 0.35 and numeric_ratio < 0.4:
             return True
         return False
 
@@ -2390,14 +4741,13 @@ class NativeDocumentParser:
             for group in groups:
                 if emitted_cells >= self.table_cell_cap:
                     break
-                header_tokens = group[0][: self.table_max_cols]
-                data_rows = group[1 : self.table_max_rows + 1]
-                if not data_rows:
+                raw_rows = group[: self.table_max_rows + 1]
+                if len(raw_rows) < self.ocr_table_min_rows:
                     continue
 
                 table_id = f"{source}_t{table_idx}"
-                rows_payload: List[Dict[str, Any]] = []
-                for row_idx, row_tokens in enumerate(data_rows, start=1):
+                raw_rows_payload: List[Dict[str, Any]] = []
+                for row_idx, row_tokens in enumerate(raw_rows, start=1):
                     cells_payload: List[Dict[str, Any]] = []
                     for col_idx, text in enumerate(row_tokens[: self.table_max_cols], start=1):
                         normalized = self._normalize_text(text)
@@ -2419,24 +4769,37 @@ class NativeDocumentParser:
                         if emitted_cells >= self.table_cell_cap:
                             break
                     if cells_payload:
-                        rows_payload.append({"row_index": row_idx, "cells": cells_payload})
+                        raw_rows_payload.append({"row_index": row_idx, "cells": cells_payload})
                     if emitted_cells >= self.table_cell_cap:
                         break
 
-                if rows_payload:
-                    rows_payload = self._decorate_rows_with_meta(rows_payload, header_tokens)
-                    if self._looks_like_false_table(header_tokens, rows_payload):
+                if raw_rows_payload:
+                    headers, data_rows_payload = self._infer_headers_and_data_rows(raw_rows_payload)
+                    data_rows_payload = self._drop_redundant_header_like_rows(data_rows_payload, headers)
+                    data_rows_payload = self._decorate_rows_with_meta(data_rows_payload, headers)
+                    if len(data_rows_payload) < self.ocr_table_min_rows:
+                        if len(data_rows_payload) != 1:
+                            continue
+                        first_cells = data_rows_payload[0].get("cells", [])
+                        numeric_hits = sum(
+                            1
+                            for c in first_cells
+                            if c.get("numeric_value") is not None or re.search(r"\d", str(c.get("text", "")))
+                        )
+                        if len(first_cells) < 3 or numeric_hits < 2:
+                            continue
+                    if self._looks_like_false_table(headers, data_rows_payload):
                         continue
                     table_blocks.append(
                         {
                             "table_id": table_id,
                             "source": source,
                             "page": page_no,
-                            "headers": header_tokens,
-                            "header_meta": self._build_header_meta(header_tokens),
-                            "rows": rows_payload,
-                            "row_count": len(rows_payload),
-                            "col_count": max((len(r.get("cells", [])) for r in rows_payload), default=0),
+                            "headers": headers,
+                            "header_meta": self._build_header_meta(headers),
+                            "rows": data_rows_payload,
+                            "row_count": len(data_rows_payload),
+                            "col_count": max((len(r.get("cells", [])) for r in data_rows_payload), default=0),
                         }
                     )
                     table_idx += 1
@@ -2452,24 +4815,33 @@ class NativeDocumentParser:
         if not cleaned:
             return []
         tokens = [t.strip() for t in re.split(r"\s{2,}|\t|\|", cleaned) if t.strip()]
-        if len(tokens) < 3:
+        if len(tokens) < 2:
             alt = [t.strip() for t in re.split(r"\s+", cleaned) if t.strip()]
-            if len(alt) >= 3:
+            if len(alt) >= 2:
                 num_like = sum(1 for t in alt if re.search(r"\d", t))
-                if num_like >= 2:
+                if (len(alt) >= 3 and num_like >= 2) or (len(alt) == 2 and num_like >= 1):
                     tokens = alt
         return tokens
 
     @staticmethod
     def _is_table_line(line: str, tokens: List[str]) -> bool:
-        if len(tokens) < 3:
+        if len(tokens) < 2:
             return False
-        if line.count("|") >= 2:
-            return True
-        if "\t" in line:
-            return True
-        if re.search(r"\s{2,}", line):
-            return True
+
+        if len(tokens) >= 3:
+            if line.count("|") >= 2:
+                return True
+            if "\t" in line:
+                return True
+            if re.search(r"\s{2,}", line):
+                return True
+
+        if len(tokens) == 2:
+            numeric_like = sum(1 for t in tokens if re.search(r"\d", t))
+            alpha_like = sum(1 for t in tokens if re.search(r"[A-Za-z\u4e00-\u9fa5]", t))
+            if (line.count("|") >= 1 or "\t" in line or re.search(r"\s{2,}", line)) and numeric_like >= 1 and alpha_like >= 1:
+                return True
+
         numeric_like = sum(1 for t in tokens if re.search(r"\d", t))
         if numeric_like >= 2 and len(tokens) >= 4:
             return True
@@ -2541,8 +4913,10 @@ class NativeDocumentParser:
             try:
                 base = float(sci_match.group(1))
                 exponent = int(sci_match.group(2))
+                if exponent > 308 or exponent < -308:
+                    return result
                 value = base * (10.0 ** exponent)
-            except ValueError:
+            except (ValueError, OverflowError):
                 return result
         else:
             m = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", cleaned)
@@ -2550,7 +4924,7 @@ class NativeDocumentParser:
                 return result
             try:
                 value = float(m.group(0))
-            except ValueError:
+            except (ValueError, OverflowError):
                 return result
 
         scale = 1.0
@@ -2563,12 +4937,19 @@ class NativeDocumentParser:
         elif "\u767e" in raw:
             scale *= 1e2
 
-        numeric_value = value * scale
+        try:
+            numeric_value = value * scale
+        except OverflowError:
+            return result
+        if not math.isfinite(numeric_value):
+            return result
         detected_unit = unit_hint
         if "%" in raw or "\uff05" in raw:
             detected_unit = detected_unit or "%"
             ratio = numeric_value / 100.0
         else:
+            ratio = None
+        if ratio is not None and not math.isfinite(ratio):
             ratio = None
 
         unit_match = re.search(
@@ -2615,9 +4996,11 @@ def parse_document_in_subprocess(
     file_bytes: bytes,
     file_name: str = "document.pdf",
     track: str = "FastTrack",
-) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
+) -> Tuple[str, Dict[str, List[float]], TableBlocks, FigureBlocks]:
     """ProcessPool entrypoint (must be top-level and picklable)."""
 
     parser = NativeDocumentParser()
-    return parser.parse_document(file_name=file_name, file_bytes=file_bytes, track=track)
+    markdown, bbox_map, table_blocks = parser.parse_document(file_name=file_name, file_bytes=file_bytes, track=track)
+    figure_blocks = parser.get_last_figure_blocks()
+    return markdown, bbox_map, table_blocks, figure_blocks
 

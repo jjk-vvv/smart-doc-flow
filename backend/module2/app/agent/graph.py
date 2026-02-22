@@ -204,7 +204,8 @@ class ExtractionGraph:
         if not table_context:
             return state
 
-        allowed_table_refs = self._collect_table_ref_ids(tables, max_refs=500)
+        max_table_refs = max(300, int(os.getenv("MODULE2_TABLE_ALLOWED_REFS_MAX", "1200")))
+        allowed_table_refs = self._collect_table_ref_ids(tables, max_refs=max_table_refs)
         if not allowed_table_refs:
             return state
 
@@ -303,7 +304,8 @@ class ExtractionGraph:
 
         correction_context = "\n".join(state["errors"][-5:]) if state["errors"] else "None"
         compact_markdown = self._build_context(state["markdown"], pending_fields)
-        allowed_refs = list(state["bbox_map"].keys())[:260]
+        max_allowed_refs = max(260, int(os.getenv("MODULE2_ALLOWED_REFS_MAX", "1200")))
+        allowed_refs = list(state["bbox_map"].keys())[:max_allowed_refs]
         prev_summary = self._results_summary(existing)
         correction_fields = sorted(error_fields) if error_fields else []
 
@@ -382,6 +384,7 @@ class ExtractionGraph:
     async def validation_node(self, state: AgentState) -> AgentState:
         errors: List[str] = []
         target_fields = self._target_fields(state["schema"])
+        required_fields = self._required_fields(state["schema"], target_fields)
 
         for field_name, field_type in target_fields.items():
             result = state["results"].get(field_name)
@@ -390,6 +393,8 @@ class ExtractionGraph:
             bbox = result.get("bbox") if result else []
 
             if value is None:
+                if field_name in required_fields:
+                    errors.append(f"{field_name} is required but missing")
                 continue
 
             if not source_ref_id or source_ref_id not in state["bbox_map"]:
@@ -451,6 +456,25 @@ class ExtractionGraph:
             return schema["fields"]
         excluded = {"dependencies", "validations"}
         return {k: v for k, v in schema.items() if k not in excluded}
+
+    @staticmethod
+    def _required_fields(schema: Dict[str, Any], target_fields: Dict[str, Any]) -> Set[str]:
+        required: Set[str] = set()
+
+        raw_required = schema.get("required", [])
+        if isinstance(raw_required, list):
+            for item in raw_required:
+                name = str(item or "").strip()
+                if name:
+                    required.add(name)
+
+        fields_raw = schema.get("fields")
+        if isinstance(fields_raw, dict):
+            for field_name, field_spec in fields_raw.items():
+                if isinstance(field_spec, dict) and bool(field_spec.get("required")):
+                    required.add(str(field_name))
+
+        return {name for name in required if name in target_fields}
 
     @staticmethod
     def _dependencies(schema: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -562,7 +586,7 @@ class ExtractionGraph:
 
     @staticmethod
     def _build_context(markdown: str, target_fields: Dict[str, Any]) -> str:
-        max_chars = max(2000, int(os.getenv("MODULE2_PROMPT_MAX_CHARS", "24000")))
+        max_chars = max(2000, int(os.getenv("MODULE2_PROMPT_MAX_CHARS", "32000")))
         if len(markdown) <= max_chars:
             return markdown
 
@@ -611,10 +635,10 @@ class ExtractionGraph:
         field_hints: Dict[str, List[str]],
         target_fields: Dict[str, Any],
     ) -> str:
-        max_tables = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_TABLES", "4")))
-        max_rows = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_ROWS", "12")))
-        max_cols = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_COLS", "8")))
-        max_header_meta = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_HEADER_META", "8")))
+        max_tables = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_TABLES", "8")))
+        max_rows = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_ROWS", "24")))
+        max_cols = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_COLS", "12")))
+        max_header_meta = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_HEADER_META", "12")))
 
         preferred_ids: List[str] = []
         for field_name in target_fields.keys():

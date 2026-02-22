@@ -40,6 +40,7 @@ class DocumentExtractionResponse(BaseModel):
     cached: bool
     result: ExtractionResult
     errors: List[str] = Field(default_factory=list)
+    diagnostics: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchExtractionResponse(BaseModel):

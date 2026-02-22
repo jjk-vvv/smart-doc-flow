@@ -30,7 +30,7 @@ export interface RiskAlert {
 export interface EntityNode {
   id: string;
   label: string;
-  type: 'Company' | 'Person' | 'Contract' | 'Location' | 'Risk' | 'Rating';
+  type: 'Company' | 'Person' | 'Contract' | 'Location' | 'Risk' | 'Rating' | '合同' | '风险' | '评分';
   x: number;
   y: number;
 }

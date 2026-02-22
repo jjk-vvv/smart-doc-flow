@@ -4,12 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "node ./node_modules/vite/bin/vite.js",
+    "build": "node ./node_modules/vite/bin/vite.js build",
+    "preview": "node ./node_modules/vite/bin/vite.js preview"
   },
   "dependencies": {
+    "@ai-sdk/react": "^3.0.99",
     "@tailwindcss/postcss": "^4.1.18",
+    "ai": "^6.0.97",
     "body-parser": "^2.2.2",
     "clsx": "^2.1.1",
     "cookie-parser": "^1.4.7",
@@ -23,7 +25,8 @@
     "recharts": "2.12.0",
     "resend": "^6.9.2",
     "tailwind-merge": "^3.4.1",
-    "twilio": "^5.12.1"
+    "twilio": "^5.12.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

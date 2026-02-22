@@ -1,18 +1,46 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
-import { Dashboard } from './components/Dashboard';
-import { DeepReadWorkbench } from './components/DeepReadWorkbench';
-import { FusionGrid } from './components/FusionGrid';
-import { KnowledgeNexus } from './components/KnowledgeNexus';
-import { UserGuide } from './components/UserGuide';
 import { AuthModal } from '@/components/AuthModal';
+import { AIAssistant } from '@/components/AIAssistant';
 import { BrainCircuit } from 'lucide-react';
+
+type AuthUser = { name: string; email: string } | null;
+let meRequestPromise: Promise<AuthUser> | null = null;
+
+const fetchCurrentUser = (): Promise<AuthUser> => {
+  if (!meRequestPromise) {
+    meRequestPromise = fetch('/api/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => (data?.user ? { name: String(data.user.name), email: String(data.user.email) } : null))
+      .catch(() => null);
+  }
+  return meRequestPromise;
+};
+
+const Dashboard = lazy(() =>
+  import('./components/Dashboard').then((mod) => ({ default: mod.Dashboard }))
+);
+const DeepReadWorkbench = lazy(() =>
+  import('./components/DeepReadWorkbench').then((mod) => ({ default: mod.DeepReadWorkbench }))
+);
+const DocInteractionWorkbench = lazy(() =>
+  import('./components/DocInteractionWorkbench').then((mod) => ({ default: mod.DocInteractionWorkbench }))
+);
+const FusionGrid = lazy(() =>
+  import('./components/FusionGrid').then((mod) => ({ default: mod.FusionGrid }))
+);
+const KnowledgeNexus = lazy(() =>
+  import('./components/KnowledgeNexus').then((mod) => ({ default: mod.KnowledgeNexus }))
+);
+const UserGuide = lazy(() =>
+  import('./components/UserGuide').then((mod) => ({ default: mod.UserGuide }))
+);
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isDark, setIsDark] = useState(false); // Default to light mode as requested
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [user, setUser] = useState<{ name: string; email: string } | null>(null);
+  const [user, setUser] = useState<AuthUser>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
 
   const handleLoginSuccess = (loggedInUser: { name: string; email: string }) => {
@@ -32,23 +60,32 @@ const App: React.FC = () => {
 
   // Fetch user on mount
   useEffect(() => {
-    fetch('/api/me')
-      .then(res => {
-        if (res.ok) return res.json();
-        throw new Error('Not authenticated');
-      })
-      .then(data => {
-        setUser(data.user);
-      })
-      .catch(() => setUser(null));
+    let active = true;
+    fetchCurrentUser().then((currentUser) => {
+      if (!active) return;
+      setUser(currentUser);
+    });
+    return () => {
+      active = false;
+    };
   }, []);
+
+  // Automatically collapse sidebar when entering User Guide
+  useEffect(() => {
+    if (activeTab === 'guide') {
+      setIsSidebarCollapsed(true);
+    }
+  }, [activeTab]);
 
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
         return <Dashboard />;
       case 'deepread':
-        return <DeepReadWorkbench />;
+      case 'deepread_extraction':
+        return <DeepReadWorkbench isSidebarCollapsed={isSidebarCollapsed} />;
+      case 'deepread_interaction':
+        return <DocInteractionWorkbench />;
       case 'fusion':
         return <FusionGrid />;
       case 'nexus':
@@ -59,6 +96,15 @@ const App: React.FC = () => {
         return <Dashboard />;
     }
   };
+
+  const loadingFallback = (
+    <div className="h-[calc(100vh-2rem)] flex items-center justify-center rounded-xl border border-border/40 bg-background/60">
+      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <BrainCircuit size={18} className="animate-pulse text-primary" />
+        <span>Loading module...</span>
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -83,7 +129,7 @@ const App: React.FC = () => {
         />
 
         <main className={`flex-1 transition-all duration-300 relative z-10 p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`}>
-          {renderContent()}
+          <Suspense fallback={loadingFallback}>{renderContent()}</Suspense>
         </main>
       </div>
 
@@ -94,6 +140,9 @@ const App: React.FC = () => {
         onLoginSuccess={handleLoginSuccess}
         isDark={isDark}
       />
+
+      {/* Vercel AI SDK Floating Assistant */}
+      <AIAssistant />
     </>
   );
 };

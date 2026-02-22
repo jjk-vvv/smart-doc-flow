@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Braces,
@@ -26,26 +26,18 @@ import {
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import {
+  readExtractionDocuments,
+  writeExtractionDocuments,
+  type ExtractionDocument,
+  type ExtractionEntity,
+} from '../lib/extractionStore';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-type ExtractedEntity = {
-  value: unknown;
-  confidence: number;
-  source_ref_id?: string | null;
-  bbox: number[];
-};
-
-type DocumentResult = {
-  file_name: string;
-  file_hash: string;
-  track: string;
-  cached: boolean;
-  result: Record<string, ExtractedEntity>;
-  errors: string[];
-};
+type DocumentResult = ExtractionDocument;
 
 type ExtractResponse = {
   documents: DocumentResult[];
@@ -58,6 +50,7 @@ type FieldItem = {
   confidence: number;
   refId?: string | null;
   bbox: number[];
+  pageNumber: number | null;
 };
 
 const DEFAULT_SCHEMA = {
@@ -71,6 +64,22 @@ const DEFAULT_SCHEMA = {
   dependencies: {
     tax_rate: ['region'],
   },
+};
+
+const ALLOWED_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'txt', 'md']);
+
+const isAllowedFile = (file: File) => {
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+  return ALLOWED_EXTENSIONS.has(ext);
+};
+
+const fileExt = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
+
+const toPageNumber = (bbox: number[]) => {
+  if (bbox.length !== 5) return null;
+  const page = Number(bbox[0]);
+  if (!Number.isFinite(page) || page < 1) return null;
+  return Math.round(page);
 };
 
 const toPercentBox = (bbox: number[]) => {
@@ -122,7 +131,7 @@ const toFieldLabel = (name: string) =>
     } as Record<string, string>
   )[name] ?? name;
 
-export const DeepReadWorkbench: React.FC = () => {
+export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ isSidebarCollapsed = false }) => {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [schemaText, setSchemaText] = useState<string>(JSON.stringify(DEFAULT_SCHEMA, null, 2));
   const [documents, setDocuments] = useState<DocumentResult[]>([]);
@@ -140,20 +149,114 @@ export const DeepReadWorkbench: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeDoc = documents[activeDocIndex] ?? null;
+  const activeSourceFile = useMemo(() => {
+    if (!activeDoc || selectedFiles.length === 0) return null;
+
+    const exact = selectedFiles.find((file) => file.name === activeDoc.file_name);
+    if (exact) return exact;
+
+    const targetName = activeDoc.file_name.toLowerCase();
+    const insensitive = selectedFiles.find((file) => file.name.toLowerCase() === targetName);
+    if (insensitive) return insensitive;
+
+    const byIndex = selectedFiles[activeDocIndex] ?? null;
+    if (byIndex && fileExt(byIndex.name) === fileExt(activeDoc.file_name)) return byIndex;
+
+    return byIndex;
+  }, [activeDoc, activeDocIndex, selectedFiles]);
+  const activeExt = activeDoc ? fileExt(activeDoc.file_name) : '';
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewText, setPreviewText] = useState<string>('');
+  const [pdfPage, setPdfPage] = useState(1);
+
+  useEffect(() => {
+    const cached = readExtractionDocuments();
+    if (cached.length === 0) return;
+    setDocuments(cached);
+    setInfoMessage(`Loaded ${cached.length} cached extraction result(s).`);
+  }, []);
+
+  useEffect(() => {
+    if (documents.length === 0) {
+      setActiveDocIndex(0);
+      return;
+    }
+    if (activeDocIndex > documents.length - 1) {
+      setActiveDocIndex(documents.length - 1);
+    }
+  }, [activeDocIndex, documents]);
+
+  useEffect(() => {
+    setPdfPage(1);
+  }, [activeDoc?.file_hash]);
+
+  useEffect(() => {
+    if (!activeSourceFile) {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(activeSourceFile);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [activeSourceFile]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeSourceFile || !['txt', 'md'].includes(activeExt)) {
+      setPreviewText('');
+      return () => {
+        cancelled = true;
+      };
+    }
+    activeSourceFile.text().then((text) => {
+      if (cancelled) return;
+      const maxChars = 12000;
+      setPreviewText(text.length > maxChars ? `${text.slice(0, maxChars)}\n\n... [truncated]` : text);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSourceFile, activeExt]);
 
   const fieldItems = useMemo<FieldItem[]>(() => {
     if (!activeDoc) return [];
 
-    const entries = Object.entries(activeDoc.result) as Array<[string, ExtractedEntity]>;
+    const entries = Object.entries(activeDoc.result) as Array<[string, ExtractionEntity]>;
     return entries.map(([fieldName, entity]) => ({
+      bbox: Array.isArray(entity.bbox) ? entity.bbox : [],
       key: fieldName,
       label: toFieldLabel(fieldName),
       valueText: entity.value == null ? 'null' : String(entity.value),
       confidence: entity.confidence ?? 0,
       refId: entity.source_ref_id,
-      bbox: Array.isArray(entity.bbox) ? entity.bbox : [],
+      pageNumber: toPageNumber(Array.isArray(entity.bbox) ? entity.bbox : []),
     }));
   }, [activeDoc]);
+
+  const inferredPdfPageCount = useMemo(() => {
+    if (activeExt !== 'pdf') return 1;
+    const maxByRefs = fieldItems.reduce((maxPage, item) => {
+      if (item.pageNumber == null) return maxPage;
+      return Math.max(maxPage, item.pageNumber);
+    }, 1);
+    return Math.max(1, maxByRefs);
+  }, [activeExt, fieldItems]);
+
+  const currentPdfPage = Math.min(Math.max(pdfPage, 1), inferredPdfPageCount);
+
+  useEffect(() => {
+    if (activeExt !== 'pdf') return;
+    if (pdfPage !== currentPdfPage) {
+      setPdfPage(currentPdfPage);
+    }
+  }, [activeExt, currentPdfPage, pdfPage]);
+
+  const overlayItems = useMemo(() => {
+    if (activeExt !== 'pdf') {
+      return fieldItems.filter((item) => item.bbox.length === 5);
+    }
+    return fieldItems.filter((item) => item.bbox.length === 5 && item.pageNumber === currentPdfPage);
+  }, [activeExt, currentPdfPage, fieldItems]);
 
   const avgConfidence = useMemo(() => {
     if (fieldItems.length === 0) return 0;
@@ -162,8 +265,15 @@ export const DeepReadWorkbench: React.FC = () => {
   }, [fieldItems]);
 
   const onSelectFiles = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const incoming = Array.from(event.target.files ?? []);
-    if (incoming.length === 0) return;
+    const incomingRaw = Array.from(event.target.files ?? []);
+    const incoming = incomingRaw.filter(isAllowedFile);
+    const rejectedCount = incomingRaw.length - incoming.length;
+    if (incoming.length === 0) {
+      if (rejectedCount > 0) {
+        setInfoMessage('未添加任何文件，仅支持 PDF/DOCX/XLSX/TXT/MD。');
+      }
+      return;
+    }
 
     const byIdentity = new Map<string, File>();
     [...selectedFiles, ...incoming].forEach((file) => {
@@ -177,6 +287,8 @@ export const DeepReadWorkbench: React.FC = () => {
     setSelectedFiles(limited);
     if (merged.length > 5) {
       setInfoMessage('批处理上限为 5 个文件，超出部分已忽略。');
+    } else if (rejectedCount > 0) {
+      setInfoMessage(`已忽略 ${rejectedCount} 个不支持的文件，仅支持 PDF/DOCX/XLSX/TXT/MD。`);
     } else {
       setInfoMessage(`已选择 ${limited.length} 个文件，可开始抽取。`);
     }
@@ -195,6 +307,7 @@ export const DeepReadWorkbench: React.FC = () => {
     setDocuments([]);
     setActiveDocIndex(0);
     setActiveFieldKey(null);
+    setPdfPage(1);
     setErrorMessage('');
     setInfoMessage('文件队列已清空。');
     setScale(1);
@@ -241,14 +354,41 @@ export const DeepReadWorkbench: React.FC = () => {
       }
 
       setDocuments(payload.documents);
+      writeExtractionDocuments(payload.documents);
       setActiveDocIndex(0);
+      setPdfPage(1);
 
       const firstErrorDoc = payload.documents.find((doc) => doc.errors && doc.errors.length > 0);
       if (firstErrorDoc) {
         setErrorMessage(firstErrorDoc.errors.join(' | '));
       } else {
         const cacheHits = payload.documents.filter((doc) => doc.cached).length;
-        setInfoMessage(`已完成 ${payload.documents.length} 份文档抽取，缓存命中 ${cacheHits} 份。`);
+        const totalTables = payload.documents.reduce((acc, doc) => {
+          const raw = doc.diagnostics?.table_count;
+          const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
+          return acc + (Number.isFinite(val) ? val : 0);
+        }, 0);
+        const totalFigures = payload.documents.reduce((acc, doc) => {
+          const raw = doc.diagnostics?.figure_count;
+          const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
+          return acc + (Number.isFinite(val) ? val : 0);
+        }, 0);
+        const sourceSet = new Set<string>();
+        const figureSourceSet = new Set<string>();
+        payload.documents.forEach((doc) => {
+          const srcRaw = doc.diagnostics?.table_sources;
+          if (!srcRaw || typeof srcRaw !== 'object') return;
+          Object.keys(srcRaw as Record<string, unknown>).forEach((key) => sourceSet.add(key));
+          const figRaw = doc.diagnostics?.figure_sources;
+          if (figRaw && typeof figRaw === 'object') {
+            Object.keys(figRaw as Record<string, unknown>).forEach((key) => figureSourceSet.add(key));
+          }
+        });
+        const sourceText = sourceSet.size > 0 ? Array.from(sourceSet).slice(0, 3).join(', ') : 'n/a';
+        const figureSourceText = figureSourceSet.size > 0 ? Array.from(figureSourceSet).slice(0, 3).join(', ') : 'n/a';
+        setInfoMessage(
+          `已完成 ${payload.documents.length} 份文档抽取，缓存命中 ${cacheHits} 份，识别表格 ${totalTables} 张（来源: ${sourceText}），识别图像 ${totalFigures} 张（来源: ${figureSourceText}）。`
+        );
       }
     } catch (error) {
       console.error(error);
@@ -275,6 +415,14 @@ export const DeepReadWorkbench: React.FC = () => {
   const handleZoomIn = () => setScale((prev) => Math.min(prev + 0.1, 2.5));
   const handleZoomOut = () => setScale((prev) => Math.max(prev - 0.1, 0.5));
   const handleRotate = () => setRotation((prev) => (prev + 90) % 360);
+  const handlePrevPdfPage = () => {
+    setPdfPage((prev) => Math.max(1, prev - 1));
+    setActiveFieldKey(null);
+  };
+  const handleNextPdfPage = () => {
+    setPdfPage((prev) => Math.min(inferredPdfPageCount, prev + 1));
+    setActiveFieldKey(null);
+  };
   const handleResetView = () => {
     setScale(1);
     setRotation(0);
@@ -289,7 +437,7 @@ export const DeepReadWorkbench: React.FC = () => {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff"
+        accept=".pdf,.docx,.xlsx,.txt,.md"
         multiple
         className="hidden"
         onChange={onSelectFiles}
@@ -307,12 +455,12 @@ export const DeepReadWorkbench: React.FC = () => {
                     <div className="p-2.5 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400">
                         <FileText size={22} strokeWidth={2.5} />
                     </div>
-                    <h2 className="text-xl font-bold tracking-tight text-slate-800 dark:text-slate-100">
+                    <h2 className="text-xl font-bold font-['Microsoft_YaHei'] tracking-tight text-slate-800 dark:text-slate-100">
                         智能文档解析
                     </h2>
                 </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
-                    基于 Gemini 多模态大模型的文档结构化抽取引擎。支持 PDF/图片批量处理与字段级溯源。
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-medium font-['Microsoft_YaHei']">
+                    基于 Gemini 多模态大模型的文档结构化抽取引擎。支持 PDF/DOCX/XLSX/TXT/MD 批量处理与字段级溯源。
                 </p>
             </div>
         </div>
@@ -320,7 +468,7 @@ export const DeepReadWorkbench: React.FC = () => {
         {/* Action Panel */}
         <div className="bg-white dark:bg-slate-900 rounded-2xl flex-1 flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800 shadow-sm">
             <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                <h3 className="text-sm font-bold flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                <h3 className="text-sm font-bold font-['Microsoft_YaHei'] flex items-center gap-2 text-slate-700 dark:text-slate-200">
                     <Layers size={16} className="text-blue-500" />
                     任务队列
                 </h3>
@@ -341,9 +489,9 @@ export const DeepReadWorkbench: React.FC = () => {
                         <div className="w-16 h-16 rounded-full bg-slate-50 dark:bg-slate-800 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-blue-100 dark:group-hover:bg-blue-900/30 group-hover:text-blue-600 transition-all duration-300">
                             <UploadCloud size={32} />
                         </div>
-                        <p className="text-sm font-bold text-slate-600 dark:text-slate-300 group-hover:text-blue-600 transition-colors">点击上传文档</p>
-                        <p className="text-[10px] opacity-60 mt-2">支持 PDF, JPG, PNG, TIFF</p>
-                        <p className="text-[10px] opacity-40 mt-1">每次最多上传 5 个文件</p>
+                        <p className="text-sm font-bold font-['Microsoft_YaHei'] text-slate-600 dark:text-slate-300 group-hover:text-blue-600 transition-colors">点击上传文档</p>
+                        <p className="text-[10px] opacity-60 mt-2 font-['Microsoft_YaHei']">支持 PDF, DOCX, XLSX, TXT, MD</p>
+                        <p className="text-[10px] opacity-40 mt-1 font-['Microsoft_YaHei']">每次最多上传 5 个文件</p>
                     </div>
                 ) : (
                     <div className="space-y-3">
@@ -426,7 +574,7 @@ export const DeepReadWorkbench: React.FC = () => {
         {showSchema && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 w-[90%] max-w-2xl z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl shadow-2xl rounded-2xl animate-in slide-in-from-top-4 fade-in duration-200 flex flex-col max-h-[500px] border border-slate-200 dark:border-slate-700 overflow-hidden ring-1 ring-slate-900/5">
                     <div className="p-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
-                    <h3 className="text-xs font-bold flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                    <h3 className="text-xs font-bold font-['Microsoft_YaHei'] flex items-center gap-2 text-slate-700 dark:text-slate-200">
                         <Braces size={14} className="text-blue-500" /> JSON 提取规则配置
                     </h3>
                     <div className="flex gap-2">
@@ -451,50 +599,89 @@ export const DeepReadWorkbench: React.FC = () => {
             </div>
 
             {/* Floating Toolbar */}
-            <div className="absolute top-6 left-1/2 -translate-x-1/2 z-40 h-11 pl-2 pr-1 rounded-full bg-white/90 dark:bg-slate-900/90 backdrop-blur-md shadow-sm border border-slate-200/60 dark:border-slate-700/60 flex items-center gap-4 transition-all hover:shadow-md hover:bg-white dark:hover:bg-slate-900">
-                <div className="flex items-center gap-3 overflow-hidden px-2">
+            <div className="absolute top-6 left-1/2 -translate-x-1/2 z-40 h-12 pl-4 pr-2 rounded-2xl bg-white dark:bg-slate-900 shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-slate-200 dark:border-slate-700 flex items-center gap-2 transition-all select-none max-w-[98%]">
+                <div className="flex items-center gap-1 overflow-hidden pl-0 min-w-0 flex-1">
                      {activeDoc ? (
                         <>
-                            <div className="flex flex-col min-w-0 max-w-[160px]">
-                                <span className="text-xs font-bold truncate text-slate-700 dark:text-slate-200">{activeDoc.file_name}</span>
-                                <span className="text-[9px] text-slate-400 flex items-center gap-1.5">
-                                    <span className={cn("w-1.5 h-1.5 rounded-full", activeDoc.cached ? "bg-emerald-500" : "bg-amber-500")} />
-                                    {activeDoc.cached ? "Cached" : "Live"}
+                            <div className="flex flex-col min-w-0 max-w-[180px]">
+                                <span className="text-sm font-bold font-['Microsoft_YaHei'] truncate text-slate-900 dark:text-slate-100">{activeDoc.file_name}</span>
+                                <span className="text-[10px] font-bold font-['Microsoft_YaHei'] text-slate-500 flex items-center gap-1.5">
+                                    <span className={cn("w-2 h-2 rounded-full shrink-0", activeDoc.cached ? "bg-emerald-500" : "bg-amber-500")} />
+                                    <span className="truncate">{activeDoc.cached ? "已缓存" : "实时预览"}</span>
                                 </span>
                             </div>
                         </>
                      ) : (
-                         <div className="flex items-center gap-2 text-slate-400 px-1">
-                            <Maximize size={14} />
-                            <span className="text-xs font-medium">预览视窗</span>
-                         </div>
+                         <div className="flex items-center gap-1 text-slate-900 dark:text-slate-100 pl-0 pr-1">
+                           <Maximize size={16} strokeWidth={2.5} className="shrink-0" />
+                           <span className="text-sm font-bold font-['Microsoft_YaHei'] whitespace-nowrap">
+                               {isSidebarCollapsed ? "预览视窗" : "预览"}
+                           </span>
+                        </div>
                      )}
                 </div>
 
-                <div className="h-4 w-px bg-slate-200 dark:bg-slate-700" />
+                <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0" />
 
-                <div className="flex items-center gap-1">
-                    <button onClick={handleZoomOut} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500 hover:text-slate-900 transition-all"><ZoomOut size={14}/></button>
-                    <span className="text-[10px] font-mono w-8 text-center text-slate-400">{Math.round(scale * 100)}%</span>
-                    <button onClick={handleZoomIn} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500 hover:text-slate-900 transition-all"><ZoomIn size={14}/></button>
-                    <button onClick={handleRotate} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500 hover:text-slate-900 transition-all ml-1"><RotateCw size={14}/></button>
-                    <button onClick={handleResetView} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500 hover:text-slate-900 transition-all" title="Reset View"><Maximize size={14}/></button>
+                <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={handleZoomOut} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-700 hover:text-blue-700 transition-all active:scale-95 shrink-0"><ZoomOut size={16} strokeWidth={2}/></button>
+                    <span className="text-xs font-bold font-mono w-10 text-center text-slate-900 dark:text-slate-100 shrink-0">{Math.round(scale * 100)}%</span>
+                    <button onClick={handleZoomIn} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-700 hover:text-blue-700 transition-all active:scale-95 shrink-0"><ZoomIn size={16} strokeWidth={2}/></button>
+                    <button onClick={handleRotate} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-700 hover:text-blue-700 transition-all ml-0.5 active:scale-95 shrink-0"><RotateCw size={16} strokeWidth={2}/></button>
+                    <button onClick={handleResetView} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-700 hover:text-blue-700 transition-all active:scale-95 shrink-0" title="重置视图"><Maximize size={16} strokeWidth={2}/></button>
                 </div>
 
-                <div className="h-4 w-px bg-slate-200 dark:bg-slate-700" />
+                <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0" />
+
+                {activeExt === 'pdf' && (
+                    <>
+                        <div className="flex items-center gap-1 shrink-0">
+                            <button
+                                onClick={handlePrevPdfPage}
+                                disabled={currentPdfPage <= 1}
+                                className={cn(
+                                    "p-2 rounded-xl transition-all active:scale-95 shrink-0",
+                                    currentPdfPage > 1
+                                        ? "text-slate-700 hover:text-blue-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                        : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                )}
+                                title="Previous page"
+                            >
+                                <ChevronRight size={16} className="rotate-180" />
+                            </button>
+                            <span className="text-xs font-bold font-mono min-w-[64px] text-center text-slate-900 dark:text-slate-100 shrink-0">
+                                P{currentPdfPage}/{inferredPdfPageCount}
+                            </span>
+                            <button
+                                onClick={handleNextPdfPage}
+                                disabled={currentPdfPage >= inferredPdfPageCount}
+                                className={cn(
+                                    "p-2 rounded-xl transition-all active:scale-95 shrink-0",
+                                    currentPdfPage < inferredPdfPageCount
+                                        ? "text-slate-700 hover:text-blue-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                        : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                )}
+                                title="Next page"
+                            >
+                                <ChevronRight size={16} />
+                            </button>
+                        </div>
+                        <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0" />
+                    </>
+                )}
 
                 <button
                     onClick={exportResults}
                     disabled={documents.length === 0}
                     className={cn(
-                        "flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
+                        "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap",
                         documents.length > 0
-                        ? "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/30"
-                        : "opacity-30 cursor-not-allowed bg-slate-50 dark:bg-slate-800 text-slate-400"
+                        ? "bg-blue-600 text-white hover:bg-blue-700 hover:shadow-blue-500/25"
+                        : "opacity-100 bg-slate-100 dark:bg-slate-800 text-slate-500 cursor-not-allowed"
                     )}
                 >
-                    <Download size={12} />
-                    <span className="hidden sm:inline">导出</span>
+                    <Download size={14} strokeWidth={2.5} />
+                    <span>导出</span>
                 </button>
             </div>
 
@@ -538,12 +725,12 @@ export const DeepReadWorkbench: React.FC = () => {
 
                        {/* Text Content */}
                        <div className="text-center space-y-4 relative z-10">
-                           <h3 className="text-xl font-bold tracking-tight text-slate-700 dark:text-slate-200">
+                           <h3 className="text-xl font-bold font-['Microsoft_YaHei'] tracking-tight text-slate-700 dark:text-slate-200">
                                智能文档解析
                            </h3>
                            <div className="flex items-center justify-center gap-3">
                                <div className="h-px w-8 bg-gradient-to-r from-transparent to-slate-200 dark:to-slate-700" />
-                               <p className="text-xs text-slate-400 font-medium">
+                               <p className="text-xs text-slate-400 font-medium font-['Microsoft_YaHei']">
                                    请选择或上传文档以开始深度结构化解析
                                </p>
                                <div className="h-px w-8 bg-gradient-to-l from-transparent to-slate-200 dark:to-slate-700" />
@@ -558,22 +745,39 @@ export const DeepReadWorkbench: React.FC = () => {
                            transition: isProcessing ? 'none' : 'transform 0.3s ease-out'
                        }}
                    >
-                        {/* Document "Paper" Representation */}
-                        <div className="w-[595px] h-[842px] relative bg-white dark:bg-[#1a1b26] ring-1 ring-slate-200/50 dark:ring-white/10 shadow-2xl">
-                            {/* Mock Content - In a real app this would be the image/pdf page */}
-                            <div className="absolute inset-0 p-12 opacity-10 pointer-events-none select-none overflow-hidden">
-                               {Array.from({ length: 45 }).map((_, i) => (
-                                   <div key={i} className="h-2 bg-slate-800 dark:bg-slate-200 rounded w-full mb-6" style={{ width: `${Math.random() * 60 + 40}%`, opacity: Math.random() * 0.5 + 0.5 }}></div>
-                               ))}
-                            </div>
-                            
-                            <div className="absolute inset-0 flex items-center justify-center opacity-5 pointer-events-none">
+                        <div className="w-[595px] h-[842px] relative bg-white dark:bg-[#1a1b26] ring-1 ring-slate-200/50 dark:ring-white/10 shadow-2xl overflow-hidden">
+                            {activeExt === 'pdf' && previewUrl ? (
+                              <iframe
+                                title={`preview-${activeDoc.file_name}`}
+                                src={`${previewUrl}#page=${currentPdfPage}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                                className="absolute inset-0 w-full h-full border-0 pointer-events-none"
+                              />
+                            ) : ['txt', 'md'].includes(activeExt) ? (
+                              <div className="absolute inset-0 p-6 overflow-auto bg-slate-50/70 dark:bg-slate-900/60">
+                                <pre className="text-[10px] leading-5 whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-200">
+                                  {previewText || '文本预览加载中...'}
+                                </pre>
+                              </div>
+                            ) : (
+                              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 bg-slate-50/70 dark:bg-slate-900/50">
+                                <div className="w-14 h-14 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center mb-4 text-slate-500">
+                                  <FileText size={26} />
+                                </div>
+                                <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-2">{activeDoc.file_name}</h4>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 max-w-[320px] leading-relaxed">
+                                  {activeSourceFile
+                                    ? '当前格式暂不支持浏览器内预览（DOCX/XLSX），已保留抽取定位层与字段明细。'
+                                    : '未找到本地原始文件（可能为缓存结果），仅展示字段定位层与抽取结果。'}
+                                </p>
+                              </div>
+                            )}
+
+                            <div className="absolute inset-0 flex items-center justify-center opacity-[0.04] pointer-events-none">
                                 <span className="text-6xl font-bold uppercase tracking-widest text-slate-900 dark:text-slate-100 rotate-45 select-none">{activeDoc.file_name}</span>
                             </div>
 
                             {/* Bounding Boxes */}
-                            {fieldItems.map((item) => {
-                               if (item.bbox.length !== 5) return null;
+                            {overlayItems.map((item) => {
                                const box = toPercentBox(item.bbox);
                                const isActive = activeFieldKey === item.key;
                                return (
@@ -599,7 +803,10 @@ export const DeepReadWorkbench: React.FC = () => {
                                          "absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2.5 py-1.5 rounded-md shadow-xl whitespace-nowrap pointer-events-none transition-all transform",
                                          isActive ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-2 scale-95"
                                       )}>
-                                          <div className="font-bold">{item.label}</div>
+                                          <div className="font-bold">
+                                            {item.label}
+                                            {item.pageNumber ? ` (P${item.pageNumber})` : ''}
+                                          </div>
                                           <div className="text-slate-300 text-[9px]">{Math.floor(item.confidence * 100)}% Confidence</div>
                                           <div className="absolute bottom-[-4px] left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 rotate-45"></div>
                                       </div>
@@ -655,7 +862,7 @@ export const DeepReadWorkbench: React.FC = () => {
                     <div className={cn("p-1.5 rounded-lg", avgConfidence > 80 ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400" : "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400")}>
                         <Zap size={14} />
                     </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">平均置信度</span>
+                    <span className="text-[10px] font-bold font-['Microsoft_YaHei'] uppercase tracking-wider text-slate-500">平均置信度</span>
                 </div>
                 <div className="flex items-baseline gap-1 mt-1">
                     <span className={cn("text-3xl font-bold tracking-tight transition-colors", avgConfidence > 80 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
@@ -742,6 +949,12 @@ export const DeepReadWorkbench: React.FC = () => {
                  {fieldItems.map((item) => (
                     <div
                         key={item.key}
+                        onClick={() => {
+                          setActiveFieldKey(item.key);
+                          if (activeExt === 'pdf' && item.pageNumber) {
+                            setPdfPage(item.pageNumber);
+                          }
+                        }}
                         onMouseEnter={() => setActiveFieldKey(item.key)}
                         onMouseLeave={() => setActiveFieldKey(null)}
                         className={cn(
@@ -757,12 +970,17 @@ export const DeepReadWorkbench: React.FC = () => {
                         
                         <div className="flex justify-between items-start mb-1.5">
                             <span className={cn(
-                                "text-[10px] font-bold uppercase tracking-wider transition-colors",
+                                "text-[10px] font-bold font-['Microsoft_YaHei'] uppercase tracking-wider transition-colors",
                                 activeFieldKey === item.key ? "text-blue-600 dark:text-blue-400" : "text-slate-500 dark:text-slate-400"
                             )}>
                                 {item.label}
                             </span>
                             <div className="flex items-center gap-1.5">
+                                {activeExt === 'pdf' && item.pageNumber && (
+                                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded-full border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300">
+                                    P{item.pageNumber}
+                                  </span>
+                                )}
                                 <span className={cn(
                                     "text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-full border",
                                     item.confidence > 0.8 
