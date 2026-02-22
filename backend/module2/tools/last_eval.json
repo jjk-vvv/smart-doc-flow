@@ -1,0 +1,115 @@
+{
+  "generated_at": "2026-02-21 22:35:15",
+  "results": [
+    {
+      "file_name": "中华人民共和国2024年国民经济和社会发展统计公报.pdf",
+      "track": "FastTrack",
+      "size_bytes": 3558869,
+      "markdown_chars": 35506,
+      "ref_count": 130,
+      "elapsed_ms": 3954,
+      "table_count": 13,
+      "valid_table_count": 3,
+      "valid_table_ratio": 0.2308,
+      "table_cells": 67,
+      "avg_rows": 1.23,
+      "avg_cols": 4.08,
+      "one_row_tables": 10,
+      "one_col_tables": 0,
+      "sources": {
+        "pdf_fitz": 13
+      }
+    },
+    {
+      "file_name": "中华人民共和国2024年国民经济和社会发展统计公报.pdf",
+      "track": "VisualTrack",
+      "size_bytes": 3558869,
+      "markdown_chars": 35506,
+      "ref_count": 130,
+      "elapsed_ms": 4277,
+      "table_count": 13,
+      "valid_table_count": 3,
+      "valid_table_ratio": 0.2308,
+      "table_cells": 67,
+      "avg_rows": 1.23,
+      "avg_cols": 4.08,
+      "one_row_tables": 10,
+      "one_col_tables": 0,
+      "sources": {
+        "pdf_fitz": 13
+      }
+    },
+    {
+      "file_name": "cts15-selected_ancillary_compounds-r-final-rev.pdf",
+      "track": "FastTrack",
+      "size_bytes": 23863928,
+      "markdown_chars": 263071,
+      "ref_count": 428,
+      "elapsed_ms": 18525,
+      "table_count": 2,
+      "valid_table_count": 0,
+      "valid_table_ratio": 0.0,
+      "table_cells": 4,
+      "avg_rows": 2.0,
+      "avg_cols": 1.0,
+      "one_row_tables": 1,
+      "one_col_tables": 2,
+      "sources": {
+        "pdf_fitz": 2
+      }
+    },
+    {
+      "file_name": "cts15-selected_ancillary_compounds-r-final-rev.pdf",
+      "track": "VisualTrack",
+      "size_bytes": 23863928,
+      "markdown_chars": 263071,
+      "ref_count": 428,
+      "elapsed_ms": 49411,
+      "table_count": 2,
+      "valid_table_count": 0,
+      "valid_table_ratio": 0.0,
+      "table_cells": 4,
+      "avg_rows": 2.0,
+      "avg_cols": 1.0,
+      "one_row_tables": 1,
+      "one_col_tables": 2,
+      "sources": {
+        "pdf_fitz": 2
+      }
+    },
+    {
+      "file_name": "核燃料后处理工学.pdf",
+      "track": "FastTrack",
+      "size_bytes": 16022495,
+      "markdown_chars": 7343,
+      "ref_count": 120,
+      "elapsed_ms": 517,
+      "table_count": 0,
+      "valid_table_count": 0,
+      "valid_table_ratio": 0.0,
+      "table_cells": 0,
+      "avg_rows": 0.0,
+      "avg_cols": 0.0,
+      "one_row_tables": 0,
+      "one_col_tables": 0,
+      "sources": {}
+    },
+    {
+      "file_name": "核燃料后处理工学.pdf",
+      "track": "VisualTrack",
+      "size_bytes": 16022495,
+      "markdown_chars": 7343,
+      "ref_count": 120,
+      "elapsed_ms": 729,
+      "table_count": 0,
+      "valid_table_count": 0,
+      "valid_table_ratio": 0.0,
+      "table_cells": 0,
+      "avg_rows": 0.0,
+      "avg_cols": 0.0,
+      "one_row_tables": 0,
+      "one_col_tables": 0,
+      "sources": {}
+    }
+  ]
+}

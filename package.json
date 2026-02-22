@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "dev": "node scripts/dev-all.cjs",
+    "dev:frontend": "npm --prefix frontend run dev -- --port 3000 --host 0.0.0.0",
+    "dev:backend": "node backend/auth/server.cjs"
+  },
   "dependencies": {
     "nodemailer": "^8.0.1"
   }

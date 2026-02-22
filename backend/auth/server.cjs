@@ -13,7 +13,7 @@ const nodemailer = require('nodemailer');
 const bcrypt = require('bcryptjs');
 const { streamText } = require('ai');
 const { createGoogleGenerativeAI } = require('@ai-sdk/google');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 
@@ -65,10 +65,15 @@ const normalizeStr = (value) => String(value || '').trim();
 const publicUser = (user) => ({ name: user.name, email: user.email });
 
 const AI_CHAT_MODEL = normalizeStr(process.env.AI_CHAT_MODEL || 'gemini-2.5-pro');
-const AI_CHAT_TEMPERATURE_RAW = Number(process.env.AI_CHAT_TEMPERATURE || '0.2');
+const AI_CHAT_TEMPERATURE_RAW = Number(process.env.AI_CHAT_TEMPERATURE || '0.45');
 const AI_CHAT_TEMPERATURE = Number.isFinite(AI_CHAT_TEMPERATURE_RAW)
   ? Math.max(0, Math.min(1, AI_CHAT_TEMPERATURE_RAW))
   : 0.2;
+const AI_CHAT_MAX_OUTPUT_TOKENS_RAW = Number(process.env.AI_CHAT_MAX_OUTPUT_TOKENS || '1024');
+const AI_CHAT_MAX_OUTPUT_TOKENS = Number.isFinite(AI_CHAT_MAX_OUTPUT_TOKENS_RAW)
+  ? Math.max(128, Math.min(2048, Math.floor(AI_CHAT_MAX_OUTPUT_TOKENS_RAW)))
+  : 1024;
+const AI_CHAT_EXTRA_PROMPT = normalizeStr(process.env.AI_CHAT_EXTRA_PROMPT);
 
 const PLATFORM_FACTS = [
   '平台名称：智能文档融合与决策系统。',
@@ -81,18 +86,39 @@ const PLATFORM_FACTS = [
 ].join('\n');
 
 const CHAT_SYSTEM_PROMPT = [
-  '你是该平台的全局对话助手。',
-  '回答必须基于下方平台事实与最新平台数据，不得编造未实现能力。',
-  '若用户问题超出当前能力范围，要明确说明限制，并给出可执行替代方案。',
-  '输出要求：',
-  '1) 仅使用自然、简体中文。',
-  '2) 仅输出纯文本，不要输出 Markdown 标记（如 * # - ` >）。',
-  '3) 内容要有清晰因果和步骤，避免空话。',
-  '4) 若信息不足，先说明“根据当前平台数据暂无法确认”，再给下一步建议。',
+  '你是该平台的全局智能助手，由多领域专家协同工作。',
+  '',
+  '专家角色池：',
+  '1) 产品与流程专家：负责把用户目标映射到平台模块与执行路径。',
+  '2) 文档智能抽取专家：负责解析能力边界、字段抽取与置信度解释。',
+  '3) 知识图谱专家：负责实体关系、图谱解读与关联推理建议。',
+  '4) 风险与决策专家：负责风险识别、优先级排序与行动方案。',
+  '5) 系统排障专家：负责接口报错、链路异常、性能与配置排查。',
+  '6) 通用知识顾问：负责平台外问题的准确、易懂、可迁移回答。',
+  '',
+  '问题路由与协同规则：',
+  '1) 先识别问题类型，再选择1到3个最相关专家视角联合回答。',
+  '2) 平台相关问题：优先基于平台事实与最新平台数据，禁止编造未实现能力。',
+  '3) 通用问题：允许直接使用通识知识回答，不要强行转成平台操作说明。',
+  '4) 混合问题：先拆分子问题，按“用户当前目标优先”给出合并结论。',
+  '5) 信息不足时：明确不确定点，并给出下一步可执行建议。',
+  '',
+  '回答质量标准：',
+  '1) 结构遵循“结论 -> 依据 -> 建议”，确保前后逻辑闭环。',
+  '2) 句子完整自然，避免口号、重复、术语堆砌和跳步表达。',
+  '3) 涉及假设时要显式标明条件边界，避免绝对化断言。',
+  '4) 以可执行性为导向，尽量让用户下一步可直接操作。',
+  '',
+  '输出风格约束：',
+  '1) 仅使用简体中文。',
+  '2) 默认使用自然段；需要分点时仅使用阿拉伯数字序号。',
+  '3) 禁止输出 Markdown 符号（例如星号、井号、短横线、引用符号）。',
+  '4) 默认120到320字；复杂问题可更详细，用户要求简短时优先80字以内。',
+  AI_CHAT_EXTRA_PROMPT ? `[附加运行时指令]\n${AI_CHAT_EXTRA_PROMPT}` : '',
   '',
   '[平台事实]',
   PLATFORM_FACTS,
-].join('\n');
+].filter(Boolean).join('\n');
 
 const toSafeChatMessages = (rawMessages) => {
   if (!Array.isArray(rawMessages)) return [];
@@ -132,14 +158,37 @@ const sanitizeAssistantChunk = (text) => (
 const CHAT_FALLBACK_TEXT =
   '当前智能助手服务暂时不可用。你可以先使用“智能文档解析”模块上传文档并执行抽取，再在“全域知识图谱”查看结果；如需我继续提供操作步骤，请直接告诉我你的目标。';
 
-const initDataStreamResponse = (res) => {
+const initDataStreamResponse = (res, source = 'model') => {
   if (res.headersSent) return;
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.setHeader('X-Vercel-AI-Data-Stream', 'v1');
+  res.setHeader('X-AI-Reply-Source', source);
   res.flushHeaders();
+};
+
+const writeDataStreamKeepAlive = (res) => {
+  if (res.writableEnded) return;
+  // SSE comment frames keep proxy links active without affecting client text parsing.
+  res.write(':ka\n\n');
+};
+
+const startDataStreamKeepAlive = (res, intervalMs = 10000) => {
+  writeDataStreamKeepAlive(res);
+  const timer = setInterval(() => {
+    if (res.writableEnded) {
+      clearInterval(timer);
+      return;
+    }
+    writeDataStreamKeepAlive(res);
+  }, Math.max(3000, intervalMs));
+
+  return () => {
+    clearInterval(timer);
+  };
 };
 
 const writeDataStreamChunk = (res, text) => {
@@ -155,8 +204,8 @@ const endDataStream = (res) => {
   res.end();
 };
 
-const streamFallbackData = (res, text = CHAT_FALLBACK_TEXT) => {
-  initDataStreamResponse(res);
+const streamFallbackData = (res, text = CHAT_FALLBACK_TEXT, source = 'fallback') => {
+  initDataStreamResponse(res, source);
   for (const ch of Array.from(String(text))) {
     writeDataStreamChunk(res, ch);
   }
@@ -683,6 +732,15 @@ const google = createGoogleGenerativeAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
 
+app.get('/api/chat/health', (req, res) => {
+  res.json({
+    ok: true,
+    model: AI_CHAT_MODEL,
+    keyConfigured: Boolean(normalizeStr(process.env.GEMINI_API_KEY)),
+    now: new Date().toISOString(),
+  });
+});
+
 app.post('/api/chat', async (req, res) => {
   try {
     const messages = toSafeChatMessages(req.body?.messages);
@@ -691,8 +749,9 @@ app.post('/api/chat', async (req, res) => {
     if (messages.length === 0) {
       return res.status(400).json({ error: 'messages is required.' });
     }
+
     if (!process.env.GEMINI_API_KEY) {
-      streamFallbackData(res, '当前未配置模型密钥，已切换为平台助手兜底模式。请联系管理员配置 GEMINI_API_KEY。');
+      streamFallbackData(res, '当前未配置模型密钥，已切换为平台助手兜底模式。请联系管理员配置 GEMINI_API_KEY。', 'fallback_no_key');
       return;
     }
 
@@ -708,8 +767,10 @@ app.post('/api/chat', async (req, res) => {
     req.on('aborted', onClientAbort);
     res.on('close', onResponseClose);
 
-    // Send the response in Vercel AI legacy DataStream Protocol expected by @ai-sdk/react@3
-    initDataStreamResponse(res);
+    // Send response in Vercel AI legacy DataStream Protocol expected by @ai-sdk/react@3.
+    // Keepalive frames prevent dev proxy idle timeouts on long generations.
+    initDataStreamResponse(res, 'model');
+    const stopKeepAlive = startDataStreamKeepAlive(res);
 
     let result;
     let hasAssistantOutput = false;
@@ -724,6 +785,7 @@ app.post('/api/chat', async (req, res) => {
         messages,
         abortSignal: abortController.signal,
         system: systemPrompt,
+        maxTokens: AI_CHAT_MAX_OUTPUT_TOKENS,
       });
     } catch (invokeError) {
       console.error('AI Invoke Error:', invokeError);
@@ -732,6 +794,7 @@ app.post('/api/chat', async (req, res) => {
         writeDataStreamChunk(res, ch);
       }
       hasAssistantOutput = true;
+      stopKeepAlive();
       endDataStream(res);
       req.removeListener('aborted', onClientAbort);
       res.removeListener('close', onResponseClose);
@@ -743,7 +806,9 @@ app.post('/api/chat', async (req, res) => {
         const safeChunk = sanitizeAssistantChunk(chunk);
         if (safeChunk && !res.writableEnded) {
           hasAssistantOutput = true;
-          writeDataStreamChunk(res, safeChunk);
+          for (const ch of Array.from(safeChunk)) {
+            writeDataStreamChunk(res, ch);
+          }
         }
       }
     } catch (streamError) {
@@ -758,6 +823,7 @@ app.post('/api/chat', async (req, res) => {
     } finally {
       req.removeListener('aborted', onClientAbort);
       res.removeListener('close', onResponseClose);
+      stopKeepAlive();
       if (!abortController.signal.aborted && !hasAssistantOutput) {
         writeDataStreamChunk(res, '模型未返回有效文本，已切换为兜底回复。');
         for (const ch of Array.from(CHAT_FALLBACK_TEXT)) {
@@ -768,7 +834,7 @@ app.post('/api/chat', async (req, res) => {
     }
   } catch (error) {
     console.error('AI SDK Chat Error:', error);
-    streamFallbackData(res);
+    streamFallbackData(res, CHAT_FALLBACK_TEXT, 'fallback_error');
   }
 });
 

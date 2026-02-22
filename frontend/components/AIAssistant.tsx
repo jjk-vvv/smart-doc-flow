@@ -5,12 +5,35 @@ import { readExtractionDocuments, readExtractionUpdatedAt, type ExtractionDocume
 
 type ChatRole = 'user' | 'assistant';
 type ChatMessage = { id: string; role: ChatRole; content: string };
+type ResizeMode = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+type DialogPosition = { x: number; y: number };
 
 const MAX_HISTORY_MESSAGES = 20;
-const TYPEWRITER_INTERVAL_MS = 16;
+const CHAT_CONNECT_TIMEOUT_MS = 25000;
 const MAX_CONTEXT_DOCUMENTS = 3;
 const MAX_CONTEXT_FIELDS = 8;
 const MAX_CONTEXT_LENGTH = 6000;
+const MIN_DIALOG_WIDTH = 300;
+const MIN_DIALOG_HEIGHT = 420;
+const VIEWPORT_MARGIN = 16;
+const DEFAULT_DIALOG_SIZE = { width: 360, height: 560 };
+const DEFAULT_DIALOG_OFFSET = { left: 56, bottom: 192 };
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const getInitialDialogPosition = (size = DEFAULT_DIALOG_SIZE): DialogPosition => {
+  if (typeof window === 'undefined') {
+    return { x: DEFAULT_DIALOG_OFFSET.left, y: 120 };
+  }
+
+  const maxX = Math.max(VIEWPORT_MARGIN, window.innerWidth - VIEWPORT_MARGIN - size.width);
+  const maxY = Math.max(VIEWPORT_MARGIN, window.innerHeight - VIEWPORT_MARGIN - size.height);
+  const rawY = window.innerHeight - DEFAULT_DIALOG_OFFSET.bottom - size.height;
+  return {
+    x: clamp(DEFAULT_DIALOG_OFFSET.left, VIEWPORT_MARGIN, maxX),
+    y: clamp(rawY, VIEWPORT_MARGIN, maxY),
+  };
+};
 
 const normalizeAssistantText = (text: string): string => (
   text
@@ -78,135 +101,127 @@ const buildPlatformContext = (): string => {
   return lines.join('\n').slice(0, MAX_CONTEXT_LENGTH);
 };
 
-const buildOfflineReply = (question: string, platformContext: string): string => {
-  const q = String(question || '').toLowerCase();
-  const hasContext = platformContext.trim().length > 0;
-
-  if (/如何|怎么|上手|使用这个平台|怎么用/.test(q)) {
-    const contextHint = hasContext
-      ? '另外，你的平台里已经有最近一次抽取数据，我会优先按这些结果回答后续问题。'
-      : '当前还没有读到最近抽取结果，你可以先在智能文档解析模块上传文件并执行抽取。';
-    return [
-      '我先给你一个可直接执行的使用路径。',
-      '第一步，先登录账号进入系统主页。',
-      '第二步，打开智能文档解析模块，上传 PDF、DOCX、XLSX、TXT 或 MD 文件。',
-      '第三步，点击批量抽取，接口是 /extract/batch，每批最多 5 个文件。',
-      '第四步，抽取完成后去仪表盘看指标和风险统计。',
-      '第五步，去全域知识图谱查看最近一次抽取形成的结构化关系。',
-      '文档交互工作台目前核心交互能力仍在建设中，建议先以解析和图谱查看为主。',
-      contextHint,
-      '当前聊天模型服务连接不稳定，我已切换到本地兜底回答模式。',
-    ].join('\n');
-  }
-
-  if (/格式|支持.*文件|文件类型|上传什么/.test(q)) {
-    return [
-      '智能文档解析模块当前支持 5 种格式。',
-      '分别是 PDF、DOCX、XLSX、TXT、MD。',
-      '批量抽取接口为 /extract/batch，每次最多上传 5 个文件。',
-      '当前聊天模型服务连接不稳定，我已切换到本地兜底回答模式。',
-    ].join('\n');
-  }
-
-  if (/最近.*抽取|抽取.*文档|解析结果|有哪些文档|平台内容/.test(q)) {
-    if (hasContext) {
-      return [
-        '根据你当前平台里的最近抽取数据，我先给你汇总如下。',
-        platformContext,
-        '如果你要我继续分析某一份文档，请直接说文档名或字段名。',
-        '当前聊天模型服务连接不稳定，我已切换到本地兜底回答模式。',
-      ].join('\n');
-    }
-    return [
-      '我现在还没有读到最近抽取数据。',
-      '你可以先到智能文档解析模块上传文档并执行抽取，完成后我就能基于平台内容回答你。',
-      '当前聊天模型服务连接不稳定，我已切换到本地兜底回答模式。',
-    ].join('\n');
-  }
-
-  return [
-    '我已收到你的问题。',
-    '当前聊天模型服务连接不稳定，我先按平台已知能力给你兜底答复。',
-    '你可以继续问我三类问题：平台功能说明、操作步骤排障、基于最近抽取结果的解读。',
-    hasContext ? '我也可以结合你当前平台中的最近抽取数据继续回答。' : '如需基于平台内容回答，请先完成一次文档抽取。',
-  ].join('\n');
-};
+const buildOfflineReply = (_question: string, _platformContext: string): string => (
+  [
+    '当前模型服务连接不稳定，本轮未获取到有效结果。',
+    '请稍后重试；如果连续失败，请确认前端 3000 与后端 3001 服务均已启动。',
+  ].join('\n')
+);
 
 export const AIAssistant: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [dialogSize, setDialogSize] = useState(DEFAULT_DIALOG_SIZE);
+  const [dialogPosition, setDialogPosition] = useState<DialogPosition>(() => getInitialDialogPosition(DEFAULT_DIALOG_SIZE));
 
   const messagesRef = useRef<ChatMessage[]>([]);
   const messageSeqRef = useRef(0);
+  const activeRequestIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const typingQueuesRef = useRef<Record<string, string[]>>({});
-  const typingTimerRef = useRef<number | null>(null);
-  const activeRequestRef = useRef<AbortController | null>(null);
+  const pendingAssistantChunksRef = useRef<Record<string, string>>({});
+  const flushFrameRef = useRef<number | null>(null);
+  const dragMovedRef = useRef(false);
+  const dragStartYRef = useRef<number | null>(null);
+  const isDraggingRef = useRef(false);
+  const resizeFrameRef = useRef<number | null>(null);
+  const resizeLatestRef = useRef<{ x: number; y: number } | null>(null);
+  const resizeStartRef = useRef<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    left: number;
+    top: number;
+    mode: ResizeMode;
+  } | null>(null);
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    const handleViewportResize = () => {
+      setDialogSize((prevSize) => {
+        const maxWidth = Math.max(MIN_DIALOG_WIDTH, window.innerWidth - VIEWPORT_MARGIN * 2);
+        const maxHeight = Math.max(MIN_DIALOG_HEIGHT, window.innerHeight - VIEWPORT_MARGIN * 2);
+        const nextSize = {
+          width: clamp(prevSize.width, MIN_DIALOG_WIDTH, maxWidth),
+          height: clamp(prevSize.height, MIN_DIALOG_HEIGHT, maxHeight),
+        };
+
+        setDialogPosition((prevPos) => {
+          const maxX = Math.max(VIEWPORT_MARGIN, window.innerWidth - VIEWPORT_MARGIN - nextSize.width);
+          const maxY = Math.max(VIEWPORT_MARGIN, window.innerHeight - VIEWPORT_MARGIN - nextSize.height);
+          return {
+            x: clamp(prevPos.x, VIEWPORT_MARGIN, maxX),
+            y: clamp(prevPos.y, VIEWPORT_MARGIN, maxY),
+          };
+        });
+
+        return nextSize;
+      });
+    };
+
+    handleViewportResize();
+    window.addEventListener('resize', handleViewportResize);
+    return () => window.removeEventListener('resize', handleViewportResize);
+  }, []);
 
   const nextMessageId = () => {
     messageSeqRef.current += 1;
     return `${Date.now()}-${messageSeqRef.current}`;
   };
 
-  const stopTypingLoop = () => {
-    if (typingTimerRef.current !== null) {
-      window.clearInterval(typingTimerRef.current);
-      typingTimerRef.current = null;
-    }
-  };
+  const flushAssistantChunks = () => {
+    flushFrameRef.current = null;
+    const updates = pendingAssistantChunksRef.current;
+    pendingAssistantChunksRef.current = {};
+    const ids = Object.keys(updates);
+    if (ids.length === 0) return;
 
-  const drainTypingQueueStep = () => {
     setMessages((prev) => {
       let changed = false;
       const next = prev.map((msg) => {
         if (msg.role !== 'assistant') return msg;
-        const queue = typingQueuesRef.current[msg.id];
-        if (!queue || queue.length === 0) return msg;
-
-        const nextChar = queue.shift();
-        if (typeof nextChar !== 'string') return msg;
+        const delta = updates[msg.id];
+        if (!delta) return msg;
 
         changed = true;
-        return { ...msg, content: msg.content + nextChar };
+        return { ...msg, content: msg.content + delta };
       });
       return changed ? next : prev;
     });
-
-    const hasPending = Object.values(typingQueuesRef.current).some((queue) => queue.length > 0);
-    if (!hasPending) {
-      stopTypingLoop();
-    }
   };
 
-  const ensureTypingLoop = () => {
-    if (typingTimerRef.current !== null) return;
-    typingTimerRef.current = window.setInterval(drainTypingQueueStep, TYPEWRITER_INTERVAL_MS);
+  const scheduleFlushAssistantChunks = () => {
+    if (flushFrameRef.current !== null) return;
+    flushFrameRef.current = window.requestAnimationFrame(flushAssistantChunks);
   };
 
   const enqueueAssistantText = (messageId: string, text: string): boolean => {
     const cleaned = normalizeAssistantText(text);
     if (!cleaned) return false;
 
-    if (!typingQueuesRef.current[messageId]) {
-      typingQueuesRef.current[messageId] = [];
-    }
-    typingQueuesRef.current[messageId].push(...Array.from(cleaned));
-    ensureTypingLoop();
+    const current = pendingAssistantChunksRef.current[messageId] || '';
+    pendingAssistantChunksRef.current[messageId] = current + cleaned;
+    scheduleFlushAssistantChunks();
     return true;
   };
 
   useEffect(() => {
     return () => {
-      stopTypingLoop();
-      if (activeRequestRef.current) {
-        activeRequestRef.current.abort();
+      if (flushFrameRef.current !== null) {
+        window.cancelAnimationFrame(flushFrameRef.current);
+        flushFrameRef.current = null;
       }
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      pendingAssistantChunksRef.current = {};
+      activeRequestIdRef.current = null;
     };
   }, []);
 
@@ -214,30 +229,49 @@ export const AIAssistant: React.FC = () => {
     const baseId = nextMessageId();
     const userMsg: ChatMessage = { id: `${baseId}-user`, role: 'user', content: userContent };
     const aiMsgId = `${baseId}-assistant`;
+    const requestId = `${baseId}-request`;
     const assistantMsg: ChatMessage = { id: aiMsgId, role: 'assistant', content: '' };
     const requestMessages = normalizeOutgoingMessages([...messagesRef.current, userMsg]);
     const platformContext = buildPlatformContext();
     const offlineReply = buildOfflineReply(userContent, platformContext);
     let receivedAnyText = false;
+    const isActiveRequest = () => activeRequestIdRef.current === requestId;
+    const requestController = new AbortController();
+    let didConnectTimeout = false;
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setIsLoading(true);
-
-    if (activeRequestRef.current) {
-      activeRequestRef.current.abort();
-      activeRequestRef.current = null;
-    }
-
-    const controller = new AbortController();
-    activeRequestRef.current = controller;
+    activeRequestIdRef.current = requestId;
+    let connectTimeoutHandle: number | null = null;
 
     try {
+      connectTimeoutHandle = window.setTimeout(() => {
+        didConnectTimeout = true;
+        requestController.abort();
+      }, CHAT_CONNECT_TIMEOUT_MS);
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: requestMessages, platformContext }),
-        signal: controller.signal,
+        signal: requestController.signal,
+      }).catch((error) => {
+        if (didConnectTimeout || requestController.signal.aborted) {
+          if (isActiveRequest()) {
+            enqueueAssistantText(aiMsgId, offlineReply);
+          }
+          return null;
+        }
+        throw error;
       });
+
+      if (connectTimeoutHandle !== null) {
+        window.clearTimeout(connectTimeoutHandle);
+        connectTimeoutHandle = null;
+      }
+
+      if (!isActiveRequest()) return;
+      if (!res) return;
 
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
@@ -266,6 +300,7 @@ export const AIAssistant: React.FC = () => {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          if (!isActiveRequest()) break;
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
@@ -310,27 +345,26 @@ export const AIAssistant: React.FC = () => {
         enqueueAssistantText(aiMsgId, offlineReply);
       }
     } catch (err) {
-      const aborted =
-        (err instanceof DOMException && err.name === 'AbortError')
-        || String((err as Error)?.message || '').includes('ERR_ABORTED');
+      if (!isActiveRequest()) return;
+      const message = String((err as Error)?.message || '');
+      const shouldFallback =
+        /HTTP 500|Failed to fetch|NetworkError|ECONNREFUSED|socket hang up|proxy|aborted/i.test(message);
 
-      if (!aborted) {
-        const message = String((err as Error)?.message || '');
-        const shouldFallback =
-          /HTTP 500|Failed to fetch|NetworkError|ECONNREFUSED|socket hang up|proxy/i.test(message);
-
-        if (shouldFallback) {
-          enqueueAssistantText(aiMsgId, offlineReply);
-        } else {
-          console.warn('Chat request failed:', err);
-          enqueueAssistantText(aiMsgId, '请求失败，请稍后重试。');
-        }
+      if (shouldFallback) {
+        enqueueAssistantText(aiMsgId, offlineReply);
+      } else {
+        console.warn('Chat request failed:', err);
+        enqueueAssistantText(aiMsgId, '请求失败，请稍后重试。');
       }
     } finally {
-      if (activeRequestRef.current === controller) {
-        activeRequestRef.current = null;
+      if (connectTimeoutHandle !== null) {
+        window.clearTimeout(connectTimeoutHandle);
       }
-      setIsLoading(false);
+      flushAssistantChunks();
+      if (isActiveRequest()) {
+        activeRequestIdRef.current = null;
+        setIsLoading(false);
+      }
     }
   };
 
@@ -349,20 +383,170 @@ export const AIAssistant: React.FC = () => {
     }
   }, [messages, isOpen]);
 
+  const handleToggleClick = () => {
+    if (dragMovedRef.current || isDraggingRef.current) {
+      dragMovedRef.current = false;
+      return;
+    }
+    setIsOpen((prev) => !prev);
+  };
+
+  const startResize = (mode: ResizeMode, event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+
+    resizeStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      width: dialogSize.width,
+      height: dialogSize.height,
+      left: dialogPosition.x,
+      top: dialogPosition.y,
+      mode,
+    };
+
+    const applyResize = () => {
+      resizeFrameRef.current = null;
+      if (!resizeStartRef.current || !resizeLatestRef.current) return;
+      const {
+        x,
+        y,
+        width,
+        height,
+        left,
+        top,
+        mode: activeMode,
+      } = resizeStartRef.current;
+      const latest = resizeLatestRef.current;
+      const dx = latest.x - x;
+      const dy = latest.y - y;
+
+      let nextWidth = width;
+      let nextHeight = height;
+      let nextLeft = left;
+      let nextTop = top;
+
+      if (activeMode.includes('e')) {
+        const maxWidth = Math.max(MIN_DIALOG_WIDTH, Math.floor(window.innerWidth - VIEWPORT_MARGIN - left));
+        nextWidth = clamp(width + dx, MIN_DIALOG_WIDTH, maxWidth);
+      }
+      if (activeMode.includes('s')) {
+        const maxHeight = Math.max(MIN_DIALOG_HEIGHT, Math.floor(window.innerHeight - VIEWPORT_MARGIN - top));
+        nextHeight = clamp(height + dy, MIN_DIALOG_HEIGHT, maxHeight);
+      }
+      if (activeMode.includes('w')) {
+        const maxLeft = left + width - MIN_DIALOG_WIDTH;
+        nextLeft = clamp(left + dx, VIEWPORT_MARGIN, maxLeft);
+        nextWidth = width - (nextLeft - left);
+      }
+      if (activeMode.includes('n')) {
+        const maxTop = top + height - MIN_DIALOG_HEIGHT;
+        nextTop = clamp(top + dy, VIEWPORT_MARGIN, maxTop);
+        nextHeight = height - (nextTop - top);
+      }
+
+      setDialogSize({ width: nextWidth, height: nextHeight });
+      setDialogPosition({ x: nextLeft, y: nextTop });
+    };
+
+    const scheduleResize = () => {
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = window.requestAnimationFrame(applyResize);
+    };
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      if (!resizeStartRef.current) return;
+      resizeLatestRef.current = { x: moveEvent.clientX, y: moveEvent.clientY };
+      scheduleResize();
+    };
+
+    const handleUp = (upEvent: PointerEvent) => {
+      resizeStartRef.current = null;
+      resizeLatestRef.current = null;
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      if (target.hasPointerCapture(upEvent.pointerId)) {
+        target.releasePointerCapture(upEvent.pointerId);
+      }
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      window.removeEventListener('pointercancel', handleUp);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    window.addEventListener('pointercancel', handleUp);
+  };
+
   return (
-    <div className="fixed bottom-32 left-0 z-[100] flex flex-col items-start pointer-events-none font-['Microsoft_YaHei']">
+    <div className="fixed bottom-48 left-0 z-[100] pointer-events-none font-['Microsoft_YaHei']">
+
+      <motion.button
+        drag="y"
+        dragConstraints={{ top: -500, bottom: 0 }}
+        dragElastic={0}
+        dragMomentum={false}
+        onDragStart={() => {
+          isDraggingRef.current = true;
+          dragMovedRef.current = false;
+        }}
+        onDragEnd={(_, info) => {
+          if (Math.abs(info.offset.y) > 4) {
+            dragMovedRef.current = true;
+          }
+          isDraggingRef.current = false;
+        }}
+        onPointerDown={(event) => {
+          dragStartYRef.current = event.clientY;
+          dragMovedRef.current = false;
+        }}
+        onPointerMove={(event) => {
+          if (dragStartYRef.current === null) return;
+          if (Math.abs(event.clientY - dragStartYRef.current) > 4) {
+            dragMovedRef.current = true;
+          }
+        }}
+        onPointerUp={() => {
+          dragStartYRef.current = null;
+        }}
+        whileHover={{ scale: 1.05 }}
+        whileTap={{ scale: 0.95 }}
+        onClick={handleToggleClick}
+        className={`group relative flex h-[64px] w-[44px] items-center justify-center rounded-r-2xl border border-l-0 shadow-lg transition-colors duration-200 pointer-events-auto ${
+          isOpen
+            ? 'border-slate-700 bg-slate-800 text-white hover:bg-slate-700'
+            : 'border-blue-200/80 bg-gradient-to-br from-white via-white to-blue-50/80 text-blue-600 shadow-[0_12px_26px_rgba(59,130,246,0.18)] ring-1 ring-blue-100/70 hover:to-blue-100/70 dark:border-cyan-500/40 dark:bg-gradient-to-br dark:from-[#0b1528] dark:via-[#0c1a33] dark:to-[#0f2544] dark:text-cyan-100 dark:ring-1 dark:ring-cyan-400/20 dark:shadow-[0_10px_26px_rgba(6,182,212,0.18)] dark:hover:to-[#113158]'
+        }`}
+      >
+        {isOpen ? <X size={20} className="-ml-1 opacity-80" /> : <Bot size={22} className="-ml-1" />}
+      </motion.button>
+
       <AnimatePresence>
         {isOpen && (
           <motion.div
-            initial={{ opacity: 0, x: -20, scale: 0.95 }}
-            animate={{ opacity: 1, x: 0, scale: 1 }}
-            exit={{ opacity: 0, x: -20, scale: 0.95 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
-            className="mb-4 ml-2 flex h-[580px] w-[380px] max-h-[85vh] flex-col overflow-hidden rounded-2xl border border-slate-200/50 bg-white/80 shadow-2xl backdrop-blur-3xl pointer-events-auto origin-bottom-left dark:border-slate-800/50 dark:bg-slate-900/80"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25, ease: 'easeOut' }}
+            className="fixed pointer-events-auto origin-top-left"
+            style={{ left: dialogPosition.x, top: dialogPosition.y }}
           >
-            <div className="flex items-center justify-between border-b border-slate-200/50 bg-gradient-to-r from-blue-50/50 to-indigo-50/50 px-5 py-4 dark:border-slate-800/50 dark:from-blue-900/20 dark:to-indigo-900/20">
+            <div
+              className="relative flex min-h-[420px] min-w-[300px] max-h-[80vh] max-w-[calc(100vw-120px)] flex-col overflow-hidden rounded-2xl border border-slate-200/70 bg-gradient-to-b from-white via-white to-slate-50/80 shadow-[0_22px_60px_rgba(15,23,42,0.14),_inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-3xl ring-1 ring-slate-200/60 dark:border-slate-700/50 dark:bg-gradient-to-b dark:from-[#0b162a] dark:via-[#0c1b33] dark:to-[#0a1428] dark:ring-1 dark:ring-slate-700/40 dark:shadow-[0_22px_80px_rgba(1,6,18,0.7),_inset_0_1px_0_rgba(255,255,255,0.04)]"
+              style={{ width: dialogSize.width, height: dialogSize.height }}
+            >
+            <div className="pointer-events-none absolute inset-0 opacity-70">
+              <div className="absolute -left-16 -top-20 h-40 w-40 rounded-full bg-gradient-to-br from-blue-100/70 via-indigo-100/25 to-transparent blur-2xl dark:from-cyan-400/15 dark:via-blue-900/25" />
+              <div className="absolute -right-20 top-8 h-44 w-44 rounded-full bg-gradient-to-br from-slate-200/40 via-slate-100/20 to-transparent blur-2xl dark:from-sky-400/10 dark:via-slate-900/25" />
+              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-slate-200/70 to-transparent dark:via-slate-700/60" />
+            </div>
+            <div className="flex items-center justify-between border-b border-slate-200/70 bg-gradient-to-r from-slate-50/90 via-white to-blue-50/40 px-5 py-4 shadow-[inset_0_-1px_0_rgba(15,23,42,0.04)] dark:border-slate-700/50 dark:bg-gradient-to-r dark:from-[#0e1c36]/95 dark:via-[#0c1a33]/85 dark:to-[#0a1428]/90 dark:shadow-[inset_0_-1px_0_rgba(255,255,255,0.04)]">
               <div className="flex items-center gap-3">
-                <div className="rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 p-2 text-white shadow-inner">
+                <div className="rounded-xl border border-slate-200/70 bg-gradient-to-br from-white via-white to-blue-50/70 p-2 text-blue-600 shadow-[0_8px_18px_rgba(59,130,246,0.16)] dark:border-slate-700/40 dark:bg-gradient-to-br dark:from-[#0c213d] dark:via-[#0f2a4d] dark:to-[#14335f] dark:text-cyan-100 dark:shadow-[0_10px_24px_rgba(34,211,238,0.18)]">
                   <Sparkles size={18} />
                 </div>
                 <h3 className="flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-100">
@@ -377,10 +561,11 @@ export const AIAssistant: React.FC = () => {
               </button>
             </div>
 
-            <div className="custom-scrollbar flex-1 space-y-5 overflow-y-auto bg-slate-50/30 p-4 dark:bg-slate-950/30">
+            <div className="custom-scrollbar flex-1 space-y-5 overflow-y-auto bg-gradient-to-b from-white via-white to-slate-50/80 p-4 dark:bg-gradient-to-b dark:from-[#0a152a]/70 dark:via-[#0b1730]/70 dark:to-[#0c1f3a]/75">
               {messages.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center space-y-4 text-center opacity-80">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-blue-100 to-indigo-50 text-blue-500 dark:from-blue-900/40 dark:to-indigo-900/40">
+                  <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-200/70 bg-gradient-to-br from-white via-white to-blue-50/70 text-blue-600 shadow-[0_10px_22px_rgba(59,130,246,0.16)] dark:border-slate-700/40 dark:bg-gradient-to-br dark:from-[#0c203d] dark:via-[#102a4e] dark:to-[#14335f] dark:text-cyan-100 dark:shadow-[0_12px_28px_rgba(34,211,238,0.18)]">
+                    <div className="absolute inset-0 rounded-2xl border border-white/60 opacity-70 dark:border-cyan-200/15" />
                     <Bot size={32} />
                   </div>
                   <div>
@@ -394,22 +579,23 @@ export const AIAssistant: React.FC = () => {
                 messages.map((msg) => (
                   <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     {msg.role !== 'user' && (
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-400">
+                      <div className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200/70 bg-gradient-to-br from-white via-white to-blue-50/70 text-blue-600 dark:border-slate-700/40 dark:bg-gradient-to-br dark:from-[#0c203d] dark:via-[#102a4e] dark:to-[#14335f] dark:text-cyan-100">
+                        <div className="absolute inset-0 rounded-full border border-white/60 opacity-60 dark:border-cyan-200/15" />
                         <Bot size={16} />
                       </div>
                     )}
                     {msg.role !== 'user' && msg.content === '' && isLoading ? (
-                      <div className="flex max-w-[80%] items-center gap-1.5 rounded-2xl rounded-tl-sm border border-slate-200/50 bg-white px-4 py-3 shadow-sm dark:border-slate-700/50 dark:bg-slate-800">
-                        <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:-0.3s]" />
-                        <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:-0.15s]" />
-                        <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400" />
+                      <div className="flex max-w-[80%] items-center gap-1.5 rounded-2xl rounded-tl-sm border border-slate-200/60 bg-white px-4 py-3 shadow-sm dark:border-cyan-600/30 dark:bg-[#0f223f]/80">
+                        <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-200/90 [animation-delay:-0.3s]" />
+                        <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-200/90 [animation-delay:-0.15s]" />
+                        <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-200/90" />
                       </div>
                     ) : (
                       <div
-                        className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-[14px] leading-relaxed ${
+                        className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-[14px] leading-relaxed backdrop-blur ${
                           msg.role === 'user'
-                            ? 'rounded-tr-sm bg-blue-600 text-white shadow-sm'
-                            : 'rounded-tl-sm border border-slate-200/50 bg-white text-slate-700 shadow-sm dark:border-slate-700/50 dark:bg-slate-800 dark:text-slate-200'
+                            ? 'rounded-tr-sm bg-slate-900 text-white shadow-sm dark:bg-cyan-400/90 dark:text-slate-900'
+                            : 'rounded-tl-sm border border-slate-200/60 bg-white/95 text-slate-700 shadow-sm dark:border-cyan-600/30 dark:bg-[#0e223f]/75 dark:text-slate-200'
                         }`}
                       >
                         {msg.content}
@@ -421,16 +607,18 @@ export const AIAssistant: React.FC = () => {
               <div ref={messagesEndRef} className="h-1" />
             </div>
 
-            <div className="border-t border-slate-200/50 bg-white p-3 dark:border-slate-800/50 dark:bg-slate-900">
+            <div className="border-t border-slate-200/70 bg-gradient-to-b from-white via-slate-50/90 to-slate-100/70 p-3 dark:border-slate-700/40 dark:bg-gradient-to-b dark:from-[#0b162a] dark:via-[#0c1a32] dark:to-[#0b1a30]">
               <form
                 onSubmit={handleFormSubmit}
-                className="relative flex items-end overflow-hidden rounded-xl border border-slate-200 bg-slate-50 transition-shadow focus-within:ring-2 focus-within:ring-blue-500/50 dark:border-slate-800 dark:bg-slate-950"
+                className="relative flex items-end overflow-hidden rounded-xl border border-slate-200/70 bg-white/95 shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-shadow focus-within:ring-2 focus-within:ring-indigo-500/30 dark:border-slate-700/40 dark:bg-gradient-to-b dark:from-[#0d223f] dark:via-[#0f2745] dark:to-[#0e213e] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),_0_10px_30px_rgba(3,7,18,0.45)] dark:focus-within:ring-cyan-300/30"
               >
+                <div className="absolute inset-x-3 top-2 h-px bg-gradient-to-r from-transparent via-slate-200/70 to-transparent dark:via-cyan-400/20" />
+                <div className="pointer-events-none absolute inset-0 rounded-xl border border-white/50 opacity-60 dark:border-cyan-200/10" />
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   placeholder="输入消息，开始对话..."
-                  className="min-h-[50px] max-h-[120px] w-full resize-none bg-transparent py-3 pl-4 pr-12 text-sm placeholder:text-slate-400 focus:outline-none dark:placeholder:text-slate-500"
+                  className="min-h-[50px] max-h-[120px] w-full resize-none bg-transparent py-3 pl-4 pr-12 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none dark:text-slate-200 dark:placeholder:text-slate-400/70"
                   rows={1}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
@@ -444,32 +632,24 @@ export const AIAssistant: React.FC = () => {
                 <button
                   type="submit"
                   disabled={!input.trim() || isLoading}
-                  className="absolute bottom-2 right-2 rounded-lg bg-blue-600 p-2 text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600"
+                  className="absolute bottom-2 right-2 rounded-lg bg-slate-900 p-2 text-white shadow-sm transition-colors hover:bg-slate-800 disabled:opacity-50 disabled:hover:bg-slate-900 dark:bg-gradient-to-br dark:from-cyan-200 dark:via-cyan-300 dark:to-sky-200 dark:text-slate-900 dark:shadow-[0_8px_18px_rgba(34,211,238,0.2)] dark:hover:from-cyan-100 dark:hover:to-sky-100"
                 >
                   <Send size={15} className={input.trim() ? '-translate-y-0.5 translate-x-0.5 transition-transform' : ''} />
                 </button>
               </form>
             </div>
+            <div className="absolute -top-1.5 left-3 right-3 z-20 h-3 cursor-ns-resize" onPointerDown={(event) => startResize('n', event)} style={{ touchAction: 'none' }} />
+            <div className="absolute -bottom-1.5 left-3 right-3 z-20 h-3 cursor-ns-resize" onPointerDown={(event) => startResize('s', event)} style={{ touchAction: 'none' }} />
+            <div className="absolute -left-1.5 top-3 bottom-3 z-20 w-3 cursor-ew-resize" onPointerDown={(event) => startResize('w', event)} style={{ touchAction: 'none' }} />
+            <div className="absolute -right-1.5 top-3 bottom-3 z-20 w-3 cursor-ew-resize" onPointerDown={(event) => startResize('e', event)} style={{ touchAction: 'none' }} />
+            <div className="absolute -left-1.5 -top-1.5 z-30 h-4 w-4 cursor-nwse-resize" onPointerDown={(event) => startResize('nw', event)} style={{ touchAction: 'none' }} />
+            <div className="absolute -right-1.5 -top-1.5 z-30 h-4 w-4 cursor-nesw-resize" onPointerDown={(event) => startResize('ne', event)} style={{ touchAction: 'none' }} />
+            <div className="absolute -left-1.5 -bottom-1.5 z-30 h-4 w-4 cursor-nesw-resize" onPointerDown={(event) => startResize('sw', event)} style={{ touchAction: 'none' }} />
+            <div className="absolute -right-1.5 -bottom-1.5 z-30 h-4 w-4 cursor-nwse-resize" onPointerDown={(event) => startResize('se', event)} style={{ touchAction: 'none' }} />
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
-
-      <motion.button
-        drag="y"
-        dragConstraints={{ top: -500, bottom: 0 }}
-        dragElastic={0}
-        dragMomentum={false}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        onClick={() => setIsOpen(!isOpen)}
-        className={`group relative flex h-[64px] w-[44px] items-center justify-center rounded-r-2xl border border-l-0 shadow-lg transition-colors duration-200 pointer-events-auto ${
-          isOpen
-            ? 'border-slate-700 bg-slate-800 text-white hover:bg-slate-700'
-            : 'border-emerald-400/50 bg-emerald-500 text-white shadow-emerald-500/30 hover:bg-emerald-400 hover:shadow-emerald-500/50'
-        }`}
-      >
-        {isOpen ? <X size={20} className="-ml-1 opacity-80" /> : <Bot size={22} className="-ml-1" />}
-      </motion.button>
     </div>
   );
 };

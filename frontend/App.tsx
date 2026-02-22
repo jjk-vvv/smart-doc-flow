@@ -6,13 +6,22 @@ import { BrainCircuit } from 'lucide-react';
 
 type AuthUser = { name: string; email: string } | null;
 let meRequestPromise: Promise<AuthUser> | null = null;
+const ME_REQUEST_TIMEOUT_MS = 6000;
 
 const fetchCurrentUser = (): Promise<AuthUser> => {
   if (!meRequestPromise) {
-    meRequestPromise = fetch('/api/me')
+    const request = fetch('/api/me')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => (data?.user ? { name: String(data.user.name), email: String(data.user.email) } : null))
       .catch(() => null);
+
+    meRequestPromise = new Promise<AuthUser>((resolve) => {
+      const timer = window.setTimeout(() => resolve(null), ME_REQUEST_TIMEOUT_MS);
+      request
+        .then((result) => resolve(result))
+        .catch(() => resolve(null))
+        .finally(() => window.clearTimeout(timer));
+    });
   }
   return meRequestPromise;
 };

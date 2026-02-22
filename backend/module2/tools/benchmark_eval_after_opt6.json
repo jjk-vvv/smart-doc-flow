@@ -1,0 +1,197 @@
+{
+  "generated_at": "2026-02-22 15:00:05",
+  "track": "VisualTrack",
+  "results": [
+    {
+      "benchmark": "cts15",
+      "file_name": "cts15-selected_ancillary_compounds-r-final-rev.pdf",
+      "file_size_bytes": 23863928,
+      "total_pdf_pages": 1092,
+      "track": "VisualTrack",
+      "range": [
+        85,
+        120
+      ],
+      "elapsed_ms": 106907,
+      "markdown_chars": 345434,
+      "ref_count": 2222,
+      "ground_truth": {
+        "tables": 5,
+        "figures": 0
+      },
+      "predicted": {
+        "tables": 3,
+        "valid_tables": 3,
+        "figures": 0
+      },
+      "recall_like": {
+        "tables": 0.6,
+        "figures": 1.0
+      },
+      "pages": {
+        "table_pages": [
+          92,
+          93
+        ],
+        "figure_pages": []
+      },
+      "sources": {
+        "table_sources": {
+          "pdf_native": 3
+        },
+        "figure_sources": {}
+      }
+    },
+    {
+      "benchmark": "nuclear",
+      "file_name": "核燃料后处理工学.pdf",
+      "file_size_bytes": 16022495,
+      "total_pdf_pages": 516,
+      "track": "VisualTrack",
+      "range": [
+        40,
+        72
+      ],
+      "elapsed_ms": 656701,
+      "markdown_chars": 229904,
+      "ref_count": 5351,
+      "ground_truth": {
+        "tables": 20,
+        "figures": 19
+      },
+      "predicted": {
+        "tables": 28,
+        "valid_tables": 28,
+        "figures": 22
+      },
+      "recall_like": {
+        "tables": 1.0,
+        "figures": 1.0
+      },
+      "pages": {
+        "table_pages": [
+          40,
+          41,
+          42,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          51,
+          52,
+          53,
+          55,
+          57,
+          59,
+          60,
+          61,
+          63,
+          64,
+          65,
+          66,
+          68,
+          69,
+          71,
+          72
+        ],
+        "figure_pages": [
+          41,
+          42,
+          43,
+          45,
+          50,
+          52,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          65,
+          69,
+          72
+        ]
+      },
+      "sources": {
+        "table_sources": {
+          "pdf_ocr_layout": 22,
+          "pdf_gemini_vision": 6
+        },
+        "figure_sources": {
+          "pdf_ocr_caption": 19,
+          "pdf_gemini_vision": 3
+        }
+      }
+    },
+    {
+      "benchmark": "national_bulletin",
+      "file_name": "中华人民共和国2024年国民经济和社会发展统计公报.pdf",
+      "file_size_bytes": 3558869,
+      "total_pdf_pages": 38,
+      "track": "VisualTrack",
+      "range": [
+        1,
+        38
+      ],
+      "elapsed_ms": 290362,
+      "markdown_chars": 94787,
+      "ref_count": 1075,
+      "ground_truth": {
+        "tables": 17,
+        "figures": 24
+      },
+      "predicted": {
+        "tables": 17,
+        "valid_tables": 17,
+        "figures": 14
+      },
+      "recall_like": {
+        "tables": 1.0,
+        "figures": 0.5833
+      },
+      "pages": {
+        "table_pages": [
+          3,
+          5,
+          8,
+          11,
+          15,
+          16,
+          18,
+          19,
+          21,
+          22,
+          25
+        ],
+        "figure_pages": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          10,
+          11,
+          14,
+          15,
+          22,
+          24,
+          25
+        ]
+      },
+      "sources": {
+        "table_sources": {
+          "pdf_gemini_vision_native": 14,
+          "pdf_fitz": 3
+        },
+        "figure_sources": {
+          "pdf_gemini_vision_native": 14
+        }
+      }
+    }
+  ]
+}
