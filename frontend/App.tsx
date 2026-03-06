@@ -7,8 +7,19 @@ import { BrainCircuit } from 'lucide-react';
 type AuthUser = { name: string; email: string } | null;
 let meRequestPromise: Promise<AuthUser> | null = null;
 const ME_REQUEST_TIMEOUT_MS = 6000;
+const AUTH_PROBE_ENV = import.meta.env.VITE_ENABLE_AUTH_PROBE;
+
+const shouldProbeAuth = () => {
+  if (AUTH_PROBE_ENV === '1') return true;
+  if (AUTH_PROBE_ENV === '0') return false;
+  const host = window.location.hostname.toLowerCase();
+  return !(host === '127.0.0.1' || host === 'localhost');
+};
 
 const fetchCurrentUser = (): Promise<AuthUser> => {
+  if (!shouldProbeAuth()) {
+    return Promise.resolve(null);
+  }
   if (!meRequestPromise) {
     const request = fetch('/api/me')
       .then((res) => (res.ok ? res.json() : null))
@@ -52,6 +63,8 @@ const App: React.FC = () => {
   const [user, setUser] = useState<AuthUser>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
 
+  const isFullPage = activeTab === 'guide';
+
   const handleLoginSuccess = (loggedInUser: { name: string; email: string }) => {
     setUser(loggedInUser);
     setShowLoginModal(false);
@@ -78,13 +91,6 @@ const App: React.FC = () => {
       active = false;
     };
   }, []);
-
-  // Automatically collapse sidebar when entering User Guide
-  useEffect(() => {
-    if (activeTab === 'guide') {
-      setIsSidebarCollapsed(true);
-    }
-  }, [activeTab]);
 
   const renderContent = () => {
     switch (activeTab) {
@@ -124,20 +130,26 @@ const App: React.FC = () => {
         {/* Ambient Background Glows */}
         <div className="fixed top-0 left-0 w-[500px] h-[500px] bg-primary/5 rounded-full blur-[120px] -translate-x-1/2 -translate-y-1/2 pointer-events-none z-0"></div>
 
-        <Sidebar
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          isDark={isDark}
-          toggleTheme={() => setIsDark(!isDark)}
-          isCollapsed={isSidebarCollapsed}
-          toggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-          user={user}
-          setUser={setUser}
-          showLoginModal={showLoginModal}
-          setShowLoginModal={setShowLoginModal}
-        />
+        {!isFullPage && (
+          <Sidebar
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            isDark={isDark}
+            toggleTheme={() => setIsDark(!isDark)}
+            isCollapsed={isSidebarCollapsed}
+            toggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            user={user}
+            setUser={setUser}
+            showLoginModal={showLoginModal}
+            setShowLoginModal={setShowLoginModal}
+          />
+        )}
 
-        <main className={`flex-1 transition-all duration-300 relative z-10 p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`}>
+        <main className={`flex-1 transition-all duration-300 relative z-10 ${
+          isFullPage 
+            ? 'w-full p-0' 
+            : `p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`
+        }`}>
           <Suspense fallback={loadingFallback}>{renderContent()}</Suspense>
         </main>
       </div>

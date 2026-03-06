@@ -1,24 +1,13 @@
-declare module '*.png' {
-  const value: string;
-  export default value;
+declare module "luckysheet/dist/plugins/js/plugin.js";
+declare module "luckysheet/dist/luckysheet.umd.js";
+
+declare module "luckyexcel" {
+  const LuckyExcel: {
+    transformExcelToLucky: (
+      file: File,
+      callback: (exportJson: { sheets?: unknown[]; info?: Record<string, unknown> }) => void
+    ) => void;
+  };
+  export default LuckyExcel;
 }
 
-declare module '*.jpg' {
-  const value: string;
-  export default value;
-}
-
-declare module '*.jpeg' {
-  const value: string;
-  export default value;
-}
-
-declare module '*.svg' {
-  const value: string;
-  export default value;
-}
-
-declare module '*.gif' {
-  const value: string;
-  export default value;
-}

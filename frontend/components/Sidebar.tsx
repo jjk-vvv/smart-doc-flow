@@ -242,17 +242,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   isParentActive && "opacity-100"
                 )}></div>
 
-                <Icon size={20} className={cn(
-                  "relative z-10 transition-colors duration-300 shrink-0",
-                  isParentActive ? 'text-black dark:text-white' : 'group-hover/nav:text-foreground'
-                )} />
+                <Icon 
+                  size={20} 
+                  strokeWidth={isParentActive ? 2.5 : 2}
+                  className={cn(
+                    "relative z-10 transition-colors duration-300 shrink-0",
+                    isParentActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 group-hover/nav:text-slate-900 dark:group-hover/nav:text-slate-200'
+                  )} 
+                />
 
                 {/* Label — hidden when collapsed */}
                 <div className={cn(
                   "text-left relative z-10 transition-all duration-300 flex items-center justify-between",
                   isCollapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100 flex-1"
                 )}>
-                  <div className={cn("text-sm tracking-tight transition-colors whitespace-nowrap font-['Microsoft_YaHei']", isParentActive ? "font-bold text-black dark:text-white" : "font-medium text-black dark:text-white")}>
+                  <div className={cn("text-sm tracking-tight transition-colors whitespace-nowrap font-['Microsoft_YaHei']", isParentActive ? "font-bold text-blue-900 dark:text-blue-100" : "font-medium text-slate-600 dark:text-slate-400 group-hover/nav:text-slate-900 dark:group-hover/nav:text-slate-200")}>
                     {item.label}
                   </div>
                   {hasSubItems && (
@@ -264,7 +268,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
 
                 {isParentActive && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-1 bg-black dark:bg-white rounded-r-full" />
+                  <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-1 bg-blue-600 dark:bg-blue-400 rounded-r-full shadow-[0_0_12px_rgba(37,99,235,0.3)] dark:shadow-[0_0_12px_rgba(96,165,250,0.3)]" />
                 )}
               </button>
 
@@ -287,18 +291,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             onClick={(e) => {
                               e.stopPropagation(); 
                               setActiveTab(sub.id);
+                              // Auto-collapse sidebar when clicking these specific modules
+                              if (['deepread_interaction', 'deepread_extraction'].includes(sub.id)) {
+                                toggleCollapse();
+                              }
                             }}
                             className={cn(
                               "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm transition-all font-['Microsoft_YaHei'] border relative overflow-hidden group/sub",
                               isSubActive
-                                ? "bg-gradient-to-r from-blue-50/50 to-transparent dark:from-blue-500/10 dark:to-transparent text-black dark:text-blue-400 border-transparent font-bold"
+                                ? "bg-gradient-to-r from-blue-100/50 to-transparent dark:from-blue-500/20 dark:to-transparent text-blue-700 dark:text-blue-300 border-transparent font-bold"
                                 : "text-slate-500 dark:text-slate-400 border-transparent hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 font-medium"
                             )}
                           >
                             {/* Sub-item indicator/icon if needed, or just text */}
                              <div className={cn(
-                                "w-1.5 h-1.5 rounded-full transition-colors",
-                                isSubActive ? "bg-blue-600 dark:bg-blue-400" : "bg-slate-300 dark:bg-slate-600 group-hover/sub:bg-slate-400"
+                                "w-1.5 h-1.5 rounded-full transition-all duration-300",
+                                isSubActive ? "bg-blue-600 dark:bg-blue-400 shadow-[0_0_8px_rgba(37,99,235,0.4)] scale-125" : "bg-slate-300 dark:bg-slate-600 group-hover/sub:bg-blue-400/50"
                              )} />
                             <span className="truncate">{sub.label}</span>
                           </button>

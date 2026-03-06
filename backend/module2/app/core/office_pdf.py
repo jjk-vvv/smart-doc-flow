@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+
+WORD_EXTENSIONS = {".doc", ".docx"}
+
+
+def is_word_file(file_name: str) -> bool:
+    return Path(file_name or "").suffix.lower() in WORD_EXTENSIONS
+
+
+def convert_word_bytes_to_pdf(
+    *,
+    file_name: str,
+    file_bytes: bytes,
+    timeout_sec: float = 90.0,
+) -> Tuple[bytes, Dict[str, Any]]:
+    """
+    Convert .doc/.docx bytes to PDF bytes.
+
+    Strategy:
+    1) LibreOffice (if available)
+    2) Microsoft Word COM automation (Windows)
+    """
+    if not file_bytes:
+        raise ValueError("empty office payload")
+    ext = Path(file_name or "").suffix.lower()
+    if ext not in WORD_EXTENSIONS:
+        raise ValueError(f"unsupported office extension: {ext or 'unknown'}")
+
+    timeout = max(20.0, float(timeout_sec))
+    start = time.perf_counter()
+    errors = []
+
+    with tempfile.TemporaryDirectory(prefix="module2_office_pdf_") as tmp:
+        tmp_dir = Path(tmp)
+        input_path = tmp_dir / f"input{ext}"
+        output_path = tmp_dir / "input.pdf"
+        input_path.write_bytes(file_bytes)
+
+        soffice_path = _resolve_soffice_path()
+        if soffice_path:
+            try:
+                _convert_with_soffice(
+                    soffice=soffice_path,
+                    input_path=input_path,
+                    out_dir=tmp_dir,
+                    timeout_sec=timeout,
+                )
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    pdf_bytes = output_path.read_bytes()
+                    return pdf_bytes, {
+                        "converter": "libreoffice",
+                        "elapsed_ms": int((time.perf_counter() - start) * 1000),
+                        "input_ext": ext,
+                    }
+            except Exception as exc:  # pragma: no cover - environment dependent
+                errors.append(f"libreoffice:{type(exc).__name__}:{exc}")
+
+        try:
+            _convert_with_word_com(input_path=input_path, output_path=output_path)
+            if output_path.exists() and output_path.stat().st_size > 0:
+                pdf_bytes = output_path.read_bytes()
+                return pdf_bytes, {
+                    "converter": "word_com",
+                    "elapsed_ms": int((time.perf_counter() - start) * 1000),
+                    "input_ext": ext,
+                }
+            errors.append("word_com:empty_pdf_output")
+        except Exception as exc:  # pragma: no cover - environment dependent
+            errors.append(f"word_com:{type(exc).__name__}:{exc}")
+
+    details = " | ".join(errors) if errors else "no converter available"
+    raise RuntimeError(f"office_to_pdf_failed: {details}")
+
+
+def _resolve_soffice_path() -> str:
+    env_path = (os.getenv("MODULE2_SOFFICE_PATH", "") or "").strip()
+    candidates = [
+        env_path,
+        "soffice",
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    ]
+    for item in candidates:
+        if not item:
+            continue
+        p = Path(item)
+        if p.exists():
+            return str(p)
+        # If item is command name, allow PATH resolution by subprocess.
+        if len(item) < 32 and "\\" not in item and "/" not in item:
+            return item
+    return ""
+
+
+def _convert_with_soffice(
+    *,
+    soffice: str,
+    input_path: Path,
+    out_dir: Path,
+    timeout_sec: float,
+) -> None:
+    cmd = [
+        soffice,
+        "--headless",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        str(out_dir),
+        str(input_path),
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=max(20.0, float(timeout_sec)),
+        check=False,
+    )
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        raise RuntimeError(stderr or stdout or f"exit_code={proc.returncode}")
+
+
+def _convert_with_word_com(*, input_path: Path, output_path: Path) -> None:
+    import pythoncom  # type: ignore
+    import win32com.client  # type: ignore
+
+    pythoncom.CoInitialize()
+    word = None
+    doc = None
+    try:
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = 0
+        doc = word.Documents.Open(str(input_path), ReadOnly=True, AddToRecentFiles=False)
+        # 17 = wdFormatPDF
+        doc.SaveAs(str(output_path), FileFormat=17)
+    finally:
+        try:
+            if doc is not None:
+                doc.Close(False)
+        except Exception:
+            pass
+        try:
+            if word is not None:
+                word.Quit()
+        except Exception:
+            pass
+        pythoncom.CoUninitialize()
+

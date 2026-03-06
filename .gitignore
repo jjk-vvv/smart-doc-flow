@@ -50,6 +50,11 @@ cts15-selected_ancillary_compounds-r-final-rev.pdf
 
 # Module2 local cache artifacts
 backend/module2/.cache/
+backend/module2/tools/generated_tests/
+.npm-local-cache/
+logs/
+frontend/build_log*.txt
+backend/module2/backend/
 
 # Exclude specific documents
 数据库操作步骤优化方案.md

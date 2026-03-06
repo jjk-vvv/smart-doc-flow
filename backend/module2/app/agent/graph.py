@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -42,6 +43,7 @@ class AgentState(TypedDict):
     schema: Dict[str, Any]
     results: Dict[str, Dict[str, Any]]
     errors: List[str]
+    soft_warnings: List[str]
     retries: int
     max_retries: int
 
@@ -49,7 +51,10 @@ class AgentState(TypedDict):
 class ExtractionGraph:
     def __init__(self, llm: Optional[ChatGoogleGenerativeAI] = None) -> None:
         temperature = float(os.getenv("MODULE2_LLM_TEMPERATURE", "0"))
-        primary_model = os.getenv("MODULE2_LLM_MODEL", "gemini-2.0-flash")
+        primary_model = os.getenv(
+            "MODULE2_LLM_MODEL",
+            os.getenv("MODULE2_GEMINI_MODEL", "gemini-3-flash-preview"),
+        )
         fallback_models = [
             m.strip()
             for m in os.getenv(
@@ -60,9 +65,24 @@ class ExtractionGraph:
         ]
         self._model_candidates = [primary_model] + [m for m in fallback_models if m != primary_model]
         self._temperature = temperature
-
-        self.llm = llm or ChatGoogleGenerativeAI(model=primary_model, temperature=temperature)
-        self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
+        self._api_key = ((os.getenv("GEMINI_API_KEY", "") or "").strip() or (os.getenv("GOOGLE_API_KEY", "") or "").strip())
+        self._llm_disabled_reason: Optional[str] = None
+        if llm is not None:
+            self.llm = llm
+            self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
+        else:
+            has_key = bool(self._api_key)
+            if has_key:
+                self.llm = ChatGoogleGenerativeAI(
+                    model=primary_model,
+                    temperature=temperature,
+                    google_api_key=self._api_key,
+                )
+                self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
+            else:
+                self.llm = None
+                self.structured_llm = None
+                self._llm_disabled_reason = "missing_google_api_key"
         self.graph = self._build_graph()
 
     async def run(self, state: AgentState) -> AgentState:
@@ -227,12 +247,23 @@ class ExtractionGraph:
             "Return strictly as JSON using: {\"fields\": {field_name: {\"value\": ..., \"ref_id\": ...}}}."
         )
 
-        payload = await self._invoke_with_model_fallback(
-            [
-                {"role": "system", "content": TABLE_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ]
-        )
+        table_timeout_sec = max(5.0, float(os.getenv("MODULE2_TABLE_EXTRACT_TIMEOUT_SEC", "45")))
+        try:
+            payload = await asyncio.wait_for(
+                self._invoke_with_model_fallback(
+                    [
+                        {"role": "system", "content": TABLE_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                ),
+                timeout=table_timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            self._push_soft_warning(state, f"table_extract_timeout: exceeded {table_timeout_sec:.1f}s")
+            return state
+        except Exception as exc:
+            self._push_soft_warning(state, f"table_extract_error: {type(exc).__name__}: {exc}")
+            return state
 
         max_field_chars = max(80, int(os.getenv("MODULE2_MAX_FIELD_CHARS", "300")))
         table_ref_lookup = self._table_ref_lookup(tables)
@@ -330,12 +361,23 @@ class ExtractionGraph:
             "Do not fabricate values or ref_id. If missing, set value/ref_id to null."
         )
 
-        payload = await self._invoke_with_model_fallback(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ]
-        )
+        field_timeout_sec = max(8.0, float(os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "75")))
+        try:
+            payload = await asyncio.wait_for(
+                self._invoke_with_model_fallback(
+                    [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                ),
+                timeout=field_timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            self._push_soft_warning(state, f"field_extract_timeout: exceeded {field_timeout_sec:.1f}s")
+            return state
+        except Exception as exc:
+            self._push_soft_warning(state, f"field_extract_error: {type(exc).__name__}: {exc}")
+            return state
 
         max_field_chars = max(80, int(os.getenv("MODULE2_MAX_FIELD_CHARS", "300")))
         for field_name in pending_fields.keys():
@@ -789,6 +831,9 @@ class ExtractionGraph:
         return lookup
 
     async def _invoke_with_model_fallback(self, messages: List[Dict[str, str]]) -> LLMExtractionPayload:
+        if self.structured_llm is None:
+            reason = self._llm_disabled_reason or "llm_unavailable"
+            raise RuntimeError(f"llm_disabled:{reason}")
         try:
             return await self.structured_llm.ainvoke(messages)
         except Exception as exc:
@@ -797,7 +842,11 @@ class ExtractionGraph:
             last_exc: Exception = exc
 
         for model_name in self._model_candidates[1:]:
-            self.llm = ChatGoogleGenerativeAI(model=model_name, temperature=self._temperature)
+            self.llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                temperature=self._temperature,
+                google_api_key=self._api_key,
+            )
             self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
             try:
                 return await self.structured_llm.ainvoke(messages)
@@ -813,6 +862,16 @@ class ExtractionGraph:
     def _is_model_not_found_error(exc: Exception) -> bool:
         text = str(exc).lower()
         return "not_found" in text or "is not found" in text or "404" in text
+
+    @staticmethod
+    def _push_soft_warning(state: AgentState, message: str) -> None:
+        msg = str(message or "").strip()
+        if not msg:
+            return
+        warnings = list(state.get("soft_warnings", []))
+        if msg not in warnings:
+            warnings.append(msg)
+        state["soft_warnings"] = warnings
 
     @staticmethod
     def _schema_keywords(target_fields: Dict[str, Any]) -> List[str]:
