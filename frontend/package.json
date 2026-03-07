@@ -27,6 +27,7 @@
     "lucide-react": "0.292.0",
     "luckyexcel": "^1.0.1",
     "luckysheet": "^2.1.13",
+    "pdfjs-dist": "^4.10.38",
     "postprocessing": "^6.38.3",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

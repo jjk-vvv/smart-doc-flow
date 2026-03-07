@@ -128,7 +128,7 @@ export const UserGuide: React.FC = () => {
 
       {/* --- HERO SECTION --- */}
       <section className="relative w-full h-[100vh] min-h-[700px] overflow-hidden bg-slate-900">
-        
+
         {/* Background Slider */}
         <AnimatePresence mode="wait">
           <motion.div
@@ -139,7 +139,7 @@ export const UserGuide: React.FC = () => {
             transition={{ duration: 1.5, ease: "easeInOut" }}
             className="absolute inset-0 z-0"
           >
-            <div 
+            <div
               className="absolute inset-0 bg-cover bg-center transform scale-105"
               style={{ backgroundImage: `url(${slides[currentSlide].image})` }}
             />
@@ -150,9 +150,9 @@ export const UserGuide: React.FC = () => {
         {/* Floating White Component (Left Content Card) */}
         <div className="absolute top-0 left-0 h-full w-full pointer-events-none z-10">
           <div className="h-full relative w-full">
-            
-            {/* The White Card Shape */}
-            <div className="absolute top-[80px] left-6 md:left-12 lg:left-[140px] w-[280px] md:w-[320px] lg:w-[360px] h-[320px] md:h-[360px] lg:h-[400px] bg-white rounded-br-[60px] pt-10 px-6 lg:px-10 shadow-[0_20px_50px_rgba(0,0,0,0.05)] pointer-events-auto flex flex-col justify-center">
+
+            {/* The White Card Shape - Precisely Matching Bytedance Proportions */}
+            <div className="absolute top-[80px] left-6 lg:left-10 w-[260px] md:w-[300px] lg:w-[360px] h-[300px] md:h-[350px] lg:h-[400px] bg-white rounded-br-[80px] md:rounded-br-[100px] lg:rounded-br-[120px] pt-10 md:pt-14 lg:pt-[80px] px-8 lg:px-[60px] shadow-sm pointer-events-auto flex flex-col justify-start">
               <AnimatePresence mode="wait">
                 <motion.div
                   key={currentSlide}
@@ -161,14 +161,14 @@ export const UserGuide: React.FC = () => {
                   exit={{ opacity: 0, x: 20 }}
                   transition={{ duration: 0.5, delay: 0.2 }}
                 >
-                  <p className="text-sm text-slate-500 font-medium mb-3 tracking-wider">
+                  <p className="text-[15px] text-slate-500 font-medium mb-6 tracking-wide">
                     {slides[currentSlide].tag}
                   </p>
-                  
-                  <h1 className="text-3xl lg:text-[2.75rem] font-medium text-slate-900 leading-[1.2] tracking-tight mb-4 whitespace-pre-line">
+
+                  <h1 className="text-4xl lg:text-[44px] font-medium text-slate-900 leading-[1.3] tracking-tight mb-2 whitespace-pre-line">
                     {slides[currentSlide].title}
                   </h1>
-                  
+
                   {/* Optional: Removed subtitle to match cleaner reference, or keep it smaller if needed */}
                   {/* <p className="text-lg text-slate-500 font-medium max-w-sm leading-relaxed">
                     {slides[currentSlide].subtitle}
@@ -193,8 +193,8 @@ export const UserGuide: React.FC = () => {
               onClick={() => setCurrentSlide(idx)}
               className={cn(
                 "h-2 rounded-full transition-all duration-500 backdrop-blur-sm",
-                currentSlide === idx 
-                  ? "w-12 bg-white" 
+                currentSlide === idx
+                  ? "w-12 bg-white"
                   : "w-2 bg-white/40 hover:bg-white/60"
               )}
               aria-label={`Go to slide ${idx + 1}`}

@@ -22,6 +22,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           secure: false,
         },
+        '/module4': {
+          target: 'http://localhost:8100',
+          changeOrigin: true,
+          secure: false,
+        },
       },
     },
     preview: {

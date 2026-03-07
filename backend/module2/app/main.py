@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.agent.graph import AgentState, ExtractionGraph
-from app.core.office_pdf import convert_word_bytes_to_pdf, is_word_file
+from app.core.office_pdf import convert_doc_bytes_to_docx, convert_word_bytes_to_pdf, is_word_file
 from app.core.parser import parse_document_in_subprocess
 from app.db.storage import ExtractionStorage
 from app.schemas import (
@@ -845,7 +845,14 @@ def _office_convert_enabled() -> bool:
 
 
 def _word_pdf_required() -> bool:
-    return (os.getenv("MODULE2_WORD_REQUIRE_PDF_PARSE", "true") or "true").lower() in {"1", "true", "yes"}
+    raw = (
+        os.getenv(
+            "MODULE2_WORD_PARSE_VIA_PDF",
+            os.getenv("MODULE2_WORD_REQUIRE_PDF_PARSE", "false"),
+        )
+        or "false"
+    ).lower()
+    return raw in {"1", "true", "yes"}
 
 
 def _visual_strict_mode() -> bool:
@@ -868,6 +875,24 @@ def _office_preview_cleanup_jobs_locked() -> None:
     ordered = sorted(office_preview_jobs.values(), key=lambda x: x.updated_at)
     for item in ordered[: max(0, len(office_preview_jobs) - cap)]:
         office_preview_jobs.pop(item.job_id, None)
+
+
+def _office_preview_artifact_exists(job: OfficePreviewJob) -> bool:
+    fragment = _artifact_fragment_from_path(job.artifact_path)
+    if not fragment:
+        raw_url = str(job.artifact_url or "").strip()
+        prefix = "/extract/artifact/"
+        if raw_url.startswith(prefix):
+            fragment = urllib.parse.unquote(raw_url[len(prefix) :]).strip().strip("/")
+    if not fragment:
+        return False
+    root = _artifact_root_dir()
+    try:
+        target = (root / fragment).resolve()
+        target.relative_to(root)
+    except Exception:
+        return False
+    return target.exists() and target.is_file()
 
 
 def _serialize_office_preview_job(job: OfficePreviewJob) -> Dict[str, Any]:
@@ -2260,6 +2285,26 @@ async def _convert_word_to_pdf_with_timeout(
     )
 
 
+async def _convert_doc_to_docx_with_timeout(
+    *,
+    file_name: str,
+    file_bytes: bytes,
+    timeout_sec: float,
+) -> Tuple[bytes, Dict[str, Any]]:
+    loop = asyncio.get_running_loop()
+    return await asyncio.wait_for(
+        loop.run_in_executor(
+            None,
+            lambda: convert_doc_bytes_to_docx(
+                file_name=file_name,
+                file_bytes=file_bytes,
+                timeout_sec=timeout_sec,
+            ),
+        ),
+        timeout=timeout_sec,
+    )
+
+
 async def _run_office_preview_job(job_id: str, file_name: str, file_bytes: bytes) -> None:
     async with office_preview_lock:
         job = office_preview_jobs.get(job_id)
@@ -2346,7 +2391,7 @@ async def _process_single_doc_bytes(
     nonpdf_guard_sec = max(1.0, float(os.getenv("MODULE2_NONPDF_BUDGET_GUARD_SEC", "2.0")))
     word_parse_extract_budget_sec: Optional[float] = None
     word_convert_budget_sec: Optional[float] = None
-    word_pdf_required = _word_pdf_required()
+    word_parse_via_pdf = _word_pdf_required()
     if not file_name.lower().endswith(".pdf"):
         nonpdf_preflight = _preflight_nonpdf_profile(file_name=file_name, file_bytes=file_bytes)
         nonpdf_budget = _resolve_nonpdf_budgets(str(nonpdf_preflight.get("profile", "mixed")))
@@ -2373,7 +2418,7 @@ async def _process_single_doc_bytes(
                 parse_timeout_sec = max(5.0, parse_timeout_sec * ratio)
                 extract_timeout_sec = max(8.0, extract_timeout_sec * ratio)
                 parse_extract_total = parse_timeout_sec + extract_timeout_sec
-            # Word=>PDF parsing is usually the bottleneck; reserve more parse budget to reduce hard timeouts.
+            # Word preprocessing can be the bottleneck; reserve more parse budget to reduce hard timeouts.
             if parse_extract_total > 12.0:
                 target_parse_share = max(
                     0.45,
@@ -2400,15 +2445,22 @@ async def _process_single_doc_bytes(
     parse_input_bytes = file_bytes
     conversion_diag: Dict[str, Any] = {}
 
-    if is_word_file(file_name) and not _office_convert_enabled() and word_pdf_required:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Word 转 PDF 功能已禁用，当前配置要求 DOC/DOCX 必须先转为 PDF 后再解析。"
-            ),
-        )
+    word_suffix = Path(file_name).suffix.lower()
+    if is_word_file(file_name):
+        if word_parse_via_pdf and not _office_convert_enabled():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Word 转 PDF 功能已禁用，当前配置要求 DOC/DOCX 必须先转为 PDF 后再解析。"
+                ),
+            )
+        if (not word_parse_via_pdf) and word_suffix == ".doc" and not _office_convert_enabled():
+            raise HTTPException(
+                status_code=503,
+                detail="DOC 原生解析需要启用 Office 转换能力（用于 DOC->DOCX 预处理）。",
+            )
 
-    if is_word_file(file_name) and _office_convert_enabled():
+    if is_word_file(file_name) and word_parse_via_pdf and _office_convert_enabled():
         convert_timeout_default = max(20.0, float(os.getenv("MODULE2_DOC_TO_PDF_TIMEOUT_SEC", "60")))
         convert_timeout_sec = convert_timeout_default
         if word_convert_budget_sec is not None:
@@ -2465,7 +2517,7 @@ async def _process_single_doc_bytes(
                 suffix == ".docx"
                 and (os.getenv("MODULE2_WORD_CONVERT_ALLOW_NATIVE_FALLBACK", "true").lower() in {"1", "true", "yes"})
             )
-            if (word_pdf_required and not allow_native_fallback) or suffix == ".doc":
+            if (word_parse_via_pdf and not allow_native_fallback) or suffix == ".doc":
                 raise HTTPException(
                     status_code=422,
                     detail=f"Word 转 PDF 失败，无法处理 {file_name}: {type(exc).__name__}: {exc}",
@@ -2474,6 +2526,55 @@ async def _process_single_doc_bytes(
             parse_input_name = file_name
             parse_input_bytes = file_bytes
             parse_warning = f"doc_to_pdf_fallback_native:{type(exc).__name__}"
+    elif is_word_file(file_name) and (not word_parse_via_pdf):
+        parse_track = "FastTrack"
+        if word_suffix == ".doc":
+            convert_timeout_default = max(12.0, float(os.getenv("MODULE2_DOC_TO_DOCX_TIMEOUT_SEC", "45")))
+            convert_timeout_sec = convert_timeout_default
+            if word_convert_budget_sec is not None:
+                convert_timeout_sec = min(convert_timeout_sec, max(12.0, float(word_convert_budget_sec)))
+            if nonpdf_total_budget_sec is not None:
+                elapsed_before_convert = max(0.0, time.perf_counter() - t0)
+                remaining_for_convert = (
+                    nonpdf_total_budget_sec
+                    - elapsed_before_convert
+                    - (parse_timeout_sec + extract_timeout_sec + nonpdf_guard_sec)
+                )
+                if remaining_for_convert > 0:
+                    convert_timeout_sec = min(convert_timeout_sec, max(12.0, remaining_for_convert))
+                else:
+                    raise HTTPException(
+                        status_code=504,
+                        detail=f"Non-PDF budget exhausted before DOC->DOCX conversion for {file_name}",
+                    )
+            convert_timeout_sec = max(12.0, convert_timeout_sec)
+            convert_t0 = time.perf_counter()
+            try:
+                docx_bytes, convert_meta = await _convert_doc_to_docx_with_timeout(
+                    file_name=file_name,
+                    file_bytes=file_bytes,
+                    timeout_sec=convert_timeout_sec,
+                )
+                parse_input_name = f"{Path(file_name).stem}.docx"
+                parse_input_bytes = docx_bytes
+                conversion_diag = {
+                    "doc_to_docx_converted": True,
+                    "doc_to_docx_converter": str(convert_meta.get("converter", "")),
+                    "doc_to_docx_elapsed_ms": int(convert_meta.get("elapsed_ms", 0) or 0),
+                    "doc_to_docx_timeout_sec": round(convert_timeout_sec, 3),
+                    "doc_to_docx_total_ms": int((time.perf_counter() - convert_t0) * 1000),
+                }
+            except Exception as exc:
+                conversion_diag = {
+                    "doc_to_docx_converted": False,
+                    "doc_to_docx_error": f"{type(exc).__name__}: {exc}",
+                    "doc_to_docx_timeout_sec": round(convert_timeout_sec, 3),
+                    "doc_to_docx_total_ms": int((time.perf_counter() - convert_t0) * 1000),
+                }
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"DOC 转 DOCX 失败，无法处理 {file_name}: {type(exc).__name__}: {exc}",
+                ) from exc
 
     if parse_input_name.lower().endswith(".pdf"):
         parse_track = "VisualTrack"
@@ -2748,6 +2849,20 @@ async def _process_single_doc_bytes(
 
     if parse_input_name.lower().endswith(".pdf"):
         try:
+            pdf_preview_frag, pdf_preview_url = _write_artifact_bytes(
+                data=parse_input_bytes,
+                file_name=f"{Path(file_name).stem}.pdf",
+                sub_dir="preview/pdf",
+                ext=".pdf",
+            )
+            conversion_diag.setdefault("pdf_preview_path", pdf_preview_frag)
+            conversion_diag.setdefault("pdf_preview_url", pdf_preview_url)
+        except Exception as exc:
+            soft_warnings.append(f"pdf_preview_cache_failed:{type(exc).__name__}")
+            soft_warnings = _normalize_soft_warnings(soft_warnings)
+
+    if parse_input_name.lower().endswith(".pdf"):
+        try:
             _attach_missing_artifacts_from_pdf(
                 file_name=file_name,
                 file_hash=decision.file_hash,
@@ -2789,7 +2904,8 @@ async def _process_single_doc_bytes(
         "parse_timeout_sec": parse_timeout_sec,
         "extract_timeout_sec": extract_timeout_sec,
         "nonpdf_total_budget_sec": nonpdf_total_budget_sec,
-        "word_pdf_required": bool(word_pdf_required) if is_word_file(file_name) else False,
+        "word_pdf_required": bool(word_parse_via_pdf) if is_word_file(file_name) else False,
+        "word_parse_via_pdf": bool(word_parse_via_pdf) if is_word_file(file_name) else False,
         "word_parse_extract_budget_sec": word_parse_extract_budget_sec,
         "word_convert_budget_sec": word_convert_budget_sec,
         "schema_mode": schema_meta.get("mode", "manual"),
@@ -2966,8 +3082,18 @@ async def extract_preview_office_start(file: UploadFile = File(...)) -> Dict[str
     async with office_preview_lock:
         _office_preview_cleanup_jobs_locked()
         for existing in office_preview_jobs.values():
-            if existing.file_hash == file_hash and existing.status == "completed" and existing.artifact_url:
+            if existing.file_hash != file_hash:
+                continue
+            if existing.status in {"queued", "running"}:
                 return _serialize_office_preview_job(existing)
+            if existing.status == "completed" and existing.artifact_url:
+                if _office_preview_artifact_exists(existing):
+                    return _serialize_office_preview_job(existing)
+                existing.status = "failed"
+                existing.updated_at = time.time()
+                existing.artifact_path = None
+                existing.artifact_url = None
+                existing.error = "stale_preview_artifact_missing"
         job_id = f"preview_{uuid.uuid4().hex[:16]}"
         now = time.time()
         job = OfficePreviewJob(
@@ -3268,6 +3394,8 @@ async def extract_assistant_query(payload: AssistantQueryRequest) -> AssistantQu
 async def extract_cache_clear() -> CacheClearResponse:
     cache_counts = await storage.clear_runtime_cache()
     removed_artifacts = _clear_artifact_cache_dir()
+    async with office_preview_lock:
+        office_preview_jobs.clear()
     return CacheClearResponse(
         ok=True,
         message="模块二缓存已清理",
@@ -3284,7 +3412,12 @@ async def extract_layout_preview(artifact_name: str, request: Request) -> Respon
     if request.method.upper() == "HEAD":
         return _head_response_for_file(target)
     media_type = mimetypes.guess_type(str(target))[0] or "application/pdf"
-    return FileResponse(path=target, media_type=media_type, filename=target.name)
+    return FileResponse(
+        path=target,
+        media_type=media_type,
+        filename=target.name,
+        content_disposition_type="inline",
+    )
 
 
 @app.api_route("/extract/artifact/{artifact_path:path}", methods=["GET", "HEAD"])
@@ -3295,7 +3428,12 @@ async def extract_artifact(artifact_path: str, request: Request) -> Response:
     if request.method.upper() == "HEAD":
         return _head_response_for_file(target)
     media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-    return FileResponse(path=target, media_type=media_type, filename=target.name)
+    return FileResponse(
+        path=target,
+        media_type=media_type,
+        filename=target.name,
+        content_disposition_type="inline",
+    )
 
 
 @app.get("/healthz")

@@ -3,6 +3,8 @@ const { spawn } = require('child_process');
 
 const rootDir = path.resolve(__dirname, '..');
 const nodeExec = process.execPath;
+const pythonExec = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const enableModule4 = process.env.MODULE4_ENABLED !== '0';
 
 const services = [
   {
@@ -10,6 +12,7 @@ const services = [
     command: nodeExec,
     args: ['server.cjs'],
     cwd: path.join(rootDir, 'backend', 'auth'),
+    required: true,
   },
   {
     name: 'frontend',
@@ -22,8 +25,19 @@ const services = [
       '0.0.0.0',
     ],
     cwd: path.join(rootDir, 'frontend'),
+    required: true,
   },
 ];
+
+if (enableModule4) {
+  services.push({
+    name: 'module4',
+    command: pythonExec,
+    args: ['-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', '8100', '--reload'],
+    cwd: path.join(rootDir, 'backend', 'module4'),
+    required: false,
+  });
+}
 
 const children = [];
 let shuttingDown = false;
@@ -53,6 +67,10 @@ for (const service of services) {
   child.on('exit', (code, signal) => {
     if (shuttingDown) return;
     const exitInfo = typeof code === 'number' ? `code ${code}` : `signal ${signal}`;
+    if (service.required === false) {
+      console.warn(`[dev-all] optional service ${service.name} exited with ${exitInfo}`);
+      return;
+    }
     console.error(`[dev-all] ${service.name} exited with ${exitInfo}`);
     stopAll(typeof code === 'number' ? code : 1);
   });

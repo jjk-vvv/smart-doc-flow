@@ -39,6 +39,7 @@ class NativeDocumentParser:
         self._runtime_page_count = 0
         self._last_figure_blocks: FigureBlocks = []
         self._last_parse_stats: Dict[str, Any] = {}
+        self._last_mineru_run_meta: Dict[str, Any] = {}
         self.artifact_root_dir = Path(os.getenv("MODULE2_ARTIFACT_ROOT_DIR", "backend/module2/.cache")).resolve()
         self.artifact_root_dir.mkdir(parents=True, exist_ok=True)
         self.max_pages = max_pages or max(1, int(os.getenv("MODULE2_MAX_PARSE_PAGES", "120")))
@@ -177,7 +178,7 @@ class NativeDocumentParser:
             "true",
             "yes",
         }
-        self.docx_media_max_assets = max(0, int(os.getenv("MODULE2_DOCX_MEDIA_MAX_ASSETS", "12")))
+        self.docx_media_max_assets = max(0, int(os.getenv("MODULE2_DOCX_MEDIA_MAX_ASSETS", "24")))
         self.docx_media_vision_enable = os.getenv("MODULE2_DOCX_MEDIA_VISION_ENABLE", "true").lower() in {
             "1",
             "true",
@@ -286,14 +287,36 @@ class NativeDocumentParser:
         self.visual_use_table_html_fallback = (
             os.getenv("MODULE2_VISUAL_USE_TABLE_HTML_FALLBACK", "true").lower() in {"1", "true", "yes"}
         )
+        module2_root = Path(__file__).resolve().parents[2]
+        repo_root = module2_root.parents[1]
+        module2_cache_root = (module2_root / ".cache").resolve()
+
+        def _resolve_cache_dir(raw_value: str, default_path: Path) -> str:
+            raw = str(raw_value or "").strip()
+            if not raw:
+                return str(default_path.resolve())
+            p = Path(raw)
+            if p.is_absolute():
+                return str(p.resolve())
+            candidate_module2 = (module2_root / p).resolve()
+            candidate_repo = (repo_root / p).resolve()
+            normalized = raw.replace("\\", "/").lower()
+            if normalized.startswith("backend/module2/"):
+                return str(candidate_repo)
+            if candidate_repo.exists() and not candidate_module2.exists():
+                return str(candidate_repo)
+            return str(candidate_module2)
+
         self.mineru_backend = os.getenv("MODULE2_MINERU_BACKEND", "pipeline")
-        self.mineru_method = os.getenv("MODULE2_MINERU_METHOD", "txt")
-        self.mineru_scanned_method = os.getenv("MODULE2_MINERU_SCANNED_METHOD", self.mineru_method)
+        self.mineru_method = os.getenv("MODULE2_MINERU_METHOD", "auto")
+        self.mineru_scanned_method = os.getenv("MODULE2_MINERU_SCANNED_METHOD", "auto")
         self.mineru_timeout_sec = max(120, int(os.getenv("MODULE2_MINERU_TIMEOUT_SEC", "3600")))
-        self.mineru_cache_dir = os.getenv(
-            "MODULE2_MINERU_CACHE_DIR",
-            "backend/module2/.cache/mineru",
+        self.mineru_cache_dir = _resolve_cache_dir(
+            os.getenv("MODULE2_MINERU_CACHE_DIR", ""),
+            module2_cache_root / "mineru",
         )
+        self.mineru_device = os.getenv("MODULE2_MINERU_DEVICE", "cpu")
+        self.mineru_method_fallbacks = os.getenv("MODULE2_MINERU_METHOD_FALLBACKS", "auto,ocr,txt")
         self.mineru_enable_cache = os.getenv("MODULE2_MINERU_ENABLE_CACHE", "true").lower() in {"1", "true", "yes"}
         self.mineru_enable_formula = os.getenv("MODULE2_MINERU_ENABLE_FORMULA", "false").lower() in {
             "1",
@@ -309,9 +332,9 @@ class NativeDocumentParser:
         )
         self.visual_crop_max_side_px = max(1200, int(os.getenv("MODULE2_VISUAL_CROP_MAX_SIDE_PX", "2800")))
         self.visual_vision_retry_count = max(0, int(os.getenv("MODULE2_VISUAL_VISION_RETRY_COUNT", "1")))
-        self.gemini_cache_dir = os.getenv(
-            "MODULE2_GEMINI_CACHE_DIR",
-            "backend/module2/.cache/gemini",
+        self.gemini_cache_dir = _resolve_cache_dir(
+            os.getenv("MODULE2_GEMINI_CACHE_DIR", ""),
+            module2_cache_root / "gemini",
         )
         self.gemini_cache_enable = os.getenv("MODULE2_GEMINI_CACHE_ENABLE", "true").lower() in {"1", "true", "yes"}
         self._mineru_layout_extractor: Optional[MineruLayoutExtractor] = None
@@ -348,6 +371,7 @@ class NativeDocumentParser:
     ) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
         self._last_figure_blocks = []
         self._last_parse_stats = {}
+        self._last_mineru_run_meta = {}
         name = (file_name or "unknown").lower()
         _, ext = os.path.splitext(name)
         if ext == ".pdf":
@@ -366,7 +390,10 @@ class NativeDocumentParser:
         return [dict(item) for item in self._last_figure_blocks]
 
     def get_last_parse_stats(self) -> Dict[str, Any]:
-        return dict(self._last_parse_stats)
+        stats = dict(self._last_parse_stats)
+        if self._last_mineru_run_meta:
+            stats["mineru_run"] = dict(self._last_mineru_run_meta)
+        return stats
 
     def _get_mineru_layout_extractor(self) -> MineruLayoutExtractor:
         if self._mineru_layout_extractor is None:
@@ -378,6 +405,8 @@ class NativeDocumentParser:
                 enable_cache=self.mineru_enable_cache,
                 enable_formula=self.mineru_enable_formula,
                 enable_table=self.mineru_enable_table,
+                device=self.mineru_device,
+                method_fallbacks=self.mineru_method_fallbacks,
             )
         return self._mineru_layout_extractor
 
@@ -601,6 +630,7 @@ class NativeDocumentParser:
             end_page=page_count,
             method=mineru_method,
         )
+        self._last_mineru_run_meta = layout.get_last_run_meta()
         if not objects:
             return None
 
@@ -759,6 +789,18 @@ class NativeDocumentParser:
             table_blocks = self._merge_cross_page_tables(table_blocks)
         table_blocks = self._prune_fragment_tables(table_blocks)
         figure_blocks = self._merge_figure_blocks([], figure_blocks)
+        self._last_parse_stats = {
+            "pipeline": "visual_first",
+            "visual_page_count": int(page_count),
+            "visual_layout_object_count": len(selected_objects),
+            "visual_ref_count": len(bbox_map),
+            "visual_table_count": len(table_blocks),
+            "visual_figure_count": len(figure_blocks),
+            "visual_table_source": table_source,
+            "visual_figure_source": figure_source,
+        }
+        if self._last_mineru_run_meta:
+            self._last_parse_stats["mineru_run"] = dict(self._last_mineru_run_meta)
         self._last_figure_blocks = figure_blocks
         return "\n".join(parts), bbox_map, table_blocks
 
@@ -2292,15 +2334,57 @@ class NativeDocumentParser:
             )
             stats["docx_media_seen"] = len(media_files_all)
             if self.docx_media_probe_enable and self.docx_media_max_assets > 0 and media_files_all:
-                media_files = media_files_all[: self.docx_media_max_assets]
+                media_candidates: List[Dict[str, Any]] = []
+                for media_path in media_files_all:
+                    media_name = os.path.basename(media_path)
+                    media_size = 0
+                    try:
+                        media_size = max(0, int(zf.getinfo(media_path).file_size))
+                    except Exception:
+                        media_size = 0
+                    media_candidates.append(
+                        {
+                            "path": media_path,
+                            "name": media_name,
+                            "size": media_size,
+                            "is_chart_cue": bool(self._looks_like_figure_cue_text(media_name)),
+                        }
+                    )
+
+                chart_cue_seen = sum(1 for item in media_candidates if bool(item.get("is_chart_cue")))
+                stats["docx_media_chart_cue_seen"] = int(chart_cue_seen)
+
+                # Prefer chart-like names first, then larger images (often key tables/charts),
+                # instead of lexical filename order (image1, image10, image100...).
+                media_candidates.sort(
+                    key=lambda item: (
+                        0 if bool(item.get("is_chart_cue")) else 1,
+                        -int(item.get("size") or 0),
+                        str(item.get("path") or ""),
+                    )
+                )
+                media_files = media_candidates[: self.docx_media_max_assets]
+                stats["docx_media_selected"] = len(media_files)
+                stats["docx_media_selected_strategy"] = "chart_cue_then_size"
+
+                # If chart-only mode is enabled but filenames have no chart cues (common in Word: image1.png),
+                # allow a bounded fallback on selected high-priority assets to avoid zero vision coverage.
+                allow_noncue_vision_fallback = bool(
+                    self.docx_media_vision_chart_only
+                    and chart_cue_seen == 0
+                    and (os.getenv("MODULE2_DOCX_MEDIA_VISION_ALLOW_NONCUE", "false").lower() in {"1", "true", "yes"})
+                )
+                stats["docx_media_vision_noncue_fallback"] = bool(allow_noncue_vision_fallback)
+
                 seen_sha256: set[str] = set()
                 vision_attempted = 0
                 saved_last_figures = self.get_last_figure_blocks()
-                for media_idx, media_path in enumerate(media_files, start=1):
+                for media_idx, media_item in enumerate(media_files, start=1):
                     if self.nonpdf_figure_max > 0 and len(figures) >= self.nonpdf_figure_max:
                         break
-                    media_name = os.path.basename(media_path)
-                    media_type = "chart" if self._looks_like_figure_cue_text(media_name) else "photo"
+                    media_path = str(media_item.get("path") or "")
+                    media_name = str(media_item.get("name") or os.path.basename(media_path))
+                    media_type = "chart" if bool(media_item.get("is_chart_cue")) else "photo"
                     caption = f"DOCX内嵌图像 {media_name}"
                     try:
                         media_bytes = zf.read(media_path)
@@ -2327,6 +2411,7 @@ class NativeDocumentParser:
                         and (
                             (not self.docx_media_vision_chart_only)
                             or (media_type == "chart")
+                            or allow_noncue_vision_fallback
                         )
                     ):
                         vision_attempted += 1

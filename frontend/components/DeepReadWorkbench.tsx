@@ -43,6 +43,183 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+type PdfCanvasPreviewProps = {
+  src: string;
+  page: number;
+  scale: number;
+  rotation: number;
+  onPageCount?: (count: number) => void;
+};
+
+const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
+  src,
+  page,
+  scale,
+  rotation,
+  onPageCount,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const docRef = useRef<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [docReadyTick, setDocReadyTick] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    let loadingTask: any = null;
+
+    const load = async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const pdfjsLib: any = await import('pdfjs-dist');
+        if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+            'pdfjs-dist/build/pdf.worker.min.mjs',
+            import.meta.url
+          ).toString();
+        }
+        loadingTask = pdfjsLib.getDocument({
+          url: src,
+          withCredentials: false,
+        });
+        const doc = await loadingTask.promise;
+        if (cancelled) {
+          try {
+            await doc.destroy();
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        docRef.current = doc;
+        const pages = Math.max(1, Number(doc.numPages || 1));
+        onPageCount?.(pages);
+        setDocReadyTick((prev) => prev + 1);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'PDF 预览加载失败');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+      try {
+        loadingTask?.destroy?.();
+      } catch {
+        // ignore
+      }
+      const doc = docRef.current;
+      docRef.current = null;
+      try {
+        doc?.destroy?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, [onPageCount, src]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let renderTask: any = null;
+
+    const render = async () => {
+      const doc = docRef.current;
+      const canvas = canvasRef.current;
+      if (!doc || !canvas) return;
+      try {
+        setLoading(true);
+        setError('');
+        const totalPages = Math.max(1, Number(doc.numPages || 1));
+        const safePage = Math.min(Math.max(1, Math.round(page)), totalPages);
+        const pdfPage = await doc.getPage(safePage);
+        const viewport = pdfPage.getViewport({
+          scale: Math.max(0.5, scale),
+          rotation: Number(rotation) || 0,
+        });
+        if (cancelled) return;
+
+        const context = canvas.getContext('2d');
+        if (!context) {
+          setError('无法初始化 PDF 预览画布');
+          return;
+        }
+
+        const pixelRatio = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.floor(viewport.width * pixelRatio));
+        canvas.height = Math.max(1, Math.floor(viewport.height * pixelRatio));
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+
+        renderTask = pdfPage.render({
+          canvasContext: context,
+          viewport,
+        });
+        await renderTask.promise;
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'PDF 渲染失败');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void render();
+
+    return () => {
+      cancelled = true;
+      try {
+        renderTask?.cancel?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, [docReadyTick, page, rotation, scale, src]);
+
+  return (
+    <div className="absolute inset-0 flex items-start justify-center overflow-auto bg-slate-50/70 p-2 dark:bg-slate-900/60 sm:p-3">
+      <canvas
+        ref={canvasRef}
+        className="rounded-md bg-white shadow-sm dark:bg-slate-900"
+      />
+      {loading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/45 dark:bg-slate-900/45">
+          <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white/90 px-3 py-1.5 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+            <Loader2 size={14} className="animate-spin" />
+            正在渲染 PDF 预览...
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/80 p-4 text-center dark:bg-slate-900/80">
+          <p className="max-w-[420px] text-xs text-slate-600 dark:text-slate-300">{error}</p>
+          <a
+            href={src}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
+          >
+            <ExternalLink size={12} />
+            新窗口打开 PDF
+          </a>
+        </div>
+      )}
+    </div>
+  );
+};
+
 type DocumentResult = ExtractionDocument;
 
 type ExtractResponse = {
@@ -100,6 +277,13 @@ const DEFAULT_SCHEMA = {
   max_auto_fields: 12,
 };
 
+const ASSISTANT_QUICK_COMMANDS = [
+  '提取合同金额、合同期限、甲乙方名称',
+  '提取发票号码、开票日期、价税合计并整理为表格',
+  '提取联系人、电话、邮箱并按主体去重',
+  '提取表格中的关键指标并按页码标注来源',
+];
+
 type OfficePreviewState = {
   status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
   jobId?: string;
@@ -117,6 +301,156 @@ const isAllowedFile = (file: File) => {
 
 const fileExt = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
 const fileIdentityKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
+
+const previewFileNameFromKey = (key: string): string => {
+  const raw = String(key || '');
+  const idx = raw.indexOf(':');
+  return (idx >= 0 ? raw.slice(0, idx) : raw).trim().toLowerCase();
+};
+
+const pickOfficePreviewByFileName = (
+  fileName: string,
+  previewMap: Record<string, OfficePreviewState>,
+): OfficePreviewState | null => {
+  const target = String(fileName || '').trim().toLowerCase();
+  if (!target) return null;
+
+  let fallback: OfficePreviewState | null = null;
+  for (const [key, state] of Object.entries(previewMap || {})) {
+    if (!state) continue;
+    if (previewFileNameFromKey(key) !== target) continue;
+    if (!fallback) fallback = state;
+    if (state.status === 'completed' && String(state.pdfUrl || '').trim()) {
+      return state;
+    }
+  }
+  return fallback;
+};
+
+type ExtractFetchResult = {
+  response: Response;
+  usedBase: string;
+};
+
+const getViteExtractBase = (): string => {
+  try {
+    const envObj = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+    return String(envObj?.VITE_MODULE2_API_BASE || envObj?.VITE_EXTRACT_API_BASE || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const trimTrailingSlash = (value: string) => String(value || '').replace(/\/+$/, '');
+
+const normalizeExtractBase = (raw: string): string => {
+  const base = trimTrailingSlash(String(raw || '').trim());
+  if (!base) return '';
+  return base.endsWith('/extract') ? base.slice(0, -8) : base;
+};
+
+const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
+  const out: string[] = [];
+  const push = (raw: string) => {
+    const base = normalizeExtractBase(raw);
+    if (!base) return;
+    if (!out.includes(base)) out.push(base);
+  };
+
+  push(preferredBase);
+  push(getViteExtractBase());
+
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol;
+    const hostname = window.location.hostname;
+    const port = window.location.port;
+    if (hostname) {
+      if (port !== '8000') push(`${protocol}//${hostname}:8000`);
+      push(`${protocol}//127.0.0.1:8000`);
+      push(`${protocol}//localhost:8000`);
+    }
+  }
+
+  return out;
+};
+
+const joinExtractUrl = (base: string, path: string): string => {
+  const normalizedPath = String(path || '').startsWith('/') ? String(path || '') : `/${String(path || '')}`;
+  const normalizedBase = normalizeExtractBase(base);
+  return normalizedBase ? `${normalizedBase}${normalizedPath}` : normalizedPath;
+};
+
+const toAbsoluteExtractUrl = (rawUrl: string, base: string): string => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  if (!value.startsWith('/')) return value;
+  const normalizedBase = normalizeExtractBase(base);
+  return normalizedBase ? `${normalizedBase}${value}` : value;
+};
+
+const parseFetchErrorMessage = (error: unknown): string => {
+  if (!(error instanceof Error)) return 'DOC/DOCX 预览转换失败';
+  const msg = String(error.message || '').trim();
+  if (!msg) return 'DOC/DOCX 预览转换失败';
+  const lowered = msg.toLowerCase();
+  if (lowered.includes('failed to fetch') || lowered.includes('networkerror') || lowered.includes('load failed')) {
+    return '无法连接文档解析后端，请确认后端服务已启动（默认 8000 端口）或配置 VITE_MODULE2_API_BASE。';
+  }
+  return msg;
+};
+
+const readResponseErrorMessage = async (response: Response): Promise<string> => {
+  let text = '';
+  try {
+    text = await response.text();
+  } catch {
+    text = '';
+  }
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return `HTTP ${response.status}`;
+  try {
+    const parsed = JSON.parse(trimmed);
+    const detail = parsed?.detail ?? parsed?.message ?? parsed?.error;
+    if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  } catch {
+    // non-json payload
+  }
+  return trimmed.length > 1800 ? `${trimmed.slice(0, 1800)}...` : trimmed;
+};
+
+const fetchExtractWithFallback = async (
+  path: string,
+  init?: RequestInit,
+  preferredBase = '',
+): Promise<ExtractFetchResult> => {
+  const tried: string[] = [];
+  let lastError = '';
+  const candidates = ['', ...buildExtractBaseCandidates(preferredBase)];
+
+  for (const base of candidates) {
+    if (tried.includes(base)) continue;
+    tried.push(base);
+    const url = joinExtractUrl(base, path);
+    try {
+      const response = await fetch(url, init);
+      if (response.ok) {
+        return { response, usedBase: base };
+      }
+
+      const msg = await readResponseErrorMessage(response);
+      const retryable = response.status >= 500 || response.status === 404;
+      if (!retryable) {
+        throw new Error(msg);
+      }
+      lastError = msg || `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = parseFetchErrorMessage(error);
+    }
+  }
+
+  throw new Error(lastError || '文档解析后端请求失败。');
+};
 
 const toPageNumber = (bbox: number[]) => {
   if (bbox.length !== 5) return null;
@@ -253,6 +587,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const [assistantDialog, setAssistantDialog] = useState<AssistantDialogMessage[]>([]);
   const [showAssistantHelp, setShowAssistantHelp] = useState(false);
   const [showSchema, setShowSchema] = useState(false); // UI Toggle
+  const [isUploaderDragOver, setIsUploaderDragOver] = useState(false);
+  const [resultSearchQuery, setResultSearchQuery] = useState('');
   
   // Viewport Controls
   const [scale, setScale] = useState(1);
@@ -260,23 +596,30 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const [activeTraceKey, setActiveTraceKey] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const assistantInputRef = useRef<HTMLTextAreaElement>(null);
   const textPreviewRef = useRef<HTMLDivElement>(null);
   const assistantDialogRef = useRef<HTMLDivElement>(null);
   const summaryRequestSeqRef = useRef(0);
   const traceRequestSeqRef = useRef(0);
+  const officePreviewPollRef = useRef<Record<string, string>>({});
+  const officePreviewApiBaseRef = useRef<Record<string, string>>({});
 
   const activeDoc = documents[activeDocIndex] ?? null;
   const activeSourceFile = useMemo(() => {
     // Priority 1: Match activeDoc if it exists
     if (activeDoc && selectedFiles.length > 0) {
+      const targetName = String(activeDoc.file_name || '').trim().toLowerCase();
+      const nameMatched = targetName
+        ? selectedFiles.filter((file) => file.name.toLowerCase() === targetName)
+        : [];
+      if (nameMatched.length === 1) return nameMatched[0];
+      const byIndex = selectedFiles[activeDocIndex] ?? null;
+      if (nameMatched.length > 1) {
+        if (byIndex && byIndex.name.toLowerCase() === targetName) return byIndex;
+        return nameMatched[0] ?? byIndex;
+      }
       const exact = selectedFiles.find((file) => file.name === activeDoc.file_name);
       if (exact) return exact;
-
-      const targetName = activeDoc.file_name.toLowerCase();
-      const insensitive = selectedFiles.find((file) => file.name.toLowerCase() === targetName);
-      if (insensitive) return insensitive;
-
-      const byIndex = selectedFiles[activeDocIndex] ?? null;
       if (byIndex && fileExt(byIndex.name) === fileExt(activeDoc.file_name)) return byIndex;
 
       return byIndex;
@@ -295,17 +638,34 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const [previewText, setPreviewText] = useState<string>('');
   const [officePreviewMap, setOfficePreviewMap] = useState<Record<string, OfficePreviewState>>({});
   const [pdfPage, setPdfPage] = useState(1);
+  const [pdfPreviewPageCount, setPdfPreviewPageCount] = useState(1);
   const assistantActionable = useMemo(
     () => Boolean(activeDoc && (((activeDoc.errors?.length ?? 0) > 0) || ((activeDoc.soft_warnings?.length ?? 0) > 0))),
     [activeDoc]
   );
   const showLeftPanel = selectedFiles.length > 0 || documents.length > 0;
   const activeOfficePreview = useMemo(() => {
-    if (!activeSourceFile) return null;
-    return officePreviewMap[fileIdentityKey(activeSourceFile)] || null;
-  }, [activeSourceFile, officePreviewMap]);
+    const fileNameHint = String(activeSourceFile?.name || activeDoc?.file_name || '').trim();
+    if (!fileNameHint) return null;
+
+    const byIdentity = activeSourceFile ? (officePreviewMap[fileIdentityKey(activeSourceFile)] || null) : null;
+    const byName = pickOfficePreviewByFileName(fileNameHint, officePreviewMap);
+
+    // Prefer a completed preview with url whenever available.
+    if (byIdentity && byIdentity.status === 'completed' && String(byIdentity.pdfUrl || '').trim()) {
+      return byIdentity;
+    }
+    if (byName && byName.status === 'completed' && String(byName.pdfUrl || '').trim()) {
+      return byName;
+    }
+    return byIdentity || byName || null;
+  }, [activeDoc?.file_name, activeSourceFile, officePreviewMap]);
   const activeDocPreviewPdfUrl = useMemo(() => {
-    const val = String(activeDoc?.diagnostics?.office_pdf_preview_url || '').trim();
+    const val = String(
+      activeDoc?.diagnostics?.office_pdf_preview_url
+      || activeDoc?.diagnostics?.pdf_preview_url
+      || ''
+    ).trim();
     return val || '';
   }, [activeDoc?.diagnostics]);
   const activeConvertedPdfUrl = useMemo(() => {
@@ -317,6 +677,44 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     if ((activeExt === 'doc' || activeExt === 'docx') && activeConvertedPdfUrl) return 'pdf';
     return activeExt;
   }, [activeExt, activeConvertedPdfUrl]);
+  const hasPreviewContent = Boolean(activeSourceFile || previewUrl);
+  const recentUserInstructions = useMemo(() => {
+    const pool = assistantDialog
+      .filter((msg) => msg.role === 'user')
+      .map((msg) => msg.content.trim())
+      .filter(Boolean)
+      .reverse();
+    return Array.from(new Set(pool)).slice(0, 6);
+  }, [assistantDialog]);
+
+  const applyAssistantInstruction = (instruction: string) => {
+    const text = String(instruction || '').trim();
+    if (!text) return;
+    setAssistantInput(text);
+    requestAnimationFrame(() => {
+      assistantInputRef.current?.focus();
+      const len = text.length;
+      assistantInputRef.current?.setSelectionRange(len, len);
+    });
+  };
+
+  useEffect(() => {
+    return () => {
+      officePreviewPollRef.current = {};
+      officePreviewApiBaseRef.current = {};
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.key.toLowerCase() !== 'o') return;
+      event.preventDefault();
+      fileInputRef.current?.click();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   useEffect(() => {
     const cached = readExtractionDocuments();
@@ -343,6 +741,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     if (!activeSourceFile) {
       if (activeConvertedPdfUrl && (activeExt === 'doc' || activeExt === 'docx')) {
         setPreviewUrl(activeConvertedPdfUrl);
+      } else if (activeExt === 'pdf' && activeDocPreviewPdfUrl) {
+        setPreviewUrl(activeDocPreviewPdfUrl);
       } else {
         setPreviewUrl(null);
       }
@@ -355,7 +755,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const url = URL.createObjectURL(activeSourceFile);
     setPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [activeSourceFile, activeExt, activeConvertedPdfUrl]);
+  }, [activeSourceFile, activeExt, activeConvertedPdfUrl, activeDocPreviewPdfUrl]);
+
+  useEffect(() => {
+    if (activeRenderExt !== 'pdf') {
+      setPdfPreviewPageCount(1);
+      return;
+    }
+    setPdfPreviewPageCount(1);
+  }, [activeRenderExt, previewUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -432,10 +840,20 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   }, [previewHighlight]);
 
   useEffect(() => {
+    setResultSearchQuery('');
+  }, [activeDoc?.file_hash]);
+
+  useEffect(() => {
     const panel = assistantDialogRef.current;
     if (!panel) return;
     panel.scrollTop = panel.scrollHeight;
   }, [assistantDialog, assistantQueryLoading]);
+
+  useEffect(() => {
+    if (activeSourceFile) {
+      setIsUploaderDragOver(false);
+    }
+  }, [activeSourceFile]);
 
   const requestSummary = async (doc: DocumentResult) => {
     if (!doc) return;
@@ -581,6 +999,30 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       pageNumber: toPageNumber(Array.isArray(entity.bbox) ? entity.bbox : []),
     }));
   }, [activeDoc]);
+  const filteredFieldItems = useMemo(() => {
+    const q = resultSearchQuery.trim().toLowerCase();
+    if (!q) return fieldItems;
+    return fieldItems.filter((item) => {
+      const key = String(item.key || '').toLowerCase();
+      const label = String(item.label || '').toLowerCase();
+      const value = String(item.valueText || '').toLowerCase();
+      return key.includes(q) || label.includes(q) || value.includes(q);
+    });
+  }, [fieldItems, resultSearchQuery]);
+  const hasResultSearch = resultSearchQuery.trim().length > 0;
+  const resultCountText = useMemo(() => {
+    if (fieldItems.length === 0) return '';
+    if (!hasResultSearch) return `${fieldItems.length} 个字段`;
+    return `${filteredFieldItems.length} / ${fieldItems.length} 个字段`;
+  }, [fieldItems.length, filteredFieldItems.length, hasResultSearch]);
+  const canCopyFilteredResults = filteredFieldItems.length > 0;
+  const filteredResultsClipboardText = useMemo(
+    () =>
+      filteredFieldItems
+        .map((item, idx) => `${idx + 1}. ${item.label} (${item.key})\n${item.valueText}`)
+        .join('\n\n'),
+    [filteredFieldItems]
+  );
 
   const inferredPdfPageCount = useMemo(() => {
     if (activeRenderExt !== 'pdf') return 1;
@@ -593,8 +1035,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       if (!Number.isFinite(page) || page < 1) return maxPage;
       return Math.max(maxPage, Math.round(page));
     }, 1);
-    return Math.max(1, maxByRefs, maxByTrace);
-  }, [activeRenderExt, fieldItems, traceHits]);
+    return Math.max(1, maxByRefs, maxByTrace, pdfPreviewPageCount);
+  }, [activeRenderExt, fieldItems, pdfPreviewPageCount, traceHits]);
 
   const currentPdfPage = Math.min(Math.max(pdfPage, 1), inferredPdfPageCount);
 
@@ -697,16 +1139,30 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 0;
   }, [activeDoc?.diagnostics?.figure_count]);
 
-  const pollOfficePreview = async (file: File, key: string, jobId: string) => {
-    const maxPoll = 80;
+  const pollOfficePreview = async (key: string, jobId: string, preferredBase = '') => {
+    const maxPoll = 150;
+    let resolvedBase = preferredBase;
     for (let i = 0; i < maxPoll; i += 1) {
+      if (officePreviewPollRef.current[key] !== jobId) return;
       await new Promise((resolve) => setTimeout(resolve, 1200));
-      const response = await fetch(`/extract/preview/office/status/${encodeURIComponent(jobId)}`);
-      if (!response.ok) continue;
+      let response: Response | null = null;
+      try {
+        const fetchResult = await fetchExtractWithFallback(
+          `/extract/preview/office/status/${encodeURIComponent(jobId)}`,
+          undefined,
+          resolvedBase,
+        );
+        response = fetchResult.response;
+        resolvedBase = fetchResult.usedBase || resolvedBase;
+        officePreviewApiBaseRef.current[key] = resolvedBase;
+      } catch {
+        continue;
+      }
+      if (!response || !response.ok) continue;
       const payload = await response.json();
       const status = String(payload.status || '').toLowerCase();
       if (status === 'completed') {
-        const pdfUrl = String(payload.artifact_url || '').trim();
+        const pdfUrl = toAbsoluteExtractUrl(String(payload.artifact_url || '').trim(), resolvedBase);
         setOfficePreviewMap((prev) => ({
           ...prev,
           [key]: {
@@ -715,9 +1171,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             pdfUrl,
           },
         }));
-        if (activeSourceFile && fileIdentityKey(activeSourceFile) === key && pdfUrl) {
-          setPreviewUrl(pdfUrl);
-        }
+        officePreviewApiBaseRef.current[key] = resolvedBase;
+        delete officePreviewPollRef.current[key];
         return;
       }
       if (status === 'failed') {
@@ -729,6 +1184,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             error: String(payload.error || 'DOC/DOCX 预览转换失败'),
           },
         }));
+        delete officePreviewApiBaseRef.current[key];
+        delete officePreviewPollRef.current[key];
         return;
       }
       setOfficePreviewMap((prev) => ({
@@ -740,6 +1197,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         },
       }));
     }
+    if (officePreviewPollRef.current[key] !== jobId) return;
     setOfficePreviewMap((prev) => ({
       ...prev,
       [key]: {
@@ -749,12 +1207,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         error: 'DOC/DOCX 预览转换超时',
       },
     }));
+    delete officePreviewApiBaseRef.current[key];
+    delete officePreviewPollRef.current[key];
   };
 
   const ensureOfficePreview = async (file: File) => {
     const ext = fileExt(file.name);
     if (ext !== 'doc' && ext !== 'docx') return;
     const key = fileIdentityKey(file);
+    if (officePreviewPollRef.current[key]) return;
     const current = officePreviewMap[key];
     if (current && (current.status === 'running' || current.status === 'queued' || current.status === 'completed')) {
       return;
@@ -766,18 +1227,20 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await fetch('/extract/preview/office/start', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!response.ok) {
-        const msg = await response.text();
-        throw new Error(msg || 'DOC/DOCX 预览转换失败');
-      }
+      const fetchResult = await fetchExtractWithFallback(
+        '/extract/preview/office/start',
+        {
+          method: 'POST',
+          body: formData,
+        },
+        officePreviewApiBaseRef.current[key] || '',
+      );
+      const response = fetchResult.response;
+      const usedBase = fetchResult.usedBase || '';
       const payload = await response.json();
       const status = String(payload.status || '').toLowerCase();
       const jobId = String(payload.job_id || '').trim();
-      const pdfUrl = String(payload.artifact_url || '').trim();
+      const pdfUrl = toAbsoluteExtractUrl(String(payload.artifact_url || '').trim(), usedBase);
       if (status === 'completed' && pdfUrl) {
         setOfficePreviewMap((prev) => ({
           ...prev,
@@ -787,11 +1250,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             pdfUrl,
           },
         }));
+        officePreviewApiBaseRef.current[key] = usedBase;
+        delete officePreviewPollRef.current[key];
         return;
       }
       if (!jobId) {
         throw new Error('DOC/DOCX 预览任务创建失败');
       }
+      officePreviewPollRef.current[key] = jobId;
+      officePreviewApiBaseRef.current[key] = usedBase;
       setOfficePreviewMap((prev) => ({
         ...prev,
         [key]: {
@@ -799,13 +1266,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           jobId,
         },
       }));
-      void pollOfficePreview(file, key, jobId);
+      void pollOfficePreview(key, jobId, usedBase);
     } catch (error) {
+      delete officePreviewPollRef.current[key];
+      delete officePreviewApiBaseRef.current[key];
       setOfficePreviewMap((prev) => ({
         ...prev,
         [key]: {
           status: 'failed',
-          error: error instanceof Error ? error.message : 'DOC/DOCX 预览转换失败',
+          error: parseFetchErrorMessage(error),
         },
       }));
     }
@@ -835,9 +1304,33 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     } else {
       setInfoMessage(`已选择 ${limited.length} 个文件，可开始抽取。`);
     }
+    const selectedKeySet = new Set(limited.map((file) => fileIdentityKey(file)));
     incoming.forEach((file) => {
+      if (!selectedKeySet.has(fileIdentityKey(file))) return;
       void ensureOfficePreview(file);
     });
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsUploaderDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsUploaderDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsUploaderDragOver(false);
+    const files = Array.from(e.dataTransfer.files) as File[];
+    if (files.length > 0) {
+      mergeSelectedFiles(files);
+    }
   };
 
   const onSelectFiles = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -853,6 +1346,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       const removed = prev[index];
       if (removed) {
         const key = fileIdentityKey(removed);
+        delete officePreviewPollRef.current[key];
+        delete officePreviewApiBaseRef.current[key];
         setOfficePreviewMap((map) => {
           if (!(key in map)) return map;
           const copied = { ...map };
@@ -866,9 +1361,14 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
   const clearAllFiles = () => {
     setSelectedFiles([]);
+    officePreviewPollRef.current = {};
+    officePreviewApiBaseRef.current = {};
+    setOfficePreviewMap({});
     setDocuments([]);
     setActiveDocIndex(0);
     setActiveFieldKey(null);
+    setPreviewUrl(null);
+    setPreviewText('');
     setPdfPage(1);
     setErrorMessage('');
     setInfoMessage("文件队列已清空。");
@@ -932,10 +1432,11 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           selectedFiles.forEach((file) => formData.append('files', file));
           formData.append('schema', JSON.stringify(schemaObj));
           try {
-            return await fetch('/extract/batch', {
+            const fetchResult = await fetchExtractWithFallback('/extract/batch', {
               method: 'POST',
               body: formData,
             });
+            return fetchResult.response;
           } catch (error) {
             lastError = error;
             if (i < attempts) {
@@ -960,32 +1461,56 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         throw new Error("后端未返回抽取结果");
       }
 
-      setDocuments(payload.documents);
-      writeExtractionDocuments(payload.documents);
+      const documentsWithPreview = payload.documents.map((doc) => {
+        const ext = fileExt(String(doc.file_name || ''));
+        if (ext !== 'doc' && ext !== 'docx') return doc;
+
+        const diagnostics =
+          doc.diagnostics && typeof doc.diagnostics === 'object'
+            ? (doc.diagnostics as Record<string, unknown>)
+            : {};
+        const existingPreviewUrl = String(diagnostics.office_pdf_preview_url || '').trim();
+        if (existingPreviewUrl) return doc;
+
+        const matchedPreview = pickOfficePreviewByFileName(doc.file_name, officePreviewMap);
+        const previewUrl = String(matchedPreview?.pdfUrl || '').trim();
+        if (!previewUrl) return doc;
+
+        return {
+          ...doc,
+          diagnostics: {
+            ...diagnostics,
+            office_pdf_preview_url: previewUrl,
+          },
+        };
+      });
+
+      setDocuments(documentsWithPreview);
+      writeExtractionDocuments(documentsWithPreview);
       setActiveDocIndex(0);
       setPdfPage(1);
-      if (payload.documents.length > 0) {
-        void requestSummary(payload.documents[0]);
+      if (documentsWithPreview.length > 0) {
+        void requestSummary(documentsWithPreview[0]);
       }
 
-      const firstErrorDoc = payload.documents.find((doc) => doc.errors && doc.errors.length > 0);
+      const firstErrorDoc = documentsWithPreview.find((doc) => doc.errors && doc.errors.length > 0);
       if (firstErrorDoc) {
         setErrorMessage(firstErrorDoc.errors.join(' | '));
       } else {
-        const cacheHits = payload.documents.filter((doc) => doc.cached).length;
-        const totalTables = payload.documents.reduce((acc, doc) => {
+        const cacheHits = documentsWithPreview.filter((doc) => doc.cached).length;
+        const totalTables = documentsWithPreview.reduce((acc, doc) => {
           const raw = doc.diagnostics?.table_count;
           const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
           return acc + (Number.isFinite(val) ? val : 0);
         }, 0);
-        const totalFigures = payload.documents.reduce((acc, doc) => {
+        const totalFigures = documentsWithPreview.reduce((acc, doc) => {
           const raw = doc.diagnostics?.figure_count;
           const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
           return acc + (Number.isFinite(val) ? val : 0);
         }, 0);
         const sourceSet = new Set<string>();
         const figureSourceSet = new Set<string>();
-        payload.documents.forEach((doc) => {
+        documentsWithPreview.forEach((doc) => {
           const srcRaw = doc.diagnostics?.table_sources;
           if (!srcRaw || typeof srcRaw !== 'object') return;
           Object.keys(srcRaw as Record<string, unknown>).forEach((key) => sourceSet.add(key));
@@ -996,13 +1521,13 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         });
         const sourceText = sourceSet.size > 0 ? Array.from(sourceSet).slice(0, 3).join(', ') : '未知';
         const figureSourceText = figureSourceSet.size > 0 ? Array.from(figureSourceSet).slice(0, 3).join(', ') : '未知';
-        const softWarningCount = payload.documents.reduce((acc, doc) => acc + (doc.soft_warnings?.length ?? 0), 0);
-        const autoSchemaDocs = payload.documents.reduce((acc, doc) => {
+        const softWarningCount = documentsWithPreview.reduce((acc, doc) => acc + (doc.soft_warnings?.length ?? 0), 0);
+        const autoSchemaDocs = documentsWithPreview.reduce((acc, doc) => {
           const mode = String(doc.diagnostics?.schema_mode || '');
           return acc + (mode === 'auto' ? 1 : 0);
         }, 0);
         setInfoMessage(
-          `已完成 ${payload.documents.length} 份文档抽取，缓存命中 ${cacheHits} 份，智能字段识别 ${autoSchemaDocs} 份，识别表格 ${totalTables} 张（来源: ${sourceText}），识别图像 ${totalFigures} 张（来源: ${figureSourceText}），软告警 ${softWarningCount} 条。`
+          `已完成 ${documentsWithPreview.length} 份文档抽取，缓存命中 ${cacheHits} 份，智能字段识别 ${autoSchemaDocs} 份，识别表格 ${totalTables} 张（来源: ${sourceText}），识别图像 ${totalFigures} 张（来源: ${figureSourceText}），软告警 ${softWarningCount} 条。`
         );
       }
     } catch (error) {
@@ -1182,12 +1707,20 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   };
 
   const workbenchGridClass = showLeftPanel
-    ? "grid flex-1 min-h-0 grid-cols-1 gap-3 xl:grid-cols-[minmax(240px,24vw)_minmax(0,1fr)] 2xl:grid-cols-[minmax(240px,18vw)_minmax(560px,1fr)_minmax(320px,22vw)]"
-    : "grid flex-1 min-h-0 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,28vw)] 2xl:grid-cols-[minmax(560px,1fr)_minmax(340px,24vw)]";
-  const rightPanelClass = showLeftPanel
-    ? "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 xl:col-span-2 2xl:col-span-1"
-    : "flex h-full w-full min-w-0 shrink-0 flex-col gap-3";
+    ? "grid flex-1 min-h-0 gap-3 grid-cols-[320px_1fr_360px]"
+    : "grid flex-1 min-h-0 gap-3 grid-cols-[1fr_360px]";
+  const rightPanelClass = "flex h-full w-full min-w-0 shrink-0 flex-col gap-3";
   const showTraceOverlay = false;
+  const previewControlsDisabled = !hasPreviewContent;
+
+  const isPageBased = useMemo(() => {
+    return (
+      activeRenderExt === 'pdf' ||
+      activeExt === 'doc' ||
+      activeExt === 'docx' ||
+      IMAGE_EXTENSIONS.has(activeExt)
+    );
+  }, [activeRenderExt, activeExt]);
 
   return (
     <div className="relative h-[calc(100vh-2rem)] overflow-hidden p-2 text-foreground flex flex-col">
@@ -1202,284 +1735,302 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       />
 
       <div className={workbenchGridClass}>
-        {/* 左侧：上传与任务助手 */}
-        {showLeftPanel && <div data-testid="module2-left-panel" className="flex h-full min-h-0 flex-col gap-3">
-          <div className="flex h-auto min-h-[240px] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-sm backdrop-blur dark:border-slate-700 dark:bg-slate-900/85 animate-in slide-in-from-left-4 fade-in duration-500 xl:min-h-[280px] xl:max-h-[46vh]">
+        {showLeftPanel && (
+          <div data-testid="module2-left-panel" className="flex h-full min-h-0 flex-col gap-3 xl:row-span-2">
+            <div 
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={cn(
+                "flex min-h-[240px] max-h-[36vh] flex-col overflow-hidden rounded-2xl border bg-white/90 shadow-sm transition-colors duration-200 dark:bg-slate-900/85",
+                isUploaderDragOver 
+                  ? "border-blue-400 bg-blue-50/50 ring-2 ring-blue-200 dark:border-blue-600 dark:bg-blue-900/20 dark:ring-blue-800"
+                  : "border-slate-200/80 dark:border-slate-700"
+              )}
+            >
               <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2.5 dark:border-slate-700">
                 <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
                   <UploadCloud size={15} className="text-blue-600 dark:text-blue-400" />
                   文件上传
                 </h3>
-                {selectedFiles.length > 0 && (
-                  <span data-testid="module2-file-count" className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                    {selectedFiles.length}/5
-                  </span>
-                )}
+                <span data-testid="module2-file-count" className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                  {selectedFiles.length}/5
+                </span>
               </div>
 
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 custom-scrollbar">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 custom-scrollbar">
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   data-testid="module2-add-files"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs font-bold text-slate-700 shadow-sm transition-all hover:bg-slate-50 hover:text-blue-600 hover:shadow-md dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 shadow-sm transition-colors hover:border-blue-200 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:text-blue-300"
                 >
-                  <span className="flex items-center justify-center gap-2">
-                    <UploadCloud size={14} />
-                    {selectedFiles.length > 0 ? '添加更多文件' : '添加文件'}
+                  <span className="inline-flex items-center gap-1.5">
+                    <Plus size={14} />
+                    {selectedFiles.length > 0 ? '继续上传文件' : '上传文件'}
                   </span>
                 </button>
 
-                {selectedFiles.length === 0 && (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/70 px-3 py-5 text-center text-[11px] text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-400">
-                    尚未选择文件，支持 PDF、Word、Excel、文本与图片格式。
-                  </div>
-                )}
+                <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-2.5 py-2 text-[10px] text-slate-500 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400">
+                  单批最多 5 个文件，支持 PDF / Word / Excel / 图片 / TXT / MD。
+                </div>
 
-                {selectedFiles.map((file, index) => (
-                    <div
-                      key={`${file.name}:${index}`}
-                      className="group flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2.5 transition-colors hover:border-blue-200 dark:border-slate-700 dark:bg-slate-800/60 dark:hover:border-blue-700"
-                    >
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <div className="rounded-lg bg-slate-100 p-2 text-slate-500 dark:bg-slate-700 dark:text-slate-300">
-                          <File size={14} />
-                        </div>
+                {selectedFiles.length === 0 ? (
+                  <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-8 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/30 dark:border-slate-700 dark:bg-slate-800/40 dark:hover:border-blue-600 dark:hover:bg-blue-900/10"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
+                       <UploadCloud size={20} />
+                    </div>
+                    <div className="space-y-0.5">
+                      <p className="text-xs font-bold text-slate-700 dark:text-slate-200">点击上传文档</p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500">支持 PDF, Word, Excel, 图片等</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {selectedFiles.map((file, index) => (
+                      <button
+                        type="button"
+                        key={`${file.name}:${index}`}
+                        onClick={() => setActiveDocIndex(index)}
+                        className={cn(
+                          "group flex w-full items-center justify-between rounded-lg border px-2.5 py-2 text-left transition-colors",
+                          activeSourceFile && fileIdentityKey(activeSourceFile) === fileIdentityKey(file)
+                            ? "border-blue-200 bg-blue-50/70 dark:border-blue-700 dark:bg-blue-900/20"
+                            : "border-slate-200 bg-white hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800/70 dark:hover:border-slate-600"
+                        )}
+                      >
                         <div className="min-w-0">
-                          <p className="truncate text-xs font-bold text-slate-700 dark:text-slate-100">{file.name}</p>
+                          <p className="truncate text-xs font-semibold text-slate-700 dark:text-slate-100">{file.name}</p>
                           <p className="text-[10px] text-slate-500 dark:text-slate-400">{(file.size / 1024).toFixed(1)} KB</p>
                         </div>
-                      </div>
-                      <button
-                        onClick={() => removeFile(index)}
-                        className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
-                      >
-                        <Trash2 size={14} />
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeFile(index);
+                          }}
+                          className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
+                          aria-label={`移除文件 ${file.name}`}
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       </button>
-                    </div>
-                  ))
-                }
+                    ))}
+                  </div>
+                )}
               </div>
 
-              <div className="space-y-3 border-t border-slate-200 p-4 dark:border-slate-700">
+              <div className="border-t border-slate-200 p-3 dark:border-slate-700">
                 <div className="flex gap-2">
                   <button
                     onClick={() => setShowSchema(!showSchema)}
                     className={cn(
-                      'flex-1 rounded-xl border px-3 py-2.5 text-xs font-bold transition-all shadow-sm',
+                      'flex-1 rounded-lg border px-2.5 py-2 text-xs font-bold transition-colors',
                       showSchema
-                        ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 hover:border-slate-400 hover:text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                        ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-300'
+                        : 'border-slate-300 bg-white text-slate-700 hover:border-blue-200 hover:text-blue-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:text-blue-300'
                     )}
                   >
-                    <span className="inline-flex items-center justify-center gap-1.5">
-                      <Settings size={14} />
-                      {showSchema ? '隐藏规则' : '配置规则'}
+                    <span className="inline-flex items-center gap-1.5">
+                      <Settings size={13} />
+                      {showSchema ? '收起规则' : '配置规则'}
                     </span>
                   </button>
                   <button
                     onClick={clearAllFiles}
                     disabled={selectedFiles.length === 0 && documents.length === 0}
                     data-testid="module2-clear-files"
-                    className="rounded-xl border border-transparent bg-transparent px-4 py-2.5 text-xs font-bold text-slate-600 transition-colors hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-red-900/20"
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-red-800 dark:hover:bg-red-900/20 dark:hover:text-red-300"
                   >
                     清空
                   </button>
                 </div>
-                <div className="relative group/extract-btn">
-                  <button
-                    onClick={runExtraction}
-                    disabled={isProcessing || selectedFiles.length === 0}
-                    data-testid="module2-start-extract"
-                    className={cn(
-                      'w-full rounded-xl py-3 text-sm font-bold text-white transition-all duration-300',
-                      isProcessing || selectedFiles.length === 0
-                        ? 'cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200 dark:bg-slate-800 dark:text-slate-600 dark:border-slate-700'
-                        : 'bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-500/30 hover:shadow-blue-500/40 hover:-translate-y-0.5 active:translate-y-0'
-                    )}
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <PlayCircle size={16} strokeWidth={2.5} />}
-                      {isProcessing ? "正在抽取..." : "开始提取"}
-                    </span>
-                  </button>
-                  {/* Tooltip for disabled state */}
-                  {selectedFiles.length === 0 && !isProcessing && (
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-800 text-white text-[10px] rounded-lg shadow-xl opacity-0 group-hover/extract-btn:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
-                      请先上传文件
-                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-[4px] border-transparent border-t-slate-800"></div>
-                    </div>
-                  )}
-                </div>
               </div>
             </div>
 
-          <div className="flex-1 flex flex-col min-h-0 rounded-2xl border border-slate-200/80 bg-white/90 p-3 shadow-sm backdrop-blur dark:border-slate-700 dark:bg-slate-900/85 transition-all duration-300">
-            <div className="mb-2 flex items-center justify-between shrink-0">
-              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                 <Bot size={16} className="text-blue-500" />
-                 信息提取任务助手
-              </h3>
-              <button
-                onClick={() => setShowAssistantHelp(true)}
-                className="flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-blue-600 transition-colors hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/40"
-              >
-                <HelpCircle size={12} />
-                助手功能说明
-              </button>
-            </div>
-            
-            {documents.length === 0 ? (
-                <div className="flex flex-1 flex-col items-center justify-center gap-3 p-4 text-center text-slate-400 select-none">
-                    {isProcessing || selectedFiles.length > 0 ? (
-                      <div className="w-full rounded-xl border border-slate-100 bg-white/60 p-3 text-left dark:border-slate-700 dark:bg-slate-900/30">
-                        <div className="mb-1 flex items-center gap-1.5 opacity-70 text-blue-600 dark:text-blue-400">
-                          <Sparkles size={12} />
-                          <span className="text-[10px] font-bold">AI智能总结</span>
-                        </div>
-                        <p data-testid="module2-summary-text" className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400 whitespace-pre-wrap break-words">
-                          {activeSummaryLoading ? "正在生成文档摘要..." : (activeSummaryText || "已接收任务，等待抽取结果。")}
-                        </p>
-                        <p className="mt-2 text-[10px] text-slate-400 dark:text-slate-500">
-                          抽取完成后可在下方对话框继续发送定向提取指令。
-                        </p>
+            <div className="flex min-h-[180px] max-h-[30vh] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-sm dark:border-slate-700 dark:bg-slate-900/85">
+              <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-3 py-2.5 dark:border-slate-700">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">文档列表</h3>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">{documents.length > 0 ? `${documents.length} 份` : '0 份'}</span>
+              </div>
+              {documents.length === 0 ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-2 px-3 text-center opacity-60">
+                  <ScanLine size={24} className="text-slate-300 dark:text-slate-600" />
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                    暂无抽取结果，请先上传文档并点击“开始提取”
+                  </p>
+                </div>
+              ) : (
+                <div className="flex-1 space-y-1 overflow-y-auto p-2 custom-scrollbar">
+                  {documents.map((doc, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setActiveDocIndex(idx);
+                        setActiveFieldKey(null);
+                      }}
+                      className={cn(
+                        "w-full rounded-lg border px-2.5 py-2 text-left text-xs transition-colors",
+                        activeDocIndex === idx
+                          ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
+                          : "border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:bg-slate-800"
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-semibold">{doc.file_name}</span>
+                        <span className="text-[10px] opacity-60">#{idx + 1}</span>
                       </div>
-                    ) : (
-                      <>
-                        <Bot size={48} strokeWidth={1} className="mb-3 opacity-20" />
-                        <p className="text-xs">请先上传并处理文档</p>
-                      </>
-                    )}
+                      <div className="mt-1 flex items-center gap-1 text-[10px] opacity-80">
+                        {doc.errors.length > 0 ? <AlertCircle size={11} className="text-red-500" /> : <CheckCircle2 size={11} className="text-emerald-500" />}
+                        {doc.errors.length > 0 ? `异常 ${doc.errors.length} 条` : "状态正常"}
+                      </div>
+                    </button>
+                  ))}
                 </div>
-            ) : (
-                <>
-                <div className="flex-1 flex flex-col min-h-0 gap-3 overflow-hidden">
-                    <div className="shrink-0 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-200 relative">
-                    <div className="absolute top-3 left-0 w-1 h-4 bg-blue-400 rounded-r-full"></div>
-                    {assistantMessage}
-                    </div>
-                    
-                    <div className="flex-1 overflow-y-auto custom-scrollbar rounded-xl border border-slate-100 bg-white/40 p-2.5 dark:border-slate-800 dark:bg-slate-900/30 flex flex-col gap-2">
-                    <div className="shrink-0">
-                        <div className="flex items-center gap-1.5 mb-1 opacity-70 text-blue-600 dark:text-blue-400">
-                            <Sparkles size={12} />
-                            <span className="text-[10px] font-bold">AI智能总结</span>
-                        </div>
-                        <p data-testid="module2-summary-text" className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400 whitespace-pre-wrap break-words">
-                            {activeSummaryLoading ? "正在生成文档摘要..." : (activeSummaryText || "暂无摘要。")}
-                        </p>
-                    </div>
+              )}
+            </div>
 
-                    <div className="shrink-0 space-y-1">
-                        <div
-                          ref={assistantDialogRef}
-                          data-testid="module2-assistant-dialog"
-                          className="max-h-48 space-y-2 overflow-y-auto rounded-xl border border-slate-100 bg-white/70 p-2 dark:border-slate-700 dark:bg-slate-900/40"
-                        >
-                          {assistantDialog.length === 0 ? (
-                            <p className="text-[10px] text-slate-400 dark:text-slate-500">
-                              等待指令，发送需求后这里会显示完整对话。
-                            </p>
-                          ) : (
-                            assistantDialog.slice(-16).map((msg) => (
-                              <div
-                                key={msg.id}
-                                className={cn(
-                                  "rounded-lg px-2 py-1.5 text-[10px] leading-relaxed break-words",
-                                  msg.role === 'assistant'
-                                    ? "border border-blue-100 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300"
-                                    : "border border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                                )}
-                              >
-                                <p className="mb-0.5 opacity-70">{msg.role === 'assistant' ? '助手' : '用户'}</p>
-                                <p>{msg.content}</p>
-                              </div>
-                            ))
-                          )}
-                          {assistantQueryLoading && (
-                            <div className="inline-flex items-center gap-1 rounded-lg border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] text-blue-600 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
-                              <Loader2 size={10} className="animate-spin" />
-                              助手处理中...
-                            </div>
-                          )}
-                        </div>
-                        <div className="relative">
-                        <textarea
-                            data-testid="module2-assistant-input"
-                            value={assistantInput}
-                            onChange={(e) => setAssistantInput(e.target.value)}
-                            onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault();
-                                if (!assistantQueryLoading) {
-                                void runAssistantInstruction();
-                                }
-                            }
-                            }}
-                            placeholder="例如：提取合同金额和税率并入库"
-                            className="w-full min-h-[72px] resize-none rounded-xl border border-slate-200 bg-white/90 px-3 py-2 pr-10 text-xs text-slate-700 outline-none transition-colors focus:border-blue-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                        />
-                        <button
-                            type="button"
-                            data-testid="module2-assistant-send"
-                            onClick={() => void runAssistantInstruction()}
-                            disabled={assistantQueryLoading || !activeDoc}
-                            className={cn(
-                            'absolute bottom-2 right-2 rounded-lg p-1.5 transition-colors',
-                            assistantQueryLoading || !activeDoc
-                                ? 'cursor-not-allowed bg-slate-200 text-slate-400 dark:bg-slate-800 dark:text-slate-600'
-                                : 'bg-blue-600 text-white hover:bg-blue-700'
-                            )}
-                        >
-                            {assistantQueryLoading ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
-                        </button>
-                        </div>
-
-                        {assistantWarnings.length > 0 && (
-                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-                            {assistantWarnings.join("；")}
-                        </div>
-                        )}
-
-                        {assistantAnswer && (
-                        <div
-                            data-testid="module2-assistant-answer"
-                            className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-[10px] leading-relaxed text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300"
-                        >
-                            {assistantAnswer}
-                        </div>
-                        )}
-                    </div>
-                    </div>
-                </div>
-
-                <div className="flex gap-2 shrink-0 mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900/85">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
+                  <Bot size={16} className="text-blue-500" />
+                  信息提取任务助手
+                </h3>
                 <button
-                    onClick={handleAssistantConfirm}
-                    className={cn(
-                    'flex-1 rounded-lg border py-2 text-xs font-bold transition-colors',
-                    assistantStatus === 'confirmed'
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200'
-                        : 'border-slate-200 bg-white text-slate-600 hover:border-emerald-300 hover:text-emerald-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200'
-                    )}
+                  onClick={() => setShowAssistantHelp(true)}
+                  className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-blue-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-blue-400"
+                  aria-label="查看助手功能说明"
                 >
-                    确认结果
+                  <HelpCircle size={14} />
                 </button>
-                <button
-                    onClick={handleAssistantRollback}
-                    className={cn(
-                    'flex-1 rounded-lg border py-2 text-xs font-bold transition-colors',
-                    assistantStatus === 'rolled_back'
-                        ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200'
-                        : 'border-slate-200 bg-white text-slate-600 hover:border-amber-300 hover:text-amber-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200'
-                    )}
-                >
-                    回滚定位
-                </button>
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div ref={assistantDialogRef} data-testid="module2-assistant-dialog" className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 custom-scrollbar">
+                  {/* Summary Section */}
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-[11px] leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-200">
+                    <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold text-blue-600 dark:text-blue-300">
+                      <Sparkles size={11} />
+                      AI智能总结
+                    </div>
+                    <p data-testid="module2-summary-text" className="whitespace-pre-wrap break-words">
+                      {activeSummaryLoading ? "正在生成文档摘要..." : (activeSummaryText || "上传文件并执行抽取后，摘要会自动展示。")}
+                    </p>
+                  </div>
+
+                  {/* Chat History */}
+                  {assistantDialog.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={cn(
+                        "flex gap-2 max-w-[95%]",
+                        msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto"
+                      )}
+                    >
+                      <div className={cn(
+                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-full mt-0.5",
+                        msg.role === 'assistant' 
+                          ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400" 
+                          : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                      )}>
+                        {msg.role === 'assistant' ? <Bot size={12} /> : <div className="text-[10px] font-bold">ME</div>}
+                      </div>
+                      <div className={cn(
+                        "rounded-2xl px-3 py-2 text-[11px] leading-relaxed shadow-sm break-words whitespace-pre-wrap",
+                        msg.role === 'assistant'
+                          ? "rounded-tl-none bg-white border border-slate-100 text-slate-700 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200"
+                          : "rounded-tr-none bg-blue-600 text-white"
+                      )}>
+                        {msg.content}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Loading State */}
+                  {assistantQueryLoading && (
+                    <div className="flex gap-2 mr-auto max-w-[90%]">
+                       <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 mt-0.5">
+                        <Bot size={12} />
+                      </div>
+                      <div className="bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 px-3 py-2.5 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-1">
+                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce"></span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Assistant Answer (Legacy support if needed, but better integrated above) */}
+                  {assistantAnswer && !assistantDialog.some(m => m.content === assistantAnswer) && (
+                     <div className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-2 text-[11px] text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                        {assistantAnswer}
+                     </div>
+                  )}
+                  
+                  {/* Warnings */}
+                  {assistantWarnings.length > 0 && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                      {assistantWarnings.join('；')}
+                    </div>
+                  )}
+
+                  {/* Spacer for scrolling */}
+                  <div className="h-2" />
                 </div>
-                </>
-            )}
+
+                {/* Input Area */}
+                <div className="border-t border-slate-200 bg-slate-50/50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
+                  {/* Quick Commands */}
+                  <div className="mb-2 flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                    {ASSISTANT_QUICK_COMMANDS.map((command) => (
+                      <button
+                        key={command}
+                        onClick={() => applyAssistantInstruction(command)}
+                        className="whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] text-slate-600 transition-colors hover:border-blue-200 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
+                      >
+                        {command}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="relative">
+                    <textarea
+                      ref={assistantInputRef}
+                      data-testid="module2-assistant-input"
+                      value={assistantInput}
+                      onChange={(e) => setAssistantInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          if (!assistantQueryLoading && activeDoc) {
+                            void runAssistantInstruction();
+                          }
+                        }
+                      }}
+                      placeholder={activeDoc ? "输入需求，回车发送..." : "请先抽取文档..."}
+                      className="max-h-24 min-h-[40px] w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 pr-9 text-xs leading-relaxed text-slate-700 outline-none transition-colors focus:border-blue-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:border-blue-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void runAssistantInstruction()}
+                      disabled={assistantQueryLoading || !activeDoc || !assistantInput.trim()}
+                      className={cn(
+                        'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
+                        assistantQueryLoading || !activeDoc || !assistantInput.trim()
+                          ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600'
+                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                      )}
+                    >
+                      {assistantQueryLoading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>}
+        )}
+
 
       {/* CENTER: Workbench Area */}
       <div className="relative flex h-full min-h-0 flex-col gap-4">
@@ -1543,19 +2094,71 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                      )}
                 </div>
 
-                <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0 mx-2" />
+                <div className="h-5 w-px bg-slate-200 dark:bg-slate-600 shrink-0 mx-2" />
 
                 <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={handleZoomOut} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-700 hover:text-blue-600 transition-colors active:scale-95 shrink-0" title="缩小"><ZoomOut size={16} strokeWidth={2}/></button>
+                    <button
+                        onClick={handleZoomOut}
+                        disabled={previewControlsDisabled}
+                        className={cn(
+                          "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                          previewControlsDisabled
+                            ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
+                            : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                        )}
+                        title="缩小"
+                        aria-label="缩小预览"
+                    >
+                      <ZoomOut size={16} strokeWidth={2}/>
+                    </button>
                     <span className="text-xs font-bold font-mono w-10 text-center text-slate-900 dark:text-slate-100 shrink-0">{Math.round(scale * 100)}%</span>
-                    <button onClick={handleZoomIn} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-700 hover:text-blue-600 transition-colors active:scale-95 shrink-0" title="放大"><ZoomIn size={16} strokeWidth={2}/></button>
-                    <button onClick={handleRotate} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-700 hover:text-blue-600 transition-colors ml-0.5 active:scale-95 shrink-0" title="旋转"><RotateCw size={16} strokeWidth={2}/></button>
-                    <button onClick={handleResetView} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-700 hover:text-blue-600 transition-colors active:scale-95 shrink-0" title="重置视图"><Maximize size={16} strokeWidth={2}/></button>
+                    <button
+                        onClick={handleZoomIn}
+                        disabled={previewControlsDisabled}
+                        className={cn(
+                          "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                          previewControlsDisabled
+                            ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
+                            : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                        )}
+                        title="放大"
+                        aria-label="放大预览"
+                    >
+                      <ZoomIn size={16} strokeWidth={2}/>
+                    </button>
+                    <button
+                        onClick={handleRotate}
+                        disabled={previewControlsDisabled}
+                        className={cn(
+                          "p-1.5 rounded-lg transition-colors ml-0.5 active:scale-95 shrink-0",
+                          previewControlsDisabled
+                            ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
+                            : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                        )}
+                        title="旋转"
+                        aria-label="旋转预览"
+                    >
+                      <RotateCw size={16} strokeWidth={2}/>
+                    </button>
+                    <button
+                        onClick={handleResetView}
+                        disabled={previewControlsDisabled}
+                        className={cn(
+                          "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                          previewControlsDisabled
+                            ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
+                            : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                        )}
+                        title="重置视图"
+                        aria-label="重置预览视图"
+                    >
+                      <Maximize size={16} strokeWidth={2}/>
+                    </button>
                 </div>
 
                 {activeRenderExt === 'pdf' && (
                     <>
-                        <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0 mx-2" />
+                        <div className="h-5 w-px bg-slate-200 dark:bg-slate-600 shrink-0 mx-2" />
                         <div className="flex items-center gap-1 shrink-0">
                             <button
                                 onClick={handlePrevPdfPage}
@@ -1563,7 +2166,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                 className={cn(
                                     "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
                                     currentPdfPage > 1
-                                        ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                        ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-200"
                                         : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
                                 )}
                                 title="上一页"
@@ -1579,7 +2182,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                 className={cn(
                                     "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
                                     currentPdfPage < inferredPdfPageCount
-                                        ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                        ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-200"
                                         : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
                                 )}
                                 title="下一页"
@@ -1590,12 +2193,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     </>
                 )}
 
-                <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0 mx-2" />
+                <div className="h-5 w-px bg-slate-200 dark:bg-slate-600 shrink-0 mx-2" />
 
                 <div className="flex items-center gap-2 shrink-0">
                     <button
                         onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 hover:text-blue-600 transition-colors dark:text-slate-300 dark:hover:bg-slate-800"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 hover:text-blue-600 transition-colors dark:text-slate-200 dark:hover:bg-slate-800"
                         title="添加更多文件"
                     >
                         <Plus size={16} strokeWidth={2.5} />
@@ -1605,6 +2208,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     {!activeDoc && selectedFiles.length > 0 ? (
                         <button
                             onClick={runExtraction}
+                            data-testid="module2-start-extract"
                             disabled={isProcessing}
                             className={cn(
                                 "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap",
@@ -1623,7 +2227,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                             className={cn(
                                 "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap",
                                 documents.length > 0
-                                ? "bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-blue-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                                ? "bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-blue-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                                 : "opacity-50 bg-slate-50 text-slate-400 cursor-not-allowed dark:bg-slate-900 dark:text-slate-600"
                             )}
                         >
@@ -1639,17 +2243,34 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     <div
                      data-testid="module2-center-uploader"
                      onClick={() => fileInputRef.current?.click()}
+                     onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsUploaderDragOver(true);
+                    }}
                      onDragOver={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      setIsUploaderDragOver(true);
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsUploaderDragOver(false);
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      setIsUploaderDragOver(false);
                       const dropped = Array.from(e.dataTransfer?.files ?? []) as File[];
                       mergeSelectedFiles(dropped);
                     }}
-                    className="group relative flex flex-col items-center justify-center h-full w-full select-none cursor-pointer overflow-hidden rounded-3xl border-2 border-dashed border-slate-300 bg-slate-50/50 transition-all duration-500 hover:border-blue-400 hover:bg-blue-50/50 hover:shadow-lg hover:shadow-blue-500/5 dark:border-slate-700 dark:bg-slate-900/30 dark:hover:border-blue-500/50 dark:hover:bg-blue-900/10"
+                    className={cn(
+                      "group relative flex h-full w-full select-none cursor-pointer flex-col items-center justify-center overflow-hidden rounded-3xl border-2 border-dashed bg-slate-50/50 transition-all duration-300",
+                      isUploaderDragOver
+                        ? "border-blue-500 bg-blue-50/70 shadow-lg shadow-blue-500/15 dark:border-blue-400 dark:bg-blue-900/20"
+                        : "border-slate-300 hover:border-blue-400 hover:bg-blue-50/50 hover:shadow-lg hover:shadow-blue-500/5 dark:border-slate-700 dark:bg-slate-900/30 dark:hover:border-blue-500/50 dark:hover:bg-blue-900/10"
+                    )}
                   >
                      {/* Creative Background Elements */}
                      <div className="absolute inset-0 opacity-0 transition-opacity duration-700 group-hover:opacity-100 pointer-events-none">
@@ -1704,19 +2325,33 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     </div>
                    </div>
                 ) : (
-                   <div 
-                        className="relative w-full max-w-[860px] origin-center shadow-2xl transition-all duration-300 ease-out will-change-transform dark:shadow-black/50"
-                        style={{ 
-                            transform: `scale(${scale}) rotate(${rotation}deg)`,
-                            transition: isProcessing ? 'none' : 'transform 0.3s ease-out'
-                        }}
+                   <div
+                        className={cn(
+                          "relative w-full origin-center transition-all duration-300 ease-out will-change-transform",
+                          isPageBased 
+                            ? "max-w-[860px] shadow-2xl dark:shadow-black/50" 
+                            : "h-full flex flex-col"
+                        )}
+                        style={activeRenderExt === 'pdf'
+                          ? undefined
+                          : {
+                              transform: `scale(${scale}) rotate(${rotation}deg)`,
+                              transition: isProcessing ? 'none' : 'transform 0.3s ease-out',
+                            }}
                     >
-                         <div className="relative aspect-[595/842] w-full overflow-hidden bg-white ring-1 ring-slate-200/50 shadow-2xl dark:bg-[#1a1b26] dark:ring-white/10">
+                         <div className={cn(
+                           "relative w-full overflow-hidden bg-white dark:bg-[#1a1b26]",
+                           isPageBased 
+                             ? "aspect-[595/842] ring-1 ring-slate-200/50 shadow-2xl dark:ring-white/10" 
+                             : "flex-1 rounded-xl ring-1 ring-slate-200/50 shadow-sm dark:ring-white/10"
+                         )}>
                             {activeRenderExt === 'pdf' && previewUrl ? (
-                              <iframe
-                                title={`preview-${activeDisplayName}`}
+                              <PdfCanvasPreview
                                 src={`${previewUrl}#page=${currentPdfPage}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-                                className="absolute inset-0 w-full h-full border-0 pointer-events-none"
+                                page={currentPdfPage}
+                                scale={scale}
+                                rotation={rotation}
+                                onPageCount={setPdfPreviewPageCount}
                               />
                             ) : (activeExt === 'doc' || activeExt === 'docx') ? (
                               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-50/70 p-6 text-center dark:bg-slate-900/60">
@@ -1854,9 +2489,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             <div className="z-20 flex h-9 items-center justify-between border-t border-border/50 bg-white/60 px-3 text-[10px] text-muted-foreground backdrop-blur-md sm:px-4 dark:bg-slate-900/60">
                 <div className="flex min-w-0 items-center gap-2 sm:gap-4">
                      <span data-testid="module2-info-message" className="truncate">{infoMessage}</span>
-                     <span className="opacity-70" data-testid="module2-trace-status">
-                       {traceLoading ? "溯源定位中..." : `溯源命中 ${traceHits.length} 条`}
-                     </span>
                 </div>
                 {activeDoc && (
                     <div className="hidden font-mono opacity-50 sm:block">
@@ -1865,63 +2497,22 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                 )}
             </div>
         </div>
+
+
       </div>
 
       {/* 右侧：文档与抽取结果 */}
       <div className={rightPanelClass}>
-        <div className="rounded-2xl border border-slate-200/80 bg-white/90 p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900/85">
-          <div className="mb-2 flex items-center justify-between px-1">
-            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">文档列表</h3>
-            <span className="text-[10px] text-slate-500 dark:text-slate-400">{documents.length > 0 ? `${documents.length} 份` : ''}</span>
-          </div>
-          {documents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10 text-center text-slate-600 select-none dark:text-slate-400">
-              <div className="mb-3 rounded-2xl bg-slate-50 p-4 shadow-sm border border-slate-100 dark:bg-slate-800/50 dark:border-slate-700">
-                 <FileText size={24} strokeWidth={1.5} className="text-slate-500 dark:text-slate-400" />
-              </div>
-              <p className="text-xs font-bold text-slate-900 dark:text-slate-100 mb-1">暂无已解析文档</p>
-              <p className="text-[10px] font-medium text-slate-600 max-w-[200px] leading-relaxed dark:text-slate-400">
-                请在左侧上传文档并点击提取，结果将展示在这里
-              </p>
-            </div>
-          ) : (
-            <div className="max-h-40 space-y-1 overflow-y-auto custom-scrollbar">
-              {documents.map((doc, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => {
-                    setActiveDocIndex(idx);
-                    setActiveFieldKey(null);
-                  }}
-                  className={cn(
-                    "w-full rounded-xl border px-3 py-2 text-left text-xs transition-colors",
-                    activeDocIndex === idx
-                      ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
-                      : "border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:bg-slate-800"
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-semibold">{doc.file_name}</span>
-                    <span className="text-[10px] opacity-60">#{idx + 1}</span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-1 text-[10px] opacity-80">
-                    {doc.errors.length > 0 ? <AlertCircle size={11} className="text-red-500" /> : <CheckCircle2 size={11} className="text-emerald-500" />}
-                    {doc.errors.length > 0 ? `异常 ${doc.errors.length} 条` : "状态正常"}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-sm dark:border-slate-700 dark:bg-slate-900/85">
+
+
           <div className="border-b border-slate-200 px-3 py-2.5 dark:border-slate-700">
             <div className="flex items-center justify-between">
               <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
                 <ScanLine size={16} className="text-blue-500" />
                 抽取结果
               </h3>
-              <span className="text-[10px] text-slate-500 dark:text-slate-400">{fieldItems.length > 0 ? `${fieldItems.length} 个字段` : ''}</span>
+              <span className="text-[10px] text-slate-500 dark:text-slate-400">{resultCountText}</span>
             </div>
             {fieldItems.length > 0 && (
               <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
@@ -1933,6 +2524,53 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                 </span>
               </div>
             )}
+            {activeDoc && fieldItems.length > 0 && (
+              <div className="mt-2 flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={resultSearchQuery}
+                    onChange={(e) => setResultSearchQuery(e.target.value)}
+                    className="h-8 w-full rounded-lg border border-slate-200 bg-white pl-7 pr-7 text-[11px] text-slate-700 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    placeholder="搜索字段名、标签、值"
+                    aria-label="搜索抽取结果"
+                  />
+                  {hasResultSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setResultSearchQuery('')}
+                      className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                      aria-label="清空抽取结果搜索"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void writeClipboard(
+                      filteredResultsClipboardText,
+                      hasResultSearch
+                        ? `已复制 ${filteredFieldItems.length} 条筛选结果。`
+                        : `已复制 ${filteredFieldItems.length} 条抽取结果。`
+                    )
+                  }
+                  disabled={!canCopyFilteredResults}
+                  className={cn(
+                    'inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] transition-colors',
+                    canCopyFilteredResults
+                      ? 'border-slate-200 text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300'
+                      : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500'
+                  )}
+                  aria-label="复制当前结果列表"
+                >
+                  <Copy size={12} />
+                  复制全部
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="border-b border-slate-200 bg-slate-50/40 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800/30">
@@ -1941,9 +2579,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                 <LocateFixed size={14} className={cn("text-slate-400", traceHits.length > 0 && "text-blue-500")} />
                 溯源定位
               </div>
-              <span className="text-[10px] text-slate-500 dark:text-slate-400">
-                {traceLoading ? "定位中..." : `${traceHits.length} 条命中`}
-              </span>
             </div>
 
             {(traceTypeStats.field > 0 || traceTypeStats.table > 0 || traceTypeStats.figure > 0 || traceTypeStats.other > 0) && (
@@ -2290,7 +2925,28 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
               </div>
             )}
 
-            {fieldItems.map((item) => (
+            {activeDoc && fieldItems.length === 0 && !errorMessage && (
+              <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center dark:border-slate-700 dark:bg-slate-800/30">
+                <FileText size={24} className="text-slate-300 dark:text-slate-600" />
+                <p className="text-xs text-slate-500 dark:text-slate-400">该文档暂无识别到的结构化字段</p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500">请检查文档内容或尝试调整提取规则</p>
+              </div>
+            )}
+
+            {activeDoc && fieldItems.length > 0 && filteredFieldItems.length === 0 && !errorMessage && (
+              <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
+                 <Search size={20} className="text-slate-300 dark:text-slate-600" />
+                 <p className="text-xs text-slate-500 dark:text-slate-400">未找到匹配 "{resultSearchQuery}" 的字段</p>
+                 <button 
+                   onClick={() => setResultSearchQuery('')}
+                   className="text-[10px] text-blue-500 hover:underline"
+                 >
+                   清除搜索
+                 </button>
+              </div>
+            )}
+
+            {filteredFieldItems.map((item) => (
               <div
                 key={item.key}
                 onClick={() => {

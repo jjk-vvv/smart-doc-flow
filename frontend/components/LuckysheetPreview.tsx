@@ -39,7 +39,77 @@ type RuntimeRef = {
   luckyExcel: LuckyExcelLike;
 };
 
+type JQueryCompat = Record<string, unknown> & {
+  isArray?: (value: unknown) => boolean;
+  isFunction?: (value: unknown) => boolean;
+  isNumeric?: (value: unknown) => boolean;
+  trim?: (value: unknown) => string;
+  type?: (value: unknown) => string;
+  fn?: Record<string, unknown>;
+};
+
 let runtimePromise: Promise<RuntimeRef> | null = null;
+
+function installJQueryCompat(raw: unknown): void {
+  const jq = raw as JQueryCompat;
+  if (!jq || (typeof jq !== "function" && typeof jq !== "object")) return;
+  if (typeof jq.isArray !== "function") {
+    jq.isArray = (value: unknown) => Array.isArray(value);
+  }
+  if (typeof jq.isFunction !== "function") {
+    jq.isFunction = (value: unknown) => typeof value === "function";
+  }
+  if (typeof jq.isNumeric !== "function") {
+    jq.isNumeric = (value: unknown) => {
+      if (typeof value === "number") return Number.isFinite(value);
+      if (typeof value === "string" && value.trim() !== "") {
+        return Number.isFinite(Number(value));
+      }
+      return false;
+    };
+  }
+  if (typeof jq.trim !== "function") {
+    jq.trim = (value: unknown) => String(value ?? "").trim();
+  }
+  if (typeof jq.type !== "function") {
+    jq.type = (value: unknown) => Object.prototype.toString.call(value).slice(8, -1).toLowerCase();
+  }
+  const jqFn = jq.fn;
+  if (jqFn && typeof jqFn.mousewheel !== "function") {
+    jqFn.mousewheel = function mousewheelShim(this: unknown): unknown {
+      return this;
+    };
+  }
+}
+
+function resolveLuckysheetExport(mod: unknown): LuckysheetLike | null {
+  const obj = mod as Record<string, unknown> | null | undefined;
+  if (!obj) return null;
+  const direct = obj as unknown as LuckysheetLike;
+  if (typeof direct.create === "function") return direct;
+  const fromDefault = (obj.default ?? null) as Record<string, unknown> | null;
+  if (fromDefault) {
+    const d = fromDefault as unknown as LuckysheetLike;
+    if (typeof d.create === "function") return d;
+    const nested = (fromDefault.luckysheet ?? null) as LuckysheetLike | null;
+    if (nested && typeof nested.create === "function") return nested;
+  }
+  const named = (obj.luckysheet ?? null) as LuckysheetLike | null;
+  if (named && typeof named.create === "function") return named;
+  return null;
+}
+
+function resolveLuckyExcelExport(mod: unknown): LuckyExcelLike | null {
+  const obj = mod as Record<string, unknown> | null | undefined;
+  if (!obj) return null;
+  const direct = obj as unknown as LuckyExcelLike;
+  if (typeof direct.transformExcelToLucky === "function") return direct;
+  const fromDefault = (obj.default ?? null) as LuckyExcelLike | null;
+  if (fromDefault && typeof fromDefault.transformExcelToLucky === "function") return fromDefault;
+  const named = (obj.LuckyExcel ?? null) as LuckyExcelLike | null;
+  if (named && typeof named.transformExcelToLucky === "function") return named;
+  return null;
+}
 
 function readRuntimeFromWindow(): RuntimeRef | null {
   const win = window as Window & {
@@ -62,6 +132,7 @@ async function ensureRuntime(): Promise<RuntimeRef> {
   runtimePromise = (async () => {
     const jqMod = await import("jquery");
     const jqValue = (jqMod as { default?: unknown }).default ?? jqMod;
+    installJQueryCompat(jqValue);
     const win = window as Window & {
       $?: unknown;
       jQuery?: unknown;
@@ -72,11 +143,16 @@ async function ensureRuntime(): Promise<RuntimeRef> {
     win.jQuery = jqValue;
 
     await import("luckysheet/dist/plugins/js/plugin.js");
-    await import("luckysheet/dist/luckysheet.umd.js");
+    const luckysheetMod = await import("luckysheet/dist/luckysheet.umd.js");
+    if (!win.luckysheet) {
+      const luckysheetExport = resolveLuckysheetExport(luckysheetMod);
+      if (luckysheetExport) {
+        win.luckysheet = luckysheetExport;
+      }
+    }
 
     const luckyExcelMod = await import("luckyexcel");
-    const luckyExcelValue =
-      (luckyExcelMod as { default?: LuckyExcelLike }).default ?? (luckyExcelMod as unknown as LuckyExcelLike);
+    const luckyExcelValue = resolveLuckyExcelExport(luckyExcelMod);
     if (!win.LuckyExcel && luckyExcelValue) {
       win.LuckyExcel = luckyExcelValue;
     }
@@ -255,7 +331,7 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
     return () => {
       disposed = true;
     };
-  }, [containerId, file, locator]);
+  }, [containerId, file]);
 
   useEffect(() => {
     return () => {

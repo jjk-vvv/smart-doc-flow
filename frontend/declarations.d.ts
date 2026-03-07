@@ -11,3 +11,7 @@ declare module "luckyexcel" {
   export default LuckyExcel;
 }
 
+declare module "pdfjs-dist" {
+  const pdfjsDist: any;
+  export = pdfjsDist;
+}
