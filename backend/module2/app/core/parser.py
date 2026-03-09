@@ -20,6 +20,7 @@ from xml.etree import ElementTree as ET
 from pypdf import PdfReader
 
 from app.core.layout_mineru import MineruLayoutExtractor
+from app.core.office_pdf import convert_word_bytes_to_pdf
 from app.core.roi_cropper import RoiCropper
 from app.core.vision_extractor import GeminiVisionExtractor
 
@@ -42,6 +43,20 @@ class NativeDocumentParser:
         self._last_mineru_run_meta: Dict[str, Any] = {}
         self.artifact_root_dir = Path(os.getenv("MODULE2_ARTIFACT_ROOT_DIR", "backend/module2/.cache")).resolve()
         self.artifact_root_dir.mkdir(parents=True, exist_ok=True)
+        self.office_convert_enabled = (
+            os.getenv("MODULE2_DOC_TO_PDF_ENABLE", "true").lower() in {"1", "true", "yes"}
+        )
+        self.word_parse_via_pdf = (
+            os.getenv(
+                "MODULE2_WORD_PARSE_VIA_PDF",
+                os.getenv("MODULE2_WORD_REQUIRE_PDF_PARSE", "true"),
+            ).lower()
+            in {"1", "true", "yes"}
+        )
+        self.word_convert_allow_native_fallback = (
+            os.getenv("MODULE2_WORD_CONVERT_ALLOW_NATIVE_FALLBACK", "false").lower() in {"1", "true", "yes"}
+        )
+        self.word_pdf_timeout_sec = max(20.0, float(os.getenv("MODULE2_DOC_TO_PDF_TIMEOUT_SEC", "60")))
         self.max_pages = max_pages or max(1, int(os.getenv("MODULE2_MAX_PARSE_PAGES", "120")))
         self.max_pages_visual = max(
             self.max_pages,
@@ -188,7 +203,7 @@ class NativeDocumentParser:
             0,
             min(
                 self.docx_media_max_assets,
-                int(os.getenv("MODULE2_DOCX_MEDIA_VISION_MAX_ASSETS", "3")),
+                int(os.getenv("MODULE2_DOCX_MEDIA_VISION_MAX_ASSETS", "6")),
             ),
         )
         self.docx_media_vision_max_bytes = max(
@@ -196,6 +211,11 @@ class NativeDocumentParser:
             int(os.getenv("MODULE2_DOCX_MEDIA_VISION_MAX_BYTES", str(6 * 1024 * 1024))),
         )
         self.docx_media_vision_chart_only = os.getenv("MODULE2_DOCX_MEDIA_VISION_CHART_ONLY", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        self.docx_media_vision_allow_noncue = os.getenv("MODULE2_DOCX_MEDIA_VISION_ALLOW_NONCUE", "true").lower() in {
             "1",
             "true",
             "yes",
@@ -377,7 +397,24 @@ class NativeDocumentParser:
         if ext == ".pdf":
             return self._parse_pdf(file_name, file_bytes, track)
         if ext == ".docx":
-            return self._parse_docx(file_bytes)
+            docx_fallback_stats: Dict[str, Any] | None = None
+            if self.word_parse_via_pdf and self.office_convert_enabled:
+                try:
+                    return self._parse_docx_via_pdf(file_name=file_name, file_bytes=file_bytes)
+                except Exception as exc:
+                    if not self.word_convert_allow_native_fallback:
+                        raise ValueError(f"DOCX->PDF parse route failed for {file_name}: {type(exc).__name__}: {exc}") from exc
+                    docx_fallback_stats = {
+                        "docx_pdf_conversion_failed": True,
+                        "docx_pdf_conversion_error": f"{type(exc).__name__}: {exc}",
+                        "docx_pdf_native_fallback": True,
+                    }
+            markdown, bbox_map, table_blocks = self._parse_docx(file_bytes)
+            if docx_fallback_stats:
+                merged_stats = dict(docx_fallback_stats)
+                merged_stats.update(self._last_parse_stats)
+                self._last_parse_stats = merged_stats
+            return markdown, bbox_map, table_blocks
         if ext == ".xlsx":
             return self._parse_xlsx(file_bytes)
         if ext in TEXT_EXTENSIONS:
@@ -595,6 +632,33 @@ class NativeDocumentParser:
         }
         self._last_figure_blocks = figure_blocks
         return "\n".join(parts), bbox_map, table_blocks
+
+    def _parse_docx_via_pdf(
+        self,
+        *,
+        file_name: str,
+        file_bytes: bytes,
+    ) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
+        pdf_bytes, convert_meta = convert_word_bytes_to_pdf(
+            file_name=file_name,
+            file_bytes=file_bytes,
+            timeout_sec=self.word_pdf_timeout_sec,
+        )
+        pdf_name = f"{Path(file_name).stem}.pdf"
+        markdown, bbox_map, table_blocks = self._parse_pdf(pdf_name, pdf_bytes, "VisualTrack")
+        stats = dict(self._last_parse_stats)
+        stats.update(
+            {
+                "word_via_pdf": True,
+                "office_pdf_converted": True,
+                "office_pdf_converter": str(convert_meta.get("converter", "")),
+                "office_pdf_elapsed_ms": int(convert_meta.get("elapsed_ms", 0) or 0),
+                "office_pdf_parse_input_name": pdf_name,
+                "office_pdf_bytes": len(pdf_bytes),
+            }
+        )
+        self._last_parse_stats = stats
+        return markdown, bbox_map, table_blocks
 
     def _parse_pdf_visual_first(
         self,
@@ -2256,6 +2320,11 @@ class NativeDocumentParser:
                     "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
                     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
                 }
+                chart_max_series = max(2, int(os.getenv("MODULE2_DOCX_CHART_XML_MAX_SERIES", "10")))
+                chart_max_points = max(6, int(os.getenv("MODULE2_DOCX_CHART_XML_MAX_POINTS", "40")))
+                chart_max_key_points = max(4, int(os.getenv("MODULE2_DOCX_CHART_XML_MAX_KEYPOINTS", "12")))
+                chart_table_max_rows = max(24, int(os.getenv("MODULE2_DOCX_CHART_XML_TABLE_MAX_ROWS", "220")))
+                stats["docx_chart_xml_table_count"] = 0
                 for chart_idx, chart_path in enumerate(chart_files, start=1):
                     if self.nonpdf_figure_max > 0 and len(figures) >= self.nonpdf_figure_max:
                         break
@@ -2272,38 +2341,20 @@ class NativeDocumentParser:
                     if not title:
                         title = f"DOCX图表 {chart_idx}"
 
-                    key_points: List[str] = []
-                    for ser in root.findall(".//c:ser", ns)[:6]:
-                        name_tokens = [
-                            self._normalize_text(str(node.text or ""))
-                            for node in (ser.findall(".//c:tx//c:v", ns) + ser.findall(".//c:tx//a:t", ns))
-                        ]
-                        series_name = self._normalize_text(" ".join(x for x in name_tokens if x))
-                        values = [
-                            self._normalize_text(str(node.text or ""))
-                            for node in ser.findall(".//c:val//c:v", ns)
-                        ]
-                        values = [v for v in values if v][:6]
-                        cats = [
-                            self._normalize_text(str(node.text or ""))
-                            for node in ser.findall(".//c:cat//c:v", ns)
-                        ]
-                        cats = [c for c in cats if c][:6]
-                        if values and cats:
-                            paired = ", ".join(f"{cats[i]}={values[i]}" for i in range(min(3, len(cats), len(values))))
-                            text = f"{series_name or '序列'}: {paired}"
-                        elif values:
-                            text = f"{series_name or '序列'}: {', '.join(values[:4])}"
-                        else:
-                            text = series_name
-                        text = self._normalize_text(text)
-                        if text:
-                            key_points.append(text)
-                    key_points = key_points[:8]
+                    series_payload = self._extract_docx_chart_series_payload(
+                        root=root,
+                        ns=ns,
+                        max_series=chart_max_series,
+                        max_points=chart_max_points,
+                    )
+                    key_points = self._build_docx_chart_key_points(
+                        series_payload=series_payload,
+                        max_items=chart_max_key_points,
+                    )
 
                     summary = f"{title}。"
                     if key_points:
-                        summary += " 关键数据：" + "；".join(key_points[:4])
+                        summary += " 关键数据：" + "；".join(key_points[:6])
 
                     ref_id = f"docx_chart_{chart_idx}"
                     parts.append(f'<ref id="{ref_id}">{escape(summary)}</ref>')
@@ -2322,6 +2373,17 @@ class NativeDocumentParser:
                             "bbox_norm": [0.0, 0.0, 1.0, 1.0],
                         }
                     )
+                    chart_table = self._build_docx_chart_table_block(
+                        chart_idx=chart_idx,
+                        title=title,
+                        series_payload=series_payload,
+                        parts=parts,
+                        bbox_map=bbox_map,
+                        max_rows=chart_table_max_rows,
+                    )
+                    if chart_table:
+                        table_blocks.append(chart_table)
+                        stats["docx_chart_xml_table_count"] = int(stats.get("docx_chart_xml_table_count", 0)) + 1
                     stats["docx_chart_xml_parsed"] += 1
 
             media_files_all = sorted(
@@ -2372,7 +2434,7 @@ class NativeDocumentParser:
                 allow_noncue_vision_fallback = bool(
                     self.docx_media_vision_chart_only
                     and chart_cue_seen == 0
-                    and (os.getenv("MODULE2_DOCX_MEDIA_VISION_ALLOW_NONCUE", "false").lower() in {"1", "true", "yes"})
+                    and self.docx_media_vision_allow_noncue
                 )
                 stats["docx_media_vision_noncue_fallback"] = bool(allow_noncue_vision_fallback)
 
@@ -2550,6 +2612,158 @@ class NativeDocumentParser:
 
         return figures, table_blocks, stats, ref_idx
 
+    def _collect_docx_chart_points(
+        self,
+        ser: ET.Element,
+        ns: Dict[str, str],
+        node_paths: List[str],
+        max_points: int,
+    ) -> List[str]:
+        points: List[str] = []
+        limit = max(1, int(max_points or 1))
+        for node_path in node_paths:
+            for node in ser.findall(f".//{node_path}//c:v", ns) + ser.findall(f".//{node_path}//a:t", ns):
+                text = self._normalize_text(str(node.text or ""))
+                if not text:
+                    continue
+                if points and points[-1] == text:
+                    continue
+                points.append(text)
+                if len(points) >= limit:
+                    return points
+        return points
+
+    def _extract_docx_chart_series_payload(
+        self,
+        *,
+        root: ET.Element,
+        ns: Dict[str, str],
+        max_series: int,
+        max_points: int,
+    ) -> List[Dict[str, Any]]:
+        payload: List[Dict[str, Any]] = []
+        series_nodes = root.findall(".//c:ser", ns)
+        for series_idx, ser in enumerate(series_nodes[: max(1, max_series)], start=1):
+            name_tokens = [
+                self._normalize_text(str(node.text or ""))
+                for node in (ser.findall(".//c:tx//c:v", ns) + ser.findall(".//c:tx//a:t", ns))
+            ]
+            series_name = self._normalize_text(" ".join(x for x in name_tokens if x))
+            if not series_name:
+                series_name = f"序列{series_idx}"
+
+            categories = self._collect_docx_chart_points(ser, ns, ["c:cat", "c:xVal"], max_points=max_points)
+            values = self._collect_docx_chart_points(ser, ns, ["c:val", "c:yVal", "c:bubbleSize"], max_points=max_points)
+
+            if not categories and values:
+                categories = [f"点{idx + 1}" for idx in range(len(values))]
+            if not values and not categories:
+                continue
+            payload.append(
+                {
+                    "name": series_name,
+                    "categories": categories[:max_points],
+                    "values": values[:max_points],
+                }
+            )
+        return payload
+
+    def _build_docx_chart_key_points(self, *, series_payload: List[Dict[str, Any]], max_items: int) -> List[str]:
+        key_points: List[str] = []
+        for item in series_payload:
+            series_name = self._normalize_text(str(item.get("name") or "序列"))
+            categories = [self._normalize_text(str(x or "")) for x in (item.get("categories") or [])]
+            values = [self._normalize_text(str(x or "")) for x in (item.get("values") or [])]
+            categories = [x for x in categories if x]
+            values = [x for x in values if x]
+            if values and categories:
+                paired = ", ".join(f"{categories[i]}={values[i]}" for i in range(min(4, len(categories), len(values))))
+                text = f"{series_name}: {paired}"
+            elif values:
+                text = f"{series_name}: {', '.join(values[:4])}"
+            elif categories:
+                text = f"{series_name}: {', '.join(categories[:4])}"
+            else:
+                continue
+            text = self._normalize_text(text)
+            if text:
+                key_points.append(text)
+            if len(key_points) >= max(1, int(max_items or 1)):
+                break
+        return key_points
+
+    def _build_docx_chart_table_block(
+        self,
+        *,
+        chart_idx: int,
+        title: str,
+        series_payload: List[Dict[str, Any]],
+        parts: List[str],
+        bbox_map: Dict[str, List[float]],
+        max_rows: int,
+    ) -> Optional[Dict[str, Any]]:
+        if not series_payload:
+            return None
+
+        headers = ["序列", "类别", "数值"]
+        rows_payload: List[Dict[str, Any]] = []
+        row_idx = 1
+        limit = max(12, int(max_rows or 12))
+
+        for series_idx, item in enumerate(series_payload, start=1):
+            series_name = self._normalize_text(str(item.get("name") or f"序列{series_idx}"))
+            categories = [self._normalize_text(str(x or "")) for x in (item.get("categories") or [])]
+            values = [self._normalize_text(str(x or "")) for x in (item.get("values") or [])]
+            point_count = max(len(categories), len(values))
+            if point_count <= 0:
+                continue
+            for point_idx in range(point_count):
+                if len(rows_payload) >= limit:
+                    break
+                category = categories[point_idx] if point_idx < len(categories) and categories[point_idx] else f"点{point_idx + 1}"
+                value = values[point_idx] if point_idx < len(values) else ""
+                cells_payload: List[Dict[str, Any]] = []
+                for col_idx, cell_text in enumerate([series_name, category, value], start=1):
+                    normalized = self._normalize_text(str(cell_text or ""))
+                    cell_ref = None
+                    bbox = [1.0, 0.0, 0.0, 1.0, 1.0]
+                    if normalized:
+                        cell_ref = f"docx_chart_t{chart_idx}_r{row_idx}_c{col_idx}"
+                        parts.append(f'<ref id="{cell_ref}">{escape(normalized)}</ref>')
+                        bbox_map[cell_ref] = bbox
+                    cells_payload.append(
+                        {
+                            "col_index": col_idx,
+                            "text": normalized,
+                            "ref_id": cell_ref,
+                            "bbox": bbox,
+                        }
+                    )
+                if any(str(cell.get("text", "")).strip() for cell in cells_payload):
+                    rows_payload.append({"row_index": row_idx, "cells": cells_payload})
+                    row_idx += 1
+            if len(rows_payload) >= limit:
+                break
+
+        if not rows_payload:
+            return None
+
+        decorated_rows = self._decorate_rows_with_meta(rows_payload, headers)
+        if not decorated_rows:
+            return None
+
+        return {
+            "table_id": f"docx_chart_t{chart_idx}",
+            "source": "docx_chart_xml",
+            "page": 1,
+            "headers": headers,
+            "header_meta": self._build_header_meta(headers),
+            "rows": decorated_rows,
+            "row_count": len(decorated_rows),
+            "col_count": max((len(r.get("cells", [])) for r in decorated_rows), default=0),
+            "chart_title": self._normalize_text(title),
+        }
+
     def _persist_docx_media_artifact(
         self,
         *,
@@ -2580,6 +2794,7 @@ class NativeDocumentParser:
         bbox_map: Dict[str, List[float]] = {}
         table_blocks: TableBlocks = []
         emitted_cells = 0
+        used_zip_fallback = False
 
         def _xlsx_bbox(
             *,
@@ -2597,10 +2812,38 @@ class NativeDocumentParser:
             h = min(1.0, max(0.001, 1.0 / float(rows)))
             return [float(sheet_idx), x, y, w, h]
 
+        def _append_rows_as_table(
+            *,
+            source_tag: str,
+            sheet_idx: int,
+            sheet_name: str,
+            rows_payload: List[Dict[str, Any]],
+        ) -> None:
+            if not rows_payload:
+                return
+            headers, data_rows = self._infer_headers_and_data_rows(rows_payload)
+            data_rows = self._drop_redundant_header_like_rows(data_rows, headers)
+            data_rows = self._decorate_rows_with_meta(data_rows, headers)
+            if not data_rows:
+                return
+            table_blocks.append(
+                {
+                    "table_id": f"{source_tag}_t{sheet_idx}",
+                    "source": source_tag,
+                    "page": sheet_idx,
+                    "sheet_index": sheet_idx,
+                    "sheet_name": sheet_name,
+                    "headers": headers,
+                    "header_meta": self._build_header_meta(headers),
+                    "rows": data_rows,
+                    "row_count": len(data_rows),
+                    "col_count": max((len(r.get("cells", [])) for r in data_rows), default=0),
+                }
+            )
+
         def consume_workbook(wb: Any, source_tag: str) -> None:
             nonlocal emitted_cells
             for sheet_idx, ws in enumerate(wb.worksheets[: self.xlsx_sheet_limit], start=1):
-                table_id = f"{source_tag}_t{sheet_idx}"
                 rows_payload: List[Dict[str, Any]] = []
                 max_rows_hint = min(self.table_max_rows, max(int(getattr(ws, "max_row", 0) or 0), 1))
                 max_cols_hint = min(self.table_max_cols, max(int(getattr(ws, "max_column", 0) or 0), 1))
@@ -2620,7 +2863,7 @@ class NativeDocumentParser:
                             max_cols=max_cols_hint,
                         )
                         if text:
-                            cell_ref = f"{table_id}_r{row_idx}_c{col_idx}"
+                            cell_ref = f"{source_tag}_t{sheet_idx}_r{row_idx}_c{col_idx}"
                             parts.append(f'<ref id="{cell_ref}">{escape(text)}</ref>')
                             bbox_map[cell_ref] = bbox
                             emitted_cells += 1
@@ -2641,40 +2884,247 @@ class NativeDocumentParser:
                     if emitted_cells >= self.xlsx_cell_cap:
                         break
 
-                if rows_payload:
-                    headers, data_rows = self._infer_headers_and_data_rows(rows_payload)
-                    data_rows = self._drop_redundant_header_like_rows(data_rows, headers)
-                    data_rows = self._decorate_rows_with_meta(data_rows, headers)
-                    if not data_rows:
-                        continue
-                    table_blocks.append(
-                        {
-                            "table_id": table_id,
-                            "source": source_tag,
-                            "page": sheet_idx,
-                            "sheet_index": sheet_idx,
-                            "sheet_name": ws.title,
-                            "headers": headers,
-                            "header_meta": self._build_header_meta(headers),
-                            "rows": data_rows,
-                            "row_count": len(data_rows),
-                            "col_count": max((len(r.get("cells", [])) for r in data_rows), default=0),
-                        }
-                    )
+                _append_rows_as_table(
+                    source_tag=source_tag,
+                    sheet_idx=sheet_idx,
+                    sheet_name=str(getattr(ws, "title", "") or f"Sheet{sheet_idx}"),
+                    rows_payload=rows_payload,
+                )
 
                 if emitted_cells >= self.xlsx_cell_cap:
                     break
 
-        wb_data = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
-        consume_workbook(wb_data, "xlsx")
+        def _xlsx_col_to_index(col_ref: str) -> int:
+            idx = 0
+            for ch in str(col_ref or "").upper():
+                if "A" <= ch <= "Z":
+                    idx = idx * 26 + (ord(ch) - 64)
+            return idx
+
+        def _xlsx_ref_to_row_col(cell_ref: str) -> Tuple[int, int]:
+            match = re.match(r"^([A-Za-z]+)(\d+)$", str(cell_ref or "").strip())
+            if not match:
+                return 0, 0
+            return int(match.group(2)), _xlsx_col_to_index(match.group(1))
+
+        def _xlsx_dimension_hints(ref_value: str) -> Tuple[int, int]:
+            raw = str(ref_value or "").strip()
+            if not raw:
+                return 1, 1
+            tail = raw.split(":")[-1]
+            row_idx, col_idx = _xlsx_ref_to_row_col(tail)
+            return max(1, row_idx), max(1, col_idx)
+
+        def _xlsx_shared_strings_from_zip(zf: zipfile.ZipFile) -> List[str]:
+            try:
+                root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            except Exception:
+                return []
+            shared: List[str] = []
+            for node in root.findall(".//{*}si"):
+                fragments = [str(text_node.text or "") for text_node in node.iterfind(".//{*}t")]
+                if fragments:
+                    shared.append(self._normalize_text("".join(fragments)))
+                else:
+                    shared.append("")
+            return shared
+
+        def _xlsx_sheet_entries_from_zip(zf: zipfile.ZipFile) -> List[Tuple[int, str, str]]:
+            rel_map: Dict[str, str] = {}
+            try:
+                rel_root = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+                for rel in rel_root.findall(".//{*}Relationship"):
+                    rel_id = str(rel.get("Id") or "").strip()
+                    rel_type = str(rel.get("Type") or "").strip().lower()
+                    target = str(rel.get("Target") or "").strip().replace("\\", "/")
+                    if not rel_id or not target or not rel_type.endswith("/worksheet"):
+                        continue
+                    if target.startswith("/"):
+                        normalized_target = target.lstrip("/")
+                    elif target.startswith("xl/"):
+                        normalized_target = target
+                    else:
+                        normalized_target = f"xl/{target.lstrip('./')}"
+                    rel_map[rel_id] = normalized_target
+            except Exception:
+                rel_map = {}
+
+            entries: List[Tuple[int, str, str]] = []
+            try:
+                root = ET.fromstring(zf.read("xl/workbook.xml"))
+                rid_keys = (
+                    "{http://purl.oclc.org/ooxml/officeDocument/relationships}id",
+                    "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id",
+                )
+                for sheet_idx, sheet in enumerate(root.findall(".//{*}sheet"), start=1):
+                    sheet_name = self._normalize_text(str(sheet.get("name") or f"Sheet{sheet_idx}"))
+                    rel_id = ""
+                    for rid_key in rid_keys:
+                        rel_id = str(sheet.get(rid_key) or "").strip()
+                        if rel_id:
+                            break
+                    target = rel_map.get(rel_id)
+                    if target:
+                        entries.append((sheet_idx, sheet_name or f"Sheet{sheet_idx}", target))
+            except Exception:
+                entries = []
+
+            if entries:
+                return entries[: self.xlsx_sheet_limit]
+
+            sheet_paths = sorted(
+                name
+                for name in zf.namelist()
+                if name.startswith("xl/worksheets/") and name.endswith(".xml")
+            )
+            return [
+                (sheet_idx, f"Sheet{sheet_idx}", sheet_path)
+                for sheet_idx, sheet_path in enumerate(sheet_paths[: self.xlsx_sheet_limit], start=1)
+            ]
+
+        def _xlsx_cell_text_from_xml(cell_node: ET.Element, shared_strings: List[str]) -> str:
+            cell_type = str(cell_node.get("t") or "").strip().lower()
+            if cell_type == "inlinestr":
+                text_parts = [str(node.text or "") for node in cell_node.findall(".//{*}t")]
+                return "".join(text_parts).strip()
+
+            value_node = cell_node.find("./{*}v")
+            formula_node = cell_node.find("./{*}f")
+            raw_value = "".join(value_node.itertext()).strip() if value_node is not None else ""
+            raw_formula = "".join(formula_node.itertext()).strip() if formula_node is not None else ""
+
+            if cell_type == "s":
+                try:
+                    shared_idx = int(float(raw_value))
+                    if 0 <= shared_idx < len(shared_strings):
+                        return shared_strings[shared_idx]
+                except Exception:
+                    return raw_value
+                return raw_value
+            if cell_type == "b":
+                if raw_value.lower() in {"1", "true"}:
+                    return "TRUE"
+                if raw_value.lower() in {"0", "false"}:
+                    return "FALSE"
+                return raw_value
+            if cell_type in {"str", "d", "e"}:
+                return raw_value
+            if raw_value:
+                return raw_value
+            if raw_formula:
+                return f"={raw_formula}"
+            return ""
+
+        def consume_zip_workbook(source_tag: str) -> None:
+            nonlocal emitted_cells, used_zip_fallback
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+                shared_strings = _xlsx_shared_strings_from_zip(zf)
+                sheet_entries = _xlsx_sheet_entries_from_zip(zf)
+                if not sheet_entries:
+                    return
+                used_zip_fallback = True
+
+                for sheet_idx, sheet_name, sheet_path in sheet_entries:
+                    if emitted_cells >= self.xlsx_cell_cap:
+                        break
+                    try:
+                        root = ET.fromstring(zf.read(sheet_path))
+                    except Exception:
+                        continue
+
+                    dimension_node = root.find(".//{*}dimension")
+                    max_rows_hint, max_cols_hint = _xlsx_dimension_hints(
+                        str(dimension_node.get("ref") or "") if dimension_node is not None else ""
+                    )
+                    rows_payload: List[Dict[str, Any]] = []
+                    sheet_data = root.find(".//{*}sheetData")
+                    if sheet_data is None:
+                        continue
+
+                    for row_pos, row_node in enumerate(sheet_data.findall("./{*}row"), start=1):
+                        try:
+                            row_idx = int(row_node.get("r") or row_pos)
+                        except Exception:
+                            row_idx = row_pos
+                        if row_idx > self.table_max_rows:
+                            break
+
+                        cells_payload: List[Dict[str, Any]] = []
+                        max_rows_hint = max(max_rows_hint, row_idx)
+                        for cell_pos, cell_node in enumerate(row_node.findall("./{*}c"), start=1):
+                            cell_ref_raw = str(cell_node.get("r") or "").strip()
+                            ref_row_idx, ref_col_idx = _xlsx_ref_to_row_col(cell_ref_raw)
+                            col_idx = ref_col_idx or cell_pos
+                            if col_idx > self.table_max_cols:
+                                continue
+
+                            text = self._normalize_text(_xlsx_cell_text_from_xml(cell_node, shared_strings))
+                            bbox = _xlsx_bbox(
+                                sheet_idx=sheet_idx,
+                                row_idx=ref_row_idx or row_idx,
+                                col_idx=col_idx,
+                                max_rows=max_rows_hint,
+                                max_cols=max(max_cols_hint, col_idx),
+                            )
+                            cell_ref = None
+                            if text:
+                                cell_ref = f"{source_tag}_t{sheet_idx}_r{ref_row_idx or row_idx}_c{col_idx}"
+                                parts.append(f'<ref id="{cell_ref}">{escape(text)}</ref>')
+                                bbox_map[cell_ref] = bbox
+                                emitted_cells += 1
+                            cells_payload.append(
+                                {
+                                    "col_index": col_idx,
+                                    "text": text,
+                                    "ref_id": cell_ref,
+                                    "bbox": bbox,
+                                }
+                            )
+                            max_cols_hint = max(max_cols_hint, col_idx)
+                            if emitted_cells >= self.xlsx_cell_cap:
+                                break
+
+                        if any(cell.get("text") for cell in cells_payload):
+                            rows_payload.append({"row_index": row_idx, "cells": cells_payload})
+
+                        if emitted_cells >= self.xlsx_cell_cap:
+                            break
+
+                    _append_rows_as_table(
+                        source_tag=source_tag,
+                        sheet_idx=sheet_idx,
+                        sheet_name=sheet_name or f"Sheet{sheet_idx}",
+                        rows_payload=rows_payload,
+                    )
+
+        try:
+            wb_data = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+            if getattr(wb_data, "worksheets", None):
+                consume_workbook(wb_data, "xlsx")
+        except Exception:
+            pass
 
         if not parts:
-            wb_formula = load_workbook(io.BytesIO(file_bytes), data_only=False, read_only=True)
-            consume_workbook(wb_formula, "xlsx_formula")
+            try:
+                consume_zip_workbook("xlsx")
+            except Exception:
+                used_zip_fallback = False
 
         if not parts:
-            wb_meta = load_workbook(io.BytesIO(file_bytes), data_only=False, read_only=True)
-            sheet_names = list(getattr(wb_meta, "sheetnames", []) or [])
+            try:
+                wb_formula = load_workbook(io.BytesIO(file_bytes), data_only=False, read_only=True)
+                if getattr(wb_formula, "worksheets", None):
+                    consume_workbook(wb_formula, "xlsx_formula")
+            except Exception:
+                pass
+
+        if not parts:
+            sheet_names: List[str] = []
+            try:
+                wb_meta = load_workbook(io.BytesIO(file_bytes), data_only=False, read_only=True)
+                sheet_names = list(getattr(wb_meta, "sheetnames", []) or [])
+            except Exception:
+                sheet_names = []
             for idx, sheet_name in enumerate(sheet_names[: self.xlsx_sheet_limit], start=1):
                 ref_id = f"xlsx_sheet_{idx}"
                 safe_name = self._normalize_text(str(sheet_name or f"Sheet{idx}"))
@@ -2689,6 +3139,8 @@ class NativeDocumentParser:
 
         if not parts:
             raise ValueError("XLSX contains no extractable rows.")
+        self._last_parse_stats = {"xlsx_zip_fallback": used_zip_fallback}
+        self._last_figure_blocks = []
         return "\n".join(parts), bbox_map, table_blocks
 
     def _parse_image(self, file_name: str, file_bytes: bytes) -> Tuple[str, Dict[str, List[float]], TableBlocks]:

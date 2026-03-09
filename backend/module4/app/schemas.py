@@ -15,7 +15,7 @@ RuleKind = Literal["deterministic", "semantic", "anomaly"]
 
 
 class IngestRequest(BaseModel):
-    tenant_id: str = "default"
+    tenant_id: str = ""
     source: SourceType = "module2"
     source_batch_key: Optional[str] = None
     documents: List[Dict[str, Any]] = Field(default_factory=list, min_length=1)
@@ -98,6 +98,7 @@ class AlertListResponse(BaseModel):
 
 
 class AlertActionRequest(BaseModel):
+    tenant_id: Optional[str] = None
     actor: str = "user"
     comment: str = ""
 
@@ -159,7 +160,19 @@ class RuleUpsertResponse(BaseModel):
     rule: RuleItem
 
 
+class RebuildRequest(BaseModel):
+    tenant_id: str = ""
+
+
+class RebuildResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    batches: int = 0
+    documents: int = 0
+
+
 class ExplainRequest(BaseModel):
+    tenant_id: Optional[str] = None
     alert_id: Optional[str] = None
     node_id: Optional[str] = None
     target_node_id: Optional[str] = None
@@ -172,7 +185,7 @@ class ExplainResponse(BaseModel):
 
 
 class SimulateRequest(BaseModel):
-    tenant_id: str = "default"
+    tenant_id: str = ""
     scenario_name: str = "default-scenario"
     params: Dict[str, Any] = Field(default_factory=dict)
     scope: Dict[str, Any] = Field(default_factory=dict)
@@ -189,4 +202,5 @@ class HealthzResponse(BaseModel):
     db_connected: bool
     degraded_memory_mode: bool
     jobs_in_queue: int
+    last_connect_error: Optional[str] = None
     now: datetime

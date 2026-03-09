@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS module4.documents (
 CREATE TABLE IF NOT EXISTS module4.evidence (
   evidence_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id TEXT NOT NULL DEFAULT 'default',
+  evidence_key TEXT,
   doc_id UUID REFERENCES module4.documents(doc_id) ON DELETE CASCADE,
   object_type TEXT NOT NULL CHECK (object_type IN ('field','table','figure','text')),
   object_id TEXT,
@@ -107,6 +108,7 @@ CREATE TABLE IF NOT EXISTS module4.rules (
 CREATE TABLE IF NOT EXISTS module4.alerts (
   alert_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id TEXT NOT NULL DEFAULT 'default',
+  alert_key TEXT,
   rule_id TEXT NOT NULL REFERENCES module4.rules(rule_id),
   severity TEXT NOT NULL CHECK (severity IN ('yellow','orange','red')),
   status TEXT NOT NULL CHECK (status IN ('open','ack','resolved','false_positive')) DEFAULT 'open',
@@ -141,8 +143,13 @@ CREATE TABLE IF NOT EXISTS module4.feedback_labels (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE module4.evidence ADD COLUMN IF NOT EXISTS evidence_key TEXT;
+ALTER TABLE module4.alerts ADD COLUMN IF NOT EXISTS alert_key TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_m4_jobs_tenant_status ON module4.jobs (tenant_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_m4_nodes_tenant_type ON module4.nodes (tenant_id, node_type);
 CREATE INDEX IF NOT EXISTS idx_m4_edges_tenant_rel ON module4.edges (tenant_id, relation_type);
 CREATE INDEX IF NOT EXISTS idx_m4_alerts_tenant_status ON module4.alerts (tenant_id, status, severity, detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_m4_evidence_doc_page ON module4.evidence (doc_id, page_no);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_alerts_tenant_key ON module4.alerts (tenant_id, alert_key) WHERE alert_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_evidence_tenant_key ON module4.evidence (tenant_id, evidence_key) WHERE evidence_key IS NOT NULL;

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Bot, Send, Sparkles, User, RotateCcw, ChevronRight } from 'lucide-react';
+import { Bot, Send, Sparkles, User } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -19,16 +19,8 @@ interface Module2InlineAssistantProps {
 }
 
 export const Module2InlineAssistant: React.FC<Module2InlineAssistantProps> = ({ className }) => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      content: '我是模组二专用助手。你可以直接下达抽取和入库指令，例如：抽取第10-20页所有表格并写入 finance_table，先给预览再执行。',
-      timestamp: Date.now(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -47,21 +39,15 @@ export const Module2InlineAssistant: React.FC<Module2InlineAssistantProps> = ({ 
       timestamp: Date.now(),
     };
 
-    setMessages((prev) => [...prev, userMsg]);
-    setInputValue('');
-    setIsTyping(true);
+    const aiMsg: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: '当前面板暂未接入实时指令执行，请使用模块二主工作台右侧助手面板进行操作。',
+      timestamp: Date.now(),
+    };
 
-    // Simulate AI response
-    setTimeout(() => {
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: '收到指令。正在解析文档结构并尝试提取相关表格...',
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => [...prev, aiMsg]);
-      setIsTyping(false);
-    }, 1500);
+    setMessages((prev) => [...prev, userMsg, aiMsg]);
+    setInputValue('');
   };
 
   return (
@@ -85,6 +71,11 @@ export const Module2InlineAssistant: React.FC<Module2InlineAssistantProps> = ({ 
         ref={scrollRef}
         className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 scroll-smooth custom-scrollbar"
       >
+        {messages.length === 0 && (
+          <div className="flex h-full items-center justify-center text-center text-xs text-slate-500 dark:text-slate-400">
+            暂无对话记录，请输入指令开始会话。
+          </div>
+        )}
         {messages.map((msg) => (
           <div
             key={msg.id}
@@ -109,18 +100,6 @@ export const Module2InlineAssistant: React.FC<Module2InlineAssistantProps> = ({ 
             </div>
           </div>
         ))}
-        {isTyping && (
-          <div className="flex gap-3 max-w-[90%] mr-auto">
-             <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 flex items-center justify-center shrink-0 mt-1">
-              <Bot size={16} />
-            </div>
-            <div className="bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-3 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-1">
-              <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-              <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-              <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce"></span>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Input */}
@@ -135,7 +114,7 @@ export const Module2InlineAssistant: React.FC<Module2InlineAssistantProps> = ({ 
                 handleSend();
               }
             }}
-            placeholder="输入自然语言指令，例如：抽取第10-20页所有表格并写入 energy_table，先预览..."
+            placeholder="输入自然语言指令，例如：抽取第10-20页所有表格并先预览结果..."
             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 pr-10 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none min-h-[80px]"
           />
           <button

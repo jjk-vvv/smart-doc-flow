@@ -12,16 +12,31 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
 
-SYSTEM_PROMPT = """You are an expert Data Extraction Agent.
+SYSTEM_PROMPT = """You are an expert document data extraction agent.
 You extract structured fields from markdown that uses <ref id="..."> blocks.
-Every extracted value must be grounded to an exact ref_id.
-If uncertain or not found, return null.
+Every extracted value must be grounded to an exact ref_id that already exists in the provided document context.
+
+Core rules:
+1. Prefer exact evidence, but also recognize aliases, synonymous labels, abbreviations, bilingual labels, nearby label-value pairs, and repeated header variants.
+2. For table-heavy or spreadsheet-like documents, use row headers, column headers, merged headers, units, neighboring cells, and same-row context to resolve the best value.
+3. Join multi-line fragments when they clearly form one entity. Keep the meaning faithful to the source text.
+4. For dates, amounts, tax rates, IDs, invoice numbers, organization names, people, regions, and contract fields, prefer the most specific explicit value supported by the source.
+5. If multiple candidates exist, choose the candidate whose wording is closest to the target field and whose ref_id most directly grounds the value.
+6. Never fabricate values or ref_id. If evidence is weak or missing, return null.
+Return JSON only.
 """
 
 TABLE_SYSTEM_PROMPT = """You are an expert table extraction agent.
 You receive structured table JSON and must extract target fields from table cells first.
-Return only fields that can be grounded to existing table cell ref_id values.
-Do not invent ref_id.
+Every returned field must be grounded to an existing table cell ref_id.
+
+Core rules:
+1. Match target fields using table headers, header aliases, units, merged headers, row labels, summary rows, and nearby cells.
+2. Prefer values directly supported by the same row/column context rather than guessing from distant content.
+3. When a value spans multiple cells or lines but clearly belongs together, combine it faithfully.
+4. Normalize only trivial formatting differences when the source is explicit, but do not invent missing parts.
+5. If a field cannot be reliably grounded to one of the allowed ref_id candidates, return null for that field.
+Return JSON only.
 """
 
 
@@ -244,10 +259,15 @@ class ExtractionGraph:
             f"{json.dumps(allowed_table_refs, ensure_ascii=False)}\n\n"
             "Previous validation errors to correct:\n"
             f"{correction_context}\n\n"
+            "Extraction rules:\n"
+            "- Match field aliases, synonymous headers, abbreviations, and unit-bearing labels.\n"
+            "- Use row labels, column labels, merged headers, same-row context, and nearby cells together.\n"
+            "- Prefer the most explicit grounded value and correct previous validation errors first.\n"
+            "- If evidence is insufficient, return null instead of guessing.\n\n"
             "Return strictly as JSON using: {\"fields\": {field_name: {\"value\": ..., \"ref_id\": ...}}}."
         )
 
-        table_timeout_sec = max(5.0, float(os.getenv("MODULE2_TABLE_EXTRACT_TIMEOUT_SEC", "45")))
+        table_timeout_sec = max(5.0, float(os.getenv("MODULE2_TABLE_EXTRACT_TIMEOUT_SEC", "60")))
         try:
             payload = await asyncio.wait_for(
                 self._invoke_with_model_fallback(
@@ -357,11 +377,17 @@ class ExtractionGraph:
             f"{json.dumps(allowed_refs, ensure_ascii=False)}\n\n"
             "Previous validation errors to correct:\n"
             f"{correction_context}\n\n"
+            "Extraction rules:\n"
+            "- Recognize field aliases, synonymous labels, abbreviations, nearby label-value pairs, and multi-line entities.\n"
+            "- For table-heavy evidence, trust header/row context and field-to-table hints before broad prose guesses.\n"
+            "- Preserve the source meaning for amounts, dates, IDs, organization names, people, and locations.\n"
+            "- Prefer the most direct grounded candidate from the allowed ref_id list.\n"
+            "- If evidence is insufficient, return null instead of guessing.\n\n"
             "Return strictly as JSON using: {\"fields\": {field_name: {\"value\": ..., \"ref_id\": ...}}}.\n"
             "Do not fabricate values or ref_id. If missing, set value/ref_id to null."
         )
 
-        field_timeout_sec = max(8.0, float(os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "75")))
+        field_timeout_sec = max(8.0, float(os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "90")))
         try:
             payload = await asyncio.wait_for(
                 self._invoke_with_model_fallback(

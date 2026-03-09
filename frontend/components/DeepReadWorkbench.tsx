@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
 import {
   AlertCircle,
   Braces,
@@ -18,6 +19,7 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCw,
+  RefreshCcw,
   Maximize,
   X,
   Search,
@@ -26,43 +28,129 @@ import {
   Bot,
   Sparkles,
   Send,
-  HelpCircle
+  HelpCircle,
+  FolderOpen,
+  FileSpreadsheet,
+  FileImage
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import {
   readExtractionDocuments,
+  clearExtractionDocuments,
   writeExtractionDocuments,
   type ExtractionDocument,
   type ExtractionEntity,
   type TraceHit,
 } from '../lib/extractionStore';
-import { LuckysheetPreview } from './LuckysheetPreview';
+import { ingestModule4Documents } from '../lib/module4Api';
+import {
+  clearWorkbenchSession,
+  readWorkbenchSession,
+  writeWorkbenchSession,
+  type PersistedExtractionJob,
+  type PersistedExtractionJobFile,
+  type PersistedWorkbenchFile,
+  type WorkbenchSessionSnapshot,
+} from '../lib/workbenchSession';
+import { LuckysheetPreview, clearLuckysheetPreviewCache, warmLuckysheetPreview } from './LuckysheetPreview';
+import smartUnitIcon from '../image2.png';
+import smartSummaryIcon from '../image3.png';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+type PdfScrollRequest = {
+  page: number;
+  nonce: number;
+};
+
+const createPdfScrollRequest = (page: number): PdfScrollRequest => ({
+  page,
+  nonce: Date.now() + Math.random(),
+});
+
 type PdfCanvasPreviewProps = {
   src: string;
-  page: number;
   scale: number;
   rotation: number;
+  scrollRequest?: PdfScrollRequest | null;
   onPageCount?: (count: number) => void;
+  onVisiblePageChange?: (page: number) => void;
 };
 
 const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
   src,
-  page,
   scale,
   rotation,
+  scrollRequest,
   onPageCount,
+  onVisiblePageChange,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stackRef = useRef<HTMLDivElement>(null);
   const docRef = useRef<any>(null);
+  const pageCanvasRefs = useRef<Array<HTMLCanvasElement | null>>([]);
+  const pageWrapperRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const frameRef = useRef<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [docReadyTick, setDocReadyTick] = useState(0);
+  const [pageCount, setPageCount] = useState(0);
+  const [stackWidth, setStackWidth] = useState(0);
+
+  const syncVisiblePage = () => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const pageNodes = pageWrapperRefs.current.filter(Boolean) as HTMLDivElement[];
+    if (pageNodes.length === 0) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const targetLine = containerRect.top + Math.min(container.clientHeight * 0.32, 240);
+
+    let bestPage = 1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    pageNodes.forEach((node, index) => {
+      const rect = node.getBoundingClientRect();
+      const anchor = rect.top + Math.min(rect.height * 0.2, 180);
+      const distance = Math.abs(anchor - targetLine);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPage = index + 1;
+      }
+    });
+
+    onVisiblePageChange?.(bestPage);
+  };
+
+  const scheduleVisiblePageSync = () => {
+    if (typeof window === 'undefined') return;
+    if (frameRef.current != null) {
+      window.cancelAnimationFrame(frameRef.current);
+    }
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      syncVisiblePage();
+    });
+  };
+
+  useEffect(() => {
+    const target = stackRef.current;
+    if (!target || typeof ResizeObserver === 'undefined') return;
+
+    const updateWidth = () => {
+      setStackWidth(Math.max(0, Math.floor(target.clientWidth)));
+    };
+
+    updateWidth();
+    const observer = new ResizeObserver(() => updateWidth());
+    observer.observe(target);
+
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +159,7 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
     const load = async () => {
       setLoading(true);
       setError('');
+      setPageCount(0);
       try {
         const pdfjsLib: any = await import('pdfjs-dist');
         if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
@@ -94,6 +183,7 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
         }
         docRef.current = doc;
         const pages = Math.max(1, Number(doc.numPages || 1));
+        setPageCount(pages);
         onPageCount?.(pages);
         setDocReadyTick((prev) => prev + 1);
       } catch (err) {
@@ -103,6 +193,7 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
       } finally {
         if (!cancelled) {
           setLoading(false);
+          scheduleVisiblePageSync();
         }
       }
     };
@@ -127,47 +218,64 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
   }, [onPageCount, src]);
 
   useEffect(() => {
+    pageCanvasRefs.current = pageCanvasRefs.current.slice(0, pageCount);
+    pageWrapperRefs.current = pageWrapperRefs.current.slice(0, pageCount);
+  }, [pageCount]);
+
+  useEffect(() => {
     let cancelled = false;
-    let renderTask: any = null;
+    const renderTasks: any[] = [];
 
     const render = async () => {
       const doc = docRef.current;
-      const canvas = canvasRef.current;
-      if (!doc || !canvas) return;
+      if (!doc || pageCount === 0 || stackWidth <= 0) return;
       try {
         setLoading(true);
         setError('');
-        const totalPages = Math.max(1, Number(doc.numPages || 1));
-        const safePage = Math.min(Math.max(1, Math.round(page)), totalPages);
-        const pdfPage = await doc.getPage(safePage);
-        const viewport = pdfPage.getViewport({
-          scale: Math.max(0.5, scale),
-          rotation: Number(rotation) || 0,
-        });
-        if (cancelled) return;
+        const safeRotation = Number(rotation) || 0;
+        const safeScale = Math.max(0.5, scale);
+        const pixelRatio = window.devicePixelRatio || 1;
 
-        const context = canvas.getContext('2d');
-        if (!context) {
+        for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+          if (cancelled) return;
+          const canvas = pageCanvasRefs.current[pageNumber - 1];
+          if (!canvas) continue;
+          const pdfPage = await doc.getPage(pageNumber);
+          if (cancelled) return;
+          const baseViewport = pdfPage.getViewport({
+            scale: 1,
+            rotation: safeRotation,
+          });
+          const fitScale = stackWidth > 0 ? stackWidth / Math.max(1, baseViewport.width) : 1;
+          const viewport = pdfPage.getViewport({
+            scale: Math.max(0.35, fitScale * safeScale),
+            rotation: safeRotation,
+          });
+          const context = canvas.getContext('2d');
+          if (!context) {
           setError('无法初始化 PDF 预览画布');
           return;
         }
 
-        const pixelRatio = window.devicePixelRatio || 1;
         canvas.width = Math.max(1, Math.floor(viewport.width * pixelRatio));
         canvas.height = Math.max(1, Math.floor(viewport.height * pixelRatio));
         canvas.style.width = `${Math.floor(viewport.width)}px`;
         canvas.style.height = `${Math.floor(viewport.height)}px`;
-        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        context.setTransform(1, 0, 0, 1, 0, 0);
         context.clearRect(0, 0, canvas.width, canvas.height);
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 
-        renderTask = pdfPage.render({
+        const renderTask = pdfPage.render({
           canvasContext: context,
           viewport,
         });
+        renderTasks.push(renderTask);
         await renderTask.promise;
+        scheduleVisiblePageSync();
+        }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'PDF 渲染失败');
+          setError(err instanceof Error ? err.message : 'PDF 预览渲染失败');
         }
       } finally {
         if (!cancelled) {
@@ -181,24 +289,80 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
     return () => {
       cancelled = true;
       try {
-        renderTask?.cancel?.();
+        renderTasks.forEach((task) => task?.cancel?.());
       } catch {
         // ignore
       }
     };
-  }, [docReadyTick, page, rotation, scale, src]);
+  }, [docReadyTick, pageCount, rotation, scale, src, stackWidth]);
+
+  useEffect(() => {
+    if (!scrollRequest?.page || pageCount === 0 || typeof window === 'undefined') return;
+
+    const targetPage = Math.min(Math.max(1, Math.round(scrollRequest.page)), pageCount);
+    const targetNode = pageWrapperRefs.current[targetPage - 1];
+    const container = scrollRef.current;
+    if (!targetNode || !container) return;
+
+    const raf = window.requestAnimationFrame(() => {
+      if (targetPage === 1) {
+        container.scrollTo({ top: 0, behavior: 'auto' });
+      } else {
+        targetNode.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+      scheduleVisiblePageSync();
+    });
+
+    return () => window.cancelAnimationFrame(raf);
+  }, [pageCount, scrollRequest?.nonce, scrollRequest?.page, src]);
+
+  useEffect(() => {
+    scheduleVisiblePageSync();
+  }, [pageCount]);
+
+  useEffect(() => {
+    return () => {
+      if (frameRef.current != null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(frameRef.current);
+      }
+    };
+  }, []);
 
   return (
-    <div className="absolute inset-0 flex items-start justify-center overflow-auto bg-slate-50/70 p-2 dark:bg-slate-900/60 sm:p-3">
-      <canvas
-        ref={canvasRef}
-        className="rounded-md bg-white shadow-sm dark:bg-slate-900"
-      />
+    <div className="absolute inset-0 overflow-hidden bg-slate-50/70 dark:bg-slate-900/60">
+      <div
+        ref={scrollRef}
+        onScroll={scheduleVisiblePageSync}
+        className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 sm:p-4"
+      >
+        <div
+          ref={stackRef}
+          className="mx-auto flex w-full max-w-[980px] flex-col gap-4"
+        >
+          {Array.from({ length: pageCount }, (_, index) => index + 1).map((pageNumber) => (
+            <div
+              key={`${src}-${pageNumber}`}
+              ref={(node) => {
+                pageWrapperRefs.current[pageNumber - 1] = node;
+              }}
+              data-page-number={pageNumber}
+              className="overflow-hidden rounded-[18px] border border-slate-200/80 bg-white shadow-[0_12px_36px_rgba(15,23,42,0.08)] dark:border-slate-700 dark:bg-slate-900"
+            >
+              <canvas
+                ref={(node) => {
+                  pageCanvasRefs.current[pageNumber - 1] = node;
+                }}
+                className="mx-auto block h-auto max-w-full bg-white dark:bg-slate-900"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
       {loading && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/45 dark:bg-slate-900/45">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/30 dark:bg-slate-900/30">
           <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white/90 px-3 py-1.5 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
             <Loader2 size={14} className="animate-spin" />
-            正在渲染 PDF 预览...
+            正在加载文档预览...
           </div>
         </div>
       )}
@@ -212,7 +376,7 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
             className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
           >
             <ExternalLink size={12} />
-            新窗口打开 PDF
+            在新窗口打开文档
           </a>
         </div>
       )}
@@ -235,6 +399,8 @@ type TraceLocateResponse = {
   truncated: boolean;
   hits: TraceHit[];
 };
+
+type TraceDisplayKind = 'field' | 'table' | 'image' | 'other';
 
 type AssistantQueryResponse = {
   ok: boolean;
@@ -277,12 +443,7 @@ const DEFAULT_SCHEMA = {
   max_auto_fields: 12,
 };
 
-const ASSISTANT_QUICK_COMMANDS = [
-  '提取合同金额、合同期限、甲乙方名称',
-  '提取发票号码、开票日期、价税合计并整理为表格',
-  '提取联系人、电话、邮箱并按主体去重',
-  '提取表格中的关键指标并按页码标注来源',
-];
+
 
 type OfficePreviewState = {
   status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
@@ -291,16 +452,186 @@ type OfficePreviewState = {
   error?: string;
 };
 
+type ExtractionJobFileState = PersistedExtractionJobFile;
+
+type ExtractionJobState = PersistedExtractionJob;
+
 const ALLOWED_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'txt', 'md', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'tif', 'tiff']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'bmp', 'webp', 'tif', 'tiff']);
 
 const isAllowedFile = (file: File) => {
-  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+  const ext = file.name.split('.').pop()?.toLowerCase() || '';
   return ALLOWED_EXTENSIONS.has(ext);
 };
 
-const fileExt = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
+const fileExt = (name: string) => name.split('.').pop()?.toLowerCase() || '';
 const fileIdentityKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
+const toPersistedWorkbenchFile = (file: File, patch?: Partial<PersistedWorkbenchFile>): PersistedWorkbenchFile => ({
+  key: fileIdentityKey(file),
+  name: file.name,
+  size: file.size,
+  lastModified: file.lastModified,
+  ext: fileExt(file.name),
+  artifactUrl: patch?.artifactUrl,
+  artifactPath: patch?.artifactPath,
+});
+
+const toArtifactRouteFromPath = (artifactPathRaw: string): string => {
+  const normalized = String(artifactPathRaw || '').trim().replace(/\\/g, '/');
+  if (!normalized) return '';
+  if (normalized.startsWith('/extract/')) return normalized;
+  const encoded = normalized
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  return encoded ? `/extract/artifact/${encoded}` : '';
+};
+
+const toRelativeExtractPath = (rawUrl: string): string => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return '';
+  if (value.startsWith('/extract/')) return value;
+  if (!/^https?:\/\//i.test(value)) return '';
+  try {
+    const parsed = new URL(value);
+    return parsed.pathname.startsWith('/extract/')
+      ? `${parsed.pathname}${parsed.search || ''}${parsed.hash || ''}`
+      : '';
+  } catch {
+    return '';
+  }
+};
+
+const hydrateFileFromArtifact = async (item: PersistedWorkbenchFile): Promise<File | null> => {
+  const artifactUrl = String(item.artifactUrl || '').trim();
+  const artifactPath = String(item.artifactPath || '').trim();
+  if (!artifactUrl && !artifactPath) return null;
+  const relativeUrl = toRelativeExtractPath(artifactUrl);
+  const routeFromPath = toArtifactRouteFromPath(artifactPath);
+  const candidates = Array.from(
+    new Set(
+      [
+        relativeUrl,
+        routeFromPath,
+        artifactUrl,
+        routeFromPath ? toAbsoluteExtractUrl(routeFromPath, '') : '',
+        /^https?:\/\//i.test(artifactUrl) ? artifactUrl : toAbsoluteExtractUrl(artifactUrl, ''),
+      ].filter(Boolean),
+    ),
+  );
+  let response: Response | null = null;
+  for (const candidate of candidates) {
+    try {
+      const fetched = await fetch(candidate);
+      if (fetched.ok) {
+        response = fetched;
+        break;
+      }
+    } catch {
+      continue;
+    }
+  }
+  if (!response) {
+    throw new Error(`无法恢复文件预览：${item.name}`);
+  }
+  const blob = await response.blob();
+  const FileCtor = typeof window !== 'undefined' && typeof window.File === 'function'
+    ? window.File
+    : globalThis.File;
+  if (typeof FileCtor !== 'function') {
+    throw new Error('当前环境不支持文件恢复');
+  }
+  return new FileCtor([blob], item.name, {
+    type: blob.type || 'application/octet-stream',
+    lastModified: Number(item.lastModified || Date.now()),
+  });
+};
+
+const toSessionSnapshot = (
+  selectedFiles: File[],
+  activeDocIndex: number,
+  officePreviewMap: Record<string, OfficePreviewState>,
+  extractionJob: ExtractionJobState | null,
+  artifactMap: Record<string, { artifactUrl?: string; artifactPath?: string }>,
+  fallbackSelectedFiles: PersistedWorkbenchFile[] = [],
+): WorkbenchSessionSnapshot => ({
+  version: 1,
+  activeDocIndex,
+  selectedFiles: selectedFiles.length > 0
+    ? selectedFiles.map((file) => toPersistedWorkbenchFile(file, artifactMap[fileIdentityKey(file)]))
+    : fallbackSelectedFiles.map((item) => ({
+        ...item,
+        artifactUrl: artifactMap[item.key]?.artifactUrl ?? item.artifactUrl,
+        artifactPath: artifactMap[item.key]?.artifactPath ?? item.artifactPath,
+      })),
+  officePreviewMap,
+  extractionJob,
+});
+
+const clampProgressPercent = (ratio: number) =>
+  Math.max(0, Math.min(100, Math.round(Math.max(0, Math.min(1, Number(ratio || 0))) * 100)));
+
+let spreadsheetWarmupIdleHandle: number | null = null;
+const spreadsheetWarmupQueue: File[] = [];
+const spreadsheetWarmupKeys = new Set<string>();
+
+const runSpreadsheetWarmupQueue = () => {
+  spreadsheetWarmupIdleHandle = null;
+  const nextFile = spreadsheetWarmupQueue.shift();
+  if (!nextFile) return;
+
+  const key = fileIdentityKey(nextFile);
+  spreadsheetWarmupKeys.delete(key);
+
+  void warmLuckysheetPreview(nextFile)
+    .catch(() => undefined)
+    .finally(() => {
+      if (spreadsheetWarmupQueue.length === 0) return;
+      const win = window as Window & {
+        requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+      };
+      if (typeof win.requestIdleCallback === 'function') {
+        spreadsheetWarmupIdleHandle = win.requestIdleCallback(() => runSpreadsheetWarmupQueue(), { timeout: 1200 });
+        return;
+      }
+      spreadsheetWarmupIdleHandle = window.setTimeout(() => runSpreadsheetWarmupQueue(), 180);
+    });
+};
+
+const clearSpreadsheetPreviewWarmupQueue = () => {
+  spreadsheetWarmupQueue.length = 0;
+  spreadsheetWarmupKeys.clear();
+  if (spreadsheetWarmupIdleHandle == null || typeof window === 'undefined') return;
+  const win = window as Window & {
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (typeof win.cancelIdleCallback === 'function') {
+    win.cancelIdleCallback(spreadsheetWarmupIdleHandle);
+  } else {
+    window.clearTimeout(spreadsheetWarmupIdleHandle);
+  }
+  spreadsheetWarmupIdleHandle = null;
+};
+
+const scheduleSpreadsheetPreviewWarmup = (file: File) => {
+  if (typeof window === 'undefined' || fileExt(file.name) !== 'xlsx') return;
+  const key = fileIdentityKey(file);
+  if (spreadsheetWarmupKeys.has(key)) return;
+
+  spreadsheetWarmupKeys.add(key);
+  spreadsheetWarmupQueue.push(file);
+  if (spreadsheetWarmupIdleHandle != null) return;
+
+  const win = window as Window & {
+    requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+  };
+  if (typeof win.requestIdleCallback === 'function') {
+    spreadsheetWarmupIdleHandle = win.requestIdleCallback(() => runSpreadsheetWarmupQueue(), { timeout: 1200 });
+    return;
+  }
+  spreadsheetWarmupIdleHandle = window.setTimeout(() => runSpreadsheetWarmupQueue(), 180);
+};
 
 const previewFileNameFromKey = (key: string): string => {
   const raw = String(key || '');
@@ -327,6 +658,25 @@ const pickOfficePreviewByFileName = (
   return fallback;
 };
 
+const pickExtractionJobFileState = (
+  extractionJob: ExtractionJobState | null,
+  file: File,
+  index: number,
+): ExtractionJobFileState | null => {
+  if (!extractionJob || !Array.isArray(extractionJob.files) || extractionJob.files.length === 0) return null;
+  const normalizedName = String(file.name || '').trim().toLowerCase();
+  const byIndex = extractionJob.files[index] || null;
+  if (byIndex && String(byIndex.file_name || '').trim().toLowerCase() === normalizedName) {
+    return byIndex;
+  }
+  const matched = extractionJob.files.filter(
+    (item) => String(item.file_name || '').trim().toLowerCase() === normalizedName,
+  );
+  if (matched.length === 1) return matched[0];
+  if (byIndex) return byIndex;
+  return matched[0] || null;
+};
+
 type ExtractFetchResult = {
   response: Response;
   usedBase: string;
@@ -338,6 +688,16 @@ const getViteExtractBase = (): string => {
     return String(envObj?.VITE_MODULE2_API_BASE || envObj?.VITE_EXTRACT_API_BASE || '').trim();
   } catch {
     return '';
+  }
+};
+
+const useModule4FrontendIngestFallback = (): boolean => {
+  try {
+    const envObj = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+    const raw = String(envObj?.VITE_MODULE4_FRONTEND_INGEST_FALLBACK || '').trim().toLowerCase();
+    return raw === '1' || raw === 'true' || raw === 'yes';
+  } catch {
+    return false;
   }
 };
 
@@ -380,22 +740,29 @@ const joinExtractUrl = (base: string, path: string): string => {
   return normalizedBase ? `${normalizedBase}${normalizedPath}` : normalizedPath;
 };
 
+const resolveExtractBase = (preferredBase = ''): string => {
+  const normalizedPreferred = normalizeExtractBase(preferredBase);
+  if (normalizedPreferred) return normalizedPreferred;
+  const candidates = buildExtractBaseCandidates(preferredBase);
+  return candidates[0] || '';
+};
+
 const toAbsoluteExtractUrl = (rawUrl: string, base: string): string => {
   const value = String(rawUrl || '').trim();
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value;
   if (!value.startsWith('/')) return value;
-  const normalizedBase = normalizeExtractBase(base);
+  const normalizedBase = resolveExtractBase(base);
   return normalizedBase ? `${normalizedBase}${value}` : value;
 };
 
 const parseFetchErrorMessage = (error: unknown): string => {
-  if (!(error instanceof Error)) return 'DOC/DOCX 预览转换失败';
+  if (!(error instanceof Error)) return '文档预览转换失败';
   const msg = String(error.message || '').trim();
-  if (!msg) return 'DOC/DOCX 预览转换失败';
+  if (!msg) return '文档预览转换失败';
   const lowered = msg.toLowerCase();
   if (lowered.includes('failed to fetch') || lowered.includes('networkerror') || lowered.includes('load failed')) {
-    return '无法连接文档解析后端，请确认后端服务已启动（默认 8000 端口）或配置 VITE_MODULE2_API_BASE。';
+    return '无法连接文档解析后端，请确认后端服务已启动（默认 8000 端口）或检查后端地址配置。';
   }
   return msg;
 };
@@ -408,10 +775,10 @@ const readResponseErrorMessage = async (response: Response): Promise<string> => 
     text = '';
   }
   const trimmed = String(text || '').trim();
-  if (!trimmed) return `HTTP ${response.status}`;
+  if (!trimmed) return `状态码 ${response.status}`;
   try {
     const parsed = JSON.parse(trimmed);
-    const detail = parsed?.detail ?? parsed?.message ?? parsed?.error;
+    const detail = parsed?.detail || parsed?.message || parsed?.error;
     if (typeof detail === 'string' && detail.trim()) return detail.trim();
   } catch {
     // non-json payload
@@ -443,7 +810,7 @@ const fetchExtractWithFallback = async (
       if (!retryable) {
         throw new Error(msg);
       }
-      lastError = msg || `HTTP ${response.status}`;
+      lastError = msg || `状态码 ${response.status}`;
     } catch (error) {
       lastError = parseFetchErrorMessage(error);
     }
@@ -516,7 +883,7 @@ const toFieldLabel = (name: string) =>
       seller_name: '销售方名称',
       total_amount: '合计金额',
     } as Record<string, string>
-  )[name] ?? name;
+  )[name] || name;
 
 const toTraceHits = (doc: DocumentResult | null, fieldKey?: string | null): TraceHit[] => {
   if (!doc || !Array.isArray(doc.trace_hits)) return [];
@@ -533,6 +900,47 @@ const toTraceHits = (doc: DocumentResult | null, fieldKey?: string | null): Trac
   return out.sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0));
 };
 
+const getTraceLocator = (hit: TraceHit): Record<string, unknown> =>
+  hit.locator && typeof hit.locator === 'object' ? (hit.locator as Record<string, unknown>) : {};
+
+const isTableLikeFigureTrace = (hit: TraceHit): boolean => {
+  const locator = getTraceLocator(hit);
+  const figureType = String(locator.figure_type || '').trim().toLowerCase();
+  if (figureType === 'table' || figureType === 'spreadsheet') return true;
+
+  const contentModes = Array.isArray(locator.content_modes)
+    ? locator.content_modes.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : [];
+
+  const dataframe = locator.dataframe && typeof locator.dataframe === 'object'
+    ? (locator.dataframe as Record<string, unknown>)
+    : {};
+  const hasHeaders = Array.isArray(dataframe.headers)
+    && dataframe.headers.some((cell) => String(cell || '').trim().length > 0);
+  const hasRows = Array.isArray(dataframe.rows)
+    && dataframe.rows.some(
+      (row) => Array.isArray(row) && row.some((cell) => String(cell || '').trim().length > 0)
+    );
+
+  return (hasHeaders || hasRows) && !contentModes.includes('visual') && !contentModes.includes('topology');
+};
+
+const getTraceDisplayKind = (hit: TraceHit): TraceDisplayKind => {
+  const objectType = String(hit.object_type || '').trim().toLowerCase();
+  if (objectType === 'field') return 'field';
+  if (objectType === 'table') return 'table';
+  if (objectType === 'figure') return isTableLikeFigureTrace(hit) ? 'table' : 'image';
+  return 'other';
+};
+
+const getTraceDisplayLabel = (hit: TraceHit): string => {
+  const kind = getTraceDisplayKind(hit);
+  if (kind === 'field') return '字段';
+  if (kind === 'table') return '表格';
+  if (kind === 'image') return '图片';
+  return '其他';
+};
+
 const toTraceHitKey = (hit: TraceHit, idx: number) =>
   `${String(hit.object_type || 'trace')}:${String(hit.object_id || '')}:${String(hit.ref_id || '')}:${idx}`;
 
@@ -544,8 +952,8 @@ const toTracePage = (hit: TraceHit): number => {
     const p = Number(bbox[0] || 0);
     if (Number.isFinite(p) && p > 0) return Math.round(p);
   }
-  const locator = (hit.locator ?? {}) as Record<string, unknown>;
-  const locatorPage = Number(locator.page ?? 0);
+  const locator = (hit.locator || {}) as Record<string, unknown>;
+  const locatorPage = Number(locator.page || 0);
   return Number.isFinite(locatorPage) && locatorPage > 0 ? Math.round(locatorPage) : 0;
 };
 
@@ -570,6 +978,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const [activeDocIndex, setActiveDocIndex] = useState(0);
   const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [extractionJob, setExtractionJob] = useState<ExtractionJobState | null>(null);
+  const [selectedFileArtifacts, setSelectedFileArtifacts] = useState<Record<string, { artifactUrl?: string; artifactPath?: string }>>({});
+  const [sessionHydrated, setSessionHydrated] = useState(false);
+  const [sessionRestorePending, setSessionRestorePending] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [infoMessage, setInfoMessage] = useState("每批最多上传 5 个文件。");
   const [activeSummaryText, setActiveSummaryText] = useState('');
@@ -585,8 +997,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const [assistantAnswer, setAssistantAnswer] = useState('');
   const [assistantWarnings, setAssistantWarnings] = useState<string[]>([]);
   const [assistantDialog, setAssistantDialog] = useState<AssistantDialogMessage[]>([]);
+  const [smartUnitTab, setSmartUnitTab] = useState<'results' | 'assistant'>('results');
+  const [assistantTabUnread, setAssistantTabUnread] = useState(false);
+  const [resultsTabUnread, setResultsTabUnread] = useState(false);
   const [showAssistantHelp, setShowAssistantHelp] = useState(false);
   const [showSchema, setShowSchema] = useState(false); // UI Toggle
+  const [isPreviewFocused, setIsPreviewFocused] = useState(false);
   const [isUploaderDragOver, setIsUploaderDragOver] = useState(false);
   const [resultSearchQuery, setResultSearchQuery] = useState('');
   
@@ -603,8 +1019,17 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const traceRequestSeqRef = useRef(0);
   const officePreviewPollRef = useRef<Record<string, string>>({});
   const officePreviewApiBaseRef = useRef<Record<string, string>>({});
+  const extractionJobPollRef = useRef<string>('');
+  const extractionJobApiBaseRef = useRef<string>('');
+  const persistedSelectedFilesRef = useRef<PersistedWorkbenchFile[]>([]);
+  const assistantActivityRef = useRef('');
+  const resultsActivityRef = useRef('');
 
-  const activeDoc = documents[activeDocIndex] ?? null;
+  useEffect(() => () => {
+    clearSpreadsheetPreviewWarmupQueue();
+  }, []);
+
+  const activeDoc = documents[activeDocIndex] || null;
   const activeSourceFile = useMemo(() => {
     // Priority 1: Match activeDoc if it exists
     if (activeDoc && selectedFiles.length > 0) {
@@ -613,10 +1038,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         ? selectedFiles.filter((file) => file.name.toLowerCase() === targetName)
         : [];
       if (nameMatched.length === 1) return nameMatched[0];
-      const byIndex = selectedFiles[activeDocIndex] ?? null;
+      const byIndex = selectedFiles[activeDocIndex] || null;
       if (nameMatched.length > 1) {
         if (byIndex && byIndex.name.toLowerCase() === targetName) return byIndex;
-        return nameMatched[0] ?? byIndex;
+        return nameMatched[0] || byIndex;
       }
       const exact = selectedFiles.find((file) => file.name === activeDoc.file_name);
       if (exact) return exact;
@@ -627,23 +1052,25 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
     // Priority 2: Fallback to selectedFiles based on index (Pre-extraction preview)
     if (!activeDoc && selectedFiles.length > 0) {
-      return selectedFiles[activeDocIndex] ?? selectedFiles[0];
+      return selectedFiles[activeDocIndex] || selectedFiles[0];
     }
 
     return null;
   }, [activeDoc, activeDocIndex, selectedFiles]);
   const activeExt = activeSourceFile ? fileExt(activeSourceFile.name) : (activeDoc ? fileExt(activeDoc.file_name) : '');
   const activeDisplayName = activeDoc?.file_name || activeSourceFile?.name || '当前文档';
+  const activeSelectionCount = Math.max(documents.length, selectedFiles.length);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewText, setPreviewText] = useState<string>('');
   const [officePreviewMap, setOfficePreviewMap] = useState<Record<string, OfficePreviewState>>({});
-  const [pdfPage, setPdfPage] = useState(1);
+  const [pdfViewportPage, setPdfViewportPage] = useState(1);
+  const [pdfScrollRequest, setPdfScrollRequest] = useState<PdfScrollRequest | null>(null);
   const [pdfPreviewPageCount, setPdfPreviewPageCount] = useState(1);
   const assistantActionable = useMemo(
-    () => Boolean(activeDoc && (((activeDoc.errors?.length ?? 0) > 0) || ((activeDoc.soft_warnings?.length ?? 0) > 0))),
+    () => Boolean(activeDoc && (((activeDoc.errors?.length || 0) > 0) || ((activeDoc.soft_warnings?.length || 0) > 0))),
     [activeDoc]
   );
-  const showLeftPanel = selectedFiles.length > 0 || documents.length > 0;
+  const showLeftPanel = !isPreviewFocused;
   const activeOfficePreview = useMemo(() => {
     const fileNameHint = String(activeSourceFile?.name || activeDoc?.file_name || '').trim();
     if (!fileNameHint) return null;
@@ -677,7 +1104,43 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     if ((activeExt === 'doc' || activeExt === 'docx') && activeConvertedPdfUrl) return 'pdf';
     return activeExt;
   }, [activeExt, activeConvertedPdfUrl]);
+  const activePreviewIdentity = useMemo(() => {
+    if (activeDoc?.file_hash) return `doc:${activeDoc.file_hash}`;
+    if (activeSourceFile) return `upload:${fileIdentityKey(activeSourceFile)}`;
+    if (activeDoc?.file_name) return `name:${activeDoc.file_name}`;
+    if (previewUrl) return `preview:${previewUrl}`;
+    return '';
+  }, [activeDoc?.file_hash, activeDoc?.file_name, activeSourceFile, previewUrl]);
   const hasPreviewContent = Boolean(activeSourceFile || previewUrl);
+  const canClearWorkbenchData = useMemo(
+    () =>
+      Boolean(
+        selectedFiles.length > 0
+        || documents.length > 0
+        || previewUrl
+        || previewText
+        || activeSummaryText
+        || traceHits.length > 0
+        || assistantDialog.length > 0
+        || assistantInput
+        || assistantAnswer
+        || resultSearchQuery
+        || Object.keys(officePreviewMap).length > 0
+      ),
+    [
+      activeSummaryText,
+      assistantAnswer,
+      assistantDialog.length,
+      assistantInput,
+      documents.length,
+      officePreviewMap,
+      previewText,
+      previewUrl,
+      resultSearchQuery,
+      selectedFiles.length,
+      traceHits.length,
+    ]
+  );
   const recentUserInstructions = useMemo(() => {
     const pool = assistantDialog
       .filter((msg) => msg.role === 'user')
@@ -702,6 +1165,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     return () => {
       officePreviewPollRef.current = {};
       officePreviewApiBaseRef.current = {};
+      extractionJobPollRef.current = '';
+      extractionJobApiBaseRef.current = '';
     };
   }, []);
 
@@ -717,25 +1182,120 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   }, []);
 
   useEffect(() => {
+    let active = true;
     const cached = readExtractionDocuments();
-    if (cached.length === 0) return;
-    setDocuments(cached);
-    setInfoMessage(`已加载 ${cached.length} 条本地缓存抽取结果。`);
+    const session = readWorkbenchSession();
+    if (cached.length > 0) {
+      setDocuments(cached);
+      setInfoMessage(`已加载 ${cached.length} 条本地缓存抽取结果。`);
+    }
+    if (!session) {
+      persistedSelectedFilesRef.current = [];
+      setSessionRestorePending(false);
+      setSessionHydrated(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    setActiveDocIndex(Math.max(0, Number(session.activeDocIndex || 0)));
+    setOfficePreviewMap(session.officePreviewMap || {});
+    setExtractionJob(session.extractionJob || null);
+    setIsProcessing(Boolean(session.extractionJob && !session.extractionJob.terminal));
+    persistedSelectedFilesRef.current = Array.isArray(session.selectedFiles) ? session.selectedFiles : [];
+    const artifactMap = Object.fromEntries(
+      (session.selectedFiles || []).map((item) => [
+        item.key,
+        {
+          artifactUrl: item.artifactUrl,
+          artifactPath: item.artifactPath,
+        },
+      ]),
+    );
+    setSelectedFileArtifacts(artifactMap);
+
+    const restorable = (session.selectedFiles || []).filter((item) =>
+      String(item.artifactUrl || item.artifactPath || '').trim()
+    );
+    if (restorable.length === 0) {
+      setSessionRestorePending(false);
+      setSessionHydrated(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    setSessionRestorePending(true);
+    setInfoMessage(`正在恢复 ${restorable.length} 份文件预览与任务状态...`);
+    Promise.all(
+      restorable.map(async (item) => {
+        try {
+          return await hydrateFileFromArtifact(item);
+        } catch {
+          return null;
+        }
+      }),
+    ).then((restored) => {
+      if (!active) return;
+      const files = restored.filter(Boolean) as File[];
+      if (files.length > 0) {
+        setSelectedFiles(files);
+        setInfoMessage(`已恢复 ${files.length} 份文件预览与任务状态。`);
+      }
+    }).finally(() => {
+      if (!active) return;
+      setSessionRestorePending(false);
+      setSessionHydrated(true);
+    });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
-    if (documents.length === 0) {
-      setActiveDocIndex(0);
+    if (activeSelectionCount === 0) {
+      if (activeDocIndex !== 0) {
+        setActiveDocIndex(0);
+      }
       return;
     }
-    if (activeDocIndex > documents.length - 1) {
-      setActiveDocIndex(documents.length - 1);
+    if (activeDocIndex > activeSelectionCount - 1) {
+      setActiveDocIndex(activeSelectionCount - 1);
     }
-  }, [activeDocIndex, documents]);
+  }, [activeDocIndex, activeSelectionCount]);
 
   useEffect(() => {
-    setPdfPage(1);
-  }, [activeDoc?.file_hash]);
+    if (!sessionHydrated || sessionRestorePending) return;
+    const hasSessionState =
+      selectedFiles.length > 0
+      || Object.keys(officePreviewMap).length > 0
+      || Boolean(extractionJob);
+    if (!hasSessionState) {
+      persistedSelectedFilesRef.current = [];
+      clearWorkbenchSession();
+      return;
+    }
+    const snapshot = toSessionSnapshot(
+      selectedFiles,
+      activeDocIndex,
+      officePreviewMap,
+      extractionJob,
+      selectedFileArtifacts,
+      persistedSelectedFilesRef.current,
+    );
+    persistedSelectedFilesRef.current = snapshot.selectedFiles;
+    writeWorkbenchSession(snapshot);
+  }, [activeDocIndex, extractionJob, officePreviewMap, selectedFileArtifacts, selectedFiles, sessionHydrated, sessionRestorePending]);
+
+  useEffect(() => {
+    setPdfViewportPage(1);
+    if (activeRenderExt === 'pdf' && activePreviewIdentity) {
+      setPdfScrollRequest(createPdfScrollRequest(1));
+      return;
+    }
+    setPdfScrollRequest(null);
+  }, [activePreviewIdentity, activeRenderExt]);
 
   useEffect(() => {
     if (!activeSourceFile) {
@@ -778,7 +1338,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       activeSourceFile.text().then((text) => {
         if (cancelled) return;
         const maxChars = 12000;
-        setPreviewText(text.length > maxChars ? `${text.slice(0, maxChars)}\n\n...【内容已截断】` : text);
+        setPreviewText(text.length > maxChars ? `${text.slice(0, maxChars)}\n\n...[内容已截断]` : text);
       });
       return () => {
         cancelled = true;
@@ -870,6 +1430,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           diagnostics: doc.diagnostics ?? {},
           errors: doc.errors ?? [],
           soft_warnings: doc.soft_warnings ?? [],
+          trace_hits: doc.trace_hits ?? [],
           max_chars: 520,
         }),
       });
@@ -881,7 +1442,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       setActiveSummaryText((payload.summary || "").trim() || "暂无摘要。");
     } catch (error) {
       if (seq !== summaryRequestSeqRef.current) return;
-      const fallback = (doc.errors?.[0] ?? '').trim();
+      const fallback = String(doc.errors?.[0] ?? '').trim();
       setActiveSummaryText(fallback || "暂时无法生成摘要，请稍后重试。");
     } finally {
       if (seq === summaryRequestSeqRef.current) {
@@ -1038,14 +1599,14 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     return Math.max(1, maxByRefs, maxByTrace, pdfPreviewPageCount);
   }, [activeRenderExt, fieldItems, pdfPreviewPageCount, traceHits]);
 
-  const currentPdfPage = Math.min(Math.max(pdfPage, 1), inferredPdfPageCount);
+  const currentPdfPage = Math.min(Math.max(pdfViewportPage, 1), inferredPdfPageCount);
 
   useEffect(() => {
     if (activeRenderExt !== 'pdf') return;
-    if (pdfPage !== currentPdfPage) {
-      setPdfPage(currentPdfPage);
+    if (pdfViewportPage !== currentPdfPage) {
+      setPdfViewportPage(currentPdfPage);
     }
-  }, [activeRenderExt, currentPdfPage, pdfPage]);
+  }, [activeRenderExt, currentPdfPage, pdfViewportPage]);
 
   const overlayItems = useMemo(() => {
     const drawable = activeRenderExt === 'pdf' || IMAGE_EXTENSIONS.has(activeRenderExt);
@@ -1082,18 +1643,18 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const stats = {
       field: 0,
       table: 0,
-      figure: 0,
+      image: 0,
       other: 0,
     };
 
     traceHits.forEach((hit) => {
-      const typ = String(hit.object_type || '').toLowerCase();
+      const typ = getTraceDisplayKind(hit);
       if (typ === 'field') {
         stats.field += 1;
       } else if (typ === 'table') {
         stats.table += 1;
-      } else if (typ === 'figure') {
-        stats.figure += 1;
+      } else if (typ === 'image') {
+        stats.image += 1;
       } else {
         stats.other += 1;
       }
@@ -1102,21 +1663,119 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     return stats;
   }, [traceHits]);
 
+  const assistantActivityKey = useMemo(
+    () =>
+      JSON.stringify({
+        summary: activeSummaryText,
+        summaryLoading: activeSummaryLoading,
+        dialogCount: assistantDialog.length,
+        lastDialogId: assistantDialog[assistantDialog.length - 1]?.id ?? '',
+        assistantAnswer,
+        assistantWarnings: assistantWarnings.join('|'),
+        assistantMessage,
+        assistantQueryLoading,
+        assistantStatus,
+      }),
+    [
+      activeSummaryText,
+      activeSummaryLoading,
+      assistantDialog,
+      assistantAnswer,
+      assistantWarnings,
+      assistantMessage,
+      assistantQueryLoading,
+      assistantStatus,
+    ]
+  );
+  const resultsActivityKey = useMemo(
+    () =>
+      JSON.stringify({
+        activeDocHash: activeDoc?.file_hash ?? '',
+        documentCount: documents.length,
+        fieldCount: fieldItems.length,
+        traceCount: traceHits.length,
+        errorMessage,
+        softWarningCount: activeDoc?.soft_warnings?.length ?? 0,
+      }),
+    [activeDoc?.file_hash, activeDoc?.soft_warnings?.length, documents.length, errorMessage, fieldItems.length, traceHits.length]
+  );
+
+  useEffect(() => {
+    if (smartUnitTab === 'assistant' && assistantTabUnread) {
+      setAssistantTabUnread(false);
+    }
+    if (smartUnitTab === 'results' && resultsTabUnread) {
+      setResultsTabUnread(false);
+    }
+  }, [assistantTabUnread, resultsTabUnread, smartUnitTab]);
+
+  useEffect(() => {
+    const hasAssistantActivity =
+      activeSummaryLoading ||
+      assistantQueryLoading ||
+      Boolean(activeSummaryText.trim()) ||
+      assistantDialog.length > 0 ||
+      assistantWarnings.length > 0 ||
+      Boolean(assistantAnswer.trim());
+    if (!hasAssistantActivity) {
+      assistantActivityRef.current = assistantActivityKey;
+      return;
+    }
+    if (
+      assistantActivityRef.current &&
+      assistantActivityRef.current !== assistantActivityKey &&
+      smartUnitTab !== 'assistant'
+    ) {
+      setAssistantTabUnread(true);
+    }
+    assistantActivityRef.current = assistantActivityKey;
+  }, [
+    activeSummaryLoading,
+    activeSummaryText,
+    assistantActivityKey,
+    assistantAnswer,
+    assistantDialog.length,
+    assistantQueryLoading,
+    assistantWarnings.length,
+    smartUnitTab,
+  ]);
+
+  useEffect(() => {
+    const hasResultActivity =
+      Boolean(activeDoc) ||
+      documents.length > 0 ||
+      fieldItems.length > 0 ||
+      traceHits.length > 0 ||
+      Boolean(errorMessage.trim());
+    if (!hasResultActivity) {
+      resultsActivityRef.current = resultsActivityKey;
+      return;
+    }
+    if (
+      resultsActivityRef.current &&
+      resultsActivityRef.current !== resultsActivityKey &&
+      smartUnitTab !== 'results'
+    ) {
+      setResultsTabUnread(true);
+    }
+    resultsActivityRef.current = resultsActivityKey;
+  }, [activeDoc, documents.length, errorMessage, fieldItems.length, resultsActivityKey, smartUnitTab, traceHits.length]);
+
   const traceGroups = useMemo(() => {
     const grouped = {
       field: [] as Array<{ hit: TraceHit; idx: number }>,
       table: [] as Array<{ hit: TraceHit; idx: number }>,
-      figure: [] as Array<{ hit: TraceHit; idx: number }>,
+      image: [] as Array<{ hit: TraceHit; idx: number }>,
       other: [] as Array<{ hit: TraceHit; idx: number }>,
     };
     traceHits.forEach((hit, idx) => {
-      const typ = String(hit.object_type || "").toLowerCase();
+      const typ = getTraceDisplayKind(hit);
       if (typ === "field") {
         grouped.field.push({ hit, idx });
       } else if (typ === "table") {
         grouped.table.push({ hit, idx });
-      } else if (typ === "figure") {
-        grouped.figure.push({ hit, idx });
+      } else if (typ === "image") {
+        grouped.image.push({ hit, idx });
       } else {
         grouped.other.push({ hit, idx });
       }
@@ -1124,7 +1783,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     return [
       { key: "field", label: "字段", items: grouped.field },
       { key: "table", label: "表格", items: grouped.table },
-      { key: "figure", label: "图表", items: grouped.figure },
+      { key: "image", label: "图片", items: grouped.image },
       { key: "other", label: "其他", items: grouped.other },
     ].filter((group) => group.items.length > 0);
   }, [traceHits]);
@@ -1181,7 +1840,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           [key]: {
             status: 'failed',
             jobId,
-            error: String(payload.error || 'DOC/DOCX 预览转换失败'),
+            error: String(payload.error || '文档预览转换失败'),
           },
         }));
         delete officePreviewApiBaseRef.current[key];
@@ -1204,7 +1863,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         ...(prev[key] || { status: 'queued' as const }),
         status: 'failed',
         jobId,
-        error: 'DOC/DOCX 预览转换超时',
+        error: '文档预览转换超时',
       },
     }));
     delete officePreviewApiBaseRef.current[key];
@@ -1255,7 +1914,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         return;
       }
       if (!jobId) {
-        throw new Error('DOC/DOCX 预览任务创建失败');
+        throw new Error('文档预览任务创建失败');
       }
       officePreviewPollRef.current[key] = jobId;
       officePreviewApiBaseRef.current[key] = usedBase;
@@ -1280,6 +1939,168 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     }
   };
 
+  const applyExtractionDocuments = (docs: DocumentResult[]) => {
+    const documentsWithPreview = docs.map((doc) => {
+      const ext = fileExt(String(doc.file_name || ''));
+      if (ext !== 'doc' && ext !== 'docx') return doc;
+
+      const diagnostics =
+        doc.diagnostics && typeof doc.diagnostics === 'object'
+          ? (doc.diagnostics as Record<string, unknown>)
+          : {};
+      const existingPreviewUrl = String(diagnostics.office_pdf_preview_url || '').trim();
+      if (existingPreviewUrl) return doc;
+
+      const matchedPreview = pickOfficePreviewByFileName(doc.file_name, officePreviewMap);
+      const previewUrl = String(matchedPreview?.pdfUrl || '').trim();
+      if (!previewUrl) return doc;
+
+      return {
+        ...doc,
+        diagnostics: {
+          ...diagnostics,
+          office_pdf_preview_url: previewUrl,
+        },
+      };
+    });
+
+    setDocuments(documentsWithPreview);
+    writeExtractionDocuments(documentsWithPreview);
+    if (useModule4FrontendIngestFallback()) {
+      void ingestModule4Documents(documentsWithPreview).catch((error) => {
+        console.warn('module4 ingest failed', error);
+      });
+    }
+    setActiveDocIndex(0);
+    setPdfViewportPage(1);
+    setPdfScrollRequest(createPdfScrollRequest(1));
+    if (documentsWithPreview.length > 0) {
+      void requestSummary(documentsWithPreview[0]);
+    }
+
+    const firstErrorDoc = documentsWithPreview.find((doc) => doc.errors && doc.errors.length > 0);
+    if (firstErrorDoc) {
+      setErrorMessage(firstErrorDoc.errors.join(' | '));
+      return;
+    }
+
+    const cacheHits = documentsWithPreview.filter((doc) => doc.cached).length;
+    const totalTables = documentsWithPreview.reduce((acc, doc) => {
+      const raw = doc.diagnostics?.table_count;
+      const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
+      return acc + (Number.isFinite(val) ? val : 0);
+    }, 0);
+    const totalFigures = documentsWithPreview.reduce((acc, doc) => {
+      const raw = doc.diagnostics?.figure_count;
+      const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
+      return acc + (Number.isFinite(val) ? val : 0);
+    }, 0);
+    const sourceSet = new Set<string>();
+    const figureSourceSet = new Set<string>();
+    documentsWithPreview.forEach((doc) => {
+      const srcRaw = doc.diagnostics?.table_sources;
+      if (!srcRaw || typeof srcRaw !== 'object') return;
+      Object.keys(srcRaw as Record<string, unknown>).forEach((key) => sourceSet.add(key));
+      const figRaw = doc.diagnostics?.figure_sources;
+      if (figRaw && typeof figRaw === 'object') {
+        Object.keys(figRaw as Record<string, unknown>).forEach((key) => figureSourceSet.add(key));
+      }
+    });
+    const sourceText = sourceSet.size > 0 ? Array.from(sourceSet).slice(0, 3).join(', ') : '未知';
+    const figureSourceText = figureSourceSet.size > 0 ? Array.from(figureSourceSet).slice(0, 3).join(', ') : '未知';
+    const softWarningCount = documentsWithPreview.reduce((acc, doc) => acc + (doc.soft_warnings?.length ?? 0), 0);
+    const autoSchemaDocs = documentsWithPreview.reduce((acc, doc) => {
+      const mode = String(doc.diagnostics?.schema_mode || '');
+      return acc + (mode === 'auto' ? 1 : 0);
+    }, 0);
+    setInfoMessage(
+      `已完成 ${documentsWithPreview.length} 份文档抽取，缓存命中 ${cacheHits} 份，智能字段识别 ${autoSchemaDocs} 份，识别表格 ${totalTables} 张（来源: ${sourceText}），识别图像 ${totalFigures} 张（来源: ${figureSourceText}），软告警 ${softWarningCount} 条。`
+    );
+  };
+
+  const pollExtractionJob = async (jobId: string, preferredBase = '') => {
+    extractionJobPollRef.current = jobId;
+    const maxAttempts = 360;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (extractionJobPollRef.current !== jobId) return;
+      try {
+        const fetchResult = await fetchExtractWithFallback(
+          `/extract/jobs/status/${encodeURIComponent(jobId)}?include_documents=true`,
+          undefined,
+          preferredBase || extractionJobApiBaseRef.current || '',
+        );
+        const usedBase = fetchResult.usedBase || preferredBase || '';
+        extractionJobApiBaseRef.current = usedBase;
+        const payload = (await fetchResult.response.json()) as ExtractionJobState & {
+          progress: ExtractionJobState['progress'];
+          terminal: boolean;
+          documents?: DocumentResult[];
+        };
+        setExtractionJob(payload);
+        setIsProcessing(!payload.terminal);
+
+        const progress = payload.progress;
+        const currentName = String(progress?.current_file_name || '').trim();
+        const currentStage = String(progress?.current_stage || '').trim();
+        const currentPercent = Math.max(0, Math.min(100, Math.round(Number(progress?.progress_ratio || 0) * 100)));
+        if (!payload.terminal) {
+          setInfoMessage(
+            currentName
+              ? `正在处理 ${currentName} · ${currentStage || 'running'} · ${currentPercent}%`
+              : `正在处理文档 · ${currentPercent}%`
+          );
+        }
+
+        if (payload.terminal) {
+          extractionJobPollRef.current = '';
+          if (Array.isArray(payload.documents) && payload.documents.length > 0) {
+            applyExtractionDocuments(payload.documents);
+          } else if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+            setErrorMessage(payload.errors.join(' | '));
+          } else {
+            setInfoMessage('抽取任务已结束，暂无可展示结果。');
+          }
+          return;
+        }
+      } catch (error) {
+        if (extractionJobPollRef.current !== jobId) return;
+        const message =
+          error instanceof Error && String(error.message || '').trim()
+            ? String(error.message || '').trim()
+            : '抽取进度同步失败';
+        if (message.toLowerCase().includes('not found')) {
+          extractionJobPollRef.current = '';
+          setErrorMessage(message);
+          setIsProcessing(false);
+          return;
+        }
+        setInfoMessage('正在同步最新解析进度...');
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    }
+    if (extractionJobPollRef.current === jobId) {
+      setErrorMessage('抽取进度轮询超时，请稍后重试。');
+      extractionJobPollRef.current = '';
+      setIsProcessing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!extractionJob || extractionJob.terminal) return;
+    if (extractionJobPollRef.current === extractionJob.job_id) return;
+    void pollExtractionJob(extractionJob.job_id, extractionJobApiBaseRef.current || '');
+  }, [extractionJob?.job_id, extractionJob?.terminal]);
+
+  useEffect(() => {
+    Object.entries(officePreviewMap).forEach(([key, state]) => {
+      if (!state?.jobId) return;
+      if (state.status !== 'queued' && state.status !== 'running') return;
+      if (officePreviewPollRef.current[key] === state.jobId) return;
+      officePreviewPollRef.current[key] = state.jobId;
+      void pollOfficePreview(key, state.jobId, officePreviewApiBaseRef.current[key] || '');
+    });
+  }, [officePreviewMap]);
+
   const mergeSelectedFiles = (incomingRaw: File[]) => {
     const incoming = incomingRaw.filter(isAllowedFile);
     const rejectedCount = incomingRaw.length - incoming.length;
@@ -1302,12 +2123,13 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     } else if (rejectedCount > 0) {
       setInfoMessage(`已忽略 ${rejectedCount} 个不支持的文件，仅支持常见文档与图片格式。`);
     } else {
-      setInfoMessage(`已选择 ${limited.length} 个文件，可开始抽取。`);
+      setInfoMessage(`已选择 ${limited.length} 个文件，可开始提取。`);
     }
     const selectedKeySet = new Set(limited.map((file) => fileIdentityKey(file)));
     incoming.forEach((file) => {
       if (!selectedKeySet.has(fileIdentityKey(file))) return;
       void ensureOfficePreview(file);
+      scheduleSpreadsheetPreviewWarmup(file);
     });
   };
 
@@ -1341,37 +2163,28 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     }
   };
 
-  const removeFile = (index: number) => {
-    setSelectedFiles((prev) => {
-      const removed = prev[index];
-      if (removed) {
-        const key = fileIdentityKey(removed);
-        delete officePreviewPollRef.current[key];
-        delete officePreviewApiBaseRef.current[key];
-        setOfficePreviewMap((map) => {
-          if (!(key in map)) return map;
-          const copied = { ...map };
-          delete copied[key];
-          return copied;
-        });
-      }
-      return prev.filter((_, i) => i !== index);
-    });
-  };
-
-  const clearAllFiles = () => {
-    setSelectedFiles([]);
+  const resetWorkbenchState = (message: string) => {
     officePreviewPollRef.current = {};
     officePreviewApiBaseRef.current = {};
+    extractionJobPollRef.current = '';
+    extractionJobApiBaseRef.current = '';
+    persistedSelectedFilesRef.current = [];
+    clearSpreadsheetPreviewWarmupQueue();
+    clearLuckysheetPreviewCache();
     setOfficePreviewMap({});
+    setExtractionJob(null);
+    setSelectedFileArtifacts({});
+    setSessionRestorePending(false);
     setDocuments([]);
     setActiveDocIndex(0);
     setActiveFieldKey(null);
     setPreviewUrl(null);
     setPreviewText('');
-    setPdfPage(1);
+    setPdfViewportPage(1);
+    setPdfScrollRequest(null);
+    setPdfPreviewPageCount(1);
     setErrorMessage('');
-    setInfoMessage("文件队列已清空。");
+    setInfoMessage(message);
     setScale(1);
     setRotation(0);
     summaryRequestSeqRef.current += 1;
@@ -1389,9 +2202,77 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setAssistantAnswer('');
     setAssistantWarnings([]);
     setAssistantQueryLoading(false);
-    
-    // Clear local storage cache
-    writeExtractionDocuments([]);
+    setAssistantDialog([]);
+    setSmartUnitTab('results');
+    setAssistantTabUnread(false);
+    setResultsTabUnread(false);
+    setShowAssistantHelp(false);
+    setIsPreviewFocused(false);
+    setIsUploaderDragOver(false);
+    setResultSearchQuery('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    clearExtractionDocuments();
+    clearWorkbenchSession();
+  };
+
+  const clearWorkbenchData = () => {
+    if (!canClearWorkbenchData) return;
+    setSelectedFiles([]);
+    resetWorkbenchState('已清空当前页面数据与本地缓存。');
+  };
+
+  const removeFile = (index: number) => {
+    const removed = selectedFiles[index];
+    if (!removed) return;
+
+    if (selectedFiles.length <= 1) {
+      setSelectedFiles([]);
+      resetWorkbenchState("文件队列已清空。");
+      return;
+    }
+
+    const key = fileIdentityKey(removed);
+    delete officePreviewPollRef.current[key];
+    delete officePreviewApiBaseRef.current[key];
+    setSelectedFileArtifacts((prev) => {
+      if (!(key in prev)) return prev;
+      const copied = { ...prev };
+      delete copied[key];
+      return copied;
+    });
+    setOfficePreviewMap((map) => {
+      if (!(key in map)) return map;
+      const copied = { ...map };
+      delete copied[key];
+      return copied;
+    });
+
+    const nextFiles = selectedFiles.filter((_, i) => i !== index);
+    setSelectedFiles(nextFiles);
+    setDocuments((prev) => {
+      if (!Array.isArray(prev) || prev.length === 0) return prev;
+      let nextDocs: DocumentResult[] = prev;
+      if (index >= 0 && index < prev.length) {
+        nextDocs = prev.filter((_, i) => i !== index);
+      } else {
+        const removedName = removed.name.trim().toLowerCase();
+        nextDocs = prev.filter((doc) => String(doc.file_name || '').trim().toLowerCase() !== removedName);
+      }
+      writeExtractionDocuments(nextDocs);
+      return nextDocs;
+    });
+    if (activeDocIndex >= nextFiles.length) {
+      setActiveDocIndex(Math.max(0, nextFiles.length - 1));
+    }
+    setActiveFieldKey(null);
+    setInfoMessage(`已移除 ${removed.name}`);
+  };
+
+  const clearAllFiles = () => {
+    setSelectedFiles([]);
+    resetWorkbenchState('文件队列已清空。');
   };
 
   const runExtraction = async () => {
@@ -1411,7 +2292,14 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setErrorMessage('');
     setActiveFieldKey(null);
     setIsProcessing(true);
-    setInfoMessage(`正在执行 ${selectedFiles.length} 个文件的抽取...`);
+    setDocuments([]);
+    clearExtractionDocuments();
+    setExtractionJob(null);
+    extractionJobPollRef.current = '';
+    extractionJobApiBaseRef.current = '';
+    setSelectedFileArtifacts({});
+    setActiveDocIndex(0);
+    setInfoMessage(`正在提交 ${selectedFiles.length} 个文件的抽取任务...`);
     setActiveSummaryLoading(true);
     setActiveSummaryText('已收到抽取任务，正在生成智能摘要...');
     setSummaryDocName(selectedFiles.length === 1 ? selectedFiles[0].name : '当前批次');
@@ -1425,18 +2313,17 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setActiveTraceKey('');
 
     try {
-      const requestBatchWithRetry = async (attempts: number) => {
+      const requestJobCreateWithRetry = async (attempts: number) => {
         let lastError: unknown = null;
         for (let i = 1; i <= attempts; i += 1) {
           const formData = new FormData();
           selectedFiles.forEach((file) => formData.append('files', file));
           formData.append('schema', JSON.stringify(schemaObj));
           try {
-            const fetchResult = await fetchExtractWithFallback('/extract/batch', {
+            return await fetchExtractWithFallback('/extract/jobs/create', {
               method: 'POST',
               body: formData,
             });
-            return fetchResult.response;
           } catch (error) {
             lastError = error;
             if (i < attempts) {
@@ -1449,93 +2336,79 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         throw lastError instanceof Error ? lastError : new Error('抽取请求失败');
       };
 
-      const response = await requestBatchWithRetry(2);
+      const fetchResult = await requestJobCreateWithRetry(2);
+      const response = fetchResult.response;
+      const usedBase = fetchResult.usedBase || '';
+      extractionJobApiBaseRef.current = usedBase;
 
       if (!response.ok) {
         const message = await response.text();
         throw new Error(message || '抽取请求失败');
       }
 
-      const payload = (await response.json()) as ExtractResponse;
-      if (!payload.documents || payload.documents.length === 0) {
-        throw new Error("后端未返回抽取结果");
+      const payload = await response.json() as ExtractionJobState & { documents?: DocumentResult[] };
+      if (!payload || !payload.job_id) {
+        throw new Error('后端未返回有效的抽取任务。');
       }
 
-      const documentsWithPreview = payload.documents.map((doc) => {
-        const ext = fileExt(String(doc.file_name || ''));
-        if (ext !== 'doc' && ext !== 'docx') return doc;
+      const normalizedFiles = Array.isArray(payload.files)
+        ? payload.files.map((item) => ({
+            ...item,
+            artifact_url: toAbsoluteExtractUrl(String(item.artifact_url || '').trim(), usedBase) || item.artifact_url,
+          }))
+        : [];
+      const normalizedJob: ExtractionJobState = {
+        ...payload,
+        files: normalizedFiles,
+        errors: Array.isArray(payload.errors) ? payload.errors : [],
+      };
+      const nextArtifactMap = selectedFiles.reduce<Record<string, { artifactUrl?: string; artifactPath?: string }>>(
+        (acc, file, index) => {
+          const item = normalizedFiles[index];
+          acc[fileIdentityKey(file)] = {
+            artifactUrl: String(item?.artifact_url || '').trim() || undefined,
+            artifactPath: String(item?.artifact_path || '').trim() || undefined,
+          };
+          return acc;
+        },
+        {},
+      );
 
-        const diagnostics =
-          doc.diagnostics && typeof doc.diagnostics === 'object'
-            ? (doc.diagnostics as Record<string, unknown>)
-            : {};
-        const existingPreviewUrl = String(diagnostics.office_pdf_preview_url || '').trim();
-        if (existingPreviewUrl) return doc;
+      setSelectedFileArtifacts(nextArtifactMap);
+      setExtractionJob(normalizedJob);
+      setIsProcessing(!normalizedJob.terminal);
+      writeWorkbenchSession(
+        toSessionSnapshot(
+          selectedFiles,
+          0,
+          officePreviewMap,
+          normalizedJob,
+          nextArtifactMap,
+        ),
+      );
 
-        const matchedPreview = pickOfficePreviewByFileName(doc.file_name, officePreviewMap);
-        const previewUrl = String(matchedPreview?.pdfUrl || '').trim();
-        if (!previewUrl) return doc;
+      const currentPercent = clampProgressPercent(normalizedJob.progress?.progress_ratio || 0);
+      const currentFileName = String(normalizedJob.progress?.current_file_name || '').trim();
+      setInfoMessage(
+        currentFileName
+          ? `已提交任务，正在处理 ${currentFileName} · ${currentPercent}%`
+          : `已提交任务，等待后端开始解析 · ${currentPercent}%`
+      );
 
-        return {
-          ...doc,
-          diagnostics: {
-            ...diagnostics,
-            office_pdf_preview_url: previewUrl,
-          },
-        };
-      });
-
-      setDocuments(documentsWithPreview);
-      writeExtractionDocuments(documentsWithPreview);
-      setActiveDocIndex(0);
-      setPdfPage(1);
-      if (documentsWithPreview.length > 0) {
-        void requestSummary(documentsWithPreview[0]);
-      }
-
-      const firstErrorDoc = documentsWithPreview.find((doc) => doc.errors && doc.errors.length > 0);
-      if (firstErrorDoc) {
-        setErrorMessage(firstErrorDoc.errors.join(' | '));
+      if (normalizedJob.terminal) {
+        if (Array.isArray(payload.documents) && payload.documents.length > 0) {
+          applyExtractionDocuments(payload.documents);
+        } else if (normalizedJob.errors.length > 0) {
+          setErrorMessage(normalizedJob.errors.join(' | '));
+        }
       } else {
-        const cacheHits = documentsWithPreview.filter((doc) => doc.cached).length;
-        const totalTables = documentsWithPreview.reduce((acc, doc) => {
-          const raw = doc.diagnostics?.table_count;
-          const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
-          return acc + (Number.isFinite(val) ? val : 0);
-        }, 0);
-        const totalFigures = documentsWithPreview.reduce((acc, doc) => {
-          const raw = doc.diagnostics?.figure_count;
-          const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
-          return acc + (Number.isFinite(val) ? val : 0);
-        }, 0);
-        const sourceSet = new Set<string>();
-        const figureSourceSet = new Set<string>();
-        documentsWithPreview.forEach((doc) => {
-          const srcRaw = doc.diagnostics?.table_sources;
-          if (!srcRaw || typeof srcRaw !== 'object') return;
-          Object.keys(srcRaw as Record<string, unknown>).forEach((key) => sourceSet.add(key));
-          const figRaw = doc.diagnostics?.figure_sources;
-          if (figRaw && typeof figRaw === 'object') {
-            Object.keys(figRaw as Record<string, unknown>).forEach((key) => figureSourceSet.add(key));
-          }
-        });
-        const sourceText = sourceSet.size > 0 ? Array.from(sourceSet).slice(0, 3).join(', ') : '未知';
-        const figureSourceText = figureSourceSet.size > 0 ? Array.from(figureSourceSet).slice(0, 3).join(', ') : '未知';
-        const softWarningCount = documentsWithPreview.reduce((acc, doc) => acc + (doc.soft_warnings?.length ?? 0), 0);
-        const autoSchemaDocs = documentsWithPreview.reduce((acc, doc) => {
-          const mode = String(doc.diagnostics?.schema_mode || '');
-          return acc + (mode === 'auto' ? 1 : 0);
-        }, 0);
-        setInfoMessage(
-          `已完成 ${documentsWithPreview.length} 份文档抽取，缓存命中 ${cacheHits} 份，智能字段识别 ${autoSchemaDocs} 份，识别表格 ${totalTables} 张（来源: ${sourceText}），识别图像 ${totalFigures} 张（来源: ${figureSourceText}），软告警 ${softWarningCount} 条。`
-        );
+        void pollExtractionJob(normalizedJob.job_id, usedBase);
       }
     } catch (error) {
       console.error(error);
       setErrorMessage(error instanceof Error ? error.message : '抽取失败');
       setActiveSummaryLoading(false);
       setActiveSummaryText("抽取失败，无法生成摘要。");
-    } finally {
       setIsProcessing(false);
     }
   };
@@ -1557,12 +2430,20 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const handleZoomIn = () => setScale((prev) => Math.min(prev + 0.1, 2.5));
   const handleZoomOut = () => setScale((prev) => Math.max(prev - 0.1, 0.5));
   const handleRotate = () => setRotation((prev) => (prev + 90) % 360);
+  const jumpToPdfPage = (page: number | null | undefined) => {
+    if (activeRenderExt !== 'pdf') return;
+    const rawPage = Number(page || 0);
+    if (!Number.isFinite(rawPage) || rawPage < 1) return;
+    const safePage = Math.min(Math.max(1, Math.round(rawPage)), inferredPdfPageCount);
+    setPdfViewportPage(safePage);
+    setPdfScrollRequest(createPdfScrollRequest(safePage));
+  };
   const handlePrevPdfPage = () => {
-    setPdfPage((prev) => Math.max(1, prev - 1));
+    jumpToPdfPage(currentPdfPage - 1);
     setActiveFieldKey(null);
   };
   const handleNextPdfPage = () => {
-    setPdfPage((prev) => Math.min(inferredPdfPageCount, prev + 1));
+    jumpToPdfPage(currentPdfPage + 1);
     setActiveFieldKey(null);
   };
   const handleResetView = () => {
@@ -1681,7 +2562,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         }
         const firstPage = Number(payload.matched_fields[0].page || 0);
         if (activeRenderExt === 'pdf' && Number.isFinite(firstPage) && firstPage > 0) {
-          setPdfPage(Math.round(firstPage));
+          jumpToPdfPage(firstPage);
         }
       }
       if (payload.persisted) {
@@ -1707,11 +2588,161 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   };
 
   const workbenchGridClass = showLeftPanel
-    ? "grid flex-1 min-h-0 gap-3 grid-cols-[320px_1fr_360px]"
-    : "grid flex-1 min-h-0 gap-3 grid-cols-[1fr_360px]";
-  const rightPanelClass = "flex h-full w-full min-w-0 shrink-0 flex-col gap-3";
+    ? "grid h-full flex-1 min-h-0 items-stretch gap-3 grid-cols-[216px_minmax(0,1fr)_336px] grid-rows-[minmax(0,1fr)] transition-[grid-template-columns] duration-300 ease-out"
+    : "grid h-full flex-1 min-h-0 items-stretch gap-3 grid-cols-[minmax(0,1fr)_336px] grid-rows-[minmax(0,1fr)] transition-[grid-template-columns] duration-300 ease-out";
+  const rightPanelClass = "flex h-full min-h-0 w-full min-w-0 shrink-0 self-stretch flex-col";
+  const pendingExtractionCount = selectedFiles.length;
+  const showBatchExtractAction = pendingExtractionCount > 0;
+  const extractionOverallPercent = clampProgressPercent(extractionJob?.progress?.progress_ratio || 0);
+  const batchExtractLabel = isProcessing
+    ? `正在提取（${extractionOverallPercent}%）`
+    : pendingExtractionCount > 1
+      ? `开始批量提取（${pendingExtractionCount}）`
+      : '开始提取';
+  const smartUnitTrackClass = cn(
+    "flex h-full w-[200%] transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform",
+    smartUnitTab === 'results' ? "translate-x-0" : "-translate-x-1/2"
+  );
   const showTraceOverlay = false;
   const previewControlsDisabled = !hasPreviewContent;
+  const previewFocusButtonTitle = '聚焦预览并隐藏全局文件夹';
+  const restoreFolderButtonTitle = '展开全局文件夹并退出聚焦预览';
+  const assistantPanel = (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-transparent">
+      <div className="px-4 py-3 bg-transparent">
+        <div className="flex items-center justify-between">
+          <h3 className="flex items-center gap-2 text-xs font-bold text-slate-600 uppercase tracking-wider dark:text-slate-300">
+            <Sparkles size={14} className="text-blue-600 dark:text-blue-400" />
+            智能助手
+          </h3>
+          <button
+            onClick={() => setShowAssistantHelp(true)}
+            className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-blue-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-blue-400"
+            aria-label="查看助手功能说明"
+          >
+            <HelpCircle size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div ref={assistantDialogRef} data-testid="module2-assistant-dialog" className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 custom-scrollbar">
+          {/* Summary Section */}
+          <div className="rounded-2xl border border-slate-200/50 bg-white/40 px-5 py-4 text-xs leading-relaxed text-slate-600 shadow-sm backdrop-blur-md transition-all hover:bg-white/60 dark:border-slate-800/50 dark:bg-slate-900/40 dark:text-slate-300 dark:hover:bg-slate-900/60">
+            <div className="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+              <img src={smartSummaryIcon} alt="智能摘要" className="h-4 w-4 object-contain" />
+              智能摘要
+            </div>
+            <p data-testid="module2-summary-text" className="whitespace-pre-wrap break-words font-medium text-slate-700 dark:text-slate-200">
+              {activeSummaryLoading ? (
+                <span className="flex items-center gap-2 text-slate-500">
+                  <Loader2 size={12} className="animate-spin" />
+                  正在生成文档摘要...
+                </span>
+              ) : (
+                activeSummaryText || "上传文件并执行抽取后，摘要会自动展示。"
+              )}
+            </p>
+          </div>
+
+          {/* Chat History */}
+          {assistantDialog.map((msg) => (
+            <div
+              key={msg.id}
+              className={cn(
+                "flex gap-3 max-w-[90%]",
+                msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto"
+              )}
+            >
+              <div className={cn(
+                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm ring-1 ring-inset ring-black/5 backdrop-blur-sm",
+                msg.role === 'assistant'
+                  ? "bg-white/80 text-blue-600 dark:bg-slate-800/80 dark:text-blue-400"
+                  : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+              )}>
+                {msg.role === 'assistant' ? <Bot size={16} /> : <div className="text-[10px] font-bold">ME</div>}
+              </div>
+              <div className={cn(
+                "rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm break-words whitespace-pre-wrap ring-1 ring-inset backdrop-blur-md transition-all hover:shadow-md",
+                msg.role === 'assistant'
+                  ? "rounded-tl-none bg-white/80 ring-slate-200/50 text-slate-700 dark:bg-slate-900/80 dark:ring-slate-700/50 dark:text-slate-200"
+                  : "rounded-tr-none bg-blue-600 ring-blue-600 text-white shadow-blue-500/20 hover:bg-blue-700"
+              )}>
+                {msg.content}
+              </div>
+            </div>
+          ))}
+
+          {/* Loading State */}
+          {assistantQueryLoading && (
+            <div className="flex gap-3 mr-auto max-w-[90%]">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 shadow-sm ring-1 ring-inset ring-black/5 backdrop-blur-sm text-blue-600 dark:bg-slate-800/80 dark:text-blue-400">
+                <Bot size={16} />
+              </div>
+              <div className="bg-white/80 backdrop-blur-md px-4 py-4 rounded-2xl rounded-tl-none shadow-sm ring-1 ring-inset ring-slate-200/50 dark:bg-slate-900/80 dark:ring-slate-700/50 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></span>
+              </div>
+            </div>
+          )}
+
+          {/* Assistant Answer (Legacy support) */}
+          {assistantAnswer && !assistantDialog.some(m => m.content === assistantAnswer) && (
+            <div data-testid="module2-assistant-answer" className="rounded-xl border border-blue-200 bg-blue-50/50 px-3 py-2.5 text-[11px] text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+              {assistantAnswer}
+            </div>
+          )}
+
+          {/* Warnings */}
+          {assistantWarnings.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50/50 px-3 py-2.5 text-[11px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              {assistantWarnings.join('；')}
+            </div>
+          )}
+
+          {/* Spacer for scrolling */}
+          <div className="h-4" />
+        </div>
+
+        {/* Input Area */}
+        <div className="border-t border-slate-100/50 bg-white/60 p-4 backdrop-blur-md dark:border-slate-800/50 dark:bg-slate-900/60">
+          <div className="relative group">
+            <textarea
+              ref={assistantInputRef}
+              data-testid="module2-assistant-input"
+              value={assistantInput}
+              onChange={(e) => setAssistantInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (!assistantQueryLoading && activeDoc) {
+                    void runAssistantInstruction();
+                  }
+                }
+              }}
+              placeholder={activeDoc ? "输入需求，回车发送..." : "请先抽取文档..."}
+              className="max-h-24 min-h-[40px] w-full resize-none rounded-2xl border-none bg-slate-100/80 px-4 py-2.5 pr-10 text-xs leading-relaxed text-slate-700 shadow-inner outline-none transition-all focus:bg-white focus:ring-2 focus:ring-blue-500/20 dark:bg-slate-800/80 dark:text-slate-200 dark:focus:bg-slate-900"
+            />
+            <button
+              type="button"
+              data-testid="module2-assistant-send"
+              onClick={() => void runAssistantInstruction()}
+              disabled={assistantQueryLoading || !activeDoc || !assistantInput.trim()}
+              className={cn(
+                'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-full transition-all duration-200',
+                assistantQueryLoading || !activeDoc || !assistantInput.trim()
+                  ? 'cursor-not-allowed bg-slate-200 text-slate-400 dark:bg-slate-700 dark:text-slate-500'
+                  : 'bg-blue-600 text-white shadow-md shadow-blue-500/30 hover:bg-blue-700 hover:shadow-lg hover:scale-105 active:scale-95'
+              )}
+            >
+              {assistantQueryLoading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} className="ml-0.5" />}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   const isPageBased = useMemo(() => {
     return (
@@ -1723,7 +2754,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   }, [activeRenderExt, activeExt]);
 
   return (
-    <div className="relative h-[calc(100vh-2rem)] overflow-hidden p-2 text-foreground flex flex-col">
+    <div className="relative flex h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-100 p-1.5 text-foreground dark:border-slate-700 dark:bg-slate-950">
       <input
         ref={fileInputRef}
         type="file"
@@ -1736,97 +2767,175 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
       <div className={workbenchGridClass}>
         {showLeftPanel && (
-          <div data-testid="module2-left-panel" className="flex h-full min-h-0 flex-col gap-3 xl:row-span-2">
+          <div
+            id="module2-left-panel"
+            data-testid="module2-left-panel"
+            className="flex h-full min-h-0 flex-col gap-2"
+          >
             <div 
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               className={cn(
-                "flex min-h-[240px] max-h-[36vh] flex-col overflow-hidden rounded-2xl border bg-white/90 shadow-sm transition-colors duration-200 dark:bg-slate-900/85",
+                "flex flex-1 min-h-[300px] flex-col overflow-hidden rounded-xl border bg-slate-50 shadow-sm transition-colors duration-200 dark:bg-slate-900",
                 isUploaderDragOver 
-                  ? "border-blue-400 bg-blue-50/50 ring-2 ring-blue-200 dark:border-blue-600 dark:bg-blue-900/20 dark:ring-blue-800"
-                  : "border-slate-200/80 dark:border-slate-700"
+                  ? "border-blue-400 ring-2 ring-blue-200 dark:border-blue-600 dark:ring-blue-800"
+                  : "border-slate-200 dark:border-slate-700"
               )}
             >
-              <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2.5 dark:border-slate-700">
-                <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
-                  <UploadCloud size={15} className="text-blue-600 dark:text-blue-400" />
-                  文件上传
+              <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
+                <FolderOpen size={18} className="text-slate-700 dark:text-slate-300" />
+                <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                  全局文件夹
                 </h3>
-                <span data-testid="module2-file-count" className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                  {selectedFiles.length}/5
-                </span>
               </div>
 
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 custom-scrollbar">
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  data-testid="module2-add-files"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 shadow-sm transition-colors hover:border-blue-200 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:text-blue-300"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Plus size={14} />
-                    {selectedFiles.length > 0 ? '继续上传文件' : '上传文件'}
-                  </span>
-                </button>
-
-                <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-2.5 py-2 text-[10px] text-slate-500 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400">
-                  单批最多 5 个文件，支持 PDF / Word / Excel / 图片 / TXT / MD。
-                </div>
-
-                {selectedFiles.length === 0 ? (
-                  <div 
+              {selectedFiles.length > 0 && (
+                <div className="border-b border-slate-100 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+                  <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-8 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/30 dark:border-slate-700 dark:bg-slate-800/40 dark:hover:border-blue-600 dark:hover:bg-blue-900/10"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                   >
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
-                       <UploadCloud size={20} />
-                    </div>
-                    <div className="space-y-0.5">
-                      <p className="text-xs font-bold text-slate-700 dark:text-slate-200">点击上传文档</p>
-                      <p className="text-[10px] text-slate-400 dark:text-slate-500">支持 PDF, Word, Excel, 图片等</p>
-                    </div>
+                    <Plus size={16} />
+                    添加新文件
+                  </button>
+                </div>
+              )}
+
+              <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 p-0 custom-scrollbar dark:bg-slate-950/30">
+                {selectedFiles.length === 0 ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 py-8 text-center text-slate-400 opacity-60">
+                    <FolderOpen size={24} className="text-slate-300 dark:text-slate-600" />
+                    <p className="text-xs">请在主视窗上传文件</p>
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    {selectedFiles.map((file, index) => (
-                      <button
-                        type="button"
-                        key={`${file.name}:${index}`}
-                        onClick={() => setActiveDocIndex(index)}
-                        className={cn(
-                          "group flex w-full items-center justify-between rounded-lg border px-2.5 py-2 text-left transition-colors",
-                          activeSourceFile && fileIdentityKey(activeSourceFile) === fileIdentityKey(file)
-                            ? "border-blue-200 bg-blue-50/70 dark:border-blue-700 dark:bg-blue-900/20"
-                            : "border-slate-200 bg-white hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800/70 dark:hover:border-slate-600"
-                        )}
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-semibold text-slate-700 dark:text-slate-100">{file.name}</p>
-                          <p className="text-[10px] text-slate-500 dark:text-slate-400">{(file.size / 1024).toFixed(1)} KB</p>
-                        </div>
-                        <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            removeFile(index);
-                          }}
-                          className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
-                          aria-label={`移除文件 ${file.name}`}
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {selectedFiles.map((file, index) => {
+                      const isActive = activeSourceFile && fileIdentityKey(activeSourceFile) === fileIdentityKey(file);
+                      const ext = file.name.split('.').pop()?.toLowerCase();
+                      
+                      let FileIcon = File;
+                      let iconColorClass = "text-slate-500";
+                      
+                      if (ext === 'pdf') {
+                        FileIcon = FileText;
+                        iconColorClass = "text-red-500";
+                      } else if (['xls', 'xlsx', 'csv'].includes(ext || '')) {
+                        FileIcon = FileSpreadsheet;
+                        iconColorClass = "text-emerald-500";
+                      } else if (['doc', 'docx'].includes(ext || '')) {
+                        FileIcon = FileText;
+                        iconColorClass = "text-blue-500";
+                      } else if (['jpg', 'jpeg', 'png', 'gif'].includes(ext || '')) {
+                        FileIcon = FileImage;
+                        iconColorClass = "text-purple-500";
+                      }
+
+                      // Status Logic
+                      const doc = documents[index];
+                      const jobFile = pickExtractionJobFileState(extractionJob, file, index);
+                      let statusText = "等待队列...";
+                      let statusColor = "text-slate-400";
+                      let StatusIndicator = <div className="h-2 w-2 rounded-full bg-slate-300 dark:bg-slate-600" />;
+                      
+                      if (jobFile && !extractionJob?.terminal) {
+                         const progress = clampProgressPercent(jobFile.progress_ratio);
+                         const message = String(jobFile.message || jobFile.stage || '正在解析').trim() || '正在解析';
+                         if (jobFile.status === 'failed') {
+                             statusText = jobFile.error ? `解析失败：${jobFile.error}` : '解析失败';
+                             statusColor = "text-red-500";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-red-500" />;
+                         } else if (jobFile.status === 'completed') {
+                             statusText = jobFile.message || '解析完成';
+                             statusColor = "text-emerald-600";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-emerald-500" />;
+                         } else {
+                             statusText = progress > 0 ? `${message} ${progress}%` : message;
+                             statusColor = jobFile.status === 'queued' ? "text-slate-400" : "text-slate-500";
+                             StatusIndicator = (
+                               <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                                 <div
+                                   className="h-full bg-blue-500 transition-all duration-500"
+                                   style={{ width: `${Math.max(progress, jobFile.status === 'queued' ? 8 : 4)}%` }}
+                                 />
+                               </div>
+                             );
+                         }
+                      } else if (jobFile) {
+                         if (jobFile.status === 'failed') {
+                             statusText = jobFile.error ? `解析失败：${jobFile.error}` : '解析失败';
+                             statusColor = "text-red-500";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-red-500" />;
+                         } else if (jobFile.status === 'completed') {
+                             statusText = jobFile.message || '解析完成';
+                             statusColor = "text-emerald-600";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-emerald-500" />;
+                         }
+                      } else if (doc) {
+                         if (doc.errors.length > 0) {
+                             statusText = "解析异常";
+                             statusColor = "text-red-500";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-red-500" />;
+                         } else {
+                             statusText = "解析完成";
+                             statusColor = "text-emerald-600";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-emerald-500" />;
+                         }
+                      }
+
+                      return (
+                        <div 
+                          key={`${file.name}:${index}`}
+                          onClick={() => setActiveDocIndex(index)}
+                          className={cn(
+                            "group relative flex cursor-pointer items-start gap-3 bg-white px-4 py-3 transition-colors hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800",
+                            isActive && "bg-slate-100 dark:bg-slate-800"
+                          )}
                         >
-                          <Trash2 size={14} />
-                        </button>
-                      </button>
-                    ))}
+                          {isActive && (
+                              <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-600 dark:bg-blue-500" />
+                          )}
+
+                          <div className="mt-0.5 shrink-0">
+                            <FileIcon size={24} className={iconColorClass} strokeWidth={1.5} />
+                          </div>
+                          
+                          <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                  <p className={cn("truncate text-sm font-bold text-slate-700 dark:text-slate-200", isActive && "text-slate-900 dark:text-white")}>
+                                      {file.name}
+                                  </p>
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      removeFile(index);
+                                    }}
+                                    className="hidden rounded p-1 text-slate-400 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:block group-hover:opacity-100 dark:hover:bg-red-900/20"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                              </div>
+                              
+                              <div className="mt-1 flex min-w-0 items-center gap-2">
+                                  {StatusIndicator}
+                                  <span className={cn("min-w-0 truncate text-[10px] font-medium", statusColor)}>
+                                      {statusText}
+                                  </span>
+                              </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
 
               <div className="border-t border-slate-200 p-3 dark:border-slate-700">
-                <div className="flex gap-2">
+                <div className="flex">
                   <button
                     onClick={() => setShowSchema(!showSchema)}
                     className={cn(
-                      'flex-1 rounded-lg border px-2.5 py-2 text-xs font-bold transition-colors',
+                      'flex w-full items-center justify-center rounded-lg border px-2.5 py-2 text-xs font-bold transition-colors',
                       showSchema
                         ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-300'
                         : 'border-slate-300 bg-white text-slate-700 hover:border-blue-200 hover:text-blue-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:text-blue-300'
@@ -1837,65 +2946,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                       {showSchema ? '收起规则' : '配置规则'}
                     </span>
                   </button>
-                  <button
-                    onClick={clearAllFiles}
-                    disabled={selectedFiles.length === 0 && documents.length === 0}
-                    data-testid="module2-clear-files"
-                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-red-800 dark:hover:bg-red-900/20 dark:hover:text-red-300"
-                  >
-                    清空
-                  </button>
                 </div>
               </div>
             </div>
-
-            <div className="flex min-h-[180px] max-h-[30vh] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-sm dark:border-slate-700 dark:bg-slate-900/85">
-              <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-3 py-2.5 dark:border-slate-700">
-                <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">文档列表</h3>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400">{documents.length > 0 ? `${documents.length} 份` : '0 份'}</span>
-              </div>
-              {documents.length === 0 ? (
-                <div className="flex flex-1 flex-col items-center justify-center gap-2 px-3 text-center opacity-60">
-                  <ScanLine size={24} className="text-slate-300 dark:text-slate-600" />
-                  <p className="text-[10px] text-slate-400 dark:text-slate-500">
-                    暂无抽取结果，请先上传文档并点击“开始提取”
-                  </p>
-                </div>
-              ) : (
-                <div className="flex-1 space-y-1 overflow-y-auto p-2 custom-scrollbar">
-                  {documents.map((doc, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => {
-                        setActiveDocIndex(idx);
-                        setActiveFieldKey(null);
-                      }}
-                      className={cn(
-                        "w-full rounded-lg border px-2.5 py-2 text-left text-xs transition-colors",
-                        activeDocIndex === idx
-                          ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
-                          : "border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:bg-slate-800"
-                      )}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-semibold">{doc.file_name}</span>
-                        <span className="text-[10px] opacity-60">#{idx + 1}</span>
-                      </div>
-                      <div className="mt-1 flex items-center gap-1 text-[10px] opacity-80">
-                        {doc.errors.length > 0 ? <AlertCircle size={11} className="text-red-500" /> : <CheckCircle2 size={11} className="text-emerald-500" />}
-                        {doc.errors.length > 0 ? `异常 ${doc.errors.length} 条` : "状态正常"}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900/85">
+            {false && (
+            <div className="absolute bottom-2 right-2 z-30 flex h-[36vh] w-[372px] min-h-[280px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white p-3 shadow-xl dark:border-slate-700 dark:bg-slate-900">
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
                   <Bot size={16} className="text-blue-500" />
-                  信息提取任务助手
+                  沉浸式伴聊助手（智能桥接）
                 </h3>
                 <button
                   onClick={() => setShowAssistantHelp(true)}
@@ -1912,7 +2971,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                   <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-[11px] leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-200">
                     <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold text-blue-600 dark:text-blue-300">
                       <Sparkles size={11} />
-                      AI智能总结
+                      智能摘要
                     </div>
                     <p data-testid="module2-summary-text" className="whitespace-pre-wrap break-words">
                       {activeSummaryLoading ? "正在生成文档摘要..." : (activeSummaryText || "上传文件并执行抽取后，摘要会自动展示。")}
@@ -1934,7 +2993,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                           ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400" 
                           : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
                       )}>
-                        {msg.role === 'assistant' ? <Bot size={12} /> : <div className="text-[10px] font-bold">ME</div>}
+                        {msg.role === 'assistant' ? <Bot size={12} /> : <div className="text-[10px] font-bold">我</div>}
                       </div>
                       <div className={cn(
                         "rounded-2xl px-3 py-2 text-[11px] leading-relaxed shadow-sm break-words whitespace-pre-wrap",
@@ -1963,7 +3022,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
                   {/* Assistant Answer (Legacy support if needed, but better integrated above) */}
                   {assistantAnswer && !assistantDialog.some(m => m.content === assistantAnswer) && (
-                     <div className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-2 text-[11px] text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                     <div data-testid="module2-assistant-answer" className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-2 text-[11px] text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
                         {assistantAnswer}
                      </div>
                   )}
@@ -1981,18 +3040,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
                 {/* Input Area */}
                 <div className="border-t border-slate-200 bg-slate-50/50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                  {/* Quick Commands */}
-                  <div className="mb-2 flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-                    {ASSISTANT_QUICK_COMMANDS.map((command) => (
-                      <button
-                        key={command}
-                        onClick={() => applyAssistantInstruction(command)}
-                        className="whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] text-slate-600 transition-colors hover:border-blue-200 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
-                      >
-                        {command}
-                      </button>
-                    ))}
-                  </div>
+
 
                   <div className="relative">
                     <textarea
@@ -2013,6 +3061,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     />
                     <button
                       type="button"
+                      data-testid="module2-assistant-send"
                       onClick={() => void runAssistantInstruction()}
                       disabled={assistantQueryLoading || !activeDoc || !assistantInput.trim()}
                       className={cn(
@@ -2027,13 +3076,13 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                   </div>
                 </div>
               </div>
-            </div>
+            </div>)}
           </div>
         )}
 
 
       {/* CENTER: Workbench Area */}
-      <div className="relative flex h-full min-h-0 flex-col gap-4">
+      <div className="relative flex h-full min-h-0 flex-col gap-2">
         {/* Schema Editor Overlay */}
         {showSchema && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 w-[90%] max-w-2xl z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl shadow-2xl rounded-2xl animate-in slide-in-from-top-4 fade-in duration-200 flex flex-col max-h-[500px] border border-slate-200 dark:border-slate-700 overflow-hidden ring-1 ring-slate-900/5">
@@ -2056,47 +3105,81 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         )}
 
         {/* Main Canvas with Floating Toolbar */}
-        <div className="flex-1 relative overflow-hidden flex flex-col bg-slate-50/50 dark:bg-slate-950/50 rounded-2xl border border-slate-200/60 dark:border-slate-800 group isolate">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
             {/* Dot Grid Background */}
-            <div className="absolute inset-0 opacity-[0.4] dark:opacity-[0.1] pointer-events-none -z-10" 
+            <div className="absolute inset-0 opacity-0 pointer-events-none -z-10" 
                  style={{ backgroundImage: 'radial-gradient(circle, #cbd5e1 1.5px, transparent 1.5px)', backgroundSize: '24px 24px' }}>
             </div>
 
             {/* Fixed Header Toolbar */}
-            <div className="relative z-20 flex w-full shrink-0 items-center gap-2 border-b border-slate-200 bg-white/80 px-4 py-2 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/80">
-                <div className="flex flex-1 items-center gap-1 overflow-hidden min-w-0">
+            <div className="relative z-20 flex w-full items-center gap-2 border-b border-slate-200 bg-slate-50 px-2.5 py-2 sm:px-3 dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                     {showLeftPanel && (
+                        <button
+                          type="button"
+                          onClick={() => setIsPreviewFocused(true)}
+                          className="group inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent text-blue-600 transition-all duration-200 active:scale-95 hover:border-slate-200 hover:bg-white hover:text-blue-700 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:text-blue-400 dark:hover:border-slate-700 dark:hover:bg-slate-800"
+                          title={previewFocusButtonTitle}
+                          aria-label={previewFocusButtonTitle}
+                          aria-pressed={false}
+                          aria-expanded={showLeftPanel}
+                          aria-controls="module2-left-panel"
+                          data-testid="module2-preview-focus-toggle"
+                        >
+                          <span className="transition-transform duration-200 ease-out group-hover:scale-105">
+                            <Maximize size={16} strokeWidth={2.2} />
+                          </span>
+                        </button>
+                      )}
+
+                     {!showLeftPanel && (
+                        <motion.button
+                          type="button"
+                          layout
+                          initial={{ opacity: 0, x: -8 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ duration: 0.18, ease: 'easeOut' }}
+                          onClick={() => setIsPreviewFocused(false)}
+                          className="ml-1 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 shadow-sm transition-all duration-200 hover:border-blue-200 hover:bg-blue-50/60 hover:text-blue-700 hover:shadow-md active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:bg-slate-800 dark:hover:text-blue-300"
+                          title={restoreFolderButtonTitle}
+                          aria-label={restoreFolderButtonTitle}
+                          aria-controls="module2-left-panel"
+                          aria-expanded={false}
+                          data-testid="module2-restore-left-panel"
+                        >
+                          <FolderOpen size={14} />
+                          <span className="hidden sm:inline">全局文件夹</span>
+                        </motion.button>
+                      )}
+
                      {activeDoc || activeSourceFile ? (
-                        <>
-                            <div className="flex flex-col min-w-0 max-w-[200px] sm:max-w-[300px]">
-                                <span className="text-sm font-bold font-['Microsoft_YaHei'] truncate text-slate-900 dark:text-slate-100">{activeDoc?.file_name ?? activeSourceFile?.name}</span>
-                                <span className="text-[10px] font-bold font-['Microsoft_YaHei'] text-slate-500 flex items-center gap-1.5">
-                                    {activeDoc ? (
-                                        <>
-                                            <span className={cn("w-2 h-2 rounded-full shrink-0", activeDoc.cached ? "bg-emerald-500" : "bg-amber-500")} />
-                                            <span className="truncate">{activeDoc.cached ? "已缓存" : "实时预览"}</span>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <span className="w-2 h-2 rounded-full shrink-0 bg-blue-500" />
-                                            <span className="truncate">待提取</span>
-                                        </>
-                                    )}
-                                </span>
-                            </div>
-                        </>
+                        <div className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-bold font-['Microsoft_YaHei'] text-slate-900 dark:text-slate-100">{activeDisplayName}</span>
+                            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] font-bold font-['Microsoft_YaHei'] text-slate-500">
+                                {activeDoc ? (
+                                    <>
+                                        <span className={cn("h-2 w-2 rounded-full shrink-0", activeDoc.cached ? "bg-emerald-500" : "bg-amber-500")} />
+                                        <span className="truncate">{activeDoc.cached ? "已缓存" : "实时预览"}</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span className="h-2 w-2 rounded-full shrink-0 bg-blue-500" />
+                                        <span className="truncate">待提取</span>
+                                    </>
+                                )}
+                            </span>
+                        </div>
                      ) : (
-                         <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
-                           <Maximize size={18} strokeWidth={2.5} className="shrink-0 text-blue-600 dark:text-blue-400" />
-                           <span className="text-sm font-bold font-['Microsoft_YaHei'] whitespace-nowrap">
+                         <div className="flex min-w-0 items-center gap-2 text-slate-900 dark:text-slate-100">
+                           <span className="truncate text-sm font-bold font-['Microsoft_YaHei']">
                                {isSidebarCollapsed ? "预览视窗" : "文档预览"}
                            </span>
                         </div>
                      )}
                 </div>
 
-                <div className="h-5 w-px bg-slate-200 dark:bg-slate-600 shrink-0 mx-2" />
-
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="ml-auto flex min-w-0 items-center gap-2 sm:gap-2.5">
+                  <div className="flex items-center gap-1">
                     <button
                         onClick={handleZoomOut}
                         disabled={previewControlsDisabled}
@@ -2111,7 +3194,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     >
                       <ZoomOut size={16} strokeWidth={2}/>
                     </button>
-                    <span className="text-xs font-bold font-mono w-10 text-center text-slate-900 dark:text-slate-100 shrink-0">{Math.round(scale * 100)}%</span>
+                    <span className="w-9 shrink-0 text-center text-xs font-bold font-mono text-slate-900 dark:text-slate-100">{Math.round(scale * 100)}%</span>
                     <button
                         onClick={handleZoomIn}
                         disabled={previewControlsDisabled}
@@ -2152,80 +3235,75 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                         title="重置视图"
                         aria-label="重置预览视图"
                     >
-                      <Maximize size={16} strokeWidth={2}/>
-                    </button>
-                </div>
-
-                {activeRenderExt === 'pdf' && (
-                    <>
-                        <div className="h-5 w-px bg-slate-200 dark:bg-slate-600 shrink-0 mx-2" />
-                        <div className="flex items-center gap-1 shrink-0">
-                            <button
-                                onClick={handlePrevPdfPage}
-                                disabled={currentPdfPage <= 1}
-                                className={cn(
-                                    "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
-                                    currentPdfPage > 1
-                                        ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-200"
-                                        : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
-                                )}
-                                title="上一页"
-                            >
-                                <ChevronRight size={16} className="rotate-180" />
-                            </button>
-                            <span className="text-xs font-bold font-mono min-w-[60px] text-center text-slate-900 dark:text-slate-100 shrink-0">
-                                {`${currentPdfPage} / ${inferredPdfPageCount}`}
-                            </span>
-                            <button
-                                onClick={handleNextPdfPage}
-                                disabled={currentPdfPage >= inferredPdfPageCount}
-                                className={cn(
-                                    "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
-                                    currentPdfPage < inferredPdfPageCount
-                                        ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-200"
-                                        : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
-                                )}
-                                title="下一页"
-                            >
-                                <ChevronRight size={16} />
-                            </button>
-                        </div>
-                    </>
-                )}
-
-                <div className="h-5 w-px bg-slate-200 dark:bg-slate-600 shrink-0 mx-2" />
-
-                <div className="flex items-center gap-2 shrink-0">
-                    <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 hover:text-blue-600 transition-colors dark:text-slate-200 dark:hover:bg-slate-800"
-                        title="添加更多文件"
-                    >
-                        <Plus size={16} strokeWidth={2.5} />
-                        <span className="hidden sm:inline">添加</span>
+                      <RefreshCcw size={16} strokeWidth={2}/>
                     </button>
 
-                    {!activeDoc && selectedFiles.length > 0 ? (
+                    {activeRenderExt === 'pdf' && (
+                        <>
+                            <div className="mx-1.5 h-5 w-px shrink-0 bg-slate-200 dark:bg-slate-600" />
+                            <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                    onClick={handlePrevPdfPage}
+                                    disabled={currentPdfPage <= 1}
+                                    className={cn(
+                                        "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                                        currentPdfPage > 1
+                                            ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-200"
+                                            : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                    )}
+                                    title="上一页"
+                                >
+                                    <ChevronRight size={16} className="rotate-180" />
+                                </button>
+                                <span className="min-w-[52px] shrink-0 text-center text-xs font-bold font-mono text-slate-900 dark:text-slate-100">
+                                    {`${currentPdfPage} / ${inferredPdfPageCount}`}
+                                </span>
+                                <button
+                                    onClick={handleNextPdfPage}
+                                    disabled={currentPdfPage >= inferredPdfPageCount}
+                                    className={cn(
+                                        "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                                        currentPdfPage < inferredPdfPageCount
+                                            ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-200"
+                                            : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                    )}
+                                    title="下一页"
+                                >
+                                    <ChevronRight size={16} />
+                                </button>
+                            </div>
+                        </>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 border-l border-slate-200/80 pl-2 dark:border-slate-700/80">
+                    {showBatchExtractAction && (
+                      <span className="hidden rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-600 sm:inline-flex dark:bg-blue-900/30 dark:text-blue-300">
+                        待处理 {pendingExtractionCount} 份
+                      </span>
+                    )}
+                    {showBatchExtractAction && (
                         <button
                             onClick={runExtraction}
                             data-testid="module2-start-extract"
                             disabled={isProcessing}
                             className={cn(
-                                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap",
+                                "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap sm:px-3",
                                 isProcessing
                                 ? "bg-slate-100 text-slate-400 cursor-not-allowed dark:bg-slate-800 dark:text-slate-600"
                                 : "bg-blue-600 text-white hover:bg-blue-700 hover:shadow-blue-500/25"
                             )}
                         >
                             {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} strokeWidth={2.5} />}
-                            <span>开始提取</span>
+                            <span>{batchExtractLabel}</span>
                         </button>
-                    ) : (
+                    )}
+                    {documents.length > 0 && (
                         <button
                             onClick={exportResults}
                             disabled={documents.length === 0}
                             className={cn(
-                                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap",
+                                "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap sm:px-3",
                                 documents.length > 0
                                 ? "bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-blue-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                                 : "opacity-50 bg-slate-50 text-slate-400 cursor-not-allowed dark:bg-slate-900 dark:text-slate-600"
@@ -2235,11 +3313,29 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                             <span>导出结果</span>
                         </button>
                     )}
+                    <button
+                        type="button"
+                        onClick={clearWorkbenchData}
+                        data-testid="module2-clear-data"
+                        disabled={!canClearWorkbenchData || isProcessing}
+                        aria-label="清空当前页面数据"
+                        title="一键清空当前页面数据与本地缓存"
+                        className={cn(
+                            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap sm:px-3",
+                            canClearWorkbenchData && !isProcessing
+                              ? "border border-red-200 bg-white text-red-600 hover:bg-red-50 hover:border-red-300 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-300 dark:hover:bg-red-950/30"
+                              : "cursor-not-allowed border border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-600"
+                        )}
+                    >
+                        <Trash2 size={14} strokeWidth={2.2} />
+                        <span>清空数据</span>
+                    </button>
+                  </div>
                 </div>
             </div>
 
-            <div className="relative z-10 flex flex-1 items-center justify-center overflow-auto p-3 sm:p-6 custom-scrollbar">
-                 {!activeSourceFile ? (
+            <div className="relative z-10 flex flex-1 items-center justify-center overflow-auto p-1.5 sm:p-3 lg:p-4 custom-scrollbar">
+                 {selectedFiles.length === 0 ? (
                     <div
                      data-testid="module2-center-uploader"
                      onClick={() => fileInputRef.current?.click()}
@@ -2316,7 +3412,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                            点击或拖拽上传文档
                        </h3>
                        <p className="text-xs text-slate-600 transition-colors group-hover:text-slate-700 dark:text-slate-400 dark:group-hover:text-slate-300 mb-3 font-medium">
-                           支持 PDF, Word, Excel, 图片等多种格式
+                           支持便携文档、文字文档、电子表格、图片等多种格式
                        </p>
                        <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-200 px-3 py-1 text-[10px] font-bold text-slate-600 transition-all duration-300 group-hover:bg-blue-50 group-hover:text-blue-600 group-hover:border-blue-200 group-hover:shadow-sm dark:bg-slate-800 dark:text-slate-400 dark:group-hover:bg-[#1E293B]/50 dark:group-hover:text-[#8DA3C1]">
                            <Sparkles size={10} />
@@ -2328,9 +3424,11 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                    <div
                         className={cn(
                           "relative w-full origin-center transition-all duration-300 ease-out will-change-transform",
-                          isPageBased 
-                            ? "max-w-[860px] shadow-2xl dark:shadow-black/50" 
-                            : "h-full flex flex-col"
+                          activeRenderExt === 'pdf'
+                            ? "h-full max-w-[1140px]"
+                          : isPageBased 
+                            ? "max-w-[940px] shadow-2xl dark:shadow-black/50" 
+                            : "h-full min-h-0 flex flex-col"
                         )}
                         style={activeRenderExt === 'pdf'
                           ? undefined
@@ -2341,29 +3439,33 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     >
                          <div className={cn(
                            "relative w-full overflow-hidden bg-white dark:bg-[#1a1b26]",
-                           isPageBased 
+                           activeRenderExt === 'pdf'
+                             ? "h-full rounded-[20px] ring-1 ring-slate-200/60 shadow-2xl dark:ring-white/10"
+                             : isPageBased 
                              ? "aspect-[595/842] ring-1 ring-slate-200/50 shadow-2xl dark:ring-white/10" 
                              : "flex-1 rounded-xl ring-1 ring-slate-200/50 shadow-sm dark:ring-white/10"
                          )}>
                             {activeRenderExt === 'pdf' && previewUrl ? (
                               <PdfCanvasPreview
-                                src={`${previewUrl}#page=${currentPdfPage}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-                                page={currentPdfPage}
+                                key={`${activePreviewIdentity}:${previewUrl}`}
+                                src={previewUrl}
                                 scale={scale}
                                 rotation={rotation}
+                                scrollRequest={pdfScrollRequest}
                                 onPageCount={setPdfPreviewPageCount}
+                                onVisiblePageChange={setPdfViewportPage}
                               />
                             ) : (activeExt === 'doc' || activeExt === 'docx') ? (
                               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-50/70 p-6 text-center dark:bg-slate-900/60">
                                 <div className="rounded-xl border border-slate-200 bg-white/90 px-4 py-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
                                   {activeOfficePreview?.status === 'failed'
-                                    ? (activeOfficePreview.error || 'Word 预览转换失败，请先执行抽取或重新上传。')
+                                    ? (activeOfficePreview.error || '文档预览转换失败，请先执行抽取或重新上传。')
                                     : (activeOfficePreview?.status === 'completed'
-                                      ? 'Word 已转换完成，正在加载 PDF 预览...'
-                                      : '后端正在将 Word 异步转换为 PDF 预览，请稍候...')}
+                                      ? '文档已转换完成，正在加载预览...'
+                                      : '后端正在将文档异步转换为预览，请稍候...')}
                                 </div>
                                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                                  支持 .doc/.docx，转换完成后自动切换为 PDF 预览。
+                                  支持文字文档，转换完成后自动切换为预览。
                                 </p>
                               </div>
                             ) : IMAGE_EXTENSIONS.has(activeExt) && previewUrl ? (
@@ -2375,11 +3477,11 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                 />
                               </div>
                             ) : activeRenderExt === 'xlsx' ? (
-                              <div className="absolute inset-0 overflow-hidden bg-slate-50/70 p-1 dark:bg-slate-900/60 sm:p-2">
+                              <div className="absolute inset-0 min-h-0 overflow-hidden bg-slate-50/70 p-0.5 dark:bg-slate-900/60 sm:p-1">
                                 <LuckysheetPreview
                                   file={activeSourceFile}
                                   locator={xlsxLocatorHint}
-                                  className="rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
+                                  className="h-full min-h-0 rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
                                 />
                               </div>
                             ) : ['txt', 'md'].includes(activeRenderExt) ? (
@@ -2454,9 +3556,9 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
                               {showTraceOverlay && overlayTraceItems.map((hit, idx) => {
                                 const rawBox = Array.isArray(hit.bbox) ? hit.bbox : [];
+                                const typ = hit.object_type;
                                 const box = toPercentBox(rawBox);
-                                const typ = String(hit.object_type || 'trace').toLowerCase();
-                                const label = typ === 'table' ? '表格溯源' : typ === 'figure' ? '图表溯源' : '溯源';
+                                const label = getTraceDisplayKind(hit) === 'table' ? '表格溯源' : getTraceDisplayKind(hit) === 'image' ? '图片溯源' : '溯源';
                                 const traceKey = toTraceHitKey(hit, idx);
                                 const isTraceActive = traceKey === activeTraceKey;
                                 return (
@@ -2486,7 +3588,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             </div>
             
             {/* Context Bar */}
-            <div className="z-20 flex h-9 items-center justify-between border-t border-border/50 bg-white/60 px-3 text-[10px] text-muted-foreground backdrop-blur-md sm:px-4 dark:bg-slate-900/60">
+            <div className="z-20 flex h-8 items-center justify-between border-t border-slate-200 bg-slate-50 px-3 text-[10px] text-slate-500 sm:px-4 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
                 <div className="flex min-w-0 items-center gap-2 sm:gap-4">
                      <span data-testid="module2-info-message" className="truncate">{infoMessage}</span>
                 </div>
@@ -2501,39 +3603,128 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
       </div>
 
-      {/* 右侧：文档与抽取结果 */}
+      {/* 右侧：结果面板 */}
       <div className={rightPanelClass}>
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-sm dark:border-slate-700 dark:bg-slate-900/85">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-2xl border border-white/20 bg-white/90 shadow-2xl shadow-slate-300/30 backdrop-blur-xl ring-1 ring-slate-200/80 dark:bg-slate-900/90 dark:shadow-slate-900/50 dark:border-white/10 dark:ring-0">
+          <div className="border-b border-slate-200/60 bg-slate-50/50 px-4 py-2 dark:border-white/10 dark:bg-slate-800/50">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="flex items-center gap-2 text-lg font-bold text-slate-800 dark:text-slate-100">
+                  <img src={smartUnitIcon} alt="智能处理单元" className="h-10 w-10 object-contain" />
+                  智能处理单元
+                </h3>
+              </div>
+              <div className="relative isolate">
+                <svg className="absolute h-0 w-0" aria-hidden="true">
+                  <defs>
+                    <filter id="gooey-tabs">
+                      <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur" />
+                      <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo" />
+                      <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+                    </filter>
+                  </defs>
+                </svg>
+                
+                <div
+                  className="inline-flex h-8 shrink-0 items-center rounded-full bg-slate-100/80 p-1 dark:bg-slate-800/80"
+                  role="tablist"
+                  aria-label="智能处理单元视图切换"
+                >
+                  <div 
+                    className="absolute inset-0 z-0 flex items-center p-1" 
+                    style={{ filter: 'url(#gooey-tabs)' }}
+                    aria-hidden="true"
+                  >
+                    {[
+                      { id: 'results', label: '结果', unread: resultsTabUnread },
+                      { id: 'assistant', label: '助手', unread: assistantTabUnread }
+                    ].map((tab) => {
+                      const isActive = smartUnitTab === tab.id;
+                      return (
+                        <div key={tab.id} className="relative flex h-6 items-center justify-center px-3">
+                          <span className="invisible text-xs font-bold whitespace-nowrap opacity-0 flex items-center gap-1.5">
+                            {tab.label}
+                            {tab.unread && <span className="h-1.5 w-1.5" />}
+                          </span>
+                          {isActive && (
+                            <motion.div
+                              layoutId="smartUnitTabBlob"
+                              className="absolute inset-0 rounded-full bg-white dark:bg-slate-900"
+                              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
 
+                  <div className="relative z-10 flex items-center">
+                    {[
+                      { id: 'results', label: '结果', unread: resultsTabUnread },
+                      { id: 'assistant', label: '助手', unread: assistantTabUnread }
+                    ].map((tab) => {
+                      const isActive = smartUnitTab === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive}
+                          onClick={() => setSmartUnitTab(tab.id as any)}
+                          className={cn(
+                            'relative inline-flex h-6 items-center justify-center rounded-full px-3 text-xs font-bold transition-colors duration-200 ease-out whitespace-nowrap',
+                            isActive
+                              ? 'text-blue-600 dark:text-blue-400'
+                              : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                          )}
+                        >
+                          <span className="flex items-center gap-1.5">
+                            {tab.label}
+                            {tab.unread && (
+                              <span className="h-1.5 w-1.5 rounded-full bg-red-500 ring-1 ring-white dark:ring-slate-900" aria-hidden="true" />
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
 
-          <div className="border-b border-slate-200 px-3 py-2.5 dark:border-slate-700">
+          <div className="flex-1 min-h-0 overflow-hidden bg-transparent">
+            <div className={smartUnitTrackClass}>
+              <section className="h-full w-1/2 min-w-0 p-0" aria-label="抽取结果视图">
+                <div className="flex h-full min-h-0 flex-col overflow-hidden bg-transparent">
+          <div className="px-4 py-3 bg-transparent">
             <div className="flex items-center justify-between">
-              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
-                <ScanLine size={16} className="text-blue-500" />
+              <h3 className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-wider dark:text-slate-400">
+                <ScanLine size={14} className="text-slate-400 dark:text-slate-500" />
                 抽取结果
               </h3>
-              <span className="text-[10px] text-slate-500 dark:text-slate-400">{resultCountText}</span>
+              <span className="rounded-full bg-slate-100/50 px-2 py-0.5 text-[10px] font-bold text-slate-500 backdrop-blur-sm dark:bg-slate-800/50 dark:text-slate-400">{resultCountText}</span>
             </div>
             {fieldItems.length > 0 && (
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
-                <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+              <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+                <span className="flex items-center justify-center rounded-lg bg-emerald-50/50 px-2 py-1.5 font-bold text-emerald-700 backdrop-blur-sm ring-1 ring-emerald-500/10 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20">
                   平均置信度 {avgConfidence}%
                 </span>
-                <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                  表格 {tableCount} / 图表 {figureCount}
+                <span className="flex items-center justify-center rounded-lg bg-blue-50/50 px-2 py-1.5 font-bold text-blue-700 backdrop-blur-sm ring-1 ring-blue-500/10 dark:bg-blue-500/10 dark:text-blue-400 dark:ring-blue-500/20">
+                  表格 {tableCount} / 图片 {figureCount}
                 </span>
               </div>
             )}
             {activeDoc && fieldItems.length > 0 && (
-              <div className="mt-2 flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Search size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+              <div className="mt-3 flex items-center gap-2">
+                <div className="relative flex-1 group">
+                  <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-blue-500" />
                   <input
                     type="text"
                     value={resultSearchQuery}
                     onChange={(e) => setResultSearchQuery(e.target.value)}
-                    className="h-8 w-full rounded-lg border border-slate-200 bg-white pl-7 pr-7 text-[11px] text-slate-700 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                    placeholder="搜索字段名、标签、值"
+                    className="h-8 w-full rounded-full border-none bg-slate-100/80 pl-9 pr-8 text-xs text-slate-700 placeholder:text-slate-400 ring-1 ring-slate-200/50 transition-all focus:bg-white focus:ring-2 focus:ring-blue-500/20 dark:bg-slate-800/50 dark:text-slate-200 dark:ring-slate-700/50 dark:focus:bg-slate-800"
+                    placeholder="搜索字段..."
                     aria-label="搜索抽取结果"
                   />
                   {hasResultSearch && (
@@ -2573,20 +3764,20 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             )}
           </div>
 
-          <div className="border-b border-slate-200 bg-slate-50/40 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800/30">
+          <div className="flex min-h-0 max-h-[42%] flex-col overflow-hidden rounded-xl border border-slate-200/50 bg-white/40 px-4 pt-2 pb-3 shadow-sm backdrop-blur-md dark:border-slate-800/50 dark:bg-slate-900/40">
             <div className="mb-2 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-200">
-                <LocateFixed size={14} className={cn("text-slate-400", traceHits.length > 0 && "text-blue-500")} />
+              <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-wider dark:text-slate-400">
+                <LocateFixed size={14} className={cn("text-slate-400", traceHits.length > 0 && "text-blue-500 dark:text-blue-400")} />
                 溯源定位
               </div>
             </div>
 
-            {(traceTypeStats.field > 0 || traceTypeStats.table > 0 || traceTypeStats.figure > 0 || traceTypeStats.other > 0) && (
-              <div className="mb-2 flex flex-wrap gap-1 text-[10px]">
-                {traceTypeStats.field > 0 && <span className="rounded-md bg-blue-50 px-2 py-1 text-blue-600 dark:bg-blue-900/20 dark:text-blue-300">字段 {traceTypeStats.field}</span>}
-                {traceTypeStats.table > 0 && <span className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-300">表格 {traceTypeStats.table}</span>}
-                {traceTypeStats.figure > 0 && <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300">图表 {traceTypeStats.figure}</span>}
-                {traceTypeStats.other > 0 && <span className="rounded-md bg-slate-100 px-2 py-1 text-slate-600 dark:bg-slate-700 dark:text-slate-300">其他 {traceTypeStats.other}</span>}
+            {(traceTypeStats.field > 0 || traceTypeStats.table > 0 || traceTypeStats.image > 0 || traceTypeStats.other > 0) && (
+              <div className="mb-2 flex flex-wrap gap-1.5 text-[10px]">
+                {traceTypeStats.field > 0 && <span className="inline-flex items-center rounded-full bg-blue-50/80 px-2 py-0.5 font-medium text-blue-600 ring-1 ring-inset ring-blue-500/10 dark:bg-blue-900/20 dark:text-blue-300">字段 {traceTypeStats.field}</span>}
+                {traceTypeStats.table > 0 && <span className="inline-flex items-center rounded-full bg-emerald-50/80 px-2 py-0.5 font-medium text-emerald-600 ring-1 ring-inset ring-emerald-500/10 dark:bg-emerald-900/20 dark:text-emerald-300">表格 {traceTypeStats.table}</span>}
+                {traceTypeStats.image > 0 && <span className="inline-flex items-center rounded-full bg-amber-50/80 px-2 py-0.5 font-medium text-amber-600 ring-1 ring-inset ring-amber-500/10 dark:bg-amber-900/20 dark:text-amber-300">图片 {traceTypeStats.image}</span>}
+                {traceTypeStats.other > 0 && <span className="inline-flex items-center rounded-full bg-slate-100/80 px-2 py-0.5 font-medium text-slate-600 ring-1 ring-inset ring-slate-500/10 dark:bg-slate-700 dark:text-slate-300">其他 {traceTypeStats.other}</span>}
               </div>
             )}
 
@@ -2597,17 +3788,17 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             )}
 
             {traceHits.length > 0 ? (
-              <div className="max-h-[46vh] space-y-1 overflow-y-auto custom-scrollbar pr-1">
+              <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 custom-scrollbar">
                 {traceGroups.map((group) => (
-                  <div key={`trace-group-${group.key}`} className="space-y-1.5">
-                    <div className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                      {group.label} · {group.items.length}
+                  <div key={`trace-group-${group.key}`} className="mb-3 last:mb-0">
+                    <div className="sticky top-0 z-10 mb-1.5 bg-slate-50/95 px-2 py-1 text-[10px] font-bold text-slate-400 backdrop-blur dark:bg-slate-900/95 dark:text-slate-500">
+                      {group.label}
                     </div>
-                    <div className="space-y-1">
+                    <div className="space-y-1.5 px-1">
                 {group.items.map(({ hit, idx }) => {
                   const objectType = String(hit.object_type || "field").toLowerCase();
-                  const objectLabel =
-                    objectType === "field" ? "字段" : objectType === "table" ? "表格" : objectType === "figure" ? "图表" : "其他";
+                  const displayKind = getTraceDisplayKind(hit);
+                  const objectLabel = getTraceDisplayLabel(hit);
                   const objectId = String(hit.object_id || "");
                   const page = toTracePage(hit);
                   const snippet = String(hit.snippet || "");
@@ -2672,7 +3863,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                       : `${Math.round(lineStart)}`;
                     locatorHints.push(`行号：${rangeText}`);
                   }
-                  const locatorSummary = locatorHints.join(' · ');
+                  const locatorSummary = locatorHints.join(' 路 ');
                   return (
                     <div
                       key={`trace-list-${traceKey}`}
@@ -2682,7 +3873,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                           setActiveFieldKey(objectId);
                         }
                         if (activeRenderExt === "pdf" && Number.isFinite(page) && page > 0) {
-                          setPdfPage(Math.round(page));
+                          jumpToPdfPage(page);
                         }
                       }}
                       onKeyDown={(e) => {
@@ -2693,38 +3884,54 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                           setActiveFieldKey(objectId);
                         }
                         if (activeRenderExt === "pdf" && Number.isFinite(page) && page > 0) {
-                          setPdfPage(Math.round(page));
+                          jumpToPdfPage(page);
                         }
                       }}
                       role="button"
                       tabIndex={0}
                       className={cn(
-                        "w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-left transition-colors hover:border-blue-300 hover:bg-blue-50/40 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-blue-700 dark:hover:bg-slate-800",
-                        isActiveTrace && "border-blue-400 bg-blue-50/60 ring-1 ring-blue-400 dark:border-blue-700 dark:bg-blue-900/20"
+                        "group relative w-full rounded-xl border border-transparent bg-white/60 px-3 py-2.5 text-left transition-all hover:bg-white hover:shadow-md hover:shadow-slate-200/50 hover:ring-1 hover:ring-slate-200/50 dark:bg-slate-800/40 dark:hover:bg-slate-800 dark:hover:ring-slate-700",
+                        isActiveTrace && "bg-blue-50 ring-1 ring-blue-200 dark:bg-blue-900/30 dark:ring-blue-800"
                       )}
                     >
-                      <div className="mb-1 flex items-center justify-between gap-2">
-                        <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">{objectLabel}</span>
-                        <div className="flex items-center gap-1">
-                          {activeRenderExt === 'pdf' && page > 0 && <span className="text-[10px] text-slate-400">{`第${Math.round(page)}页`}</span>}
-                          <span className="text-[10px] text-slate-400">{Math.round((Number(hit.confidence || 0) || 0) * 100)}%</span>
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                           <span className={cn(
+                             "flex h-5 items-center justify-center rounded-md px-1.5 text-[10px] font-bold uppercase tracking-wider",
+                             displayKind === 'field' ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300" :
+                             displayKind === 'table' ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" :
+                             displayKind === 'image' ? "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300" :
+                             "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                           )}>
+                             {objectLabel}
+                           </span>
+                           {activeRenderExt === 'pdf' && page > 0 && (
+                             <span className="flex items-center gap-0.5 text-[10px] font-medium text-slate-400">
+                               <span className="opacity-50">Page</span>
+                               <span>{Math.round(page)}</span>
+                             </span>
+                           )}
                         </div>
+                        <span className="text-[10px] font-medium text-slate-400 opacity-0 transition-opacity group-hover:opacity-100">{Math.round((Number(hit.confidence || 0) || 0) * 100)}%</span>
                       </div>
                       <p className="line-clamp-2 text-[11px] leading-relaxed text-slate-700 dark:text-slate-200">
                         {snippet || objectId || "溯源片段"}
                       </p>
                       {locatorSummary && (
-                        <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
-                          {locatorSummary}
-                        </p>
+                        <div className="mt-2 flex items-center gap-1.5">
+                          <div className="h-1 w-1 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+                          <p className="truncate text-[10px] text-slate-500 dark:text-slate-400">
+                            {locatorSummary}
+                          </p>
+                        </div>
                       )}
 
                       {objectType === 'figure' && figureModes.length > 0 && (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
+                        <div className="mt-2 flex flex-wrap gap-1">
                           {figureModes.map((mode) => (
                             <span
                               key={`${traceKey}-mode-${mode}`}
-                              className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+                              className="rounded-md bg-amber-50/50 px-1.5 py-0.5 text-[10px] text-amber-700/80 ring-1 ring-inset ring-amber-600/10 dark:bg-amber-900/20 dark:text-amber-300"
                             >
                               {modeLabelMap[mode] || mode}
                             </span>
@@ -2745,7 +3952,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                         </div>
                       )}
 
-                      {objectType === 'table' && tableRows.length > 0 && (
+                      {displayKind === 'table' && tableRows.length > 0 && (
                         <div className="mt-2 overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
                           <table className="min-w-full text-[11px] text-slate-700 dark:text-slate-200">
                             <thead className="bg-slate-100 dark:bg-slate-800">
@@ -2829,7 +4036,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                           <Copy size={11} />
                           复制片段
                         </button>
-                        {objectType === 'table' && tableRows.length > 0 && (
+                        {displayKind === 'table' && tableRows.length > 0 && (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -2839,7 +4046,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                   tableHeaders.length > 0 ? tableHeaders : tableRows[0],
                                   tableRows
                                 ),
-                                "已复制表格内容（TSV）。"
+                                "已复制表格内容（制表符分隔格式）。"
                               );
                             }}
                             className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-1.5 py-1 text-[10px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
@@ -2853,7 +4060,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              void writeClipboard(artifactUrl, "已复制截图链接");
+                              void writeClipboard(artifactUrl, "已复制截图链接。");
                             }}
                             className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-1.5 py-1 text-[10px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
                           >
@@ -2886,7 +4093,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             )}
           </div>
 
-          <div className="flex-1 min-h-0 space-y-2 overflow-y-auto custom-scrollbar bg-slate-50/30 p-3 dark:bg-slate-900/30">
+          <div className="flex-1 min-h-0 space-y-2 overflow-y-auto custom-scrollbar bg-transparent px-4 pb-4">
             {errorMessage && (
               <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
                 <div className="flex items-start gap-2">
@@ -2926,10 +4133,14 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             )}
 
             {activeDoc && fieldItems.length === 0 && !errorMessage && (
-              <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center dark:border-slate-700 dark:bg-slate-800/30">
-                <FileText size={24} className="text-slate-300 dark:text-slate-600" />
-                <p className="text-xs text-slate-500 dark:text-slate-400">该文档暂无识别到的结构化字段</p>
-                <p className="text-[10px] text-slate-400 dark:text-slate-500">请检查文档内容或尝试调整提取规则</p>
+              <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/30 p-8 text-center backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/30">
+                <div className="rounded-full bg-slate-100 p-3 ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+                  <FileText size={24} className="text-slate-400 dark:text-slate-500" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-slate-600 dark:text-slate-300">暂无结构化字段</p>
+                  <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">请检查文档内容或调整提取规则</p>
+                </div>
               </div>
             )}
 
@@ -2961,40 +4172,57 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     setActiveTraceKey(toTraceHitKey(hit, hitIndex));
                   }
                   if (activeRenderExt === "pdf" && item.pageNumber) {
-                    setPdfPage(item.pageNumber);
+                    jumpToPdfPage(item.pageNumber);
                   }
                 }}
                 onMouseEnter={() => setActiveFieldKey(item.key)}
                 onMouseLeave={() => setActiveFieldKey(null)}
                 className={cn(
-                  "cursor-pointer rounded-xl border p-2.5 transition-all duration-200",
+                  "group relative cursor-pointer rounded-xl border p-3 transition-all duration-300",
                   activeFieldKey === item.key
-                    ? "border-blue-500 bg-white shadow-sm ring-1 ring-blue-500 dark:bg-slate-900"
-                    : "border-slate-200 bg-white hover:border-blue-300 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-blue-700"
+                    ? "border-blue-500/50 bg-blue-50/40 shadow-md ring-1 ring-blue-500/20 backdrop-blur-md dark:bg-blue-900/30 dark:ring-blue-500/30"
+                    : "border-slate-200/50 bg-white/40 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-white/60 hover:shadow-lg hover:shadow-slate-200/40 backdrop-blur-sm dark:border-slate-800/50 dark:bg-slate-900/40 dark:hover:border-blue-800 dark:hover:bg-slate-800/60 dark:hover:shadow-none"
                 )}
               >
-                <div className="mb-1 flex items-start justify-between gap-2">
-                  <span className={cn("text-[10px] font-bold tracking-wide", activeFieldKey === item.key ? "text-blue-600 dark:text-blue-300" : "text-slate-500 dark:text-slate-400")}>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className={cn(
+                    "text-[10px] font-bold uppercase tracking-wider transition-colors",
+                    activeFieldKey === item.key ? "text-blue-600 dark:text-blue-400" : "text-slate-500 group-hover:text-blue-500 dark:text-slate-400 dark:group-hover:text-blue-400"
+                  )}>
                     {item.label}
                   </span>
                   <div className="flex items-center gap-1.5">
-                    {activeRenderExt === "pdf" && item.pageNumber && <span className="text-[10px] text-slate-400">{`第${item.pageNumber}页`}</span>}
+                    {activeRenderExt === "pdf" && item.pageNumber && (
+                      <span className="flex items-center gap-0.5 rounded-md bg-slate-100/50 px-1.5 py-0.5 text-[9px] font-medium text-slate-500 dark:bg-slate-800/50 dark:text-slate-400">
+                        P{item.pageNumber}
+                      </span>
+                    )}
                     <span
                       className={cn(
-                        "rounded-full border px-1.5 py-0.5 text-[9px] font-bold",
+                        "flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold shadow-sm ring-1 ring-inset backdrop-blur-sm",
                         item.confidence > 0.8
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
-                          : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+                          ? "bg-emerald-50/50 text-emerald-600 ring-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/30"
+                          : "bg-amber-50/50 text-amber-600 ring-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/30"
                       )}
                     >
+                      {item.confidence > 0.8 ? <CheckCircle2 size={8} /> : <AlertCircle size={8} />}
                       {Math.floor(item.confidence * 100)}%
                     </span>
                   </div>
                 </div>
 
-                <div className="break-all font-mono text-sm leading-snug text-slate-800 dark:text-slate-200">{item.valueText}</div>
+                <div className="break-all rounded-lg bg-slate-50/50 px-2.5 py-2 font-mono text-sm leading-relaxed text-slate-700 ring-1 ring-inset ring-slate-200/50 transition-colors group-hover:bg-white/80 group-hover:ring-blue-100 dark:bg-slate-950/30 dark:text-slate-300 dark:ring-slate-800 dark:group-hover:bg-slate-950/50 dark:group-hover:ring-blue-900/30">
+                  {item.valueText}
+                </div>
               </div>
             ))}
+          </div>
+                </div>
+              </section>
+              <section className="h-full w-1/2 min-w-0 p-2" aria-label="任务助手视图">
+                {assistantPanel}
+              </section>
+            </div>
           </div>
         </div>
       </div>
@@ -3019,7 +4247,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                 <div className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-bold">1</div>
                 <div>
                   <h4 className="font-bold text-slate-800 dark:text-slate-200 mb-1">智能解析与提取</h4>
-                  <p>上传文档后，助手会自动分析文档结构，您可以直接查看右侧提取结果，或在下方对话框输入指令（如“提取发票金额”）进行定向提取。</p>
+                  <p>上传文档后，助手会自动分析文档结构，你可以直接查看右侧提取结果，或在下方对话框输入指令（如“提取发票金额”）进行定向提取。</p>
                 </div>
               </div>
               <div className="flex gap-3">
@@ -3033,7 +4261,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                 <div className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 font-bold">3</div>
                 <div>
                   <h4 className="font-bold text-slate-800 dark:text-slate-200 mb-1">交互式结果修正</h4>
-                  <p>如果对结果不满意，可直接告诉助手“金额不对，应该是xxx”，助手会根据反馈进行修正并重新定位。</p>
+                  <p>如果对结果不满意，可直接告诉助手“金额不对，应该是示例值”，助手会根据反馈进行修正并重新定位。</p>
                 </div>
               </div>
             </div>
@@ -3051,3 +4279,4 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     </div>
   );
 };
+

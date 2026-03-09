@@ -4,6 +4,7 @@ const { spawn } = require('child_process');
 const rootDir = path.resolve(__dirname, '..');
 const nodeExec = process.execPath;
 const pythonExec = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const enableModule2 = process.env.MODULE2_ENABLED !== '0';
 const enableModule4 = process.env.MODULE4_ENABLED !== '0';
 
 const services = [
@@ -28,6 +29,16 @@ const services = [
     required: true,
   },
 ];
+
+if (enableModule2) {
+  services.push({
+    name: 'module2',
+    command: pythonExec,
+    args: ['-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', '8000', '--reload'],
+    cwd: path.join(rootDir, 'backend', 'module2'),
+    required: true,
+  });
+}
 
 if (enableModule4) {
   services.push({
@@ -60,6 +71,7 @@ for (const service of services) {
     cwd: service.cwd,
     stdio: 'inherit',
     shell: false,
+    env: process.env,
   });
 
   children.push(child);

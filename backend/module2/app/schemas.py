@@ -118,6 +118,7 @@ class BridgeFilePayload(BaseModel):
 
 class BridgeJobCreateRequest(BaseModel):
     request_id: Optional[str] = None
+    tenant_id: Optional[str] = None
     schema: Dict[str, Any] = Field(default_factory=dict)
     files: List[BridgeFilePayload] = Field(..., min_length=1, max_length=5)
     max_retries: int = Field(default=2, ge=0, le=6)
@@ -145,6 +146,7 @@ class SummarizeRequest(BaseModel):
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
     errors: List[str] = Field(default_factory=list)
     soft_warnings: List[str] = Field(default_factory=list)
+    trace_hits: List[TraceHit] = Field(default_factory=list)
     max_chars: int = Field(default=400, ge=120, le=4000)
 
 

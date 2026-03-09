@@ -6,10 +6,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
 
-/* ═══════════════════════════════════════════════════════
-   Bytedance Clone - Core Components
-   ═══════════════════════════════════════════════════════ */
-
 export const UserGuide: React.FC = () => {
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -19,19 +15,19 @@ export const UserGuide: React.FC = () => {
     {
       image: "https://images.unsplash.com/photo-1497215728101-856f4ea42174?q=80&w=2070&auto=format&fit=crop",
       title: "文档智慧\n重塑未来",
-      subtitle: "Smart Document Flow Platform",
+      subtitle: "智能文档流转平台",
       tag: "核心愿景"
     },
     {
       image: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=2072&auto=format&fit=crop",
       title: "高效协同\n无界流转",
-      subtitle: "Seamless Workflow Automation",
+      subtitle: "无缝流程自动化",
       tag: "卓越效能"
     },
     {
       image: "https://images.unsplash.com/photo-1556761175-5973dc0f32e7?q=80&w=2664&auto=format&fit=crop",
       title: "数据洞察\n决策之源",
-      subtitle: "Intelligent Decision Support",
+      subtitle: "智能决策支持",
       tag: "深度智能"
     }
   ], []);
@@ -73,7 +69,7 @@ export const UserGuide: React.FC = () => {
               <span className="hidden md:inline-block bg-clip-text text-transparent bg-gradient-to-r from-white via-indigo-100 to-white transition-all duration-500">
                 智能文档流转平台
               </span>
-              <span className="md:hidden text-white">SmartDoc</span>
+              <span className="md:hidden text-white">智文流转</span>
             </div>
 
             {/* Desktop Links */}
@@ -197,19 +193,19 @@ export const UserGuide: React.FC = () => {
                   ? "w-12 bg-white"
                   : "w-2 bg-white/40 hover:bg-white/60"
               )}
-              aria-label={`Go to slide ${idx + 1}`}
+              aria-label={`切换到第 ${idx + 1} 张轮播图`}
             />
           ))}
         </div>
       </section>
 
-      {/* --- BYTESTYLES (文化区) --- */}
+      {/* --- 平台价值观 --- */}
       <section className="bg-[#f8f9fa] py-32 px-6 lg:px-12">
         <div className="max-w-[1400px] mx-auto">
           <div className="mb-20">
-            <h2 className="text-5xl md:text-6xl font-black text-slate-900 tracking-tight">字节范 <span className="text-slate-400 font-normal">ByteStyle</span></h2>
+            <h2 className="text-5xl md:text-6xl font-black text-slate-900 tracking-tight">平台价值观</h2>
             <p className="mt-6 text-xl text-slate-500 max-w-3xl leading-relaxed">
-              字节范是字节跳动企业文化的重要组成部分，是我们共同认可的行为准则。
+              平台价值观是团队协同与产品演进的核心准则，是我们共同认可的行为标准。
             </p>
           </div>
 
@@ -293,7 +289,7 @@ export const UserGuide: React.FC = () => {
 
       {/* Footer Minimal */}
       <footer className="bg-slate-950 text-slate-400 py-12 text-center text-sm">
-        <p>© {new Date().getFullYear()} Bytedance Clone. All rights reserved.</p>
+        <p>© {new Date().getFullYear()} 智能文档流转平台 版权所有。</p>
       </footer>
     </div>
   );

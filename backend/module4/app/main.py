@@ -6,12 +6,13 @@ import json
 import math
 import os
 from collections import Counter
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from string import Formatter
 from typing import Any, Dict, List, Optional, Sequence
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.storage import Module4Storage
@@ -33,6 +34,8 @@ from app.schemas import (
     IngestRequest,
     IngestResponse,
     JobResponse,
+    RebuildRequest,
+    RebuildResponse,
     RuleItem,
     RuleListResponse,
     RuleUpsertRequest,
@@ -76,6 +79,16 @@ def _default_tenant() -> str:
     return os.getenv("MODULE4_DEFAULT_TENANT", "default").strip() or "default"
 
 
+def _tenant_from_request(request: Optional[Request], candidate: Optional[str] = None) -> str:
+    if candidate and str(candidate).strip():
+        return str(candidate).strip()
+    if request is not None:
+        header_value = str(request.headers.get("x-tenant-id") or "").strip()
+        if header_value:
+            return header_value
+    return _default_tenant()
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -104,6 +117,10 @@ def _to_int(value: Any, default: int = 0) -> int:
 def _risk_key(text: str) -> str:
     digest = hashlib.sha256((text or "").encode("utf-8")).hexdigest()
     return digest[:16]
+
+
+def _stable_json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -267,6 +284,17 @@ def _compact_payload_context(context: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in payload.items() if v is not None and v != ""}
 
 
+def _derived_ingest_batch_key(payload: IngestRequest, tenant_id: Optional[str] = None) -> str:
+    if payload.source_batch_key:
+        return str(payload.source_batch_key).strip()
+    normalized = {
+        "tenant_id": tenant_id or payload.tenant_id or _default_tenant(),
+        "source": payload.source,
+        "documents": payload.model_dump(mode="json").get("documents", []),
+    }
+    return _risk_key(_stable_json_dumps(normalized))
+
+
 def _rule_risk_score(rule: Dict[str, Any], context: Dict[str, Any]) -> float:
     severity = str(rule.get("severity") or "yellow").lower()
     expr = rule.get("expr") if isinstance(rule.get("expr"), dict) else {}
@@ -425,7 +453,81 @@ def _normalize_evidence_row(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-app = FastAPI(title="A23 Module 4 - Global Knowledge Graph & Risk Intelligence", version="1.1.0")
+storage = Module4Storage(os.getenv("MODULE4_DATABASE_DSN", "postgresql://postgres:postgres@localhost:5432/a23"))
+job_tasks: Dict[str, asyncio.Task[Any]] = {}
+
+
+def _count_documents_from_batches(batches: Sequence[Dict[str, Any]]) -> int:
+    total = 0
+    for batch in batches:
+        payload = batch.get("raw_payload") if isinstance(batch.get("raw_payload"), dict) else {}
+        documents = payload.get("documents") if isinstance(payload.get("documents"), list) else []
+        total += len(documents)
+    return total
+
+
+async def _recover_jobs() -> None:
+    recoverable = await storage.list_recoverable_jobs()
+    for row in recoverable:
+        job_type = str(row.get("job_type") or "").strip()
+        job_id = str(row.get("job_id") or "").strip()
+        if not job_id or job_id in job_tasks:
+            continue
+        if job_type == "ingest":
+            batch_id = str(row.get("batch_id") or "").strip()
+            raw_payload = row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {}
+            if not batch_id:
+                await storage.update_job(
+                    job_id,
+                    status="failed",
+                    error_message="Recover payload invalid: missing batch_id",
+                    finished_at=_now_utc(),
+                )
+                continue
+            try:
+                payload = IngestRequest.model_validate(raw_payload)
+            except Exception as exc:
+                await storage.update_job(
+                    job_id,
+                    status="failed",
+                    error_message=f"Recover payload invalid: {type(exc).__name__}: {exc}",
+                    finished_at=_now_utc(),
+                )
+                continue
+            _schedule_ingest_job(job_id, batch_id, payload)
+            continue
+
+        if job_type == "rebuild_graph":
+            payload_raw = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            try:
+                payload = RebuildRequest.model_validate(payload_raw)
+            except Exception as exc:
+                await storage.update_job(
+                    job_id,
+                    status="failed",
+                    error_message=f"Recover rebuild payload invalid: {type(exc).__name__}: {exc}",
+                    finished_at=_now_utc(),
+                )
+                continue
+            _schedule_rebuild_job(job_id, payload)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await storage.connect()
+    await _recover_jobs()
+    try:
+        yield
+    finally:
+        tasks = [task for task in job_tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await storage.close()
+
+
+app = FastAPI(title="A23 Module 4 - Global Knowledge Graph & Risk Intelligence", version="1.1.0", lifespan=lifespan)
 CORS_ORIGINS, CORS_ALLOW_ALL = _cors_origins()
 app.add_middleware(
     CORSMiddleware,
@@ -434,9 +536,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-storage = Module4Storage(os.getenv("MODULE4_DATABASE_DSN", "postgresql://postgres:postgres@localhost:5432/a23"))
-job_tasks: Dict[str, asyncio.Task[Any]] = {}
 
 
 async def _emit_alert(
@@ -449,6 +548,7 @@ async def _emit_alert(
     summary: str,
     risk_score: float,
     payload: Dict[str, Any],
+    db_conn: Any = None,
 ) -> None:
     await storage.insert_alert(
         tenant_id=tenant_id,
@@ -459,6 +559,7 @@ async def _emit_alert(
         summary=summary,
         risk_score=risk_score,
         payload=payload,
+        conn=db_conn,
     )
 
 
@@ -479,260 +580,296 @@ async def _process_document(
         str(x) for x in (doc.get("soft_warnings") if isinstance(doc.get("soft_warnings"), list) else []) if str(x).strip()
     ]
 
-    doc_row = await storage.upsert_document(
-        tenant_id=tenant_id,
-        batch_id=batch_id,
-        file_name=file_name,
-        file_hash=file_hash,
-        track=track,
-        diagnostics=diagnostics,
-    )
-    doc_node = await storage.upsert_node(
-        tenant_id=tenant_id,
-        node_type="Document",
-        canonical_key=file_hash,
-        display_name=file_name,
-        attrs={
-            "file_hash": file_hash,
-            "file_name": file_name,
-            "track": track,
-            "cached": bool(doc.get("cached")),
-            "diagnostics": diagnostics,
-        },
-        confidence=1.0,
-    )
-
-    counters = {"nodes": 1, "edges": 0, "alerts": 0, "evidence": 0}
-    field_node_ids: Dict[str, str] = {}
-    result = doc.get("result") if isinstance(doc.get("result"), dict) else {}
-
-    for field_name, entity in result.items():
-        entity_map = entity if isinstance(entity, dict) else {}
-        value = entity_map.get("value")
-        confidence = _to_float(entity_map.get("confidence"), 0.0)
-        source_ref_id = str(entity_map.get("source_ref_id") or "").strip() or None
-        bbox = entity_map.get("bbox") if isinstance(entity_map.get("bbox"), list) else []
-
-        field_node = await storage.upsert_node(
+    async with storage.transaction() as db_conn:
+        doc_row = await storage.upsert_document(
             tenant_id=tenant_id,
-            node_type="Field",
-            canonical_key=f"{file_hash}:{field_name}",
-            display_name=str(field_name),
+            batch_id=batch_id,
+            file_name=file_name,
+            file_hash=file_hash,
+            track=track,
+            diagnostics=diagnostics,
+            conn=db_conn,
+        )
+        doc_node = await storage.upsert_node(
+            tenant_id=tenant_id,
+            node_type="Document",
+            canonical_key=file_hash,
+            display_name=file_name,
             attrs={
                 "file_hash": file_hash,
                 "file_name": file_name,
-                "field_name": field_name,
+                "track": track,
+                "cached": bool(doc.get("cached")),
+                "diagnostics": diagnostics,
+            },
+            confidence=1.0,
+            conn=db_conn,
+        )
+
+        counters = {"nodes": 1, "edges": 0, "alerts": 0, "evidence": 0}
+        field_node_ids: Dict[str, str] = {}
+        result = doc.get("result") if isinstance(doc.get("result"), dict) else {}
+
+        for field_name, entity in result.items():
+            entity_map = entity if isinstance(entity, dict) else {}
+            value = entity_map.get("value")
+            confidence = _to_float(entity_map.get("confidence"), 0.0)
+            source_ref_id = str(entity_map.get("source_ref_id") or "").strip() or None
+            bbox = entity_map.get("bbox") if isinstance(entity_map.get("bbox"), list) else []
+
+            field_node = await storage.upsert_node(
+                tenant_id=tenant_id,
+                node_type="Field",
+                canonical_key=f"{file_hash}:{field_name}",
+                display_name=str(field_name),
+                attrs={
+                    "file_hash": file_hash,
+                    "file_name": file_name,
+                    "field_name": field_name,
+                    "value": value,
+                    "source_ref_id": source_ref_id,
+                    "bbox": bbox,
+                },
+                confidence=confidence,
+                conn=db_conn,
+            )
+            counters["nodes"] += 1
+            field_node_ids[str(field_name)] = str(field_node["node_id"])
+
+            await storage.upsert_edge(
+                tenant_id=tenant_id,
+                source_node_id=str(doc_node["node_id"]),
+                target_node_id=str(field_node["node_id"]),
+                relation_type="extracts",
+                direction="out",
+                attrs={"field_name": field_name},
+                confidence=max(0.1, confidence),
+                risk_score=round(_clamp((1.0 - confidence) * 100.0, 0.0, 100.0), 3),
+                conn=db_conn,
+            )
+            counters["edges"] += 1
+
+            field_context = {
+                "tenant_id": tenant_id,
+                "file_hash": file_hash,
+                "file_name": file_name,
+                "track": track,
+                "field_name": str(field_name),
                 "value": value,
+                "confidence": confidence,
                 "source_ref_id": source_ref_id,
                 "bbox": bbox,
-            },
-            confidence=confidence,
-        )
-        field_node_ids[str(field_name)] = str(field_node["node_id"])
-        counters["nodes"] += 1
+                "errors_count": len(errors),
+                "soft_warning_count": len(soft_warnings),
+                "diagnostics": diagnostics,
+            }
+            for rule in field_rules:
+                hit = _evaluate_rule_hit(rule, field_context)
+                if not hit:
+                    continue
+                await _emit_alert(
+                    tenant_id=tenant_id,
+                    rule_id=hit["rule_id"],
+                    severity=hit["severity"],
+                    subject_node_id=str(field_node["node_id"]),
+                    title=hit["title"],
+                    summary=hit["summary"],
+                    risk_score=hit["risk_score"],
+                    payload=hit["payload"],
+                    db_conn=db_conn,
+                )
+                counters["alerts"] += 1
 
-        await storage.upsert_edge(
-            tenant_id=tenant_id,
-            source_node_id=str(doc_node["node_id"]),
-            target_node_id=str(field_node["node_id"]),
-            relation_type="extracts",
-            direction="out",
-            attrs={"field_name": field_name},
-            confidence=max(0.1, confidence),
-            risk_score=max(0.0, 1.0 - confidence),
-        )
-        counters["edges"] += 1
+        if errors:
+            risk_node = await storage.upsert_node(
+                tenant_id=tenant_id,
+                node_type="Risk",
+                canonical_key=f"{file_hash}:errors:{_risk_key('|'.join(errors))}",
+                display_name=f"{file_name} parsing errors",
+                attrs={"errors": errors},
+                confidence=0.99,
+                conn=db_conn,
+            )
+            counters["nodes"] += 1
+            await storage.upsert_edge(
+                tenant_id=tenant_id,
+                source_node_id=str(doc_node["node_id"]),
+                target_node_id=str(risk_node["node_id"]),
+                relation_type="has_risk",
+                direction="out",
+                attrs={"kind": "errors"},
+                confidence=0.95,
+                risk_score=92.0,
+                conn=db_conn,
+            )
+            counters["edges"] += 1
 
-        field_context = {
+        for warning in soft_warnings[:6]:
+            risk_node = await storage.upsert_node(
+                tenant_id=tenant_id,
+                node_type="Risk",
+                canonical_key=f"{file_hash}:warning:{_risk_key(warning)}",
+                display_name=f"{file_name} warning",
+                attrs={"warning": warning},
+                confidence=0.8,
+                conn=db_conn,
+            )
+            counters["nodes"] += 1
+            await storage.upsert_edge(
+                tenant_id=tenant_id,
+                source_node_id=str(doc_node["node_id"]),
+                target_node_id=str(risk_node["node_id"]),
+                relation_type="has_warning",
+                direction="out",
+                attrs={"kind": "soft_warning"},
+                confidence=0.75,
+                risk_score=35.0,
+                conn=db_conn,
+            )
+            counters["edges"] += 1
+
+        doc_context = {
             "tenant_id": tenant_id,
             "file_hash": file_hash,
             "file_name": file_name,
             "track": track,
-            "field_name": str(field_name),
-            "value": value,
-            "confidence": confidence,
-            "source_ref_id": source_ref_id,
-            "bbox": bbox,
+            "errors": errors,
             "errors_count": len(errors),
+            "soft_warnings": soft_warnings,
             "soft_warning_count": len(soft_warnings),
             "diagnostics": diagnostics,
+            "field_count": len(result),
         }
-        for rule in field_rules:
-            hit = _evaluate_rule_hit(rule, field_context)
+        for rule in document_rules:
+            hit = _evaluate_rule_hit(rule, doc_context)
             if not hit:
                 continue
             await _emit_alert(
                 tenant_id=tenant_id,
                 rule_id=hit["rule_id"],
                 severity=hit["severity"],
-                subject_node_id=str(field_node["node_id"]),
+                subject_node_id=str(doc_node["node_id"]),
                 title=hit["title"],
                 summary=hit["summary"],
                 risk_score=hit["risk_score"],
                 payload=hit["payload"],
+                db_conn=db_conn,
             )
             counters["alerts"] += 1
 
-    if errors:
-        risk_node = await storage.upsert_node(
-            tenant_id=tenant_id,
-            node_type="Risk",
-            canonical_key=f"{file_hash}:errors:{_risk_key('|'.join(errors))}",
-            display_name=f"{file_name} parsing errors",
-            attrs={"errors": errors},
-            confidence=0.99,
-        )
-        counters["nodes"] += 1
-        await storage.upsert_edge(
-            tenant_id=tenant_id,
-            source_node_id=str(doc_node["node_id"]),
-            target_node_id=str(risk_node["node_id"]),
-            relation_type="has_risk",
-            direction="out",
-            attrs={"kind": "errors"},
-            confidence=0.95,
-            risk_score=92.0,
-        )
-        counters["edges"] += 1
+        trace_hits = doc.get("trace_hits") if isinstance(doc.get("trace_hits"), list) else []
+        for hit in trace_hits[:200]:
+            hit_map = hit if isinstance(hit, dict) else {}
+            page_raw = hit_map.get("page")
+            page_no = _to_int(page_raw, -1) if str(page_raw or "").strip() else None
+            page_no = page_no if page_no is None or page_no >= 0 else None
 
-    for warning in soft_warnings[:6]:
-        risk_node = await storage.upsert_node(
-            tenant_id=tenant_id,
-            node_type="Risk",
-            canonical_key=f"{file_hash}:warning:{_risk_key(warning)}",
-            display_name=f"{file_name} warning",
-            attrs={"warning": warning},
-            confidence=0.8,
-        )
-        counters["nodes"] += 1
-        await storage.upsert_edge(
-            tenant_id=tenant_id,
-            source_node_id=str(doc_node["node_id"]),
-            target_node_id=str(risk_node["node_id"]),
-            relation_type="has_warning",
-            direction="out",
-            attrs={"kind": "soft_warning"},
-            confidence=0.75,
-            risk_score=35.0,
-        )
-        counters["edges"] += 1
-
-    doc_context = {
-        "tenant_id": tenant_id,
-        "file_hash": file_hash,
-        "file_name": file_name,
-        "track": track,
-        "errors": errors,
-        "errors_count": len(errors),
-        "soft_warnings": soft_warnings,
-        "soft_warning_count": len(soft_warnings),
-        "diagnostics": diagnostics,
-        "field_count": len(result),
-    }
-    for rule in document_rules:
-        hit = _evaluate_rule_hit(rule, doc_context)
-        if not hit:
-            continue
-        await _emit_alert(
-            tenant_id=tenant_id,
-            rule_id=hit["rule_id"],
-            severity=hit["severity"],
-            subject_node_id=str(doc_node["node_id"]),
-            title=hit["title"],
-            summary=hit["summary"],
-            risk_score=hit["risk_score"],
-            payload=hit["payload"],
-        )
-        counters["alerts"] += 1
-
-    trace_hits = doc.get("trace_hits") if isinstance(doc.get("trace_hits"), list) else []
-    for hit in trace_hits[:200]:
-        hit_map = hit if isinstance(hit, dict) else {}
-        page_raw = hit_map.get("page")
-        page_no = _to_int(page_raw, -1) if str(page_raw or "").strip() else None
-        page_no = page_no if page_no is None or page_no >= 0 else None
-
-        evidence = await storage.insert_evidence(
-            tenant_id=tenant_id,
-            doc_id=str(doc_row["doc_id"]),
-            object_type=str(hit_map.get("object_type") or "field"),
-            object_id=str(hit_map.get("object_id") or ""),
-            ref_id=str(hit_map.get("ref_id") or "").strip() or None,
-            page_no=page_no,
-            snippet=str(hit_map.get("snippet") or "")[:500],
-            locator=hit_map.get("locator") if isinstance(hit_map.get("locator"), dict) else {},
-            bbox=hit_map.get("bbox") if isinstance(hit_map.get("bbox"), list) else [],
-            artifact_url=str(hit_map.get("artifact_url") or "").strip() or None,
-            confidence=_to_float(hit_map.get("confidence"), 0.0),
-        )
-        counters["evidence"] += 1
-
-        object_type = str(hit_map.get("object_type") or "").strip().lower()
-        object_id = str(hit_map.get("object_id") or "").strip()
-        if object_type in {"table", "figure"} and object_id:
-            target_node = await storage.upsert_node(
+            evidence = await storage.insert_evidence(
                 tenant_id=tenant_id,
-                node_type=object_type.title(),
-                canonical_key=f"{file_hash}:{object_type}:{object_id}",
-                display_name=object_id,
-                attrs={
-                    "file_hash": file_hash,
-                    "object_type": object_type,
-                    "snippet": str(hit_map.get("snippet") or "")[:300],
-                    "page": hit_map.get("page"),
-                },
-                confidence=_to_float(hit_map.get("confidence"), 0.6),
+                doc_id=str(doc_row["doc_id"]),
+                object_type=str(hit_map.get("object_type") or "field"),
+                object_id=str(hit_map.get("object_id") or ""),
+                ref_id=str(hit_map.get("ref_id") or "").strip() or None,
+                page_no=page_no,
+                snippet=str(hit_map.get("snippet") or "")[:500],
+                locator=hit_map.get("locator") if isinstance(hit_map.get("locator"), dict) else {},
+                bbox=hit_map.get("bbox") if isinstance(hit_map.get("bbox"), list) else [],
+                artifact_url=str(hit_map.get("artifact_url") or "").strip() or None,
+                confidence=_to_float(hit_map.get("confidence"), 0.0),
+                conn=db_conn,
             )
-            counters["nodes"] += 1
-            edge = await storage.upsert_edge(
-                tenant_id=tenant_id,
-                source_node_id=str(doc_node["node_id"]),
-                target_node_id=str(target_node["node_id"]),
-                relation_type="contains",
-                direction="out",
-                attrs={"object_type": object_type},
-                confidence=_to_float(hit_map.get("confidence"), 0.6),
-                risk_score=0.0,
-            )
-            counters["edges"] += 1
-            await storage.link_edge_evidence(edge_id=str(edge["edge_id"]), evidence_id=str(evidence["evidence_id"]))
+            counters["evidence"] += 1
 
-    polymorphic_links = diagnostics.get("polymorphic_links") if isinstance(diagnostics.get("polymorphic_links"), list) else []
-    for link in polymorphic_links[:120]:
-        link_map = link if isinstance(link, dict) else {}
-        field_name = str(link_map.get("field") or "").strip()
-        src_id = field_node_ids.get(field_name)
-        if not src_id:
-            continue
-        targets = link_map.get("targets") if isinstance(link_map.get("targets"), list) else []
-        for target in targets[:10]:
-            target_map = target if isinstance(target, dict) else {}
-            target_type = str(target_map.get("type") or "").strip().lower()
-            target_id = str(target_map.get("id") or "").strip()
-            if target_type not in {"table", "figure"} or not target_id:
+            object_type = str(hit_map.get("object_type") or "").strip().lower()
+            object_id = str(hit_map.get("object_id") or "").strip()
+            if object_type in {"table", "figure"} and object_id:
+                target_node = await storage.upsert_node(
+                    tenant_id=tenant_id,
+                    node_type=object_type.title(),
+                    canonical_key=f"{file_hash}:{object_type}:{object_id}",
+                    display_name=object_id,
+                    attrs={
+                        "file_hash": file_hash,
+                        "object_type": object_type,
+                        "snippet": str(hit_map.get("snippet") or "")[:300],
+                        "page": hit_map.get("page"),
+                    },
+                    confidence=_to_float(hit_map.get("confidence"), 0.6),
+                    conn=db_conn,
+                )
+                counters["nodes"] += 1
+                edge = await storage.upsert_edge(
+                    tenant_id=tenant_id,
+                    source_node_id=str(doc_node["node_id"]),
+                    target_node_id=str(target_node["node_id"]),
+                    relation_type="contains",
+                    direction="out",
+                    attrs={"object_type": object_type},
+                    confidence=_to_float(hit_map.get("confidence"), 0.6),
+                    risk_score=0.0,
+                    conn=db_conn,
+                )
+                counters["edges"] += 1
+                await storage.link_edge_evidence(
+                    edge_id=str(edge["edge_id"]),
+                    evidence_id=str(evidence["evidence_id"]),
+                    conn=db_conn,
+                )
+
+        polymorphic_links = diagnostics.get("polymorphic_links") if isinstance(diagnostics.get("polymorphic_links"), list) else []
+        for link in polymorphic_links[:120]:
+            link_map = link if isinstance(link, dict) else {}
+            field_name = str(link_map.get("field") or "").strip()
+            src_id = field_node_ids.get(field_name)
+            if not src_id:
                 continue
-            tgt_node = await storage.upsert_node(
-                tenant_id=tenant_id,
-                node_type=target_type.title(),
-                canonical_key=f"{file_hash}:{target_type}:{target_id}",
-                display_name=target_id,
-                attrs={"file_hash": file_hash, "type": target_type},
-                confidence=_to_float(target_map.get("confidence"), 0.6),
-            )
-            counters["nodes"] += 1
-            await storage.upsert_edge(
-                tenant_id=tenant_id,
-                source_node_id=src_id,
-                target_node_id=str(tgt_node["node_id"]),
-                relation_type="links_to",
-                direction="out",
-                attrs={"match": target_map.get("match"), "page": target_map.get("page")},
-                confidence=_to_float(target_map.get("confidence"), 0.6),
-                risk_score=0.0,
-            )
-            counters["edges"] += 1
+            targets = link_map.get("targets") if isinstance(link_map.get("targets"), list) else []
+            for target in targets[:10]:
+                target_map = target if isinstance(target, dict) else {}
+                target_type = str(target_map.get("type") or "").strip().lower()
+                target_id = str(target_map.get("id") or "").strip()
+                if target_type not in {"table", "figure"} or not target_id:
+                    continue
+                tgt_node = await storage.upsert_node(
+                    tenant_id=tenant_id,
+                    node_type=target_type.title(),
+                    canonical_key=f"{file_hash}:{target_type}:{target_id}",
+                    display_name=target_id,
+                    attrs={"file_hash": file_hash, "type": target_type},
+                    confidence=_to_float(target_map.get("confidence"), 0.6),
+                    conn=db_conn,
+                )
+                counters["nodes"] += 1
+                await storage.upsert_edge(
+                    tenant_id=tenant_id,
+                    source_node_id=src_id,
+                    target_node_id=str(tgt_node["node_id"]),
+                    relation_type="links_to",
+                    direction="out",
+                    attrs={"match": target_map.get("match"), "page": target_map.get("page")},
+                    confidence=_to_float(target_map.get("confidence"), 0.6),
+                    risk_score=0.0,
+                    conn=db_conn,
+                )
+                counters["edges"] += 1
 
     return counters
+
+
+def _schedule_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> None:
+    existing = job_tasks.get(job_id)
+    if existing and not existing.done():
+        return
+    task = asyncio.create_task(_run_ingest_job(job_id, batch_id, payload))
+    job_tasks[job_id] = task
+
+
+def _schedule_rebuild_job(job_id: str, payload: RebuildRequest) -> None:
+    existing = job_tasks.get(job_id)
+    if existing and not existing.done():
+        return
+    task = asyncio.create_task(_run_rebuild_job(job_id, payload))
+    job_tasks[job_id] = task
 
 
 async def _run_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> None:
@@ -762,6 +899,77 @@ async def _run_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) ->
             await storage.update_job(job_id, progress=progress, result=agg)
 
         await storage.update_job(job_id, status="success", progress=100.0, result=agg, finished_at=_now_utc())
+    except asyncio.CancelledError:
+        await storage.update_job(
+            job_id,
+            status="queued",
+            error_message="Job interrupted during shutdown and queued for recovery",
+            started_at=None,
+            finished_at=None,
+        )
+        raise
+    except Exception as exc:
+        await storage.update_job(
+            job_id,
+            status="failed",
+            error_message=f"{type(exc).__name__}: {exc}",
+            finished_at=_now_utc(),
+        )
+    finally:
+        job_tasks.pop(job_id, None)
+
+
+async def _run_rebuild_job(job_id: str, payload: RebuildRequest) -> None:
+    tenant_id = payload.tenant_id or _default_tenant()
+    batches = await storage.list_ingest_batches(tenant_id=tenant_id)
+    total_docs = _count_documents_from_batches(batches)
+    agg = {
+        "documents": total_docs,
+        "batches": len(batches),
+        "nodes": 0,
+        "edges": 0,
+        "alerts": 0,
+        "evidence": 0,
+    }
+
+    await storage.update_job(job_id, status="running", started_at=_now_utc(), progress=1.0)
+    try:
+        await storage.delete_tenant_graph_data(tenant_id=tenant_id)
+
+        rules = await storage.list_rules(enabled_only=True)
+        deterministic_rules = [rule for rule in rules if str(rule.get("rule_kind")).lower() in SUPPORTED_RULE_KINDS]
+        field_rules = [rule for rule in deterministic_rules if _rule_scope(rule) == "field"]
+        document_rules = [rule for rule in deterministic_rules if _rule_scope(rule) == "document"]
+
+        processed = 0
+        for batch in batches:
+            batch_id = str(batch.get("batch_id") or "").strip()
+            raw_payload = batch.get("raw_payload") if isinstance(batch.get("raw_payload"), dict) else {}
+            documents = raw_payload.get("documents") if isinstance(raw_payload.get("documents"), list) else []
+            for doc in documents:
+                counters = await _process_document(
+                    tenant_id=tenant_id,
+                    batch_id=batch_id,
+                    doc=doc if isinstance(doc, dict) else {},
+                    field_rules=field_rules,
+                    document_rules=document_rules,
+                )
+                for key, value in counters.items():
+                    agg[key] += int(value)
+                processed += 1
+                progress = round((processed / max(1, total_docs)) * 100.0, 2)
+                await storage.update_job(job_id, progress=progress, result=agg)
+
+        await storage.update_job(job_id, status="success", progress=100.0, result=agg, finished_at=_now_utc())
+    except asyncio.CancelledError:
+        await storage.update_job(
+            job_id,
+            status="queued",
+            error_message="Rebuild interrupted during shutdown and queued for recovery",
+            started_at=None,
+            finished_at=None,
+        )
+        raise
     except Exception as exc:
         await storage.update_job(
             job_id,
@@ -784,58 +992,93 @@ def _build_stats(nodes: Sequence[Dict[str, Any]], edges: Sequence[Dict[str, Any]
     )
 
 
-@app.on_event("startup")
-async def startup_event() -> None:
-    await storage.connect()
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    for task in list(job_tasks.values()):
-        if not task.done():
-            task.cancel()
-    await storage.close()
-
-
 @app.post("/module4/ingest", response_model=IngestResponse)
-async def module4_ingest(payload: IngestRequest) -> IngestResponse:
-    tenant_id = payload.tenant_id or _default_tenant()
+async def module4_ingest(payload: IngestRequest, request: Request) -> IngestResponse:
+    tenant_id = _tenant_from_request(request, payload.tenant_id)
+    source_batch_key = _derived_ingest_batch_key(payload, tenant_id=tenant_id)
+    existing_batch = await storage.get_ingest_batch(
+        tenant_id=tenant_id,
+        source=payload.source,
+        source_batch_key=source_batch_key,
+    )
+    if existing_batch and existing_batch.get("job_id"):
+        existing_job = await storage.get_job(str(existing_batch.get("job_id")))
+        if existing_job and str(existing_job.get("status") or "") in {"queued", "running", "success"}:
+            if str(existing_job.get("status")) in {"queued", "running"}:
+                raw_payload = existing_batch.get("raw_payload") if isinstance(existing_batch.get("raw_payload"), dict) else {}
+                recover_payload = IngestRequest.model_validate(raw_payload or payload.model_dump(mode="json"))
+                _schedule_ingest_job(str(existing_job["job_id"]), str(existing_batch["batch_id"]), recover_payload)
+            return IngestResponse(
+                job_id=str(existing_job["job_id"]),
+                batch_id=str(existing_batch["batch_id"]),
+                status=str(existing_job["status"]),
+            )
+
+    payload_data = payload.model_dump(mode="json")
+    payload_data["tenant_id"] = tenant_id
+    payload_data["source_batch_key"] = source_batch_key
     job = await storage.create_job(
         tenant_id=tenant_id,
         job_type="ingest",
         status="queued",
-        payload={"source": payload.source, "source_batch_key": payload.source_batch_key, "documents": len(payload.documents)},
+        payload={"source": payload.source, "source_batch_key": source_batch_key, "documents": len(payload.documents)},
     )
     batch = await storage.create_ingest_batch(
         tenant_id=tenant_id,
         source=payload.source,
-        source_batch_key=payload.source_batch_key,
+        source_batch_key=source_batch_key,
         job_id=str(job["job_id"]),
-        raw_payload=payload.model_dump(mode="json"),
+        raw_payload=payload_data,
     )
-    task = asyncio.create_task(_run_ingest_job(str(job["job_id"]), str(batch["batch_id"]), payload))
-    job_tasks[str(job["job_id"])] = task
+    effective_payload = IngestRequest.model_validate(payload_data)
+    _schedule_ingest_job(str(job["job_id"]), str(batch["batch_id"]), effective_payload)
     return IngestResponse(job_id=str(job["job_id"]), batch_id=str(batch["batch_id"]), status=str(job["status"]))
 
 
 @app.get("/module4/jobs/{job_id}", response_model=JobResponse)
-async def module4_job_status(job_id: str) -> JobResponse:
-    row = await storage.get_job(job_id)
+async def module4_job_status(job_id: str, request: Request, tenant_id: str = Query(default="")) -> JobResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
+    row = await storage.get_job(job_id, tenant_id=resolved_tenant)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
     return JobResponse(**row)
 
 
+@app.post("/module4/rebuild", response_model=RebuildResponse)
+async def module4_rebuild(body: RebuildRequest, request: Request) -> RebuildResponse:
+    tenant_id = _tenant_from_request(request, body.tenant_id)
+    batches = await storage.list_ingest_batches(tenant_id=tenant_id)
+    if not batches:
+        raise HTTPException(status_code=404, detail="No ingest batches found for tenant")
+
+    documents = _count_documents_from_batches(batches)
+    job = await storage.create_job(
+        tenant_id=tenant_id,
+        job_type="rebuild_graph",
+        status="queued",
+        payload={"tenant_id": tenant_id, "batches": len(batches), "documents": documents},
+    )
+    _schedule_rebuild_job(str(job["job_id"]), RebuildRequest(tenant_id=tenant_id))
+    return RebuildResponse(
+        job_id=str(job["job_id"]),
+        status=str(job["status"]),
+        batches=len(batches),
+        documents=documents,
+    )
+
+
 @app.get("/module4/graph", response_model=GraphResponse)
 async def module4_graph(
-    tenant_id: str = Query(default=_default_tenant()),
+    request: Request,
+    tenant_id: str = Query(default=""),
     node_types: str = "",
     relation_types: str = "",
     limit_nodes: int = 800,
     limit_edges: int = 1500,
 ) -> GraphResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
     nodes_raw, edges_raw = await storage.list_graph(
-        tenant_id=tenant_id,
+        tenant_id=resolved_tenant,
         node_types=_parse_csv_list(node_types),
         relation_types=_parse_csv_list(relation_types),
         limit_nodes=limit_nodes,
@@ -851,45 +1094,24 @@ async def module4_graph(
 @app.get("/module4/graph/neighborhood/{node_id}", response_model=GraphResponse)
 async def module4_neighborhood(
     node_id: str,
-    tenant_id: str = Query(default=_default_tenant()),
+    request: Request,
+    tenant_id: str = Query(default=""),
     depth: int = 1,
     relation_types: str = "",
     limit: int = 1200,
 ) -> GraphResponse:
-    nodes_raw, edges_raw = await storage.list_graph(
-        tenant_id=tenant_id,
-        node_types=None,
+    resolved_tenant = _tenant_from_request(request, tenant_id)
+    nodes_raw, edges_raw = await storage.list_neighborhood(
+        tenant_id=resolved_tenant,
+        node_id=node_id,
+        depth=depth,
         relation_types=_parse_csv_list(relation_types),
-        limit_nodes=limit,
-        limit_edges=limit * 3,
+        limit=limit,
     )
-    node_rows = [_normalize_graph_node_row(row) for row in nodes_raw]
-    edge_rows = [_normalize_graph_edge_row(row) for row in edges_raw]
-    node_map = {str(n["node_id"]): n for n in node_rows}
-    if node_id not in node_map:
+    if not nodes_raw:
         raise HTTPException(status_code=404, detail="Node not found")
-    depth = max(1, min(4, int(depth)))
-    visited = {node_id}
-    frontier = {node_id}
-    selected_edges: List[Dict[str, Any]] = []
-    for _ in range(depth):
-        next_frontier = set()
-        for edge in edge_rows:
-            src = str(edge.get("source_node_id"))
-            tgt = str(edge.get("target_node_id"))
-            if src in frontier or tgt in frontier:
-                selected_edges.append(edge)
-                if src not in visited:
-                    visited.add(src)
-                    next_frontier.add(src)
-                if tgt not in visited:
-                    visited.add(tgt)
-                    next_frontier.add(tgt)
-        frontier = next_frontier
-        if not frontier:
-            break
-    selected_nodes = [node_map[nid] for nid in visited if nid in node_map]
-    selected_edges = selected_edges[: limit * 2]
+    selected_nodes = [_normalize_graph_node_row(row) for row in nodes_raw]
+    selected_edges = [_normalize_graph_edge_row(row) for row in edges_raw]
     return GraphResponse(
         nodes=[GraphNode(**row) for row in selected_nodes],
         edges=[GraphEdge(**row) for row in selected_edges],
@@ -899,15 +1121,17 @@ async def module4_neighborhood(
 
 @app.get("/module4/alerts", response_model=AlertListResponse)
 async def module4_alerts(
-    tenant_id: str = Query(default=_default_tenant()),
+    request: Request,
+    tenant_id: str = Query(default=""),
     status: Optional[str] = None,
     severity: Optional[str] = None,
     rule_id: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
 ) -> AlertListResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
     total, items = await storage.list_alerts(
-        tenant_id=tenant_id,
+        tenant_id=resolved_tenant,
         status=status,
         severity=severity,
         rule_id=rule_id,
@@ -919,9 +1143,11 @@ async def module4_alerts(
 
 
 @app.post("/module4/alerts/{alert_id}/ack", response_model=AlertActionResponse)
-async def module4_alert_ack(alert_id: str, body: AlertActionRequest) -> AlertActionResponse:
+async def module4_alert_ack(alert_id: str, body: AlertActionRequest, request: Request) -> AlertActionResponse:
+    tenant_id = _tenant_from_request(request, body.tenant_id)
     row = await storage.update_alert_status(
         alert_id=alert_id,
+        tenant_id=tenant_id,
         status="ack",
         actor=body.actor,
         comment=body.comment,
@@ -932,9 +1158,11 @@ async def module4_alert_ack(alert_id: str, body: AlertActionRequest) -> AlertAct
 
 
 @app.post("/module4/alerts/{alert_id}/resolve", response_model=AlertActionResponse)
-async def module4_alert_resolve(alert_id: str, body: AlertResolveRequest) -> AlertActionResponse:
+async def module4_alert_resolve(alert_id: str, body: AlertResolveRequest, request: Request) -> AlertActionResponse:
+    tenant_id = _tenant_from_request(request, body.tenant_id)
     row = await storage.update_alert_status(
         alert_id=alert_id,
+        tenant_id=tenant_id,
         status="resolved",
         actor=body.actor,
         comment=body.comment,
@@ -947,15 +1175,17 @@ async def module4_alert_resolve(alert_id: str, body: AlertResolveRequest) -> Ale
 
 @app.get("/module4/evidence", response_model=EvidenceListResponse)
 async def module4_evidence(
-    tenant_id: str = Query(default=_default_tenant()),
+    request: Request,
+    tenant_id: str = Query(default=""),
     doc_id: Optional[str] = None,
     object_type: Optional[str] = None,
     object_id: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
 ) -> EvidenceListResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
     total, items = await storage.list_evidence(
-        tenant_id=tenant_id,
+        tenant_id=resolved_tenant,
         doc_id=doc_id,
         object_type=object_type,
         object_id=object_id,
@@ -969,12 +1199,14 @@ async def module4_evidence(
 @app.get("/module4/evidence/edge/{edge_id}", response_model=EvidenceListResponse)
 async def module4_edge_evidence(
     edge_id: str,
-    tenant_id: str = Query(default=_default_tenant()),
+    request: Request,
+    tenant_id: str = Query(default=""),
     page: int = 1,
     page_size: int = 50,
 ) -> EvidenceListResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
     total, items = await storage.list_edge_evidence(
-        tenant_id=tenant_id,
+        tenant_id=resolved_tenant,
         edge_id=edge_id,
         page=page,
         page_size=page_size,
@@ -1008,9 +1240,10 @@ async def module4_rule_upsert(rule_id: str, body: RuleUpsertRequest) -> RuleUpse
 
 
 @app.post("/module4/explain", response_model=ExplainResponse)
-async def module4_explain(body: ExplainRequest) -> ExplainResponse:
+async def module4_explain(body: ExplainRequest, request: Request) -> ExplainResponse:
+    tenant_id = _tenant_from_request(request, body.tenant_id)
     if body.alert_id:
-        alert = await storage.get_alert(body.alert_id)
+        alert = await storage.get_alert(body.alert_id, tenant_id=tenant_id)
         if not alert:
             raise HTTPException(status_code=404, detail="Alert not found")
         payload = alert.get("payload") if isinstance(alert.get("payload"), dict) else {}
@@ -1042,10 +1275,11 @@ async def module4_explain(body: ExplainRequest) -> ExplainResponse:
 
 
 @app.post("/module4/simulate", response_model=SimulateResponse)
-async def module4_simulate(body: SimulateRequest) -> SimulateResponse:
+async def module4_simulate(body: SimulateRequest, request: Request) -> SimulateResponse:
+    tenant_id = _tenant_from_request(request, body.tenant_id)
     multiplier = _to_float(body.params.get("risk_multiplier", 1.0), 1.0)
     total, alerts = await storage.list_alerts(
-        tenant_id=body.tenant_id,
+        tenant_id=tenant_id,
         status="open",
         severity=None,
         rule_id=None,
@@ -1076,10 +1310,12 @@ async def module4_simulate(body: SimulateRequest) -> SimulateResponse:
 async def module4_healthz() -> HealthzResponse:
     diag = storage.diagnostics()
     queue_size = await storage.queue_size()
+    degraded = bool(diag.get("degraded_memory_mode")) or not bool(diag.get("db_connected"))
     return HealthzResponse(
-        status="ok",
+        status="degraded" if degraded else "ok",
         db_connected=bool(diag.get("db_connected")),
         degraded_memory_mode=bool(diag.get("degraded_memory_mode")),
         jobs_in_queue=queue_size,
+        last_connect_error=str(diag.get("last_connect_error") or "") or None,
         now=_now_utc(),
     )

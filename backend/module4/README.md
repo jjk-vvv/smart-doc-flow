@@ -18,6 +18,7 @@ Copy-Item .env.example .env
 
 If PostgreSQL is temporarily unavailable, `MODULE4_DB_CONNECT_TIMEOUT_SEC` controls how fast the service falls back to memory mode.
 Use `MODULE4_FORCE_MEMORY_MODE=1` when you want deterministic local testing without a database.
+`MODULE4_ALERT_LOW_CONF_THRESHOLD` controls the built-in low-confidence rule threshold when default rules are seeded.
 
 3. Run API:
 
@@ -35,6 +36,7 @@ npm run dev:module4
 
 - `POST /module4/ingest`
 - `GET /module4/jobs/{job_id}`
+- `POST /module4/rebuild`
 - `GET /module4/graph`
 - `GET /module4/graph/neighborhood/{node_id}`
 - `GET /module4/alerts`
@@ -60,3 +62,12 @@ Rules are stored in `module4.rules` and are applied during `ingest`.
   - `value`: comparison target
   - `risk_score` or `risk_formula` (`1_minus_confidence`)
   - `title` / `summary`: template strings (for example `{file_name}`, `{field_name}`, `{confidence}`)
+
+## Stability Notes
+
+- Ingest batches are deduplicated by `source_batch_key`; when omitted, the service derives a stable key from the payload.
+- Re-ingesting the same payload reuses existing alerts and evidence instead of inflating counts.
+- `POST /module4/rebuild` clears tenant graph data and replays saved ingest batches for that tenant.
+- In-flight ingest / rebuild jobs are re-queued on graceful shutdown so they can be recovered on the next startup when PostgreSQL is available.
+- `GET /module4/healthz` returns `status=degraded` when the service is running in memory fallback mode.
+- Tenant-scoped APIs can resolve tenant from request body/query or the `X-Tenant-Id` header.

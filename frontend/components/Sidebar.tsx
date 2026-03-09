@@ -83,19 +83,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const menuItems = [
-    { id: 'dashboard', label: '指挥控制台', sub: 'Command Center', icon: LayoutGrid },
+    { id: 'dashboard', label: '指挥控制台', sub: '指挥中心', icon: LayoutGrid },
     { 
       id: 'deepread', 
       label: '智能文档解析', 
-      sub: 'Deep Parsing', 
+      sub: '深度解析', 
       icon: FileSearch,
       subItems: [
         { id: 'deepread_interaction', label: '文档智能操作交互模块', icon: Bot },
         { id: 'deepread_extraction', label: '非结构化文档信息需求模块', icon: FileText }
       ]
     },
-    { id: 'fusion', label: '多源数据融合', sub: 'Data Fusion', icon: Database },
-    { id: 'nexus', label: '全域知识图谱', sub: 'Knowledge Graph', icon: GitGraph },
+    { id: 'fusion', label: '多源数据融合', sub: '数据融合', icon: Database },
+    { id: 'nexus', label: '全域知识图谱', sub: '知识图谱', icon: GitGraph },
   ];
 
   return (
@@ -136,7 +136,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             isCollapsed ? "w-10 h-10" : "w-12 h-12"
           )}>
             <div className="absolute inset-0 bg-primary/5 opacity-0 dark:opacity-100 rounded-xl pointer-events-none" />
-            <img src={LogoImage} alt="Logo" className={cn(
+            <img src={LogoImage} alt="平台徽标" className={cn(
               "object-contain drop-shadow-sm relative z-10",
               isCollapsed ? "w-7 h-7" : "w-9 h-9"
             )} />

@@ -100,6 +100,13 @@ export const writeExtractionDocuments = (documents: ExtractionDocument[]): void 
   window.dispatchEvent(new Event(EXTRACTION_UPDATED_EVENT));
 };
 
+export const clearExtractionDocuments = (): void => {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(STORAGE_KEY);
+  window.localStorage.removeItem(UPDATED_AT_KEY);
+  window.dispatchEvent(new Event(EXTRACTION_UPDATED_EVENT));
+};
+
 export const subscribeExtractionUpdates = (handler: () => void): (() => void) => {
   if (typeof window === "undefined") return () => undefined;
   const onCustom = () => handler();

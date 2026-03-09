@@ -20,6 +20,10 @@ type LuckysheetPreviewProps = {
 type LuckysheetLike = {
   create: (options: Record<string, unknown>) => void;
   destroy?: () => void;
+  resize?: () => void;
+  refresh?: () => void;
+  flowdata?: () => unknown[];
+  luckysheetrefreshgrid?: () => void;
   setSheetActive?: (order: number) => void;
   setSheetActiveByIndex?: (index: number) => void;
   setRangeShow?: (ranges: Array<{ row: [number, number]; column: [number, number] }>, order?: number) => void;
@@ -48,7 +52,429 @@ type JQueryCompat = Record<string, unknown> & {
   fn?: Record<string, unknown>;
 };
 
+type WorkbookPayload = {
+  sheets: unknown[];
+  info: Record<string, unknown>;
+};
+
+type SheetJsModule = typeof import("xlsx");
+
+type SheetJsCellLike = {
+  v?: unknown;
+  w?: string;
+  t?: string;
+  z?: string;
+  f?: string;
+};
+
+type SheetJsRangeLike = {
+  s: { r: number; c: number };
+  e: { r: number; c: number };
+};
+
+type SheetJsWorksheetLike = Record<string, unknown> & {
+  "!ref"?: string;
+  "!merges"?: SheetJsRangeLike[];
+};
+
+type LuckySheetCellDatum = {
+  r?: number;
+  c?: number;
+  v?: unknown;
+};
+
 let runtimePromise: Promise<RuntimeRef> | null = null;
+const workbookPayloadCache = new Map<string, WorkbookPayload>();
+const workbookPayloadPromiseCache = new Map<string, Promise<WorkbookPayload>>();
+const MAX_WORKBOOK_CACHE_ITEMS = 6;
+
+function workbookCacheKey(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function cloneWorkbookPayload(payload: WorkbookPayload): WorkbookPayload {
+  if (typeof structuredClone === "function") {
+    return structuredClone(payload) as WorkbookPayload;
+  }
+  return JSON.parse(JSON.stringify(payload)) as WorkbookPayload;
+}
+
+function cloneValue<T>(value: T): T {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value) as T;
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function storeWorkbookPayload(key: string, payload: WorkbookPayload): void {
+  if (workbookPayloadCache.has(key)) {
+    workbookPayloadCache.delete(key);
+  }
+  workbookPayloadCache.set(key, cloneWorkbookPayload(payload));
+  while (workbookPayloadCache.size > MAX_WORKBOOK_CACHE_ITEMS) {
+    const oldestKey = workbookPayloadCache.keys().next().value;
+    if (!oldestKey) break;
+    workbookPayloadCache.delete(oldestKey);
+  }
+}
+
+function hasLuckysheetCellValue(cell: unknown): boolean {
+  if (cell === null || cell === undefined) return false;
+  if (typeof cell === "number" || typeof cell === "boolean") return true;
+  if (typeof cell === "string") return cell.trim().length > 0;
+  if (typeof cell !== "object") return false;
+
+  const cellLike = cell as Record<string, unknown>;
+  const rawValue = cellLike.v;
+  if (rawValue !== null && rawValue !== undefined && String(rawValue).trim().length > 0) {
+    return true;
+  }
+  const formattedValue = cellLike.m;
+  if (formattedValue !== null && formattedValue !== undefined && String(formattedValue).trim().length > 0) {
+    return true;
+  }
+  const formula = cellLike.f;
+  return typeof formula === "string" && formula.trim().length > 0;
+}
+
+function dropSheetCelldata(sheet: Record<string, unknown>): boolean {
+  const celldata = Array.isArray(sheet.celldata) ? (sheet.celldata as unknown[]) : [];
+  if (celldata.length === 0) return false;
+  delete sheet.celldata;
+  return true;
+}
+
+function sheetDataLooksHydrated(sheet: Record<string, unknown>): boolean {
+  const data = Array.isArray(sheet.data) ? (sheet.data as unknown[]) : [];
+  if (data.length === 0) return false;
+
+  const rowProbeLimit = Math.min(data.length, 56);
+  for (let rowIdx = 0; rowIdx < rowProbeLimit; rowIdx += 1) {
+    const row = data[rowIdx];
+    if (!Array.isArray(row) || row.length === 0) continue;
+    const colProbeLimit = Math.min(row.length, 40);
+    for (let colIdx = 0; colIdx < colProbeLimit; colIdx += 1) {
+      if (hasLuckysheetCellValue(row[colIdx])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function sheetNeedsHydration(sheet: Record<string, unknown>): boolean {
+  const data = Array.isArray(sheet.data) ? (sheet.data as unknown[]) : [];
+  const celldata = Array.isArray(sheet.celldata) ? (sheet.celldata as LuckySheetCellDatum[]) : [];
+  if (celldata.length === 0) return false;
+  if (data.length === 0) return true;
+  if (sheetDataLooksHydrated(sheet)) return false;
+
+  const sampleSize = Math.min(celldata.length, 24);
+  let matched = 0;
+  let missing = 0;
+  for (let idx = 0; idx < sampleSize; idx += 1) {
+    const item = celldata[idx];
+    const row = Number(item?.r);
+    const col = Number(item?.c);
+    if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) {
+      continue;
+    }
+    const rowData = Array.isArray(data[row]) ? (data[row] as unknown[]) : [];
+    if (hasLuckysheetCellValue(rowData[col])) {
+      matched += 1;
+    } else {
+      missing += 1;
+    }
+  }
+  if (matched === 0 && missing > 0) return true;
+  return missing >= Math.ceil(Math.max(sampleSize, 1) * 0.66);
+}
+
+function hydrateSheetGrid(sheet: Record<string, unknown>, force = false): boolean {
+  const data = Array.isArray(sheet.data) ? (sheet.data as unknown[][]) : [];
+  const celldata = Array.isArray(sheet.celldata) ? (sheet.celldata as LuckySheetCellDatum[]) : [];
+  if ((!force && data.length > 0) || celldata.length === 0) {
+    return false;
+  }
+
+  const grid: unknown[][] = [];
+  let maxRow = -1;
+  let maxCol = -1;
+  let changed = false;
+
+  for (const item of celldata) {
+    const row = Number(item?.r);
+    const col = Number(item?.c);
+    if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) continue;
+    if (!Array.isArray(grid[row])) {
+      grid[row] = [];
+    }
+    grid[row][col] = item?.v ?? null;
+    if (row > maxRow) maxRow = row;
+    if (col > maxCol) maxCol = col;
+  }
+
+  if (grid.length > 0) {
+    sheet.data = grid;
+    changed = true;
+  }
+
+  if (maxRow >= 0) {
+    const rowCount = Number(sheet.row ?? 0);
+    const nextRowCount = Number.isFinite(rowCount) && rowCount > 0 ? Math.max(rowCount, maxRow + 1) : maxRow + 1;
+    if (nextRowCount !== rowCount) {
+      sheet.row = nextRowCount;
+      changed = true;
+    }
+  }
+  if (maxCol >= 0) {
+    const colCount = Number(sheet.column ?? 0);
+    const nextColCount = Number.isFinite(colCount) && colCount > 0 ? Math.max(colCount, maxCol + 1) : maxCol + 1;
+    if (nextColCount !== colCount) {
+      sheet.column = nextColCount;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function hydrateLuckysheetFiles(luckysheet?: LuckysheetLike | null): boolean {
+  const sheets = typeof luckysheet?.getluckysheetfile === "function" ? luckysheet.getluckysheetfile() : [];
+  if (!Array.isArray(sheets) || sheets.length === 0) return false;
+
+  let changed = false;
+  let hasData = false;
+  for (const sheet of sheets) {
+    if (!sheet || typeof sheet !== "object") continue;
+    const normalized = sheet as Record<string, unknown>;
+    if (sheetDataLooksHydrated(normalized)) {
+      if (dropSheetCelldata(normalized)) {
+        changed = true;
+      }
+      hasData = true;
+      continue;
+    }
+    if (sheetNeedsHydration(normalized) && hydrateSheetGrid(normalized, true)) {
+      dropSheetCelldata(normalized);
+      changed = true;
+      hasData = true;
+      continue;
+    }
+  }
+
+  if (!changed) return hasData;
+  try {
+    luckysheet?.luckysheetrefreshgrid?.();
+  } catch {
+    // Best-effort refresh.
+  }
+  return true;
+}
+
+function luckysheetRuntimeHasData(luckysheet?: LuckysheetLike | null): boolean {
+  const sheets = typeof luckysheet?.getluckysheetfile === "function" ? luckysheet.getluckysheetfile() : [];
+  if (!Array.isArray(sheets) || sheets.length === 0) return false;
+  return sheets.some((sheet) => sheet && typeof sheet === "object" && sheetDataLooksHydrated(sheet as Record<string, unknown>));
+}
+
+function syncRuntimeSheetsFromPayload(luckysheet: LuckysheetLike | null | undefined, sourceSheets: unknown[]): boolean {
+  const runtimeSheets = typeof luckysheet?.getluckysheetfile === "function" ? luckysheet.getluckysheetfile() : [];
+  if (!Array.isArray(runtimeSheets) || runtimeSheets.length === 0 || !Array.isArray(sourceSheets) || sourceSheets.length === 0) {
+    return false;
+  }
+
+  let changed = false;
+  runtimeSheets.forEach((runtimeSheet, index) => {
+    if (!runtimeSheet || typeof runtimeSheet !== "object") return;
+    const runtime = runtimeSheet as Record<string, unknown>;
+    if (sheetDataLooksHydrated(runtime)) return;
+
+    const runtimeName = String(runtime.name ?? "").trim();
+    const source = sourceSheets.find((item, sourceIndex) => {
+      if (!item || typeof item !== "object") return false;
+      const normalized = item as Record<string, unknown>;
+      const sourceName = String(normalized.name ?? "").trim();
+      if (runtimeName && sourceName && runtimeName === sourceName) return true;
+      return sourceIndex === index;
+    });
+    if (!source || typeof source !== "object") return;
+
+    const normalizedSource = source as Record<string, unknown>;
+    const sourceData = Array.isArray(normalizedSource.data) ? normalizedSource.data : [];
+    if (sourceData.length === 0) return;
+
+    runtime.data = cloneValue(sourceData);
+    const nextRowCount = Number(normalizedSource.row ?? sourceData.length);
+    const nextColCount = Number(
+      normalizedSource.column
+      ?? (Array.isArray(sourceData[0]) ? (sourceData[0] as unknown[]).length : 0)
+    );
+    if (Number.isFinite(nextRowCount) && nextRowCount > 0) {
+      runtime.row = nextRowCount;
+    }
+    if (Number.isFinite(nextColCount) && nextColCount > 0) {
+      runtime.column = nextColCount;
+    }
+    if (normalizedSource.config && typeof normalizedSource.config === "object") {
+      runtime.config = cloneValue(normalizedSource.config as Record<string, unknown>);
+    }
+    changed = true;
+  });
+
+  if (!changed) return false;
+  try {
+    luckysheet?.luckysheetrefreshgrid?.();
+  } catch {
+    // Best-effort refresh.
+  }
+  return true;
+}
+
+function hydrateWorkbookSheets(sheets: unknown[]): boolean {
+  if (!Array.isArray(sheets) || sheets.length === 0) return false;
+  let hasData = false;
+  for (const item of sheets) {
+    if (!item || typeof item !== "object") continue;
+    const normalized = item as Record<string, unknown>;
+    if (!sheetDataLooksHydrated(normalized) && sheetNeedsHydration(normalized)) {
+      hydrateSheetGrid(normalized, true);
+    }
+    if (!sheetDataLooksHydrated(normalized)) continue;
+    hasData = true;
+    dropSheetCelldata(normalized);
+  }
+  return hasData;
+}
+
+function mapSheetJsCellType(type?: string): string {
+  switch ((type || "").toLowerCase()) {
+    case "n":
+      return "n";
+    case "b":
+      return "b";
+    case "d":
+      return "d";
+    case "e":
+      return "e";
+    case "s":
+    case "str":
+    case "inlinestr":
+      return "s";
+    default:
+      return "g";
+  }
+}
+
+function toLuckysheetCellFromSheetJs(cell: SheetJsCellLike | null | undefined): Record<string, unknown> | null {
+  if (!cell || typeof cell !== "object") return null;
+  const hasValue = cell.v !== undefined && cell.v !== null;
+  const display = cell.w ?? (hasValue ? String(cell.v) : "");
+  const formula = typeof cell.f === "string" && cell.f.trim() ? `=${cell.f}` : "";
+  if (!hasValue && !display && !formula) return null;
+
+  const format = typeof cell.z === "string" && cell.z.trim() ? cell.z : (typeof cell.v === "number" ? "General" : "@");
+  const out: Record<string, unknown> = {
+    v: hasValue ? cell.v : display,
+    m: display || (hasValue ? String(cell.v) : ""),
+    ct: {
+      fa: format,
+      t: mapSheetJsCellType(cell.t),
+    },
+  };
+  if (formula) {
+    out.f = formula;
+  }
+  return out;
+}
+
+function buildWorkbookPayloadWithSheetJs(
+  xlsx: SheetJsModule,
+  file: File,
+  workbook: { SheetNames: string[]; Sheets: Record<string, SheetJsWorksheetLike> },
+): WorkbookPayload {
+  const sheets = workbook.SheetNames.map((sheetName, index) => {
+    const worksheet = workbook.Sheets[sheetName] as SheetJsWorksheetLike | undefined;
+    const ref = typeof worksheet?.["!ref"] === "string" && worksheet["!ref"].trim() ? worksheet["!ref"] : "A1";
+    const range = xlsx.utils.decode_range(ref);
+    const rowCount = Math.max(1, range.e.r + 1);
+    const colCount = Math.max(1, range.e.c + 1);
+    const celldata: Array<{ r: number; c: number; v: Record<string, unknown> }> = [];
+
+    for (const [address, rawCell] of Object.entries(worksheet ?? {})) {
+      if (address.startsWith("!")) continue;
+      const cell = toLuckysheetCellFromSheetJs(rawCell as SheetJsCellLike);
+      if (!cell) continue;
+      const decoded = xlsx.utils.decode_cell(address);
+      if (decoded.r < 0 || decoded.c < 0) continue;
+      celldata.push({
+        r: decoded.r,
+        c: decoded.c,
+        v: cell,
+      });
+    }
+
+    const mergeConfig: Record<string, { r: number; c: number; rs: number; cs: number }> = {};
+    const merges = Array.isArray(worksheet?.["!merges"]) ? worksheet["!merges"] : [];
+    for (const merge of merges) {
+      const startRow = Number(merge?.s?.r);
+      const startCol = Number(merge?.s?.c);
+      const endRow = Number(merge?.e?.r);
+      const endCol = Number(merge?.e?.c);
+      if (!Number.isFinite(startRow) || !Number.isFinite(startCol) || !Number.isFinite(endRow) || !Number.isFinite(endCol)) {
+        continue;
+      }
+      const rowSpan = endRow - startRow + 1;
+      const colSpan = endCol - startCol + 1;
+      if (rowSpan <= 1 && colSpan <= 1) continue;
+      mergeConfig[`r_${startRow}_c_${startCol}`] = {
+        r: startRow,
+        c: startCol,
+        rs: rowSpan,
+        cs: colSpan,
+      };
+    }
+
+    return {
+      name: sheetName,
+      index: String(index),
+      order: index,
+      status: index === 0 ? 1 : 0,
+      row: rowCount,
+      column: colCount,
+      defaultColWidth: 84,
+      defaultRowHeight: 22,
+      celldata,
+      config: Object.keys(mergeConfig).length > 0 ? { merge: mergeConfig } : {},
+    };
+  });
+
+  return {
+    sheets,
+    info: {
+      name: file.name,
+      source: "sheetjs-fallback",
+    },
+  };
+}
+
+async function readWorkbookWithSheetJs(file: File): Promise<WorkbookPayload> {
+  const xlsx = await import("xlsx");
+  const arrayBuffer = await file.arrayBuffer();
+  const workbook = xlsx.read(arrayBuffer, {
+    type: "array",
+    cellDates: true,
+    cellFormula: true,
+    cellNF: true,
+    cellText: true,
+  });
+
+  if (!Array.isArray(workbook.SheetNames) || workbook.SheetNames.length === 0) {
+    throw new Error("未检测到可预览的工作表");
+  }
+
+  return buildWorkbookPayloadWithSheetJs(xlsx, file, workbook as { SheetNames: string[]; Sheets: Record<string, SheetJsWorksheetLike> });
+}
 
 function installJQueryCompat(raw: unknown): void {
   const jq = raw as JQueryCompat;
@@ -159,7 +585,7 @@ async function ensureRuntime(): Promise<RuntimeRef> {
 
     const runtime = readRuntimeFromWindow();
     if (!runtime) {
-      throw new Error("Luckysheet 运行时加载失败");
+      throw new Error("表格预览运行时加载失败");
     }
     return runtime;
   })().catch((error) => {
@@ -169,13 +595,13 @@ async function ensureRuntime(): Promise<RuntimeRef> {
   return runtimePromise;
 }
 
-async function convertXlsx(runtime: RuntimeRef, file: File): Promise<{ sheets: unknown[]; info: Record<string, unknown> }> {
+async function convertXlsx(runtime: RuntimeRef, file: File): Promise<WorkbookPayload> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const timer = window.setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error("Excel 转换超时"));
+      reject(new Error("电子表格转换超时"));
     }, 30_000);
 
     try {
@@ -200,6 +626,66 @@ async function convertXlsx(runtime: RuntimeRef, file: File): Promise<{ sheets: u
       reject(error);
     }
   });
+}
+
+async function getWorkbookPayload(file: File, runtime?: RuntimeRef): Promise<WorkbookPayload> {
+  const key = workbookCacheKey(file);
+  const cached = workbookPayloadCache.get(key);
+  if (cached) {
+    storeWorkbookPayload(key, cached);
+    return cloneWorkbookPayload(cached);
+  }
+
+  const pending = workbookPayloadPromiseCache.get(key);
+  if (pending) {
+    return cloneWorkbookPayload(await pending);
+  }
+
+  const task = (async () => {
+    let payload: WorkbookPayload | null = null;
+
+    try {
+      const activeRuntime = runtime ?? (await ensureRuntime());
+      payload = await convertXlsx(activeRuntime, file);
+      if (!Array.isArray(payload.sheets) || payload.sheets.length === 0) {
+        payload = await readWorkbookWithSheetJs(file);
+      }
+    } catch (error) {
+      payload = await readWorkbookWithSheetJs(file);
+      if (!payload || !Array.isArray(payload.sheets) || payload.sheets.length === 0) {
+        throw error;
+      }
+    }
+
+    if (!payload) {
+      throw new Error("电子表格预览加载失败");
+    }
+
+    storeWorkbookPayload(key, payload);
+    return cloneWorkbookPayload(payload);
+  })().finally(() => {
+    workbookPayloadPromiseCache.delete(key);
+  });
+
+  workbookPayloadPromiseCache.set(key, task);
+  return cloneWorkbookPayload(await task);
+}
+
+export async function preloadLuckysheetRuntime(): Promise<void> {
+  await ensureRuntime();
+}
+
+export async function warmLuckysheetPreview(file: File | null): Promise<void> {
+  if (!file) return;
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (ext !== "xlsx") return;
+  const runtime = await ensureRuntime();
+  await getWorkbookPayload(file, runtime);
+}
+
+export function clearLuckysheetPreviewCache(): void {
+  workbookPayloadCache.clear();
+  workbookPayloadPromiseCache.clear();
 }
 
 function applyLocator(luckysheet: LuckysheetLike, locator?: LocatorHint | null) {
@@ -268,61 +754,535 @@ function applyLocator(luckysheet: LuckysheetLike, locator?: LocatorHint | null) 
   }
 }
 
+function requestLuckysheetRelayout(luckysheet?: LuckysheetLike | null): void {
+  if (!luckysheet) return;
+  const run = () => {
+    try {
+      luckysheet.resize?.();
+    } catch {
+      // Best-effort relayout.
+    }
+    try {
+      luckysheet.refresh?.();
+    } catch {
+      // Best-effort relayout.
+    }
+    try {
+      window.dispatchEvent(new Event("resize"));
+    } catch {
+      // Ignore.
+    }
+  };
+
+  window.requestAnimationFrame(() => {
+    run();
+    window.requestAnimationFrame(() => {
+      run();
+      window.setTimeout(() => {
+        window.requestAnimationFrame(run);
+      }, 90);
+    });
+  });
+}
+
+function isLuckysheetFlowReady(luckysheet?: LuckysheetLike | null): boolean {
+  if (!luckysheet || typeof luckysheet.flowdata !== "function") return false;
+  try {
+    const flow = luckysheet.flowdata();
+    return Array.isArray(flow) && flow.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function isLuckysheetPreviewReady(
+  luckysheet?: LuckysheetLike | null,
+  sourceSheets?: unknown[],
+): boolean {
+  if (!luckysheet) return false;
+  if (isLuckysheetFlowReady(luckysheet)) return true;
+  hydrateLuckysheetFiles(luckysheet);
+  if (Array.isArray(sourceSheets) && sourceSheets.length > 0) {
+    syncRuntimeSheetsFromPayload(luckysheet, sourceSheets);
+    hydrateLuckysheetFiles(luckysheet);
+  }
+  return isLuckysheetFlowReady(luckysheet);
+}
+
+function syncLuckysheetViewport(
+  wrapper?: HTMLDivElement | null,
+  container?: HTMLDivElement | null,
+): void {
+  if (!wrapper || !container) return;
+
+  const width = Math.max(0, Math.floor(wrapper.clientWidth || wrapper.getBoundingClientRect().width));
+  const height = Math.max(0, Math.floor(wrapper.clientHeight || wrapper.getBoundingClientRect().height));
+  if (width <= 0 || height <= 0) return;
+
+  container.style.width = `${width}px`;
+  container.style.height = `${height}px`;
+  container.style.minWidth = "0px";
+  container.style.minHeight = "0px";
+
+  const root = container.querySelector<HTMLElement>(".luckysheet");
+  if (!root) return;
+
+  root.style.width = `${width}px`;
+  root.style.height = `${height}px`;
+  root.style.left = "0px";
+  root.style.top = "0px";
+}
+
+type TableWorkbookSheet = {
+  name: string;
+  rows: unknown[][];
+  rowCount: number;
+  colCount: number;
+};
+
+const TABLE_ROW_HEIGHT = 30;
+const TABLE_HEADER_HEIGHT = 34;
+const TABLE_ROW_HEADER_WIDTH = 64;
+const TABLE_COL_WIDTH = 152;
+const TABLE_ROW_OVERSCAN = 12;
+
+function displayCellText(cell: unknown): string {
+  if (cell === null || cell === undefined) return "";
+  if (typeof cell === "string") return cell;
+  if (typeof cell === "number" || typeof cell === "boolean") return String(cell);
+  if (typeof cell !== "object") return String(cell);
+
+  const cellLike = cell as Record<string, unknown>;
+  const formatted = cellLike.m;
+  if (formatted !== null && formatted !== undefined && String(formatted).trim().length > 0) {
+    return String(formatted);
+  }
+  const value = cellLike.v;
+  if (value !== null && value !== undefined && String(value).trim().length > 0) {
+    return String(value);
+  }
+  const formula = cellLike.f;
+  if (typeof formula === "string" && formula.trim().length > 0) {
+    return formula;
+  }
+  return "";
+}
+
+function hasWorkbookPayloadData(payload?: WorkbookPayload | null): boolean {
+  return Boolean(payload && Array.isArray(payload.sheets) && payload.sheets.some((sheet) => {
+    if (!sheet || typeof sheet !== "object") return false;
+    return sheetDataLooksHydrated(sheet as Record<string, unknown>);
+  }));
+}
+
+function buildTableWorkbookSheets(payload?: WorkbookPayload | null): TableWorkbookSheet[] {
+  if (!payload || !Array.isArray(payload.sheets)) return [];
+  return payload.sheets
+    .map((sheet, index) => {
+      const normalized = (sheet && typeof sheet === "object") ? (sheet as Record<string, unknown>) : null;
+      if (!normalized) return null;
+      const rows = Array.isArray(normalized.data) ? (normalized.data as unknown[][]) : [];
+      const rowCount = Math.max(rows.length, Number(normalized.row ?? 0) || 0, 1);
+      const colCount = Math.max(
+        Number(normalized.column ?? 0) || 0,
+        rows.reduce((maxCols, row) => Math.max(maxCols, Array.isArray(row) ? row.length : 0), 0),
+        1,
+      );
+      return {
+        name: String(normalized.name ?? `工作表 ${index + 1}`),
+        rows,
+        rowCount,
+        colCount,
+      } satisfies TableWorkbookSheet;
+    })
+    .filter((sheet): sheet is TableWorkbookSheet => Boolean(sheet));
+}
+
+function resolveLocatorSheetIndex(locator: LocatorHint | null | undefined, sheets: TableWorkbookSheet[]): number {
+  if (!Array.isArray(sheets) || sheets.length === 0) return 0;
+  const sheetName = String(locator?.sheet_name || "").trim();
+  if (sheetName) {
+    const byName = sheets.findIndex((sheet) => sheet.name === sheetName);
+    if (byName >= 0) return byName;
+  }
+  const sheetIndex = Number(locator?.sheet_index || 0);
+  if (Number.isFinite(sheetIndex) && sheetIndex > 0) {
+    return Math.max(0, Math.min(sheets.length - 1, Math.round(sheetIndex) - 1));
+  }
+  return 0;
+}
+
+function columnLabelFromIndex(index: number): string {
+  let current = Math.max(0, Math.floor(index));
+  let label = "";
+  do {
+    label = String.fromCharCode(65 + (current % 26)) + label;
+    current = Math.floor(current / 26) - 1;
+  } while (current >= 0);
+  return label;
+}
+
+const SheetTableFallback: React.FC<{
+  payload: WorkbookPayload;
+  locator?: LocatorHint | null;
+}> = ({ payload, locator }) => {
+  const sheets = useMemo(() => buildTableWorkbookSheets(payload), [payload]);
+  const [activeSheetIndex, setActiveSheetIndex] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setActiveSheetIndex(resolveLocatorSheetIndex(locator, sheets));
+  }, [locator, sheets]);
+
+  useEffect(() => {
+    const target = scrollRef.current;
+    if (!target || typeof ResizeObserver === "undefined") return;
+    const updateViewport = () => {
+      setViewportHeight(Math.max(0, target.clientHeight - TABLE_HEADER_HEIGHT));
+    };
+    updateViewport();
+    const observer = new ResizeObserver(() => {
+      updateViewport();
+    });
+    observer.observe(target);
+    return () => {
+      observer.disconnect();
+    };
+  }, [activeSheetIndex]);
+
+  const activeSheet = sheets[activeSheetIndex] || sheets[0] || null;
+
+  useEffect(() => {
+    const target = scrollRef.current;
+    if (!target || !activeSheet) return;
+    const rowIndex = Math.max(0, Math.round(Number(locator?.row_index || 1)) - 1);
+    const colIndex = Math.max(0, Math.round(Number(locator?.col_index || 1)) - 1);
+    target.scrollTop = rowIndex * TABLE_ROW_HEIGHT;
+    target.scrollLeft = colIndex * TABLE_COL_WIDTH;
+    setScrollTop(target.scrollTop);
+    setScrollLeft(target.scrollLeft);
+  }, [activeSheet, locator]);
+
+  const visibleRowRange = useMemo(() => {
+    if (!activeSheet) {
+      return { start: 0, end: 0 };
+    }
+    const bodyHeight = Math.max(viewportHeight, TABLE_ROW_HEIGHT * 8);
+    const start = Math.max(0, Math.floor(scrollTop / TABLE_ROW_HEIGHT) - TABLE_ROW_OVERSCAN);
+    const visibleCount = Math.ceil(bodyHeight / TABLE_ROW_HEIGHT) + TABLE_ROW_OVERSCAN * 2;
+    const end = Math.min(activeSheet.rowCount, start + visibleCount);
+    return { start, end };
+  }, [activeSheet, scrollTop, viewportHeight]);
+
+  const highlightRow = Math.max(0, Math.round(Number(locator?.row_index || 0)) - 1);
+  const highlightCol = Math.max(0, Math.round(Number(locator?.col_index || 0)) - 1);
+  const totalWidth = activeSheet
+    ? TABLE_ROW_HEADER_WIDTH + activeSheet.colCount * TABLE_COL_WIDTH
+    : TABLE_ROW_HEADER_WIDTH;
+  const totalHeight = activeSheet ? activeSheet.rowCount * TABLE_ROW_HEIGHT : 0;
+
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white dark:bg-slate-900">
+      {sheets.length > 1 && (
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-slate-200 bg-slate-50/90 px-2 py-1.5 text-[11px] dark:border-slate-700 dark:bg-slate-900/90">
+          {sheets.map((sheet, index) => (
+            <button
+              key={`${sheet.name}-${index}`}
+              type="button"
+              onClick={() => setActiveSheetIndex(index)}
+              className={`rounded-md px-2.5 py-1 font-medium transition ${
+                index === activeSheetIndex
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "bg-white text-slate-600 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              }`}
+            >
+              {sheet.name}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <div
+          ref={scrollRef}
+          className="h-full overflow-auto bg-slate-50/60 text-[11px] text-slate-700 dark:bg-slate-950/40 dark:text-slate-200"
+          onScroll={(event) => {
+            const target = event.currentTarget;
+            setScrollTop(target.scrollTop);
+            setScrollLeft(target.scrollLeft);
+          }}
+        >
+          <div className="relative" style={{ width: `${totalWidth}px`, minHeight: `${TABLE_HEADER_HEIGHT + totalHeight}px` }}>
+            <div className="sticky top-0 z-20 flex border-b border-slate-200 bg-slate-100/95 text-[11px] font-semibold text-slate-600 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-300">
+              <div
+                className="sticky left-0 z-30 flex shrink-0 items-center justify-center border-r border-slate-200 bg-slate-100/95 dark:border-slate-700 dark:bg-slate-900/95"
+                style={{ width: `${TABLE_ROW_HEADER_WIDTH}px`, height: `${TABLE_HEADER_HEIGHT}px` }}
+              >
+                #
+              </div>
+              {activeSheet && Array.from({ length: activeSheet.colCount }, (_, colIndex) => (
+                <div
+                  key={`header-${colIndex}`}
+                  className="flex shrink-0 items-center border-r border-slate-200 px-3 dark:border-slate-700"
+                  style={{ width: `${TABLE_COL_WIDTH}px`, height: `${TABLE_HEADER_HEIGHT}px` }}
+                >
+                  {columnLabelFromIndex(colIndex)}
+                </div>
+              ))}
+            </div>
+
+            <div className="relative" style={{ height: `${totalHeight}px` }}>
+              {activeSheet && Array.from({ length: Math.max(0, visibleRowRange.end - visibleRowRange.start) }, (_, offset) => {
+                const rowIndex = visibleRowRange.start + offset;
+                const row = Array.isArray(activeSheet.rows[rowIndex]) ? activeSheet.rows[rowIndex] : [];
+                const isHighlightedRow = highlightRow === rowIndex;
+                return (
+                  <div
+                    key={`row-${rowIndex}`}
+                    className={`absolute left-0 flex ${isHighlightedRow ? "bg-amber-50/80 dark:bg-amber-500/10" : "bg-transparent"}`}
+                    style={{
+                      top: `${rowIndex * TABLE_ROW_HEIGHT}px`,
+                      width: `${totalWidth}px`,
+                      height: `${TABLE_ROW_HEIGHT}px`,
+                    }}
+                  >
+                    <div
+                      className={`sticky left-0 z-10 flex shrink-0 items-center justify-center border-b border-r border-slate-200 px-2 font-medium ${
+                        isHighlightedRow
+                          ? "bg-amber-100 text-amber-800 dark:border-slate-700 dark:bg-amber-500/20 dark:text-amber-200"
+                          : "bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+                      }`}
+                      style={{ width: `${TABLE_ROW_HEADER_WIDTH}px`, height: `${TABLE_ROW_HEIGHT}px` }}
+                    >
+                      {rowIndex + 1}
+                    </div>
+                    {Array.from({ length: activeSheet.colCount }, (_, colIndex) => {
+                      const text = displayCellText(row[colIndex]);
+                      const isHighlightedCell = highlightRow === rowIndex && highlightCol === colIndex;
+                      return (
+                        <div
+                          key={`cell-${rowIndex}-${colIndex}`}
+                          className={`flex shrink-0 items-center border-b border-r px-3 ${
+                            isHighlightedCell
+                              ? "bg-amber-100/80 font-medium text-amber-900 ring-1 ring-inset ring-amber-300 dark:border-slate-700 dark:bg-amber-500/20 dark:text-amber-100 dark:ring-amber-500/60"
+                              : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
+                          }`}
+                          style={{ width: `${TABLE_COL_WIDTH}px`, height: `${TABLE_ROW_HEIGHT}px` }}
+                          title={text}
+                        >
+                          <span className="truncate">{text || "\u00A0"}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, locator, className = "" }) => {
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState("");
+  const [renderMode, setRenderMode] = useState<"grid" | "table">("grid");
+  const [fallbackPayload, setFallbackPayload] = useState<WorkbookPayload | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<RuntimeRef | null>(null);
+  const settleRelayoutRef = useRef<number | null>(null);
+  const hydrationTimerRefs = useRef<number[]>([]);
+  const lastObservedSizeRef = useRef<{ width: number; height: number } | null>(null);
   const containerId = useMemo(() => `module2-luckysheet-${Math.random().toString(36).slice(2, 11)}`, []);
 
   useEffect(() => {
+    if (renderMode !== "grid") return;
     const runtime = runtimeRef.current?.luckysheet;
     if (!runtime || status !== "ready") return;
     applyLocator(runtime, locator);
-  }, [locator, status]);
+  }, [locator, renderMode, status]);
 
   useEffect(() => {
     let disposed = false;
+
+    const clearHydrationTimers = () => {
+      if (hydrationTimerRefs.current.length === 0) return;
+      hydrationTimerRefs.current.forEach((timerId) => {
+        window.clearTimeout(timerId);
+        window.clearInterval(timerId);
+      });
+      hydrationTimerRefs.current = [];
+    };
+
+    const scheduleReadyCheck = (
+      luckysheet?: LuckysheetLike | null,
+      rawSourceSheets: unknown[] = [],
+      tablePayload?: WorkbookPayload | null,
+    ) => {
+      clearHydrationTimers();
+      let settled = false;
+      let sourceSheets: unknown[] | null = null;
+      const finalize = () => {
+        if (settled) return;
+        settled = true;
+        clearHydrationTimers();
+      };
+      const activateTableFallback = () => {
+        finalize();
+        try {
+          luckysheet?.destroy?.();
+        } catch {
+          // Ignore.
+        }
+        runtimeRef.current = null;
+        if (containerRef.current) {
+          containerRef.current.innerHTML = "";
+        }
+        if (!disposed) {
+          setRenderMode("table");
+          setStatus("ready");
+        }
+      };
+      const getSourceSheets = () => {
+        if (sourceSheets) return sourceSheets;
+        if (!Array.isArray(rawSourceSheets) || rawSourceSheets.length === 0) {
+          sourceSheets = [];
+          return sourceSheets;
+        }
+        sourceSheets = cloneValue(rawSourceSheets);
+        hydrateWorkbookSheets(sourceSheets);
+        return sourceSheets;
+      };
+      const attempt = () => {
+        if (!isLuckysheetPreviewReady(luckysheet, getSourceSheets())) {
+          return;
+        }
+        finalize();
+        syncLuckysheetViewport(wrapperRef.current, containerRef.current);
+        requestLuckysheetRelayout(luckysheet);
+        if (!disposed) {
+          setRenderMode("grid");
+          setStatus("ready");
+        }
+      };
+      attempt();
+      window.requestAnimationFrame(attempt);
+      hydrationTimerRefs.current.push(
+        window.setInterval(() => {
+          if (settled) return;
+          attempt();
+        }, 250)
+      );
+      if (hasWorkbookPayloadData(tablePayload)) {
+        hydrationTimerRefs.current.push(
+          window.setTimeout(() => {
+            if (settled || disposed) return;
+            if (isLuckysheetPreviewReady(luckysheet, getSourceSheets())) return;
+            activateTableFallback();
+          }, 6_500)
+        );
+      }
+      hydrationTimerRefs.current.push(
+        window.setTimeout(() => {
+          if (settled || disposed) return;
+          if (hasWorkbookPayloadData(tablePayload)) {
+            activateTableFallback();
+            return;
+          }
+          finalize();
+          setError("电子表格预览初始化超时，请稍后重试");
+          setStatus("error");
+        }, 20_000)
+      );
+    };
+
+    const mountWorkbook = (runtime: RuntimeRef, payload: WorkbookPayload, tablePayload?: WorkbookPayload | null) => {
+      const createSheets = cloneValue(payload.sheets);
+      const recoverySheets = cloneValue(payload.sheets);
+      runtime.luckysheet.destroy?.();
+      if (containerRef.current) {
+        containerRef.current.innerHTML = "";
+      }
+      syncLuckysheetViewport(wrapperRef.current, containerRef.current);
+      runtime.luckysheet.create({
+        container: containerId,
+        data: createSheets,
+        title: String(payload.info?.name || file?.name || "工作簿"),
+        userInfo: false,
+        lang: "zh",
+        showtoolbar: false,
+        showinfobar: false,
+        showstatisticBar: false,
+        showsheetbar: true,
+        allowCopy: true,
+        enableAddRow: false,
+        enableAddBackTop: false,
+        enablePage: false,
+        editMode: false,
+      });
+      scheduleReadyCheck(runtime.luckysheet, recoverySheets, tablePayload);
+    };
+
     async function run() {
       if (!file) {
+        try {
+          runtimeRef.current?.luckysheet.destroy?.();
+        } catch {
+          // Ignore.
+        }
+        if (containerRef.current) {
+          containerRef.current.innerHTML = "";
+        }
+        runtimeRef.current = null;
+        setRenderMode("grid");
+        setFallbackPayload(null);
         setStatus("idle");
         setError("");
+        lastObservedSizeRef.current = null;
         return;
       }
 
+      setRenderMode("grid");
+      setFallbackPayload(null);
       setStatus("loading");
       setError("");
       try {
-        const runtime = await ensureRuntime();
+        const payload = await getWorkbookPayload(file);
         if (disposed) return;
-        runtimeRef.current = runtime;
-        const payload = await convertXlsx(runtime, file);
-        if (disposed) return;
-        runtime.luckysheet.destroy?.();
+        let tablePayload = cloneWorkbookPayload(payload);
+        let hasTableData = hydrateWorkbookSheets(tablePayload.sheets);
+        if (!hasTableData) {
+          try {
+            tablePayload = await readWorkbookWithSheetJs(file);
+            hasTableData = hydrateWorkbookSheets(tablePayload.sheets);
+          } catch {
+            tablePayload = cloneWorkbookPayload(payload);
+          }
+        }
+        setFallbackPayload(hasTableData ? tablePayload : null);
 
-        runtime.luckysheet.create({
-          container: containerId,
-          data: payload.sheets,
-          title: String(payload.info?.name || file.name || "工作簿"),
-          userInfo: false,
-          lang: "zh",
-          showtoolbar: false,
-          showinfobar: false,
-          showstatisticBar: false,
-          showsheetbar: true,
-          allowCopy: true,
-          enableAddRow: false,
-          enableAddBackTop: false,
-          enablePage: false,
-          editMode: false,
-        });
-
-        applyLocator(runtime.luckysheet, locator);
-        setStatus("ready");
+        try {
+          const runtime = await ensureRuntime();
+          if (disposed) return;
+          runtimeRef.current = runtime;
+          mountWorkbook(runtime, payload, hasTableData ? tablePayload : null);
+        } catch (runtimeError) {
+          if (hasTableData) {
+            setRenderMode("table");
+            setStatus("ready");
+            return;
+          }
+          throw runtimeError;
+        }
       } catch (err) {
         if (disposed) return;
-        const msg = err instanceof Error ? err.message : "Excel 预览加载失败";
-        setError(msg || "Excel 预览加载失败");
+        const msg = err instanceof Error ? err.message : "电子表格预览加载失败";
+        setError(msg || "电子表格预览加载失败");
         setStatus("error");
       }
     }
@@ -330,11 +1290,85 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
     void run();
     return () => {
       disposed = true;
+      clearHydrationTimers();
     };
   }, [containerId, file]);
 
   useEffect(() => {
+    if (renderMode !== "grid") return;
+    if (status !== "ready") return;
+    syncLuckysheetViewport(wrapperRef.current, containerRef.current);
+    requestLuckysheetRelayout(runtimeRef.current?.luckysheet);
+
+    if (settleRelayoutRef.current !== null) {
+      window.clearTimeout(settleRelayoutRef.current);
+    }
+    settleRelayoutRef.current = window.setTimeout(() => {
+      settleRelayoutRef.current = null;
+      syncLuckysheetViewport(wrapperRef.current, containerRef.current);
+      requestLuckysheetRelayout(runtimeRef.current?.luckysheet);
+    }, 320);
+  }, [file, renderMode, status]);
+
+  useEffect(() => {
+    if (renderMode !== "grid") return;
+    if (!file || status !== "ready") return;
+    const target = wrapperRef.current;
+    if (!target || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      if (width <= 0 || height <= 0) return;
+
+      const prev = lastObservedSizeRef.current;
+      lastObservedSizeRef.current = { width, height };
+      syncLuckysheetViewport(wrapperRef.current, containerRef.current);
+      if (!prev) {
+        return;
+      }
+
+      const widthDelta = Math.abs(width - prev.width);
+      const heightDelta = Math.abs(height - prev.height);
+      if (widthDelta < 6 && heightDelta < 6) return;
+
+      requestLuckysheetRelayout(runtimeRef.current?.luckysheet);
+
+      if (settleRelayoutRef.current !== null) {
+        window.clearTimeout(settleRelayoutRef.current);
+      }
+      settleRelayoutRef.current = window.setTimeout(() => {
+        settleRelayoutRef.current = null;
+        syncLuckysheetViewport(wrapperRef.current, containerRef.current);
+        requestLuckysheetRelayout(runtimeRef.current?.luckysheet);
+      }, 340);
+    });
+
+    observer.observe(target);
     return () => {
+      observer.disconnect();
+      if (settleRelayoutRef.current !== null) {
+        window.clearTimeout(settleRelayoutRef.current);
+        settleRelayoutRef.current = null;
+      }
+    };
+  }, [file, renderMode, status]);
+
+  useEffect(() => {
+    return () => {
+      if (settleRelayoutRef.current !== null) {
+        window.clearTimeout(settleRelayoutRef.current);
+        settleRelayoutRef.current = null;
+      }
+      if (hydrationTimerRefs.current.length > 0) {
+        hydrationTimerRefs.current.forEach((timerId) => {
+          window.clearTimeout(timerId);
+          window.clearInterval(timerId);
+        });
+        hydrationTimerRefs.current = [];
+      }
       try {
         runtimeRef.current?.luckysheet.destroy?.();
       } catch {
@@ -344,24 +1378,28 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
   }, []);
 
   return (
-    <div className={`relative h-full w-full overflow-hidden ${className}`}>
+    <div ref={wrapperRef} className={`module2-luckysheet-preview relative h-full w-full min-h-0 min-w-0 overflow-hidden ${className}`}>
       {status === "loading" && (
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-slate-50/80 text-xs text-slate-600 dark:bg-slate-900/80 dark:text-slate-300">
-          Excel 预览加载中...
+          电子表格预览加载中...
         </div>
       )}
       {status === "error" && (
         <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
           <p className="max-w-md rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-center text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-            {error || "Excel 预览加载失败"}
+            {error || "电子表格预览加载失败"}
           </p>
+        </div>
+      )}
+      {renderMode === "table" && fallbackPayload && status === "ready" && (
+        <div className="absolute inset-0 z-10">
+          <SheetTableFallback payload={fallbackPayload} locator={locator} />
         </div>
       )}
       <div
         id={containerId}
         ref={containerRef}
-        className="h-full w-full"
-        style={{ visibility: status === "ready" ? "visible" : "hidden" }}
+        className={`h-full w-full min-h-0 min-w-0 ${renderMode === "table" ? "hidden" : ""}`}
       />
     </div>
   );

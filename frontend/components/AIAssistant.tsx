@@ -569,7 +569,7 @@ export const AIAssistant: React.FC = () => {
                     <Bot size={32} />
                   </div>
                   <div>
-                    <p className="font-medium text-slate-700 dark:text-slate-300">您好，我是您的专属 AI 助理。</p>
+                    <p className="font-medium text-slate-700 dark:text-slate-300">您好，我是您的专属智能助理。</p>
                     <p className="mt-2 max-w-[240px] text-sm text-slate-500 dark:text-slate-400">
                       您可以咨询平台功能、系统操作、文档解析与辅助决策相关问题。
                     </p>

@@ -58,7 +58,7 @@ const UserGuide = lazy(() =>
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [isDark, setIsDark] = useState(false); // Default to light mode as requested
+  const [isDark, setIsDark] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [user, setUser] = useState<AuthUser>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -116,7 +116,7 @@ const App: React.FC = () => {
     <div className="h-[calc(100vh-2rem)] flex items-center justify-center rounded-xl border border-border/40 bg-background/60">
       <div className="flex items-center gap-3 text-sm text-muted-foreground">
         <BrainCircuit size={18} className="animate-pulse text-primary" />
-        <span>Loading module...</span>
+        <span>模块加载中...</span>
       </div>
     </div>
   );

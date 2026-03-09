@@ -36,8 +36,8 @@ const shortText = (value: string, maxLen: number): string =>
   value.length > maxLen ? `${value.slice(0, Math.max(1, maxLen - 3))}...` : value;
 
 const toErrorText = (value: unknown): string => {
-  if (value instanceof Error) return value.message || "unknown error";
-  return String(value || "unknown error");
+  if (value instanceof Error) return value.message || "未知错误";
+  return String(value || "未知错误");
 };
 
 const formatModule4Error = (errors: string[]): string => {
@@ -51,15 +51,42 @@ const formatModule4Error = (errors: string[]): string => {
     lower.includes("networkerror") ||
     lower.includes("network error");
   if (serviceDown) {
-    return "module4 service unavailable. Start `npm run dev:backend` (or `npm run dev:module4`).";
+    return "模块四服务不可用，请先启动后端服务后再重试。";
   }
   return text;
 };
 
 const typeLabel = (value: EntityNode["type"]): string => {
-  if (value === "Contract") return "Document";
-  if (value === "Risk") return "Risk";
-  return "Node";
+  if (value === "Contract") return "文档";
+  if (value === "Risk") return "风险";
+  return "节点";
+};
+
+const backendTypeLabel = (value?: string): string => {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "document") return "文档";
+  if (normalized === "field") return "字段";
+  if (normalized === "table") return "表格";
+  if (normalized === "figure") return "图像";
+  if (normalized === "risk") return "风险";
+  return "其他类型";
+};
+
+const severityLabel = (value?: string): string => {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "critical") return "紧急";
+  if (normalized === "high") return "高";
+  if (normalized === "medium") return "中";
+  if (normalized === "low") return "低";
+  return "未分级";
+};
+
+const alertStatusLabel = (value?: string): string => {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "open") return "待处理";
+  if (normalized === "ack") return "已确认";
+  if (normalized === "closed") return "已关闭";
+  return "状态未知";
 };
 
 const buildGraphFromLocal = (documents: ExtractionDocument[]): GraphData => {
@@ -74,11 +101,11 @@ const buildGraphFromLocal = (documents: ExtractionDocument[]): GraphData => {
     const docY = 120 + docIndex * 115;
     nodes.push({
       id: docNodeId,
-      label: shortText(doc.file_name || `document_${docIndex + 1}`, 20),
+      label: shortText(doc.file_name || `文档_${docIndex + 1}`, 20),
       type: "Contract",
       x: 170,
       y: docY,
-      meta: { sourceDoc: doc.file_name, backendNodeType: "Document" },
+      meta: { sourceDoc: doc.file_name, backendNodeType: "文档" },
     });
 
     const fields = Object.entries(doc.result || {}).slice(0, MAX_FIELDS_PER_DOC);
@@ -99,12 +126,12 @@ const buildGraphFromLocal = (documents: ExtractionDocument[]): GraphData => {
         meta: {
           sourceDoc: doc.file_name,
           fieldName,
-          value: value == null ? "null" : String(value),
+          value: value == null ? "空值" : String(value),
           confidence,
-          backendNodeType: "Field",
+          backendNodeType: "字段",
         },
       });
-      links.push({ source: docNodeId, target: nodeId, label: isRisky ? "risk" : "extract" });
+      links.push({ source: docNodeId, target: nodeId, label: isRisky ? "风险" : "抽取" });
       fieldCounter += 1;
     });
 
@@ -113,13 +140,13 @@ const buildGraphFromLocal = (documents: ExtractionDocument[]): GraphData => {
       const nodeId = `risk-${docNodeId}-${riskCounter}`;
       nodes.push({
         id: nodeId,
-        label: `error_${riskCounter + 1}`,
+        label: `风险_${riskCounter + 1}`,
         type: "Risk",
         x: 920,
         y: 140 + (riskCounter % 10) * 78,
-        meta: { sourceDoc: doc.file_name, errorText: err, backendNodeType: "Risk" },
+        meta: { sourceDoc: doc.file_name, errorText: err, backendNodeType: "风险" },
       });
-      links.push({ source: docNodeId, target: nodeId, label: "error" });
+      links.push({ source: docNodeId, target: nodeId, label: "异常" });
       riskCounter += 1;
     });
   });
@@ -188,7 +215,7 @@ const buildGraphFromModule4 = (payload: {
   const links: EntityLink[] = backendEdges.map((edge) => ({
     source: edge.source_node_id,
     target: edge.target_node_id,
-    label: String(edge.relation_type || "link"),
+    label: String(edge.relation_type || "关联"),
   }));
 
   return { nodes, links, source: "module4" };
@@ -213,14 +240,14 @@ export const KnowledgeNexus: React.FC = () => {
         graphLoadedFromModule4 = true;
       }
     } catch (error) {
-      errors.push(`graph ${toErrorText(error)}`);
+      errors.push(`图谱请求失败：${toErrorText(error)}`);
     }
 
     try {
       const alertRes = await fetchModule4Alerts({ page: 1, pageSize: 20 });
       setAlerts(Array.isArray(alertRes.items) ? alertRes.items : []);
     } catch (error) {
-      errors.push(`alerts ${toErrorText(error)}`);
+      errors.push(`告警请求失败：${toErrorText(error)}`);
     }
 
     if (!graphLoadedFromModule4) {
@@ -262,7 +289,7 @@ export const KnowledgeNexus: React.FC = () => {
 
   const handleAckAlert = async (alertId: string) => {
     try {
-      await ackModule4Alert(alertId, "user", "ack from nexus");
+      await ackModule4Alert(alertId, "user", "已在图谱页确认");
       setAlerts((prev) => prev.map((item) => (item.alert_id === alertId ? { ...item, status: "ack" } : item)));
     } catch {
       // keep silent, backend error is shown in panel top
@@ -279,13 +306,13 @@ export const KnowledgeNexus: React.FC = () => {
             <Network className="text-primary" size={24} />
           </div>
           <div>
-            <h2 className="text-black dark:text-white font-bold font-['Microsoft_YaHei'] text-xl tracking-tight">Knowledge Nexus</h2>
-            <p className="text-xs text-muted-foreground">{graph.source === "module4" ? "source: module4" : "source: local fallback"}</p>
+            <h2 className="text-black dark:text-white font-bold font-['Microsoft_YaHei'] text-xl tracking-tight">全域知识图谱</h2>
+            <p className="text-xs text-muted-foreground">{graph.source === "module4" ? "数据源：模块四" : "数据源：本地回退"}</p>
           </div>
         </div>
         {backendError && (
           <div className="max-w-md text-xs px-3 py-2 rounded-lg border border-amber-200 bg-amber-50 text-amber-700 pointer-events-auto">
-            module4 warning: {backendError}
+            模块四告警：{backendError}
           </div>
         )}
       </div>
@@ -293,17 +320,17 @@ export const KnowledgeNexus: React.FC = () => {
       <div className="absolute bottom-6 left-6 z-10 pointer-events-none">
         <div className="glass px-4 py-3 rounded-xl flex items-center gap-4">
           <div className="flex flex-col">
-            <span className="text-[10px] text-muted-foreground font-bold uppercase">Nodes</span>
+            <span className="text-[10px] text-muted-foreground font-bold uppercase">节点</span>
             <span className="text-lg font-mono font-bold text-foreground">{graph.nodes.length}</span>
           </div>
           <div className="w-px h-8 bg-white/10" />
           <div className="flex flex-col">
-            <span className="text-[10px] text-muted-foreground font-bold uppercase">Links</span>
+            <span className="text-[10px] text-muted-foreground font-bold uppercase">连线</span>
             <span className="text-lg font-mono font-bold text-foreground">{graph.links.length}</span>
           </div>
           <div className="w-px h-8 bg-white/10" />
           <div className="flex flex-col">
-            <span className="text-[10px] text-muted-foreground font-bold uppercase">Risks</span>
+            <span className="text-[10px] text-muted-foreground font-bold uppercase">风险</span>
             <span className="text-lg font-mono font-bold text-red-500">{riskCount}</span>
           </div>
         </div>
@@ -311,7 +338,7 @@ export const KnowledgeNexus: React.FC = () => {
 
       <div className="absolute top-6 right-6 z-20 w-72 max-h-[45vh] overflow-auto rounded-xl border border-white/20 bg-white/75 dark:bg-slate-900/80 p-3 shadow-xl">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-xs font-bold uppercase text-muted-foreground">Alerts</h3>
+          <h3 className="text-xs font-bold uppercase text-muted-foreground">风险预警</h3>
           <span className="text-xs font-mono text-foreground">{alerts.length}</span>
         </div>
         <div className="space-y-2">
@@ -325,12 +352,12 @@ export const KnowledgeNexus: React.FC = () => {
               }}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] font-bold uppercase text-slate-500">{item.severity}</span>
+                <span className="text-[10px] font-bold uppercase text-slate-500">{severityLabel(item.severity)}</span>
                 <span className="text-[10px] text-slate-400">{Math.round(Number(item.risk_score || 0))}</span>
               </div>
               <p className="text-xs text-slate-700 dark:text-slate-200 mt-1">{shortText(item.title, 40)}</p>
               <div className="mt-1 flex items-center justify-between">
-                <span className="text-[10px] text-slate-400">{item.status}</span>
+                <span className="text-[10px] text-slate-400">{alertStatusLabel(item.status)}</span>
                 {item.status === "open" && (
                   <span
                     role="button"
@@ -347,13 +374,13 @@ export const KnowledgeNexus: React.FC = () => {
                       }
                     }}
                   >
-                    ack
+                    确认
                   </span>
                 )}
               </div>
             </button>
           ))}
-          {alerts.length === 0 && <p className="text-xs text-muted-foreground">No active alerts.</p>}
+          {alerts.length === 0 && <p className="text-xs text-muted-foreground">暂无活跃预警。</p>}
         </div>
       </div>
 
@@ -406,7 +433,7 @@ export const KnowledgeNexus: React.FC = () => {
         {graph.nodes.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="px-5 py-3 rounded-xl border border-border/40 bg-background/70 text-sm text-muted-foreground font-bold">
-              No graph yet. Run DeepRead or ingest module4 data.
+              暂无图谱数据，请先执行文档抽取或接入模块四数据。
             </div>
           </div>
         )}
@@ -427,7 +454,7 @@ export const KnowledgeNexus: React.FC = () => {
                   {selectedNode.label}
                   <ExternalLink size={14} className="text-muted-foreground" />
                 </h3>
-                <p className="text-xs text-muted-foreground font-mono">ID: {selectedNode.id}</p>
+                <p className="text-xs text-muted-foreground font-mono">节点ID：{selectedNode.id}</p>
               </div>
               <button onClick={() => setSelectedNode(null)} className="text-muted-foreground hover:text-foreground p-1 hover:bg-white/10 rounded">
                 <X size={18} />
@@ -436,29 +463,29 @@ export const KnowledgeNexus: React.FC = () => {
             <div className="p-6 space-y-4 overflow-y-auto h-[calc(100%-100px)]">
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-3 bg-white/5 rounded-lg border border-white/5">
-                  <div className="text-[10px] text-muted-foreground uppercase mb-1">Node Type</div>
-                  <div className="text-xs font-mono text-white">{selectedNode.meta.backendNodeType || "--"}</div>
+                  <div className="text-[10px] text-muted-foreground uppercase mb-1">节点类型</div>
+                  <div className="text-xs font-mono text-white">{backendTypeLabel(selectedNode.meta.backendNodeType)}</div>
                 </div>
                 <div className="p-3 bg-white/5 rounded-lg border border-white/5">
-                  <div className="text-[10px] text-muted-foreground uppercase mb-1">Confidence</div>
+                  <div className="text-[10px] text-muted-foreground uppercase mb-1">置信度</div>
                   <div className="text-xs font-mono text-white">
                     {selectedNode.meta.confidence == null ? "--" : `${Math.round(selectedNode.meta.confidence * 100)}%`}
                   </div>
                 </div>
                 <div className="p-3 bg-white/5 rounded-lg border border-white/5 col-span-2">
-                  <div className="text-[10px] text-muted-foreground uppercase mb-1">Connected links</div>
+                  <div className="text-[10px] text-muted-foreground uppercase mb-1">关联连线</div>
                   <div className="text-xs font-mono text-white">{selectedLinkCount}</div>
                 </div>
               </div>
 
               {selectedNode.meta.fieldName && (
                 <div className="p-4 bg-white/5 border border-white/10 rounded-xl">
-                  <h4 className="text-xs font-bold text-muted-foreground uppercase mb-2">Field payload</h4>
+                  <h4 className="text-xs font-bold text-muted-foreground uppercase mb-2">字段详情</h4>
                   <p className="text-xs text-slate-300">
-                    Field: <span className="text-white">{selectedNode.meta.fieldName}</span>
+                    字段：<span className="text-white">{selectedNode.meta.fieldName}</span>
                   </p>
                   <p className="text-xs text-slate-300 mt-1">
-                    Value: <span className="text-white break-all">{selectedNode.meta.value || "--"}</span>
+                    值：<span className="text-white break-all">{selectedNode.meta.value || "--"}</span>
                   </p>
                 </div>
               )}
@@ -467,7 +494,7 @@ export const KnowledgeNexus: React.FC = () => {
                 <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
                   <div className="flex items-center gap-2 mb-2 text-red-400 font-bold text-sm">
                     <ShieldAlert size={16} />
-                    Risk signal
+                    风险信号
                   </div>
                   <p className="text-xs text-red-300/90 leading-relaxed">{selectedNode.meta.errorText}</p>
                 </div>

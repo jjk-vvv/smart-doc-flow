@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -20,7 +21,7 @@ import zipfile
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from dotenv import load_dotenv
 
@@ -50,6 +51,16 @@ from app.schemas import (
     TraceLocateRequest,
     TraceLocateResponse,
 )
+
+logger = logging.getLogger(__name__)
+module4_sync_tasks: Set[asyncio.Task[Any]] = set()
+module4_sync_metrics: Dict[str, Any] = {
+    "attempted_batches": 0,
+    "succeeded_batches": 0,
+    "failed_batches": 0,
+    "last_error": "",
+    "last_success_at": 0.0,
+}
 
 
 @dataclass
@@ -91,6 +102,47 @@ class OfficePreviewJob:
     error: str = ""
 
 
+@dataclass
+class ExtractionJobFileState:
+    file_name: str
+    file_hash: str
+    status: str
+    stage: str
+    progress_ratio: float
+    message: str
+    artifact_path: Optional[str] = None
+    artifact_url: Optional[str] = None
+    error: str = ""
+    track: str = ""
+    cached: bool = False
+
+
+@dataclass
+class ExtractionJobState:
+    job_id: str
+    status: str
+    created_at: float
+    updated_at: float
+    total_files: int
+    completed_files: int
+    failed_files: int
+    current_file_index: int
+    current_file_name: str
+    current_stage: str
+    files: List[ExtractionJobFileState]
+    documents: List[DocumentExtractionResponse]
+    errors: List[str]
+
+    def terminal(self) -> bool:
+        return self.status in {"completed", "failed"}
+
+
+EXTRACTION_CACHE_VERSION = (
+    str(os.getenv("MODULE2_EXTRACTION_CACHE_VERSION", "20260309-word-pdf-route-v1")).strip()
+    or "20260309-word-pdf-route-v1"
+)
+
+
 class StreamRouter:
     """Layer 1: Ingestion & triage (hash/cache/routing)."""
 
@@ -99,7 +151,9 @@ class StreamRouter:
 
     async def triage(self, file_name: str, file_bytes: bytes, schema_hash: str) -> RouteDecision:
         file_hash = hashlib.sha256(file_bytes).hexdigest()
-        cache_key = hashlib.sha256(f"{file_hash}:{schema_hash}".encode("utf-8")).hexdigest()
+        cache_key = hashlib.sha256(
+            f"{EXTRACTION_CACHE_VERSION}:{file_hash}:{schema_hash}".encode("utf-8")
+        ).hexdigest()
         cached = await self.storage.check_cache(cache_key)
         if cached:
             return RouteDecision(file_hash=file_hash, cache_key=cache_key, track="CacheHit", cached_payload=cached)
@@ -130,7 +184,7 @@ class StreamRouter:
 def _cors_origins() -> tuple[List[str], bool]:
     raw = os.getenv(
         "MODULE2_CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:3002,http://localhost:5173",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3002,http://127.0.0.1:3002,http://localhost:5173,http://127.0.0.1:5173",
     )
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     if not origins:
@@ -164,6 +218,8 @@ bridge_request_index: Dict[str, str] = {}
 bridge_lock = asyncio.Lock()
 office_preview_jobs: Dict[str, OfficePreviewJob] = {}
 office_preview_lock = asyncio.Lock()
+extraction_jobs: Dict[str, ExtractionJobState] = {}
+extraction_lock = asyncio.Lock()
 
 
 def _schema_hash(schema: Dict[str, Any]) -> str:
@@ -191,10 +247,14 @@ def _schema_auto_infer_requested(schema: Dict[str, Any]) -> bool:
 
 def _coerce_field_type(type_hint: Any) -> str:
     text = str(type_hint or "").strip().lower()
-    if text in {"number", "float", "int", "integer", "numeric", "decimal", "ratio", "percent"}:
+    if text in {"int", "integer"}:
+        return "integer"
+    if text in {"number", "float", "double", "numeric", "decimal", "ratio", "percent"}:
         return "number"
     if text in {"date", "datetime", "time", "timestamp"}:
-        return "string"
+        return "date"
+    if text in {"bool", "boolean"}:
+        return "boolean"
     return "string"
 
 
@@ -239,48 +299,119 @@ def _extract_text_for_schema(markdown: str, table_blocks: List[Dict[str, Any]], 
     return merged
 
 
+_DATE_FIELD_TOKENS = (
+    "日期",
+    "时间",
+    "年份",
+    "年月",
+    "季度",
+    "时点",
+    "date",
+    "time",
+    "datetime",
+    "timestamp",
+    "year",
+    "month",
+)
+
+_INTEGER_FIELD_TOKENS = (
+    "数量",
+    "总数",
+    "个数",
+    "条数",
+    "件数",
+    "人数",
+    "家数",
+    "座数",
+    "项数",
+    "单位数",
+    "count",
+    "quantity",
+    "qty",
+    "total_count",
+    "item_count",
+)
+
+_NUMBER_FIELD_TOKENS = (
+    "金额",
+    "总量",
+    "总计",
+    "合计",
+    "均值",
+    "平均",
+    "比例",
+    "占比",
+    "比率",
+    "税率",
+    "增速",
+    "增长",
+    "成本",
+    "费用",
+    "单价",
+    "总价",
+    "值",
+    "分数",
+    "指数",
+    "监测值",
+    "amount",
+    "total",
+    "ratio",
+    "rate",
+    "percent",
+    "price",
+    "cost",
+    "value",
+    "score",
+    "index",
+    "avg",
+    "average",
+)
+
+
+def _schema_field_type_priority(field_type: str) -> int:
+    normalized = _coerce_field_type(field_type)
+    return {
+        "string": 0,
+        "number": 1,
+        "integer": 2,
+        "date": 2,
+        "boolean": 2,
+    }.get(normalized, 0)
+
+
+def _field_name_prefers_date(field_name: str) -> bool:
+    text = str(field_name or "").strip().lower()
+    if not text:
+        return False
+    return any(tok in text for tok in _DATE_FIELD_TOKENS)
+
+
+def _field_name_prefers_integer(field_name: str) -> bool:
+    text = str(field_name or "").strip().lower()
+    if not text:
+        return False
+    if _field_name_prefers_date(text):
+        return False
+    return any(tok in text for tok in _INTEGER_FIELD_TOKENS)
+
+
 def _field_name_prefers_number(field_name: str) -> bool:
     text = str(field_name or "").strip().lower()
     if not text:
         return False
-    zh_tokens = (
-        "金额",
-        "数量",
-        "总量",
-        "总数",
-        "总计",
-        "合计",
-        "均值",
-        "平均",
-        "比例",
-        "占比",
-        "比率",
-        "税率",
-        "增速",
-        "增长率",
-        "成本",
-        "费用",
-        "单价",
-        "率",
-        "值",
-    )
-    en_tokens = (
-        "amount",
-        "total",
-        "count",
-        "number",
-        "num",
-        "quantity",
-        "ratio",
-        "rate",
-        "percent",
-        "price",
-        "cost",
-        "value",
-        "score",
-        "index",
-    )
-    return any(tok in text for tok in zh_tokens) or any(tok in text for tok in en_tokens)
+    if _field_name_prefers_date(text):
+        return False
+    return any(tok in text for tok in _NUMBER_FIELD_TOKENS)
+
+
+def _infer_field_type_from_name(field_name: str) -> str:
+    if _field_name_prefers_date(field_name):
+        return "date"
+    if _field_name_prefers_integer(field_name):
+        return "integer"
+    if _field_name_prefers_number(field_name):
+        return "number"
+    return "string"
 
 
 def _infer_schema_fields_heuristic(markdown: str, table_blocks: List[Dict[str, Any]], max_fields: int) -> Dict[str, str]:
@@ -314,9 +445,9 @@ def _infer_schema_fields_heuristic(markdown: str, table_blocks: List[Dict[str, A
         prev_score = score_map.get(key, 0)
         if score > prev_score:
             score_map[key] = score
-        inferred = "number" if _field_name_prefers_number(key) else "string"
+        inferred = _infer_field_type_from_name(key)
         prev_type = type_map.get(key)
-        if prev_type is None or (prev_type != "number" and inferred == "number"):
+        if prev_type is None or _schema_field_type_priority(inferred) > _schema_field_type_priority(prev_type):
             type_map[key] = inferred
 
     for table_idx, table in enumerate(table_blocks[:12], start=1):
@@ -358,7 +489,7 @@ def _infer_schema_fields_heuristic(markdown: str, table_blocks: List[Dict[str, A
         score_map.keys(),
         key=lambda name: (
             -score_map.get(name, 0),
-            0 if type_map.get(name) == "number" else 1,
+            -_schema_field_type_priority(type_map.get(name, "string")),
             len(name),
             name,
         ),
@@ -410,19 +541,23 @@ async def _infer_schema_fields_llm(
         return {}
 
     system_prompt = (
-        "你是文档抽取字段规划器。请根据文档内容给出最有价值、可定位的抽取字段。"
-        "仅返回 JSON，不要输出解释文本。字段数量控制在 4-12 个。"
+        "You are a document schema planner. Select only the most valuable, stable, and extractable fields from the file. "
+        "Prefer identifiers, dates, organizations, people, regions, totals, counts, rates, units, and the core business metrics. "
+        "For spreadsheets or table-heavy documents, prioritize main dimensions and key metrics instead of generic helper columns. "
+        "Avoid low-value generic fields such as ref, page, text, 序号, 备注, 说明, name, or sheet unless they are true business fields. "
+        f"Return 4 to {max(4, min(max_fields, 12))} fields, JSON only, with no explanation."
     )
     user_prompt = (
-        f"文件名：{file_name}\n"
-        f"上下文：\n{context}\n\n"
-        "输出格式：\n"
+        f"File name: {file_name}\n"
+        f"Document context:\n{context}\n\n"
+        "Output JSON exactly as:\n"
         "{\n"
         '  "fields": [\n'
-        '    {"field_name": "字段名", "field_type": "string|number"},\n'
+        '    {"field_name": "字段名", "field_type": "string|number|integer|date"},\n'
         "    ...\n"
         "  ]\n"
-        "}\n"
+        "}\n\n"
+        "Keep field names in the original document language whenever possible."
     )
 
     try:
@@ -483,6 +618,11 @@ async def _resolve_effective_schema(
     max_fields = max(4, min(int(requested_schema.get("max_auto_fields", 12) or 12), 20))
     if file_name.lower().endswith(".xlsx") or str(profile_hint).lower() == "table_heavy":
         max_fields = min(max_fields, 6)
+    elif file_name.lower().endswith(".pdf"):
+        max_fields = min(
+            max_fields,
+            max(4, int(os.getenv("MODULE2_AUTO_SCHEMA_PDF_MAX_FIELDS", "8"))),
+        )
     auto_infer = _schema_auto_infer_requested(requested_schema)
     if not auto_infer:
         normalized = _normalize_schema_fields(req_fields, max_fields=max_fields)
@@ -848,9 +988,9 @@ def _word_pdf_required() -> bool:
     raw = (
         os.getenv(
             "MODULE2_WORD_PARSE_VIA_PDF",
-            os.getenv("MODULE2_WORD_REQUIRE_PDF_PARSE", "false"),
+            os.getenv("MODULE2_WORD_REQUIRE_PDF_PARSE", "true"),
         )
-        or "false"
+        or "true"
     ).lower()
     return raw in {"1", "true", "yes"}
 
@@ -909,6 +1049,76 @@ def _serialize_office_preview_job(job: OfficePreviewJob) -> Dict[str, Any]:
         "error": job.error,
         "terminal": job.status in {"completed", "failed"},
     }
+
+
+def _serialize_extraction_job(job: ExtractionJobState, *, include_documents: bool = False) -> Dict[str, Any]:
+    total_files = max(1, int(job.total_files or 0))
+    progress_ratio = sum(
+        max(0.0, min(1.0, float(item.progress_ratio or 0.0))) for item in job.files
+    ) / float(total_files)
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "job_id": job.job_id,
+        "status": job.status,
+        "terminal": job.terminal(),
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "progress": {
+            "total_files": int(job.total_files),
+            "completed_files": int(job.completed_files),
+            "failed_files": int(job.failed_files),
+            "current_file_index": int(job.current_file_index),
+            "current_file_name": job.current_file_name,
+            "current_stage": job.current_stage,
+            "progress_ratio": round(progress_ratio, 4),
+        },
+        "files": [
+            {
+                "file_name": item.file_name,
+                "file_hash": item.file_hash,
+                "status": item.status,
+                "stage": item.stage,
+                "progress_ratio": round(max(0.0, min(1.0, float(item.progress_ratio or 0.0))), 4),
+                "message": item.message,
+                "artifact_path": item.artifact_path,
+                "artifact_url": item.artifact_url,
+                "error": item.error,
+                "track": item.track,
+                "cached": bool(item.cached),
+            }
+            for item in job.files
+        ],
+        "errors": list(job.errors),
+    }
+    if include_documents or job.terminal():
+        payload["documents"] = [doc.model_dump(mode="json") for doc in job.documents]
+    return payload
+
+
+def _extraction_job_ttl_sec() -> float:
+    return max(300.0, float(os.getenv("MODULE2_EXTRACT_JOB_TTL_SEC", "7200")))
+
+
+def _extraction_job_cap() -> int:
+    return max(16, int(os.getenv("MODULE2_EXTRACT_JOB_CAP", "240")))
+
+
+def _cleanup_extraction_jobs_locked() -> None:
+    ttl_sec = _extraction_job_ttl_sec()
+    cap = _extraction_job_cap()
+    now_ts = time.time()
+    expired = [
+        job_id
+        for job_id, job in extraction_jobs.items()
+        if job.terminal() and (now_ts - float(job.updated_at)) > ttl_sec
+    ]
+    for job_id in expired:
+        extraction_jobs.pop(job_id, None)
+    if len(extraction_jobs) <= cap:
+        return
+    ordered = sorted(extraction_jobs.values(), key=lambda item: float(item.updated_at))
+    for item in ordered[: max(0, len(extraction_jobs) - cap)]:
+        extraction_jobs.pop(item.job_id, None)
 
 
 def _resolve_trace_artifact_ref(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -1429,12 +1639,42 @@ def _build_document_trace_hits(
     return out[:trace_cap]
 
 
+def _trace_display_kind_from_hit(hit: Dict[str, Any]) -> str:
+    object_type = str(hit.get("object_type", "") or "").strip().lower()
+    if object_type in {"field", "table"}:
+        return object_type
+    if object_type != "figure":
+        return "other"
+
+    locator = hit.get("locator") if isinstance(hit.get("locator"), dict) else {}
+    figure_type = str(locator.get("figure_type", "")).strip().lower()
+    if figure_type in {"table", "spreadsheet"}:
+        return "table"
+
+    content_modes = [
+        str(item).strip().lower()
+        for item in (locator.get("content_modes") if isinstance(locator.get("content_modes"), list) else [])
+        if str(item).strip()
+    ]
+    dataframe = locator.get("dataframe") if isinstance(locator.get("dataframe"), dict) else {}
+    headers = dataframe.get("headers") if isinstance(dataframe.get("headers"), list) else []
+    rows = dataframe.get("rows") if isinstance(dataframe.get("rows"), list) else []
+    has_headers = any(str(cell).strip() for cell in headers)
+    has_rows = any(isinstance(row, list) and any(str(cell).strip() for cell in row) for row in rows[:3])
+    if (has_headers or has_rows) and "visual" not in content_modes and "topology" not in content_modes:
+        return "table"
+    return "image"
+
+
 def _trace_stats(trace_hits: List[Dict[str, Any]]) -> Dict[str, Any]:
     count_by_type: Dict[str, int] = {}
+    count_by_display_kind: Dict[str, int] = {}
     page_set = set()
     for hit in trace_hits:
         typ = str(hit.get("object_type", "unknown") or "unknown")
         count_by_type[typ] = count_by_type.get(typ, 0) + 1
+        display_kind = _trace_display_kind_from_hit(hit)
+        count_by_display_kind[display_kind] = count_by_display_kind.get(display_kind, 0) + 1
         try:
             page_no = int(hit.get("page", 0) or 0)
         except (TypeError, ValueError):
@@ -1444,6 +1684,7 @@ def _trace_stats(trace_hits: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "trace_hit_count": len(trace_hits),
         "trace_object_counts": count_by_type,
+        "trace_display_counts": count_by_display_kind,
         "trace_pages": sorted(page_set),
     }
 
@@ -1628,7 +1869,7 @@ def _preflight_nonpdf_profile(file_name: str, file_bytes: bytes) -> Dict[str, An
 
 def _resolve_nonpdf_budgets(profile: str) -> Dict[str, float]:
     parse_default = max(5.0, float(os.getenv("MODULE2_PARSE_TIMEOUT_SEC", "120")))
-    extract_default = max(8.0, float(os.getenv("MODULE2_EXTRACT_TIMEOUT_SEC", "120")))
+    extract_default = max(8.0, float(os.getenv("MODULE2_EXTRACT_TIMEOUT_SEC", "150")))
     total_cap = max(30.0, float(os.getenv("MODULE2_NONPDF_TOTAL_BUDGET_SEC", "90")))
 
     profile_key = (profile or "text_heavy").strip().lower()
@@ -1708,6 +1949,211 @@ def _head_response_for_file(file_path: Path) -> Response:
 def _bridge_public_base_url() -> str:
     raw = (os.getenv("MODULE2_DIFY_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     return raw
+
+
+def _module4_sync_enabled() -> bool:
+    return (os.getenv("MODULE2_MODULE4_SYNC_ENABLED", "true") or "true").lower() in {"1", "true", "yes"}
+
+
+def _module4_base_url() -> str:
+    raw = (os.getenv("MODULE2_MODULE4_BASE_URL", "http://localhost:8100") or "").strip().rstrip("/")
+    return raw or "http://localhost:8100"
+
+
+def _module4_sync_timeout_sec() -> float:
+    return max(2.0, float(os.getenv("MODULE2_MODULE4_SYNC_TIMEOUT_SEC", "12")))
+
+
+def _module4_sync_retries() -> int:
+    return max(0, min(int(os.getenv("MODULE2_MODULE4_SYNC_RETRIES", "2")), 5))
+
+
+def _module4_sync_backoff_sec() -> float:
+    return max(0.2, float(os.getenv("MODULE2_MODULE4_SYNC_BACKOFF_SEC", "1.5")))
+
+
+def _module4_sync_shutdown_drain_sec() -> float:
+    return max(0.0, float(os.getenv("MODULE2_MODULE4_SHUTDOWN_DRAIN_SEC", "8")))
+
+
+def _module4_default_tenant() -> str:
+    return (os.getenv("MODULE2_MODULE4_DEFAULT_TENANT", "default") or "default").strip() or "default"
+
+
+def _module4_tenant(request: Optional[Request] = None, explicit: str = "") -> str:
+    explicit_clean = (explicit or "").strip()
+    if explicit_clean:
+        return explicit_clean
+    if request is not None:
+        header_tenant = (request.headers.get("x-tenant-id") or "").strip()
+        if header_tenant:
+            return header_tenant
+    return _module4_default_tenant()
+
+
+def _module4_headers(tenant_id: str) -> Dict[str, str]:
+    headers = {"Content-Type": "application/json", "X-Tenant-Id": tenant_id}
+    bearer = (os.getenv("MODULE2_MODULE4_BEARER_TOKEN", "") or "").strip()
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    return headers
+
+
+def _module4_sync_retryable_status(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def _module4_sync_delay_sec(attempt_index: int) -> float:
+    base = _module4_sync_backoff_sec()
+    return min(base * (2 ** max(0, attempt_index - 1)), 12.0)
+
+
+def _track_module4_sync_task(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    module4_sync_tasks.add(task)
+
+    def _cleanup(done: asyncio.Task[Any]) -> None:
+        module4_sync_tasks.discard(done)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("module2 module4 sync task crashed: %s: %s", type(exc).__name__, exc)
+
+    task.add_done_callback(_cleanup)
+    return task
+
+
+def _spawn_module4_sync_task(*, source: str, tenant_id: str, documents: List[Any], source_batch_key: str) -> None:
+    _track_module4_sync_task(
+        asyncio.create_task(
+            _sync_documents_to_module4(
+                source=source,
+                tenant_id=tenant_id,
+                documents=documents,
+                source_batch_key=source_batch_key,
+            )
+        )
+    )
+
+
+def _module4_normalize_documents(documents: List[Any]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for item in documents:
+        if hasattr(item, "model_dump"):
+            raw = item.model_dump(mode="json")
+        elif isinstance(item, dict):
+            raw = dict(item)
+        else:
+            continue
+        normalized.append(raw if isinstance(raw, dict) else {})
+    return normalized
+
+
+def _module4_source_batch_key(
+    *,
+    source: str,
+    tenant_id: str,
+    documents: List[Any],
+    seed: str,
+) -> str:
+    payload = {
+        "source": source,
+        "tenant_id": tenant_id,
+        "seed": seed,
+        "documents": _module4_normalize_documents(documents),
+    }
+    digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return digest[:32]
+
+
+async def _sync_documents_to_module4(
+    *,
+    source: str,
+    tenant_id: str,
+    documents: List[Any],
+    source_batch_key: str,
+) -> None:
+    if not _module4_sync_enabled():
+        return
+
+    normalized_docs = _module4_normalize_documents(documents)
+    if not normalized_docs:
+        return
+    module4_sync_metrics["attempted_batches"] = int(module4_sync_metrics.get("attempted_batches", 0)) + 1
+
+    payload = {
+        "tenant_id": tenant_id,
+        "source": source,
+        "source_batch_key": source_batch_key,
+        "documents": normalized_docs,
+    }
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    url = f"{_module4_base_url()}/module4/ingest"
+    headers = _module4_headers(tenant_id)
+    timeout_sec = _module4_sync_timeout_sec()
+    attempts = _module4_sync_retries() + 1
+
+    def _post() -> Tuple[int, str]:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return int(getattr(resp, "status", 200) or 200), body
+
+    for attempt in range(1, attempts + 1):
+        try:
+            status, body = await asyncio.to_thread(_post)
+            if status >= 400:
+                raise RuntimeError(f"HTTP {status}: {body[:300]}")
+            module4_sync_metrics["succeeded_batches"] = int(module4_sync_metrics.get("succeeded_batches", 0)) + 1
+            module4_sync_metrics["last_error"] = ""
+            module4_sync_metrics["last_success_at"] = time.time()
+            logger.info(
+                "module2 synced %s document(s) to module4 tenant=%s source=%s batch=%s attempt=%s/%s",
+                len(normalized_docs),
+                tenant_id,
+                source,
+                source_batch_key,
+                attempt,
+                attempts,
+            )
+            return
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+            retryable = _module4_sync_retryable_status(int(getattr(exc, "code", 0) or 0))
+            message = f"HTTPError {getattr(exc, 'code', 'unknown')}: {detail[:400]}"
+            if attempt < attempts and retryable:
+                delay = _module4_sync_delay_sec(attempt)
+                logger.warning(
+                    "module2 -> module4 sync failed, retrying in %.1fs (%s/%s): %s",
+                    delay,
+                    attempt,
+                    attempts,
+                    message,
+                )
+                await asyncio.sleep(delay)
+                continue
+            module4_sync_metrics["failed_batches"] = int(module4_sync_metrics.get("failed_batches", 0)) + 1
+            module4_sync_metrics["last_error"] = message
+            logger.warning("module2 -> module4 sync failed: %s", message)
+            return
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            if attempt < attempts:
+                delay = _module4_sync_delay_sec(attempt)
+                logger.warning(
+                    "module2 -> module4 sync exception, retrying in %.1fs (%s/%s): %s",
+                    delay,
+                    attempt,
+                    attempts,
+                    message,
+                )
+                await asyncio.sleep(delay)
+                continue
+            module4_sync_metrics["failed_batches"] = int(module4_sync_metrics.get("failed_batches", 0)) + 1
+            module4_sync_metrics["last_error"] = message[:400]
+            logger.warning("module2 -> module4 sync failed: %s", message)
+            return
 
 
 def _bridge_token_required() -> bool:
@@ -2049,7 +2495,7 @@ def _trace_hits_from_job(job: BridgeJobState, req: BridgeTraceLocateRequest) -> 
     )
 
 
-def _summarize_document_payload(req: SummarizeRequest) -> str:
+def _summarize_document_payload_legacy(req: SummarizeRequest) -> str:
     lines: List[str] = []
     lines.append(f"文档：{req.file_name}")
     if req.errors:
@@ -2108,6 +2554,207 @@ _FIELD_LABELS = {
 }
 _ASSISTANT_PERSIST_HINTS = ("入库", "落库", "保存", "存储", "写入数据库", "写库")
 _ASSISTANT_ALL_HINTS = ("全部", "所有", "全量", "完整", "所有字段", "全部字段")
+
+
+def _summary_clean_text(value: Any, max_len: int = 80) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip("，,；;。 ") + "…"
+
+
+def _summary_unique_texts(values: List[Any], limit: int = 4, max_len: int = 80) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    for value in values:
+        cleaned = _summary_clean_text(value, max_len=max_len)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _summary_trace_hit_dicts(req: SummarizeRequest) -> List[Dict[str, Any]]:
+    hits: List[Dict[str, Any]] = []
+    for item in req.trace_hits or []:
+        if isinstance(item, dict):
+            hits.append(dict(item))
+            continue
+        if hasattr(item, "model_dump"):
+            payload = item.model_dump(mode="json")
+            if isinstance(payload, dict):
+                hits.append(payload)
+    return hits
+
+
+def _summary_trace_kind(hit: Dict[str, Any]) -> str:
+    return _trace_display_kind_from_hit(hit)
+
+
+_SUMMARY_NOTICE_SKIP = {
+    "quality_gate_ok",
+}
+
+_SUMMARY_NOTICE_MAP = {
+    "table_extract_timeout": "复杂表格抽取超时，当前表格结果可能仍有遗漏。",
+    "field_extract_timeout": "字段抽取超时，部分字段可能尚未完全识别。",
+    "field_extract_error": "字段抽取阶段出现异常，部分字段可能尚未完全识别。",
+    "word_pdf_parse_timeout_fallback_fasttrack": "Word 转 PDF 后的深度版面解析超时，当前已切换为快速解析链路，图表完整度可能受影响。",
+    "pdf_visual_timeout_fallback_fasttrack": "PDF 视觉解析超时，当前已切换为快速解析链路，复杂版面定位可能不够完整。",
+}
+
+
+def _summary_notice_text(raw_notice: Any) -> str:
+    text = str(raw_notice or "").strip()
+    if not text or text in _SUMMARY_NOTICE_SKIP:
+        return ""
+    for prefix, mapped in _SUMMARY_NOTICE_MAP.items():
+        if text == prefix or text.startswith(f"{prefix}:"):
+            return mapped
+    return _summary_clean_text(text, max_len=64)
+
+
+def _summarize_document_payload(req: SummarizeRequest) -> str:
+    lines: List[str] = [f"文档《{req.file_name}》已完成内容解析。"]
+
+    result_items: List[str] = []
+    for key, value in req.result.items():
+        if not isinstance(value, dict):
+            continue
+        field_val = value.get("value")
+        if field_val in (None, "", [], {}):
+            continue
+        field_text = _summary_clean_text(field_val, max_len=42)
+        if not field_text:
+            continue
+        label = _FIELD_LABELS.get(key, key)
+        conf = value.get("confidence")
+        try:
+            conf_pct = int(round(float(conf or 0.0) * 100))
+        except Exception:
+            conf_pct = 0
+        if conf_pct > 0:
+            result_items.append(f"{label}为{field_text}（置信度{conf_pct}%）")
+        else:
+            result_items.append(f"{label}为{field_text}")
+        if len(result_items) >= 6:
+            break
+    if result_items:
+        lines.append("已抽取的关键信息包括：" + "；".join(result_items) + "。")
+
+    trace_hits = _summary_trace_hit_dicts(req)
+    content_focus_raw: List[str] = []
+    table_focus_raw: List[str] = []
+    image_focus_raw: List[str] = []
+    trace_table_ids: Set[str] = set()
+    trace_image_ids: Set[str] = set()
+
+    for hit in trace_hits:
+        kind = _summary_trace_kind(hit)
+        locator = hit.get("locator") if isinstance(hit.get("locator"), dict) else {}
+        object_id = str(hit.get("object_id", "")).strip()
+        object_key = object_id.lower()
+        object_unique_key = object_key or str(hit.get("ref_id", "")).strip() or _summary_clean_text(hit.get("snippet"), max_len=48)
+        snippet = _summary_clean_text(hit.get("snippet"), max_len=72)
+
+        if kind == "field":
+            if snippet:
+                label = _FIELD_LABELS.get(object_key, object_id) if object_key else object_id
+                content_focus_raw.append(f"{label}：{snippet}" if label else snippet)
+            continue
+
+        if kind == "table":
+            if object_unique_key:
+                trace_table_ids.add(object_unique_key)
+            sheet_name = _summary_clean_text(locator.get("sheet_name"), max_len=24)
+            table_preview = locator.get("table_preview") if isinstance(locator.get("table_preview"), dict) else {}
+            headers_raw = table_preview.get("headers") if isinstance(table_preview.get("headers"), list) else []
+            headers = _summary_unique_texts(headers_raw, limit=3, max_len=18)
+            if headers:
+                header_text = " / ".join(headers)
+                table_focus_raw.append(f"{sheet_name}表格包含 {header_text}" if sheet_name else f"表格包含 {header_text}")
+            elif snippet:
+                table_focus_raw.append(snippet)
+            continue
+
+        if kind == "image":
+            if object_unique_key:
+                trace_image_ids.add(object_unique_key)
+            caption = _summary_clean_text(locator.get("caption"), max_len=64)
+            key_points = _summary_unique_texts(
+                locator.get("key_points") if isinstance(locator.get("key_points"), list) else [],
+                limit=2,
+                max_len=48,
+            )
+            text_blocks = _summary_unique_texts(
+                locator.get("text_blocks") if isinstance(locator.get("text_blocks"), list) else [],
+                limit=2,
+                max_len=48,
+            )
+            image_focus_raw.append(caption or (key_points[0] if key_points else "") or (text_blocks[0] if text_blocks else "") or snippet)
+
+    content_focus = _summary_unique_texts(content_focus_raw, limit=3, max_len=78)
+    if content_focus:
+        lines.append("从原文与溯源片段看，文档重点涉及：" + "；".join(content_focus) + "。")
+
+    table_focus = _summary_unique_texts(table_focus_raw, limit=2, max_len=54)
+    image_focus = _summary_unique_texts(image_focus_raw, limit=2, max_len=54)
+
+    diag = req.diagnostics or {}
+    trace_display_counts = diag.get("trace_display_counts") if isinstance(diag.get("trace_display_counts"), dict) else {}
+    table_count = int(diag.get("table_count", 0) or 0)
+    image_count = int(diag.get("figure_count", 0) or 0)
+    table_count = max(table_count, len(trace_table_ids), int(trace_display_counts.get("table", 0) or 0))
+    image_count = max(image_count, len(trace_image_ids), int(trace_display_counts.get("image", 0) or 0))
+
+    structure_parts: List[str] = []
+    if table_count > 0:
+        table_part = f"{table_count} 个表格"
+        if table_focus:
+            table_part += f"（如：{'；'.join(table_focus)}）"
+        structure_parts.append(table_part)
+    if image_count > 0:
+        image_part = f"{image_count} 处图片"
+        if image_focus:
+            image_part += f"（如：{'；'.join(image_focus)}）"
+        structure_parts.append(image_part)
+    if structure_parts:
+        lines.append("识别到的结构内容包括" + "，".join(structure_parts) + "。")
+
+    if not result_items and not content_focus and not structure_parts:
+        lines.append("当前已完成基础解析，但尚未形成足够稳定的内容摘要，建议结合抽取结果与溯源定位继续查看。")
+
+    notices: List[str] = []
+    error_items = _summary_unique_texts(
+        [_summary_notice_text(item) for item in (req.errors or []) if _summary_notice_text(item)],
+        limit=2,
+        max_len=64,
+    )
+    warning_items = _summary_unique_texts(
+        [_summary_notice_text(item) for item in (req.soft_warnings or []) if _summary_notice_text(item)],
+        limit=2,
+        max_len=64,
+    )
+    if error_items:
+        notices.append("需关注：" + "；".join(error_items))
+    if warning_items:
+        notices.append("提示：" + "；".join(warning_items))
+    if notices:
+        lines.append(" ".join(notices) + "。")
+
+    summary = " ".join(line.strip() for line in lines if line and line.strip()).strip()
+    max_chars = int(req.max_chars or 400)
+    if len(summary) > max_chars:
+        summary = summary[: max_chars - 1].rstrip() + "…"
+    return summary
 
 
 def _assistant_field_label(field_name: str) -> str:
@@ -2254,6 +2901,19 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    if module4_sync_tasks:
+        pending = list(module4_sync_tasks)
+        drain_timeout = _module4_sync_shutdown_drain_sec()
+        if drain_timeout > 0:
+            _, still_pending = await asyncio.wait(pending, timeout=drain_timeout)
+            if still_pending:
+                for task in still_pending:
+                    task.cancel()
+                await asyncio.gather(*still_pending, return_exceptions=True)
+        else:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
     await storage.close()
     process_pool.shutdown(wait=False, cancel_futures=True)
 
@@ -2352,12 +3012,27 @@ async def _process_single_doc_bytes(
     schema: Dict[str, Any],
     schema_hash: str,
     max_retries: int,
+    progress_hook: Optional[Callable[[str, float, str, Dict[str, Any]], None]] = None,
 ) -> DocumentExtractionResponse:
     t0 = time.perf_counter()
     router = StreamRouter(storage)
     decision = await router.triage(file_name, file_bytes, schema_hash)
 
+    def _emit_progress(stage: str, ratio: float, message: str = "", extra: Optional[Dict[str, Any]] = None) -> None:
+        if progress_hook is None:
+            return
+        try:
+            progress_hook(
+                str(stage or "").strip() or "running",
+                max(0.0, min(1.0, float(ratio))),
+                str(message or "").strip(),
+                dict(extra or {}),
+            )
+        except Exception:
+            return
+
     if decision.cached_payload is not None:
+        _emit_progress("cached", 1.0, "命中缓存，正在恢复抽取结果")
         cached_result = decision.cached_payload.get("result", {})
         cached_errors_raw = decision.cached_payload.get("errors", [])
         cached_errors = [str(x) for x in cached_errors_raw] if isinstance(cached_errors_raw, list) else []
@@ -2382,9 +3057,10 @@ async def _process_single_doc_bytes(
             diagnostics=cached_diag,
         )
 
+    _emit_progress("preflight", 0.05, "已接收文件，正在执行预检查")
     loop = asyncio.get_running_loop()
     parse_timeout_sec = max(5.0, float(os.getenv("MODULE2_PARSE_TIMEOUT_SEC", "150")))
-    extract_timeout_sec = max(8.0, float(os.getenv("MODULE2_EXTRACT_TIMEOUT_SEC", "120")))
+    extract_timeout_sec = max(8.0, float(os.getenv("MODULE2_EXTRACT_TIMEOUT_SEC", "150")))
     nonpdf_preflight: Optional[Dict[str, Any]] = None
     nonpdf_budget: Optional[Dict[str, float]] = None
     nonpdf_total_budget_sec: Optional[float] = None
@@ -2398,12 +3074,37 @@ async def _process_single_doc_bytes(
         parse_timeout_sec = float(nonpdf_budget["parse_timeout_sec"])
         extract_timeout_sec = float(nonpdf_budget["extract_timeout_sec"])
         nonpdf_total_budget_sec = float(nonpdf_budget.get("total_budget_sec", 90.0))
-        if is_word_file(file_name):
-            word_parse_extract_budget_sec = max(
-                24.0,
-                float(os.getenv("MODULE2_WORD_PARSE_EXTRACT_BUDGET_SEC", "70")),
+        if file_name.lower().endswith(".xlsx"):
+            parse_timeout_sec = max(
+                parse_timeout_sec,
+                float(os.getenv("MODULE2_XLSX_PARSE_TIMEOUT_SEC", "32")),
             )
-            word_convert_budget_sec = max(12.0, float(os.getenv("MODULE2_WORD_CONVERT_BUDGET_SEC", "24")))
+            extract_timeout_sec = max(
+                extract_timeout_sec,
+                float(os.getenv("MODULE2_XLSX_EXTRACT_TIMEOUT_SEC", "96")),
+            )
+            nonpdf_total_budget_sec = max(
+                nonpdf_total_budget_sec,
+                float(os.getenv("MODULE2_XLSX_TOTAL_BUDGET_SEC", "140")),
+            )
+        if is_word_file(file_name):
+            nonpdf_total_budget_sec = max(
+                nonpdf_total_budget_sec or 0.0,
+                float(os.getenv("MODULE2_WORD_TOTAL_BUDGET_SEC", "150")),
+            )
+            parse_timeout_sec = max(
+                parse_timeout_sec,
+                float(os.getenv("MODULE2_WORD_PARSE_TIMEOUT_SEC", "42")),
+            )
+            extract_timeout_sec = max(
+                extract_timeout_sec,
+                float(os.getenv("MODULE2_WORD_EXTRACT_TIMEOUT_SEC", "72")),
+            )
+            word_parse_extract_budget_sec = max(
+                32.0,
+                float(os.getenv("MODULE2_WORD_PARSE_EXTRACT_BUDGET_SEC", "96")),
+            )
+            word_convert_budget_sec = max(15.0, float(os.getenv("MODULE2_WORD_CONVERT_BUDGET_SEC", "30")))
             if nonpdf_total_budget_sec is not None:
                 max_convert_budget = max(12.0, nonpdf_total_budget_sec - 20.0)
                 word_convert_budget_sec = min(word_convert_budget_sec, max_convert_budget)
@@ -2421,8 +3122,8 @@ async def _process_single_doc_bytes(
             # Word preprocessing can be the bottleneck; reserve more parse budget to reduce hard timeouts.
             if parse_extract_total > 12.0:
                 target_parse_share = max(
-                    0.45,
-                    min(0.9, float(os.getenv("MODULE2_WORD_PARSE_SHARE", "0.62"))),
+                    0.42,
+                    min(0.78, float(os.getenv("MODULE2_WORD_PARSE_SHARE", "0.50"))),
                 )
                 min_word_parse_timeout = max(
                     18.0,
@@ -2435,6 +3136,16 @@ async def _process_single_doc_bytes(
                 )
                 parse_timeout_sec = min(target_parse_timeout, parse_extract_total - 8.0)
                 extract_timeout_sec = max(8.0, parse_extract_total - parse_timeout_sec)
+                min_word_extract_timeout = max(
+                    24.0,
+                    float(os.getenv("MODULE2_WORD_EXTRACT_TIMEOUT_MIN_SEC", "56")),
+                )
+                if extract_timeout_sec < min_word_extract_timeout:
+                    parse_timeout_sec = max(
+                        min_word_parse_timeout,
+                        parse_extract_total - min_word_extract_timeout,
+                    )
+                    extract_timeout_sec = max(8.0, parse_extract_total - parse_timeout_sec)
 
     parse_t0 = time.perf_counter()
     parse_track = decision.track
@@ -2482,6 +3193,7 @@ async def _process_single_doc_bytes(
         convert_timeout_sec = max(12.0, convert_timeout_sec)
         convert_t0 = time.perf_counter()
         try:
+            _emit_progress("converting", 0.14, "正在将文档转换为 PDF 解析链路")
             pdf_bytes, convert_meta = await _convert_word_to_pdf_with_timeout(
                 file_name=file_name,
                 file_bytes=file_bytes,
@@ -2505,6 +3217,7 @@ async def _process_single_doc_bytes(
                 "office_pdf_preview_url": url,
                 "office_pdf_total_ms": int((time.perf_counter() - convert_t0) * 1000),
             }
+            _emit_progress("converting", 0.24, "文档已转换为 PDF，正在准备版面解析")
         except Exception as exc:
             conversion_diag = {
                 "office_pdf_converted": False,
@@ -2515,7 +3228,7 @@ async def _process_single_doc_bytes(
             suffix = Path(file_name).suffix.lower()
             allow_native_fallback = (
                 suffix == ".docx"
-                and (os.getenv("MODULE2_WORD_CONVERT_ALLOW_NATIVE_FALLBACK", "true").lower() in {"1", "true", "yes"})
+                and (os.getenv("MODULE2_WORD_CONVERT_ALLOW_NATIVE_FALLBACK", "false").lower() in {"1", "true", "yes"})
             )
             if (word_parse_via_pdf and not allow_native_fallback) or suffix == ".doc":
                 raise HTTPException(
@@ -2609,6 +3322,7 @@ async def _process_single_doc_bytes(
                 return markdown, refs, tables, [], {}
         raise ValueError("Unexpected parse output shape")
 
+    _emit_progress("parsing", 0.32, f"正在解析文档版面：{parse_input_name}")
     try:
         parsed_output = await asyncio.wait_for(
             loop.run_in_executor(process_pool, parse_document_in_subprocess, parse_input_bytes, parse_input_name, parse_track),
@@ -2616,9 +3330,22 @@ async def _process_single_doc_bytes(
         )
         marked_markdown, bbox_map, table_blocks, figure_blocks, parse_stats = _unpack_parse_output(parsed_output)
     except TimeoutError as exc:
-        is_word_pdf_parse = is_word_file(file_name) and parse_input_name.lower().endswith(".pdf")
-        if is_word_pdf_parse:
-            fallback_timeout = max(12.0, min(60.0, parse_timeout_sec))
+        parse_input_is_pdf = parse_input_name.lower().endswith(".pdf")
+        is_word_pdf_parse = is_word_file(file_name) and parse_input_is_pdf
+        should_try_pdf_native_fallback = parse_track == "VisualTrack" and parse_input_is_pdf
+        if is_word_pdf_parse or should_try_pdf_native_fallback:
+            if is_word_pdf_parse:
+                fallback_timeout = max(20.0, min(120.0, parse_timeout_sec * 1.15))
+                fallback_input_bytes = parse_input_bytes
+                fallback_input_name = parse_input_name
+                fallback_track = "VisualTrack->WordPdfFastTrackFallback"
+                fallback_hint = "word_pdf_parse_timeout_fallback_fasttrack"
+            else:
+                fallback_timeout = max(20.0, min(120.0, parse_timeout_sec))
+                fallback_input_bytes = parse_input_bytes
+                fallback_input_name = parse_input_name
+                fallback_track = "VisualTrack->FastTrackTimeoutFallback"
+                fallback_hint = "pdf_visual_timeout_fallback_fasttrack"
             if nonpdf_total_budget_sec is not None:
                 elapsed_now = max(0.0, time.perf_counter() - t0)
                 remaining_budget = nonpdf_total_budget_sec - elapsed_now - max(6.0, nonpdf_guard_sec)
@@ -2630,15 +3357,14 @@ async def _process_single_doc_bytes(
                     loop.run_in_executor(
                         process_pool,
                         parse_document_in_subprocess,
-                        file_bytes,
-                        file_name,
+                        fallback_input_bytes,
+                        fallback_input_name,
                         "FastTrack",
                     ),
                     timeout=fallback_timeout,
                 )
                 marked_markdown, bbox_map, table_blocks, figure_blocks, parse_stats = _unpack_parse_output(parsed_output)
-                parse_track = "VisualTrack->WordNativeFallback"
-                fallback_hint = "word_pdf_parse_timeout_fallback_native"
+                parse_track = fallback_track
                 parse_warning = f"{parse_warning}|{fallback_hint}" if parse_warning else fallback_hint
             except TimeoutError as fallback_exc:
                 raise HTTPException(status_code=504, detail=f"Native parsing timed out for {file_name}") from fallback_exc
@@ -2727,6 +3453,7 @@ async def _process_single_doc_bytes(
                 raise HTTPException(status_code=503, detail=message) from exc
             raise HTTPException(status_code=500, detail=f"Native parsing failed for {file_name}: {exc}") from exc
     parse_ms = int((time.perf_counter() - parse_t0) * 1000)
+    _emit_progress("parsed", 0.64, "版面解析完成，正在抽取字段与图表")
 
     auto_schema_llm_max_mb = max(0.2, float(os.getenv("MODULE2_AUTO_SCHEMA_LLM_MAX_FILE_MB", "1.2")))
     allow_schema_llm = (len(file_bytes) / (1024.0 * 1024.0) <= auto_schema_llm_max_mb) and len(table_blocks) <= 12
@@ -2760,6 +3487,7 @@ async def _process_single_doc_bytes(
 
     extract_t0 = time.perf_counter()
     used_quick_fallback = False
+    _emit_progress("extracting", 0.72, "正在抽取字段、表格、图片与溯源信息")
     try:
         final_state = await asyncio.wait_for(graph.run(init_state), timeout=extract_timeout_sec)
     except TimeoutError as exc:
@@ -2784,6 +3512,7 @@ async def _process_single_doc_bytes(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Extraction graph failed for {file_name}: {exc}") from exc
     extract_ms = int((time.perf_counter() - extract_t0) * 1000)
+    _emit_progress("finalizing", 0.92, "抽取完成，正在整理结果与缓存")
     total_ms = int((time.perf_counter() - t0) * 1000)
 
     final_results = final_state.get("results", {})
@@ -2981,6 +3710,8 @@ async def _process_single_doc_bytes(
         },
     )
 
+    _emit_progress("completed", 1.0, "抽取完成")
+
     return response
 
 
@@ -3004,6 +3735,151 @@ async def process_single_doc(
     return await _process_single_doc_bytes(file_name, file_bytes, schema, schema_hash, max_retries)
 
 
+async def _read_upload_file_bytes(file: UploadFile) -> Tuple[str, bytes]:
+    file_name = file.filename or "unknown"
+    max_file_mb = max(1, int(os.getenv("MODULE2_MAX_FILE_MB", "25")))
+    max_file_bytes = max_file_mb * 1024 * 1024
+    file_bytes = await file.read(max_file_bytes + 1)
+    if len(file_bytes) > max_file_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large: {file_name}. Max size is {max_file_mb}MB.",
+        )
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail=f"Empty file: {file_name}")
+    return file_name, file_bytes
+
+
+async def _run_extraction_job(
+    *,
+    job_id: str,
+    loaded_files: List[Tuple[str, bytes, str, str, str]],
+    schema_obj: Dict[str, Any],
+    schema_digest: str,
+    max_retries: int,
+    tenant_id: str,
+    request: Request,
+) -> None:
+    async with extraction_lock:
+        job = extraction_jobs.get(job_id)
+        if not job:
+            return
+        job.status = "running"
+        job.updated_at = time.time()
+
+    for file_index, (file_name, file_bytes, file_hash, artifact_path, artifact_url) in enumerate(loaded_files, start=1):
+        def _update_progress(stage: str, ratio: float, message: str, extra: Dict[str, Any]) -> None:
+            async def _mutate() -> None:
+                async with extraction_lock:
+                    job_state = extraction_jobs.get(job_id)
+                    if not job_state:
+                        return
+                    job_state.updated_at = time.time()
+                    if 0 <= (file_index - 1) < len(job_state.files):
+                        file_state = job_state.files[file_index - 1]
+                        next_status = "running"
+                        if stage == "queued":
+                            next_status = "queued"
+                        elif stage in {"completed", "cached"}:
+                            next_status = "completed"
+                        elif stage == "failed":
+                            next_status = "failed"
+                        if not (file_state.status in {"completed", "failed"} and next_status not in {"completed", "failed"}):
+                            job_state.current_file_index = file_index
+                            job_state.current_file_name = file_name
+                            job_state.current_stage = stage
+                            file_state.status = next_status
+                            file_state.stage = stage
+                            file_state.progress_ratio = max(0.0, min(1.0, float(ratio)))
+                            file_state.message = message or file_state.message
+
+            task = asyncio.create_task(_mutate())
+            task.add_done_callback(lambda _: None)
+
+        _update_progress("queued", 0.0, "已进入解析队列", {})
+        try:
+            doc = await _process_single_doc_bytes(
+                file_name=file_name,
+                file_bytes=file_bytes,
+                schema=schema_obj,
+                schema_hash=schema_digest,
+                max_retries=max_retries,
+                progress_hook=_update_progress,
+            )
+            async with extraction_lock:
+                job_state = extraction_jobs.get(job_id)
+                if not job_state:
+                    return
+                if 0 <= (file_index - 1) < len(job_state.files):
+                    file_state = job_state.files[file_index - 1]
+                    file_state.progress_ratio = 1.0
+                    file_state.status = "failed" if doc.errors else "completed"
+                    file_state.stage = "completed" if not doc.errors else "failed"
+                    file_state.message = "抽取完成" if not doc.errors else "抽取完成，但存在错误"
+                    file_state.track = doc.track
+                    file_state.cached = bool(doc.cached)
+                    if doc.errors:
+                        file_state.error = " | ".join(doc.errors)
+                job_state.documents.append(doc)
+                if doc.errors:
+                    job_state.failed_files += 1
+                    job_state.errors.append(f"{file_name}: {' | '.join(doc.errors)}")
+                else:
+                    job_state.completed_files += 1
+                job_state.current_file_index = file_index
+                job_state.current_file_name = file_name
+                job_state.current_stage = "completed"
+                job_state.updated_at = time.time()
+        except Exception as exc:
+            async with extraction_lock:
+                job_state = extraction_jobs.get(job_id)
+                if not job_state:
+                    return
+                if 0 <= (file_index - 1) < len(job_state.files):
+                    file_state = job_state.files[file_index - 1]
+                    file_state.progress_ratio = 1.0
+                    file_state.status = "failed"
+                    file_state.stage = "failed"
+                    file_state.error = f"{type(exc).__name__}: {exc}"
+                    file_state.message = "抽取失败"
+                job_state.failed_files += 1
+                job_state.errors.append(f"{file_name}: {type(exc).__name__}: {exc}")
+                job_state.current_file_index = file_index
+                job_state.current_file_name = file_name
+                job_state.current_stage = "failed"
+                job_state.updated_at = time.time()
+
+    async with extraction_lock:
+        job = extraction_jobs.get(job_id)
+        if not job:
+            return
+        done = int(job.completed_files + job.failed_files)
+        if done < int(job.total_files):
+            job.status = "running"
+        elif job.completed_files == 0:
+            job.status = "failed"
+        else:
+            job.status = "completed"
+        job.current_stage = "completed" if job.status == "completed" else ("failed" if job.status == "failed" else job.current_stage)
+        job.updated_at = time.time()
+        sync_documents = list(job.documents)
+
+    if sync_documents:
+        resolved_tenant = _module4_tenant(request, tenant_id)
+        source_batch_key = _module4_source_batch_key(
+            source="module2",
+            tenant_id=resolved_tenant,
+            documents=sync_documents,
+            seed=f"extract_job:{schema_digest}:{job_id}",
+        )
+        _spawn_module4_sync_task(
+            source="module2",
+            tenant_id=resolved_tenant,
+            documents=sync_documents,
+            source_batch_key=source_batch_key,
+        )
+
+
 def _error_doc_response(file_name: str, exc: Exception) -> DocumentExtractionResponse:
     if isinstance(exc, HTTPException):
         detail = exc.detail
@@ -3024,10 +3900,105 @@ def _error_doc_response(file_name: str, exc: Exception) -> DocumentExtractionRes
     )
 
 
-@app.post("/extract/batch", response_model=BatchExtractionResponse)
-async def extract_batch(
+@app.post("/extract/jobs/create")
+async def extract_jobs_create(
+    request: Request,
     files: List[UploadFile] = File(...),
     schema: str = Form(...),
+    tenant_id: str = Form(default=""),
+) -> Dict[str, Any]:
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+    if len(files) > 5:
+        raise HTTPException(status_code=400, detail="At most 5 files are allowed per batch")
+
+    try:
+        schema_obj = json.loads(schema)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid schema JSON: {exc}") from exc
+    if not isinstance(schema_obj, dict):
+        raise HTTPException(status_code=400, detail="Schema must be a JSON object")
+
+    loaded_files: List[Tuple[str, bytes, str, str, str]] = []
+    for file in files:
+        file_name, file_bytes = await _read_upload_file_bytes(file)
+        file_hash = hashlib.sha256(file_bytes).hexdigest()
+        ext = Path(file_name).suffix or ".bin"
+        artifact_path, artifact_url = _write_artifact_bytes(
+            data=file_bytes,
+            file_name=file_name,
+            sub_dir="preview/uploaded",
+            ext=ext,
+        )
+        loaded_files.append((file_name, file_bytes, file_hash, artifact_path, artifact_url))
+
+    schema_digest = _schema_hash(schema_obj)
+    max_retries = max(0, min(int(os.getenv("MODULE2_MAX_RETRIES", "2")), 6))
+    job_id = f"extract_job_{uuid.uuid4().hex[:16]}"
+    now_ts = time.time()
+    job_state = ExtractionJobState(
+        job_id=job_id,
+        status="queued",
+        created_at=now_ts,
+        updated_at=now_ts,
+        total_files=len(loaded_files),
+        completed_files=0,
+        failed_files=0,
+        current_file_index=0,
+        current_file_name="",
+        current_stage="queued",
+        files=[
+            ExtractionJobFileState(
+                file_name=file_name,
+                file_hash=file_hash,
+                status="queued",
+                stage="queued",
+                progress_ratio=0.0,
+                message="等待开始解析",
+                artifact_path=artifact_path,
+                artifact_url=artifact_url,
+            )
+            for file_name, _, file_hash, artifact_path, artifact_url in loaded_files
+        ],
+        documents=[],
+        errors=[],
+    )
+
+    async with extraction_lock:
+        _cleanup_extraction_jobs_locked()
+        extraction_jobs[job_id] = job_state
+
+    asyncio.create_task(
+        _run_extraction_job(
+            job_id=job_id,
+            loaded_files=loaded_files,
+            schema_obj=schema_obj,
+            schema_digest=schema_digest,
+            max_retries=max_retries,
+            tenant_id=tenant_id,
+            request=request,
+        )
+    )
+
+    return _serialize_extraction_job(job_state, include_documents=False)
+
+
+@app.get("/extract/jobs/status/{job_id}")
+async def extract_jobs_status(job_id: str, include_documents: bool = False) -> Dict[str, Any]:
+    async with extraction_lock:
+        _cleanup_extraction_jobs_locked()
+        job = extraction_jobs.get(str(job_id).strip())
+        if not job:
+            raise HTTPException(status_code=404, detail="Extraction job not found")
+        return _serialize_extraction_job(job, include_documents=include_documents)
+
+
+@app.post("/extract/batch", response_model=BatchExtractionResponse)
+async def extract_batch(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    schema: str = Form(...),
+    tenant_id: str = Form(default=""),
 ) -> BatchExtractionResponse:
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
@@ -3059,6 +4030,20 @@ async def extract_batch(
             results.append(_error_doc_response(file.filename or "unknown", item))
         else:
             results.append(item)
+
+    resolved_tenant = _module4_tenant(request, tenant_id)
+    source_batch_key = _module4_source_batch_key(
+        source="module2",
+        tenant_id=resolved_tenant,
+        documents=results,
+        seed=f"extract_batch:{schema_digest}",
+    )
+    _spawn_module4_sync_task(
+        source="module2",
+        tenant_id=resolved_tenant,
+        documents=results,
+        source_batch_key=source_batch_key,
+    )
     return BatchExtractionResponse(documents=results)
 
 
@@ -3133,6 +4118,8 @@ async def _run_bridge_job(
     schema_hash: str,
     max_retries: int,
     loaded_files: List[Tuple[str, bytes]],
+    tenant_id: str,
+    request_id: str,
 ) -> None:
     async with bridge_lock:
         job = bridge_jobs.get(job_id)
@@ -3169,6 +4156,7 @@ async def _run_bridge_job(
                 job.errors.append(f"{file_name}: {type(exc).__name__}: {exc}")
                 job.updated_at = time.time()
 
+    sync_documents: List[DocumentExtractionResponse] = []
     async with bridge_lock:
         job = bridge_jobs.get(job_id)
         if not job:
@@ -3180,7 +4168,22 @@ async def _run_bridge_job(
             job.status = "failed"
         else:
             job.status = "completed"
+            sync_documents = list(job.documents)
         job.updated_at = time.time()
+
+    if sync_documents:
+        source_batch_key = _module4_source_batch_key(
+            source="module2",
+            tenant_id=tenant_id,
+            documents=sync_documents,
+            seed=f"dify_bridge:{request_id}:{schema_hash}",
+        )
+        _spawn_module4_sync_task(
+            source="module2",
+            tenant_id=tenant_id,
+            documents=sync_documents,
+            source_batch_key=source_batch_key,
+        )
 
 
 @app.post("/dify/module2/jobs/create")
@@ -3201,6 +4204,7 @@ async def dify_module2_jobs_create(request: Request, payload: BridgeJobCreateReq
     loaded_files = _bridge_load_input_files(payload)
     if not loaded_files:
         raise HTTPException(status_code=400, detail="No valid files provided")
+    resolved_tenant = _module4_tenant(request, payload.tenant_id or "")
 
     job_id = f"job_{uuid.uuid4().hex[:16]}"
     now = time.time()
@@ -3230,6 +4234,8 @@ async def dify_module2_jobs_create(request: Request, payload: BridgeJobCreateReq
             schema_hash=schema_hash,
             max_retries=payload.max_retries,
             loaded_files=loaded_files,
+            tenant_id=resolved_tenant,
+            request_id=request_id,
         )
     )
 
@@ -3443,6 +4449,12 @@ async def healthz() -> Dict[str, str]:
         "bridge_jobs_in_memory": str(len(bridge_jobs)),
         "bridge_request_index_size": str(len(bridge_request_index)),
         "office_preview_jobs_in_memory": str(len(office_preview_jobs)),
+        "module4_sync_enabled": str(_module4_sync_enabled()).lower(),
+        "module4_sync_inflight_batches": str(len(module4_sync_tasks)),
+        "module4_sync_attempted_batches": str(module4_sync_metrics.get("attempted_batches", 0)),
+        "module4_sync_succeeded_batches": str(module4_sync_metrics.get("succeeded_batches", 0)),
+        "module4_sync_failed_batches": str(module4_sync_metrics.get("failed_batches", 0)),
+        "module4_sync_last_error": str(module4_sync_metrics.get("last_error", "") or ""),
         "bridge_token_required": str(_bridge_token_required()).lower(),
         "bridge_remote_allow_http": str(_bridge_allow_http_remote()).lower(),
         "storage_db_connected": str(storage.diagnostics().get("db_connected", False)).lower(),
