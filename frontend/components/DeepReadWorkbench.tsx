@@ -1,9 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
 import {
   AlertCircle,
   Braces,
   CheckCircle2,
+  Copy,
   Download,
+  ExternalLink,
   FileText,
   Loader2,
   PlayCircle,
@@ -13,34 +16,409 @@ import {
   File,
   Settings,
   ChevronRight,
-  Layers,
-  Cpu,
-  Zap,
   ZoomIn,
   ZoomOut,
   RotateCw,
+  RefreshCcw,
   Maximize,
   X,
   Search,
-  Plus
+  Plus,
+  LocateFixed,
+  Bot,
+  Sparkles,
+  Send,
+  HelpCircle,
+  FolderOpen,
+  FileSpreadsheet,
+  FileImage
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import {
   readExtractionDocuments,
+  clearExtractionDocuments,
   writeExtractionDocuments,
   type ExtractionDocument,
   type ExtractionEntity,
+  type TraceHit,
 } from '../lib/extractionStore';
+import { ingestModule4Documents } from '../lib/module4Api';
+import {
+  clearWorkbenchSession,
+  readWorkbenchSession,
+  writeWorkbenchSession,
+  type PersistedExtractionJob,
+  type PersistedExtractionJobFile,
+  type PersistedWorkbenchFile,
+  type WorkbenchSessionSnapshot,
+} from '../lib/workbenchSession';
+import { LuckysheetPreview, clearLuckysheetPreviewCache, warmLuckysheetPreview } from './LuckysheetPreview';
+import smartUnitIcon from '../image2.png';
+import smartSummaryIcon from '../image3.png';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+type PdfScrollRequest = {
+  page: number;
+  nonce: number;
+};
+
+const createPdfScrollRequest = (page: number): PdfScrollRequest => ({
+  page,
+  nonce: Date.now() + Math.random(),
+});
+
+type PdfCanvasPreviewProps = {
+  src: string;
+  scale: number;
+  rotation: number;
+  scrollRequest?: PdfScrollRequest | null;
+  onPageCount?: (count: number) => void;
+  onVisiblePageChange?: (page: number) => void;
+};
+
+const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
+  src,
+  scale,
+  rotation,
+  scrollRequest,
+  onPageCount,
+  onVisiblePageChange,
+}) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stackRef = useRef<HTMLDivElement>(null);
+  const docRef = useRef<any>(null);
+  const pageCanvasRefs = useRef<Array<HTMLCanvasElement | null>>([]);
+  const pageWrapperRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const frameRef = useRef<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [docReadyTick, setDocReadyTick] = useState(0);
+  const [pageCount, setPageCount] = useState(0);
+  const [stackWidth, setStackWidth] = useState(0);
+
+  const syncVisiblePage = () => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const pageNodes = pageWrapperRefs.current.filter(Boolean) as HTMLDivElement[];
+    if (pageNodes.length === 0) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const targetLine = containerRect.top + Math.min(container.clientHeight * 0.32, 240);
+
+    let bestPage = 1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    pageNodes.forEach((node, index) => {
+      const rect = node.getBoundingClientRect();
+      const anchor = rect.top + Math.min(rect.height * 0.2, 180);
+      const distance = Math.abs(anchor - targetLine);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPage = index + 1;
+      }
+    });
+
+    onVisiblePageChange?.(bestPage);
+  };
+
+  const scheduleVisiblePageSync = () => {
+    if (typeof window === 'undefined') return;
+    if (frameRef.current != null) {
+      window.cancelAnimationFrame(frameRef.current);
+    }
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      syncVisiblePage();
+    });
+  };
+
+  useEffect(() => {
+    const target = stackRef.current;
+    if (!target || typeof ResizeObserver === 'undefined') return;
+
+    const updateWidth = () => {
+      setStackWidth(Math.max(0, Math.floor(target.clientWidth)));
+    };
+
+    updateWidth();
+    const observer = new ResizeObserver(() => updateWidth());
+    observer.observe(target);
+
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let loadingTask: any = null;
+
+    const load = async () => {
+      setLoading(true);
+      setError('');
+      setPageCount(0);
+      try {
+        const pdfjsLib: any = await import('pdfjs-dist');
+        if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+            'pdfjs-dist/build/pdf.worker.min.mjs',
+            import.meta.url
+          ).toString();
+        }
+        loadingTask = pdfjsLib.getDocument({
+          url: src,
+          withCredentials: false,
+        });
+        const doc = await loadingTask.promise;
+        if (cancelled) {
+          try {
+            await doc.destroy();
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        docRef.current = doc;
+        const pages = Math.max(1, Number(doc.numPages || 1));
+        setPageCount(pages);
+        onPageCount?.(pages);
+        setDocReadyTick((prev) => prev + 1);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'PDF 预览加载失败');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+          scheduleVisiblePageSync();
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+      try {
+        loadingTask?.destroy?.();
+      } catch {
+        // ignore
+      }
+      const doc = docRef.current;
+      docRef.current = null;
+      try {
+        doc?.destroy?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, [onPageCount, src]);
+
+  useEffect(() => {
+    pageCanvasRefs.current = pageCanvasRefs.current.slice(0, pageCount);
+    pageWrapperRefs.current = pageWrapperRefs.current.slice(0, pageCount);
+  }, [pageCount]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const renderTasks: any[] = [];
+
+    const render = async () => {
+      const doc = docRef.current;
+      if (!doc || pageCount === 0 || stackWidth <= 0) return;
+      try {
+        setLoading(true);
+        setError('');
+        const safeRotation = Number(rotation) || 0;
+        const safeScale = Math.max(0.5, scale);
+        const pixelRatio = window.devicePixelRatio || 1;
+
+        for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+          if (cancelled) return;
+          const canvas = pageCanvasRefs.current[pageNumber - 1];
+          if (!canvas) continue;
+          const pdfPage = await doc.getPage(pageNumber);
+          if (cancelled) return;
+          const baseViewport = pdfPage.getViewport({
+            scale: 1,
+            rotation: safeRotation,
+          });
+          const fitScale = stackWidth > 0 ? stackWidth / Math.max(1, baseViewport.width) : 1;
+          const viewport = pdfPage.getViewport({
+            scale: Math.max(0.35, fitScale * safeScale),
+            rotation: safeRotation,
+          });
+          const context = canvas.getContext('2d');
+          if (!context) {
+          setError('无法初始化 PDF 预览画布');
+          return;
+        }
+
+        canvas.width = Math.max(1, Math.floor(viewport.width * pixelRatio));
+        canvas.height = Math.max(1, Math.floor(viewport.height * pixelRatio));
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+        const renderTask = pdfPage.render({
+          canvasContext: context,
+          viewport,
+        });
+        renderTasks.push(renderTask);
+        await renderTask.promise;
+        scheduleVisiblePageSync();
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'PDF 预览渲染失败');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void render();
+
+    return () => {
+      cancelled = true;
+      try {
+        renderTasks.forEach((task) => task?.cancel?.());
+      } catch {
+        // ignore
+      }
+    };
+  }, [docReadyTick, pageCount, rotation, scale, src, stackWidth]);
+
+  useEffect(() => {
+    if (!scrollRequest?.page || pageCount === 0 || typeof window === 'undefined') return;
+
+    const targetPage = Math.min(Math.max(1, Math.round(scrollRequest.page)), pageCount);
+    const targetNode = pageWrapperRefs.current[targetPage - 1];
+    const container = scrollRef.current;
+    if (!targetNode || !container) return;
+
+    const raf = window.requestAnimationFrame(() => {
+      if (targetPage === 1) {
+        container.scrollTo({ top: 0, behavior: 'auto' });
+      } else {
+        targetNode.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+      scheduleVisiblePageSync();
+    });
+
+    return () => window.cancelAnimationFrame(raf);
+  }, [pageCount, scrollRequest?.nonce, scrollRequest?.page, src]);
+
+  useEffect(() => {
+    scheduleVisiblePageSync();
+  }, [pageCount]);
+
+  useEffect(() => {
+    return () => {
+      if (frameRef.current != null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(frameRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <div className="absolute inset-0 overflow-hidden bg-slate-50/70 dark:bg-slate-900/60">
+      <div
+        ref={scrollRef}
+        onScroll={scheduleVisiblePageSync}
+        className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 sm:p-4"
+      >
+        <div
+          ref={stackRef}
+          className="mx-auto flex w-full max-w-[980px] flex-col gap-4"
+        >
+          {Array.from({ length: pageCount }, (_, index) => index + 1).map((pageNumber) => (
+            <div
+              key={`${src}-${pageNumber}`}
+              ref={(node) => {
+                pageWrapperRefs.current[pageNumber - 1] = node;
+              }}
+              data-page-number={pageNumber}
+              className="overflow-hidden rounded-[18px] border border-slate-200/80 bg-white shadow-[0_12px_36px_rgba(15,23,42,0.08)] dark:border-slate-700 dark:bg-slate-900"
+            >
+              <canvas
+                ref={(node) => {
+                  pageCanvasRefs.current[pageNumber - 1] = node;
+                }}
+                className="mx-auto block h-auto max-w-full bg-white dark:bg-slate-900"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+      {loading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/30 dark:bg-slate-900/30">
+          <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white/90 px-3 py-1.5 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+            <Loader2 size={14} className="animate-spin" />
+            正在加载文档预览...
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/80 p-4 text-center dark:bg-slate-900/80">
+          <p className="max-w-[420px] text-xs text-slate-600 dark:text-slate-300">{error}</p>
+          <a
+            href={src}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
+          >
+            <ExternalLink size={12} />
+            在新窗口打开文档
+          </a>
+        </div>
+      )}
+    </div>
+  );
+};
+
 type DocumentResult = ExtractionDocument;
 
 type ExtractResponse = {
   documents: DocumentResult[];
+};
+
+type SummarizeResponse = {
+  summary: string;
+};
+
+type TraceLocateResponse = {
+  hit_count: number;
+  truncated: boolean;
+  hits: TraceHit[];
+};
+
+type TraceDisplayKind = 'field' | 'table' | 'image' | 'other';
+
+type AssistantQueryResponse = {
+  ok: boolean;
+  answer: string;
+  summary_used: string;
+  matched_fields: Array<{
+    field_name: string;
+    label: string;
+    value: unknown;
+    confidence: number;
+    source_ref_id?: string | null;
+    page?: number | null;
+    bbox?: number[];
+  }>;
+  matched_trace_hits: TraceHit[];
+  persisted: boolean;
+  persisted_rows: number;
+  warnings: string[];
 };
 
 type FieldItem = {
@@ -53,27 +431,393 @@ type FieldItem = {
   pageNumber: number | null;
 };
 
-const DEFAULT_SCHEMA = {
-  fields: {
-    contract_amount: 'number',
-    start_date: 'string',
-    end_date: 'string',
-    tax_rate: 'number',
-    region: 'string',
-  },
-  dependencies: {
-    tax_rate: ['region'],
-  },
+type AssistantDialogMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
 };
 
-const ALLOWED_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'txt', 'md']);
+const DEFAULT_SCHEMA = {
+  auto_infer: true,
+  prefer_llm: true,
+  max_auto_fields: 12,
+};
+
+
+
+type OfficePreviewState = {
+  status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+  jobId?: string;
+  pdfUrl?: string;
+  error?: string;
+};
+
+type ExtractionJobFileState = PersistedExtractionJobFile;
+
+type ExtractionJobState = PersistedExtractionJob;
+
+const ALLOWED_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'txt', 'md', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'tif', 'tiff']);
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'bmp', 'webp', 'tif', 'tiff']);
 
 const isAllowedFile = (file: File) => {
-  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+  const ext = file.name.split('.').pop()?.toLowerCase() || '';
   return ALLOWED_EXTENSIONS.has(ext);
 };
 
-const fileExt = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
+const fileExt = (name: string) => name.split('.').pop()?.toLowerCase() || '';
+const fileIdentityKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
+const toPersistedWorkbenchFile = (file: File, patch?: Partial<PersistedWorkbenchFile>): PersistedWorkbenchFile => ({
+  key: fileIdentityKey(file),
+  name: file.name,
+  size: file.size,
+  lastModified: file.lastModified,
+  ext: fileExt(file.name),
+  artifactUrl: patch?.artifactUrl,
+  artifactPath: patch?.artifactPath,
+});
+
+const toArtifactRouteFromPath = (artifactPathRaw: string): string => {
+  const normalized = String(artifactPathRaw || '').trim().replace(/\\/g, '/');
+  if (!normalized) return '';
+  if (normalized.startsWith('/extract/')) return normalized;
+  const encoded = normalized
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  return encoded ? `/extract/artifact/${encoded}` : '';
+};
+
+const toRelativeExtractPath = (rawUrl: string): string => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return '';
+  if (value.startsWith('/extract/')) return value;
+  if (!/^https?:\/\//i.test(value)) return '';
+  try {
+    const parsed = new URL(value);
+    return parsed.pathname.startsWith('/extract/')
+      ? `${parsed.pathname}${parsed.search || ''}${parsed.hash || ''}`
+      : '';
+  } catch {
+    return '';
+  }
+};
+
+const hydrateFileFromArtifact = async (item: PersistedWorkbenchFile): Promise<File | null> => {
+  const artifactUrl = String(item.artifactUrl || '').trim();
+  const artifactPath = String(item.artifactPath || '').trim();
+  if (!artifactUrl && !artifactPath) return null;
+  const relativeUrl = toRelativeExtractPath(artifactUrl);
+  const routeFromPath = toArtifactRouteFromPath(artifactPath);
+  const candidates = Array.from(
+    new Set(
+      [
+        relativeUrl,
+        routeFromPath,
+        artifactUrl,
+        routeFromPath ? toAbsoluteExtractUrl(routeFromPath, '') : '',
+        /^https?:\/\//i.test(artifactUrl) ? artifactUrl : toAbsoluteExtractUrl(artifactUrl, ''),
+      ].filter(Boolean),
+    ),
+  );
+  let response: Response | null = null;
+  for (const candidate of candidates) {
+    try {
+      const fetched = await fetch(candidate);
+      if (fetched.ok) {
+        response = fetched;
+        break;
+      }
+    } catch {
+      continue;
+    }
+  }
+  if (!response) {
+    throw new Error(`无法恢复文件预览：${item.name}`);
+  }
+  const blob = await response.blob();
+  const FileCtor = typeof window !== 'undefined' && typeof window.File === 'function'
+    ? window.File
+    : globalThis.File;
+  if (typeof FileCtor !== 'function') {
+    throw new Error('当前环境不支持文件恢复');
+  }
+  return new FileCtor([blob], item.name, {
+    type: blob.type || 'application/octet-stream',
+    lastModified: Number(item.lastModified || Date.now()),
+  });
+};
+
+const toSessionSnapshot = (
+  selectedFiles: File[],
+  activeDocIndex: number,
+  officePreviewMap: Record<string, OfficePreviewState>,
+  extractionJob: ExtractionJobState | null,
+  artifactMap: Record<string, { artifactUrl?: string; artifactPath?: string }>,
+  fallbackSelectedFiles: PersistedWorkbenchFile[] = [],
+): WorkbenchSessionSnapshot => ({
+  version: 1,
+  activeDocIndex,
+  selectedFiles: selectedFiles.length > 0
+    ? selectedFiles.map((file) => toPersistedWorkbenchFile(file, artifactMap[fileIdentityKey(file)]))
+    : fallbackSelectedFiles.map((item) => ({
+        ...item,
+        artifactUrl: artifactMap[item.key]?.artifactUrl ?? item.artifactUrl,
+        artifactPath: artifactMap[item.key]?.artifactPath ?? item.artifactPath,
+      })),
+  officePreviewMap,
+  extractionJob,
+});
+
+const clampProgressPercent = (ratio: number) =>
+  Math.max(0, Math.min(100, Math.round(Math.max(0, Math.min(1, Number(ratio || 0))) * 100)));
+
+let spreadsheetWarmupIdleHandle: number | null = null;
+const spreadsheetWarmupQueue: File[] = [];
+const spreadsheetWarmupKeys = new Set<string>();
+
+const runSpreadsheetWarmupQueue = () => {
+  spreadsheetWarmupIdleHandle = null;
+  const nextFile = spreadsheetWarmupQueue.shift();
+  if (!nextFile) return;
+
+  const key = fileIdentityKey(nextFile);
+  spreadsheetWarmupKeys.delete(key);
+
+  void warmLuckysheetPreview(nextFile)
+    .catch(() => undefined)
+    .finally(() => {
+      if (spreadsheetWarmupQueue.length === 0) return;
+      const win = window as Window & {
+        requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+      };
+      if (typeof win.requestIdleCallback === 'function') {
+        spreadsheetWarmupIdleHandle = win.requestIdleCallback(() => runSpreadsheetWarmupQueue(), { timeout: 1200 });
+        return;
+      }
+      spreadsheetWarmupIdleHandle = window.setTimeout(() => runSpreadsheetWarmupQueue(), 180);
+    });
+};
+
+const clearSpreadsheetPreviewWarmupQueue = () => {
+  spreadsheetWarmupQueue.length = 0;
+  spreadsheetWarmupKeys.clear();
+  if (spreadsheetWarmupIdleHandle == null || typeof window === 'undefined') return;
+  const win = window as Window & {
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (typeof win.cancelIdleCallback === 'function') {
+    win.cancelIdleCallback(spreadsheetWarmupIdleHandle);
+  } else {
+    window.clearTimeout(spreadsheetWarmupIdleHandle);
+  }
+  spreadsheetWarmupIdleHandle = null;
+};
+
+const scheduleSpreadsheetPreviewWarmup = (file: File) => {
+  if (typeof window === 'undefined' || fileExt(file.name) !== 'xlsx') return;
+  const key = fileIdentityKey(file);
+  if (spreadsheetWarmupKeys.has(key)) return;
+
+  spreadsheetWarmupKeys.add(key);
+  spreadsheetWarmupQueue.push(file);
+  if (spreadsheetWarmupIdleHandle != null) return;
+
+  const win = window as Window & {
+    requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+  };
+  if (typeof win.requestIdleCallback === 'function') {
+    spreadsheetWarmupIdleHandle = win.requestIdleCallback(() => runSpreadsheetWarmupQueue(), { timeout: 1200 });
+    return;
+  }
+  spreadsheetWarmupIdleHandle = window.setTimeout(() => runSpreadsheetWarmupQueue(), 180);
+};
+
+const previewFileNameFromKey = (key: string): string => {
+  const raw = String(key || '');
+  const idx = raw.indexOf(':');
+  return (idx >= 0 ? raw.slice(0, idx) : raw).trim().toLowerCase();
+};
+
+const pickOfficePreviewByFileName = (
+  fileName: string,
+  previewMap: Record<string, OfficePreviewState>,
+): OfficePreviewState | null => {
+  const target = String(fileName || '').trim().toLowerCase();
+  if (!target) return null;
+
+  let fallback: OfficePreviewState | null = null;
+  for (const [key, state] of Object.entries(previewMap || {})) {
+    if (!state) continue;
+    if (previewFileNameFromKey(key) !== target) continue;
+    if (!fallback) fallback = state;
+    if (state.status === 'completed' && String(state.pdfUrl || '').trim()) {
+      return state;
+    }
+  }
+  return fallback;
+};
+
+const pickExtractionJobFileState = (
+  extractionJob: ExtractionJobState | null,
+  file: File,
+  index: number,
+): ExtractionJobFileState | null => {
+  if (!extractionJob || !Array.isArray(extractionJob.files) || extractionJob.files.length === 0) return null;
+  const normalizedName = String(file.name || '').trim().toLowerCase();
+  const byIndex = extractionJob.files[index] || null;
+  if (byIndex && String(byIndex.file_name || '').trim().toLowerCase() === normalizedName) {
+    return byIndex;
+  }
+  const matched = extractionJob.files.filter(
+    (item) => String(item.file_name || '').trim().toLowerCase() === normalizedName,
+  );
+  if (matched.length === 1) return matched[0];
+  if (byIndex) return byIndex;
+  return matched[0] || null;
+};
+
+type ExtractFetchResult = {
+  response: Response;
+  usedBase: string;
+};
+
+const getViteExtractBase = (): string => {
+  try {
+    const envObj = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+    return String(envObj?.VITE_MODULE2_API_BASE || envObj?.VITE_EXTRACT_API_BASE || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const useModule4FrontendIngestFallback = (): boolean => {
+  try {
+    const envObj = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+    const raw = String(envObj?.VITE_MODULE4_FRONTEND_INGEST_FALLBACK || '').trim().toLowerCase();
+    return raw === '1' || raw === 'true' || raw === 'yes';
+  } catch {
+    return false;
+  }
+};
+
+const trimTrailingSlash = (value: string) => String(value || '').replace(/\/+$/, '');
+
+const normalizeExtractBase = (raw: string): string => {
+  const base = trimTrailingSlash(String(raw || '').trim());
+  if (!base) return '';
+  return base.endsWith('/extract') ? base.slice(0, -8) : base;
+};
+
+const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
+  const out: string[] = [];
+  const push = (raw: string) => {
+    const base = normalizeExtractBase(raw);
+    if (!base) return;
+    if (!out.includes(base)) out.push(base);
+  };
+
+  push(preferredBase);
+  push(getViteExtractBase());
+
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol;
+    const hostname = window.location.hostname;
+    const port = window.location.port;
+    if (hostname) {
+      if (port !== '8000') push(`${protocol}//${hostname}:8000`);
+      push(`${protocol}//127.0.0.1:8000`);
+      push(`${protocol}//localhost:8000`);
+    }
+  }
+
+  return out;
+};
+
+const joinExtractUrl = (base: string, path: string): string => {
+  const normalizedPath = String(path || '').startsWith('/') ? String(path || '') : `/${String(path || '')}`;
+  const normalizedBase = normalizeExtractBase(base);
+  return normalizedBase ? `${normalizedBase}${normalizedPath}` : normalizedPath;
+};
+
+const resolveExtractBase = (preferredBase = ''): string => {
+  const normalizedPreferred = normalizeExtractBase(preferredBase);
+  if (normalizedPreferred) return normalizedPreferred;
+  const candidates = buildExtractBaseCandidates(preferredBase);
+  return candidates[0] || '';
+};
+
+const toAbsoluteExtractUrl = (rawUrl: string, base: string): string => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  if (!value.startsWith('/')) return value;
+  const normalizedBase = resolveExtractBase(base);
+  return normalizedBase ? `${normalizedBase}${value}` : value;
+};
+
+const parseFetchErrorMessage = (error: unknown): string => {
+  if (!(error instanceof Error)) return '文档预览转换失败';
+  const msg = String(error.message || '').trim();
+  if (!msg) return '文档预览转换失败';
+  const lowered = msg.toLowerCase();
+  if (lowered.includes('failed to fetch') || lowered.includes('networkerror') || lowered.includes('load failed')) {
+    return '无法连接文档解析后端，请确认后端服务已启动（默认 8000 端口）或检查后端地址配置。';
+  }
+  return msg;
+};
+
+const readResponseErrorMessage = async (response: Response): Promise<string> => {
+  let text = '';
+  try {
+    text = await response.text();
+  } catch {
+    text = '';
+  }
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return `状态码 ${response.status}`;
+  try {
+    const parsed = JSON.parse(trimmed);
+    const detail = parsed?.detail || parsed?.message || parsed?.error;
+    if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  } catch {
+    // non-json payload
+  }
+  return trimmed.length > 1800 ? `${trimmed.slice(0, 1800)}...` : trimmed;
+};
+
+const fetchExtractWithFallback = async (
+  path: string,
+  init?: RequestInit,
+  preferredBase = '',
+): Promise<ExtractFetchResult> => {
+  const tried: string[] = [];
+  let lastError = '';
+  const candidates = ['', ...buildExtractBaseCandidates(preferredBase)];
+
+  for (const base of candidates) {
+    if (tried.includes(base)) continue;
+    tried.push(base);
+    const url = joinExtractUrl(base, path);
+    try {
+      const response = await fetch(url, init);
+      if (response.ok) {
+        return { response, usedBase: base };
+      }
+
+      const msg = await readResponseErrorMessage(response);
+      const retryable = response.status >= 500 || response.status === 404;
+      if (!retryable) {
+        throw new Error(msg);
+      }
+      lastError = msg || `状态码 ${response.status}`;
+    } catch (error) {
+      lastError = parseFetchErrorMessage(error);
+    }
+  }
+
+  throw new Error(lastError || '文档解析后端请求失败。');
+};
 
 const toPageNumber = (bbox: number[]) => {
   if (bbox.length !== 5) return null;
@@ -115,6 +859,16 @@ const toPercentBox = (bbox: number[]) => {
   };
 };
 
+const hasMeaningfulBox = (bbox: number[]) => {
+  if (!Array.isArray(bbox) || bbox.length !== 5) return false;
+  const [, x, y, w, h] = bbox.map((n) => Number(n));
+  if (![x, y, w, h].every((n) => Number.isFinite(n))) return false;
+  if (w <= 0 || h <= 0) return false;
+  // Avoid fake full-page placeholders: [1, 0, 0, 1, 1]
+  if (x <= 0.0001 && y <= 0.0001 && w >= 0.995 && h >= 0.995) return false;
+  return true;
+};
+
 const toFieldLabel = (name: string) =>
   (
     {
@@ -129,7 +883,93 @@ const toFieldLabel = (name: string) =>
       seller_name: '销售方名称',
       total_amount: '合计金额',
     } as Record<string, string>
-  )[name] ?? name;
+  )[name] || name;
+
+const toTraceHits = (doc: DocumentResult | null, fieldKey?: string | null): TraceHit[] => {
+  if (!doc || !Array.isArray(doc.trace_hits)) return [];
+  const key = (fieldKey || '').trim().toLowerCase();
+  const out = doc.trace_hits.filter((hit) => {
+    if (!hit || typeof hit !== 'object') return false;
+    const objectType = String(hit.object_type || '');
+    if (!objectType) return false;
+    if (!key) return true;
+    const objectId = String(hit.object_id || '').toLowerCase();
+    const snippet = String(hit.snippet || '').toLowerCase();
+    return objectId === key || snippet.includes(`${key}:`);
+  });
+  return out.sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0));
+};
+
+const getTraceLocator = (hit: TraceHit): Record<string, unknown> =>
+  hit.locator && typeof hit.locator === 'object' ? (hit.locator as Record<string, unknown>) : {};
+
+const isTableLikeFigureTrace = (hit: TraceHit): boolean => {
+  const locator = getTraceLocator(hit);
+  const figureType = String(locator.figure_type || '').trim().toLowerCase();
+  if (figureType === 'table' || figureType === 'spreadsheet') return true;
+
+  const contentModes = Array.isArray(locator.content_modes)
+    ? locator.content_modes.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : [];
+
+  const dataframe = locator.dataframe && typeof locator.dataframe === 'object'
+    ? (locator.dataframe as Record<string, unknown>)
+    : {};
+  const hasHeaders = Array.isArray(dataframe.headers)
+    && dataframe.headers.some((cell) => String(cell || '').trim().length > 0);
+  const hasRows = Array.isArray(dataframe.rows)
+    && dataframe.rows.some(
+      (row) => Array.isArray(row) && row.some((cell) => String(cell || '').trim().length > 0)
+    );
+
+  return (hasHeaders || hasRows) && !contentModes.includes('visual') && !contentModes.includes('topology');
+};
+
+const getTraceDisplayKind = (hit: TraceHit): TraceDisplayKind => {
+  const objectType = String(hit.object_type || '').trim().toLowerCase();
+  if (objectType === 'field') return 'field';
+  if (objectType === 'table') return 'table';
+  if (objectType === 'figure') return isTableLikeFigureTrace(hit) ? 'table' : 'image';
+  return 'other';
+};
+
+const getTraceDisplayLabel = (hit: TraceHit): string => {
+  const kind = getTraceDisplayKind(hit);
+  if (kind === 'field') return '字段';
+  if (kind === 'table') return '表格';
+  if (kind === 'image') return '图片';
+  return '其他';
+};
+
+const toTraceHitKey = (hit: TraceHit, idx: number) =>
+  `${String(hit.object_type || 'trace')}:${String(hit.object_id || '')}:${String(hit.ref_id || '')}:${idx}`;
+
+const toTracePage = (hit: TraceHit): number => {
+  const pageRaw = Number(hit.page || 0);
+  if (Number.isFinite(pageRaw) && pageRaw > 0) return Math.round(pageRaw);
+  const bbox = Array.isArray(hit.bbox) ? hit.bbox : [];
+  if (bbox.length === 5) {
+    const p = Number(bbox[0] || 0);
+    if (Number.isFinite(p) && p > 0) return Math.round(p);
+  }
+  const locator = (hit.locator || {}) as Record<string, unknown>;
+  const locatorPage = Number(locator.page || 0);
+  return Number.isFinite(locatorPage) && locatorPage > 0 ? Math.round(locatorPage) : 0;
+};
+
+const resolveArtifactUrl = (hit: TraceHit): string => {
+  const direct = String(hit.artifact_url || '').trim();
+  if (direct) return direct;
+  const pathRaw = String(hit.artifact_path || '').trim();
+  if (!pathRaw) return '';
+  const normalized = pathRaw.replace(/\\/g, '/');
+  const encoded = normalized
+    .split('/')
+    .filter(Boolean)
+    .map((seg) => encodeURIComponent(seg))
+    .join('/');
+  return encoded ? `/extract/artifact/${encoded}` : '';
+};
 
 export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ isSidebarCollapsed = false }) => {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -138,125 +978,660 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const [activeDocIndex, setActiveDocIndex] = useState(0);
   const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [extractionJob, setExtractionJob] = useState<ExtractionJobState | null>(null);
+  const [selectedFileArtifacts, setSelectedFileArtifacts] = useState<Record<string, { artifactUrl?: string; artifactPath?: string }>>({});
+  const [sessionHydrated, setSessionHydrated] = useState(false);
+  const [sessionRestorePending, setSessionRestorePending] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [infoMessage, setInfoMessage] = useState('每批最多上传 5 个文件。');
+  const [infoMessage, setInfoMessage] = useState("每批最多上传 5 个文件。");
+  const [activeSummaryText, setActiveSummaryText] = useState('');
+  const [activeSummaryLoading, setActiveSummaryLoading] = useState(false);
+  const [summaryDocName, setSummaryDocName] = useState('');
+  const [traceHits, setTraceHits] = useState<TraceHit[]>([]);
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [traceError, setTraceError] = useState('');
+  const [assistantStatus, setAssistantStatus] = useState<'idle' | 'confirmed' | 'rolled_back'>('idle');
+  const [assistantMessage, setAssistantMessage] = useState("等待生成可执行建议。");
+  const [assistantInput, setAssistantInput] = useState('');
+  const [assistantQueryLoading, setAssistantQueryLoading] = useState(false);
+  const [assistantAnswer, setAssistantAnswer] = useState('');
+  const [assistantWarnings, setAssistantWarnings] = useState<string[]>([]);
+  const [assistantDialog, setAssistantDialog] = useState<AssistantDialogMessage[]>([]);
+  const [smartUnitTab, setSmartUnitTab] = useState<'results' | 'assistant'>('results');
+  const [assistantTabUnread, setAssistantTabUnread] = useState(false);
+  const [resultsTabUnread, setResultsTabUnread] = useState(false);
+  const [showAssistantHelp, setShowAssistantHelp] = useState(false);
   const [showSchema, setShowSchema] = useState(false); // UI Toggle
+  const [isPreviewFocused, setIsPreviewFocused] = useState(false);
+  const [isUploaderDragOver, setIsUploaderDragOver] = useState(false);
+  const [resultSearchQuery, setResultSearchQuery] = useState('');
   
   // Viewport Controls
   const [scale, setScale] = useState(1);
   const [rotation, setRotation] = useState(0);
+  const [activeTraceKey, setActiveTraceKey] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const assistantInputRef = useRef<HTMLTextAreaElement>(null);
+  const textPreviewRef = useRef<HTMLDivElement>(null);
+  const assistantDialogRef = useRef<HTMLDivElement>(null);
+  const summaryRequestSeqRef = useRef(0);
+  const traceRequestSeqRef = useRef(0);
+  const officePreviewPollRef = useRef<Record<string, string>>({});
+  const officePreviewApiBaseRef = useRef<Record<string, string>>({});
+  const extractionJobPollRef = useRef<string>('');
+  const extractionJobApiBaseRef = useRef<string>('');
+  const persistedSelectedFilesRef = useRef<PersistedWorkbenchFile[]>([]);
+  const assistantActivityRef = useRef('');
+  const resultsActivityRef = useRef('');
 
-  const activeDoc = documents[activeDocIndex] ?? null;
+  useEffect(() => () => {
+    clearSpreadsheetPreviewWarmupQueue();
+  }, []);
+
+  const activeDoc = documents[activeDocIndex] || null;
   const activeSourceFile = useMemo(() => {
-    if (!activeDoc || selectedFiles.length === 0) return null;
+    // Priority 1: Match activeDoc if it exists
+    if (activeDoc && selectedFiles.length > 0) {
+      const targetName = String(activeDoc.file_name || '').trim().toLowerCase();
+      const nameMatched = targetName
+        ? selectedFiles.filter((file) => file.name.toLowerCase() === targetName)
+        : [];
+      if (nameMatched.length === 1) return nameMatched[0];
+      const byIndex = selectedFiles[activeDocIndex] || null;
+      if (nameMatched.length > 1) {
+        if (byIndex && byIndex.name.toLowerCase() === targetName) return byIndex;
+        return nameMatched[0] || byIndex;
+      }
+      const exact = selectedFiles.find((file) => file.name === activeDoc.file_name);
+      if (exact) return exact;
+      if (byIndex && fileExt(byIndex.name) === fileExt(activeDoc.file_name)) return byIndex;
 
-    const exact = selectedFiles.find((file) => file.name === activeDoc.file_name);
-    if (exact) return exact;
+      return byIndex;
+    }
 
-    const targetName = activeDoc.file_name.toLowerCase();
-    const insensitive = selectedFiles.find((file) => file.name.toLowerCase() === targetName);
-    if (insensitive) return insensitive;
+    // Priority 2: Fallback to selectedFiles based on index (Pre-extraction preview)
+    if (!activeDoc && selectedFiles.length > 0) {
+      return selectedFiles[activeDocIndex] || selectedFiles[0];
+    }
 
-    const byIndex = selectedFiles[activeDocIndex] ?? null;
-    if (byIndex && fileExt(byIndex.name) === fileExt(activeDoc.file_name)) return byIndex;
-
-    return byIndex;
+    return null;
   }, [activeDoc, activeDocIndex, selectedFiles]);
-  const activeExt = activeDoc ? fileExt(activeDoc.file_name) : '';
+  const activeExt = activeSourceFile ? fileExt(activeSourceFile.name) : (activeDoc ? fileExt(activeDoc.file_name) : '');
+  const activeDisplayName = activeDoc?.file_name || activeSourceFile?.name || '当前文档';
+  const activeSelectionCount = Math.max(documents.length, selectedFiles.length);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewText, setPreviewText] = useState<string>('');
-  const [pdfPage, setPdfPage] = useState(1);
+  const [officePreviewMap, setOfficePreviewMap] = useState<Record<string, OfficePreviewState>>({});
+  const [pdfViewportPage, setPdfViewportPage] = useState(1);
+  const [pdfScrollRequest, setPdfScrollRequest] = useState<PdfScrollRequest | null>(null);
+  const [pdfPreviewPageCount, setPdfPreviewPageCount] = useState(1);
+  const assistantActionable = useMemo(
+    () => Boolean(activeDoc && (((activeDoc.errors?.length || 0) > 0) || ((activeDoc.soft_warnings?.length || 0) > 0))),
+    [activeDoc]
+  );
+  const showLeftPanel = !isPreviewFocused;
+  const activeOfficePreview = useMemo(() => {
+    const fileNameHint = String(activeSourceFile?.name || activeDoc?.file_name || '').trim();
+    if (!fileNameHint) return null;
+
+    const byIdentity = activeSourceFile ? (officePreviewMap[fileIdentityKey(activeSourceFile)] || null) : null;
+    const byName = pickOfficePreviewByFileName(fileNameHint, officePreviewMap);
+
+    // Prefer a completed preview with url whenever available.
+    if (byIdentity && byIdentity.status === 'completed' && String(byIdentity.pdfUrl || '').trim()) {
+      return byIdentity;
+    }
+    if (byName && byName.status === 'completed' && String(byName.pdfUrl || '').trim()) {
+      return byName;
+    }
+    return byIdentity || byName || null;
+  }, [activeDoc?.file_name, activeSourceFile, officePreviewMap]);
+  const activeDocPreviewPdfUrl = useMemo(() => {
+    const val = String(
+      activeDoc?.diagnostics?.office_pdf_preview_url
+      || activeDoc?.diagnostics?.pdf_preview_url
+      || ''
+    ).trim();
+    return val || '';
+  }, [activeDoc?.diagnostics]);
+  const activeConvertedPdfUrl = useMemo(() => {
+    const fromUpload = String(activeOfficePreview?.pdfUrl || '').trim();
+    if (fromUpload) return fromUpload;
+    return activeDocPreviewPdfUrl;
+  }, [activeOfficePreview?.pdfUrl, activeDocPreviewPdfUrl]);
+  const activeRenderExt = useMemo(() => {
+    if ((activeExt === 'doc' || activeExt === 'docx') && activeConvertedPdfUrl) return 'pdf';
+    return activeExt;
+  }, [activeExt, activeConvertedPdfUrl]);
+  const activePreviewIdentity = useMemo(() => {
+    if (activeDoc?.file_hash) return `doc:${activeDoc.file_hash}`;
+    if (activeSourceFile) return `upload:${fileIdentityKey(activeSourceFile)}`;
+    if (activeDoc?.file_name) return `name:${activeDoc.file_name}`;
+    if (previewUrl) return `preview:${previewUrl}`;
+    return '';
+  }, [activeDoc?.file_hash, activeDoc?.file_name, activeSourceFile, previewUrl]);
+  const hasPreviewContent = Boolean(activeSourceFile || previewUrl);
+  const canClearWorkbenchData = useMemo(
+    () =>
+      Boolean(
+        selectedFiles.length > 0
+        || documents.length > 0
+        || previewUrl
+        || previewText
+        || activeSummaryText
+        || traceHits.length > 0
+        || assistantDialog.length > 0
+        || assistantInput
+        || assistantAnswer
+        || resultSearchQuery
+        || Object.keys(officePreviewMap).length > 0
+      ),
+    [
+      activeSummaryText,
+      assistantAnswer,
+      assistantDialog.length,
+      assistantInput,
+      documents.length,
+      officePreviewMap,
+      previewText,
+      previewUrl,
+      resultSearchQuery,
+      selectedFiles.length,
+      traceHits.length,
+    ]
+  );
+  const recentUserInstructions = useMemo(() => {
+    const pool = assistantDialog
+      .filter((msg) => msg.role === 'user')
+      .map((msg) => msg.content.trim())
+      .filter(Boolean)
+      .reverse();
+    return Array.from(new Set(pool)).slice(0, 6);
+  }, [assistantDialog]);
+
+  const applyAssistantInstruction = (instruction: string) => {
+    const text = String(instruction || '').trim();
+    if (!text) return;
+    setAssistantInput(text);
+    requestAnimationFrame(() => {
+      assistantInputRef.current?.focus();
+      const len = text.length;
+      assistantInputRef.current?.setSelectionRange(len, len);
+    });
+  };
 
   useEffect(() => {
-    const cached = readExtractionDocuments();
-    if (cached.length === 0) return;
-    setDocuments(cached);
-    setInfoMessage(`Loaded ${cached.length} cached extraction result(s).`);
+    return () => {
+      officePreviewPollRef.current = {};
+      officePreviewApiBaseRef.current = {};
+      extractionJobPollRef.current = '';
+      extractionJobApiBaseRef.current = '';
+    };
   }, []);
 
   useEffect(() => {
-    if (documents.length === 0) {
-      setActiveDocIndex(0);
-      return;
-    }
-    if (activeDocIndex > documents.length - 1) {
-      setActiveDocIndex(documents.length - 1);
-    }
-  }, [activeDocIndex, documents]);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.key.toLowerCase() !== 'o') return;
+      event.preventDefault();
+      fileInputRef.current?.click();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   useEffect(() => {
-    setPdfPage(1);
-  }, [activeDoc?.file_hash]);
+    let active = true;
+    const cached = readExtractionDocuments();
+    const session = readWorkbenchSession();
+    if (cached.length > 0) {
+      setDocuments(cached);
+      setInfoMessage(`已加载 ${cached.length} 条本地缓存抽取结果。`);
+    }
+    if (!session) {
+      persistedSelectedFilesRef.current = [];
+      setSessionRestorePending(false);
+      setSessionHydrated(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    setActiveDocIndex(Math.max(0, Number(session.activeDocIndex || 0)));
+    setOfficePreviewMap(session.officePreviewMap || {});
+    setExtractionJob(session.extractionJob || null);
+    setIsProcessing(Boolean(session.extractionJob && !session.extractionJob.terminal));
+    persistedSelectedFilesRef.current = Array.isArray(session.selectedFiles) ? session.selectedFiles : [];
+    const artifactMap = Object.fromEntries(
+      (session.selectedFiles || []).map((item) => [
+        item.key,
+        {
+          artifactUrl: item.artifactUrl,
+          artifactPath: item.artifactPath,
+        },
+      ]),
+    );
+    setSelectedFileArtifacts(artifactMap);
+
+    const restorable = (session.selectedFiles || []).filter((item) =>
+      String(item.artifactUrl || item.artifactPath || '').trim()
+    );
+    if (restorable.length === 0) {
+      setSessionRestorePending(false);
+      setSessionHydrated(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    setSessionRestorePending(true);
+    setInfoMessage(`正在恢复 ${restorable.length} 份文件预览与任务状态...`);
+    Promise.all(
+      restorable.map(async (item) => {
+        try {
+          return await hydrateFileFromArtifact(item);
+        } catch {
+          return null;
+        }
+      }),
+    ).then((restored) => {
+      if (!active) return;
+      const files = restored.filter(Boolean) as File[];
+      if (files.length > 0) {
+        setSelectedFiles(files);
+        setInfoMessage(`已恢复 ${files.length} 份文件预览与任务状态。`);
+      }
+    }).finally(() => {
+      if (!active) return;
+      setSessionRestorePending(false);
+      setSessionHydrated(true);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeSelectionCount === 0) {
+      if (activeDocIndex !== 0) {
+        setActiveDocIndex(0);
+      }
+      return;
+    }
+    if (activeDocIndex > activeSelectionCount - 1) {
+      setActiveDocIndex(activeSelectionCount - 1);
+    }
+  }, [activeDocIndex, activeSelectionCount]);
+
+  useEffect(() => {
+    if (!sessionHydrated || sessionRestorePending) return;
+    const hasSessionState =
+      selectedFiles.length > 0
+      || Object.keys(officePreviewMap).length > 0
+      || Boolean(extractionJob);
+    if (!hasSessionState) {
+      persistedSelectedFilesRef.current = [];
+      clearWorkbenchSession();
+      return;
+    }
+    const snapshot = toSessionSnapshot(
+      selectedFiles,
+      activeDocIndex,
+      officePreviewMap,
+      extractionJob,
+      selectedFileArtifacts,
+      persistedSelectedFilesRef.current,
+    );
+    persistedSelectedFilesRef.current = snapshot.selectedFiles;
+    writeWorkbenchSession(snapshot);
+  }, [activeDocIndex, extractionJob, officePreviewMap, selectedFileArtifacts, selectedFiles, sessionHydrated, sessionRestorePending]);
+
+  useEffect(() => {
+    setPdfViewportPage(1);
+    if (activeRenderExt === 'pdf' && activePreviewIdentity) {
+      setPdfScrollRequest(createPdfScrollRequest(1));
+      return;
+    }
+    setPdfScrollRequest(null);
+  }, [activePreviewIdentity, activeRenderExt]);
 
   useEffect(() => {
     if (!activeSourceFile) {
-      setPreviewUrl(null);
+      if (activeConvertedPdfUrl && (activeExt === 'doc' || activeExt === 'docx')) {
+        setPreviewUrl(activeConvertedPdfUrl);
+      } else if (activeExt === 'pdf' && activeDocPreviewPdfUrl) {
+        setPreviewUrl(activeDocPreviewPdfUrl);
+      } else {
+        setPreviewUrl(null);
+      }
+      return;
+    }
+    if ((activeExt === 'doc' || activeExt === 'docx') && activeConvertedPdfUrl) {
+      setPreviewUrl(activeConvertedPdfUrl);
       return;
     }
     const url = URL.createObjectURL(activeSourceFile);
     setPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [activeSourceFile]);
+  }, [activeSourceFile, activeExt, activeConvertedPdfUrl, activeDocPreviewPdfUrl]);
+
+  useEffect(() => {
+    if (activeRenderExt !== 'pdf') {
+      setPdfPreviewPageCount(1);
+      return;
+    }
+    setPdfPreviewPageCount(1);
+  }, [activeRenderExt, previewUrl]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!activeSourceFile || !['txt', 'md'].includes(activeExt)) {
+    if (!activeSourceFile) {
       setPreviewText('');
       return () => {
         cancelled = true;
       };
     }
-    activeSourceFile.text().then((text) => {
-      if (cancelled) return;
-      const maxChars = 12000;
-      setPreviewText(text.length > maxChars ? `${text.slice(0, maxChars)}\n\n... [truncated]` : text);
-    });
+
+    if (['txt', 'md'].includes(activeExt)) {
+      activeSourceFile.text().then((text) => {
+        if (cancelled) return;
+        const maxChars = 12000;
+        setPreviewText(text.length > maxChars ? `${text.slice(0, maxChars)}\n\n...[内容已截断]` : text);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setPreviewText('');
     return () => {
       cancelled = true;
     };
   }, [activeSourceFile, activeExt]);
 
+  const activeTraceHit = useMemo(() => {
+    if (!activeTraceKey) return null;
+    const idx = traceHits.findIndex((hit, i) => toTraceHitKey(hit, i) === activeTraceKey);
+    if (idx < 0) return null;
+    return traceHits[idx];
+  }, [activeTraceKey, traceHits]);
+
+  const previewHighlight = useMemo(() => {
+    if (!['txt', 'md'].includes(activeExt)) return null;
+    const sourceText = previewText || '';
+    if (!sourceText) return null;
+    const rawSnippet = String(activeTraceHit?.snippet || '').split('|')[0].trim();
+    const fieldEntity = activeDoc && activeFieldKey ? activeDoc.result?.[activeFieldKey] : null;
+    const fieldFallback = fieldEntity?.value == null ? '' : String(fieldEntity.value);
+    let keyword = rawSnippet || fieldFallback;
+    keyword = keyword.replace(/^[^:：]{1,30}[:：]\s*/, '').trim();
+    if (keyword.length < 2) return null;
+    if (keyword.length > 64) keyword = keyword.slice(0, 64);
+
+    const lowerText = sourceText.toLowerCase();
+    const lowerKeyword = keyword.toLowerCase();
+    const start = lowerText.indexOf(lowerKeyword);
+    if (start < 0) return null;
+    return {
+      before: sourceText.slice(0, start),
+      hit: sourceText.slice(start, start + keyword.length),
+      after: sourceText.slice(start + keyword.length),
+    };
+  }, [activeExt, previewText, activeTraceHit, activeFieldKey, activeDoc]);
+
+  const xlsxLocatorHint = useMemo(() => {
+    if (activeRenderExt !== 'xlsx') return null;
+    const locator = (activeTraceHit?.locator ?? {}) as Record<string, unknown>;
+    return {
+      sheet_index: Number(locator.sheet_index || 0),
+      row_index: Number(locator.row_index || 0),
+      col_index: Number(locator.col_index || 0),
+      sheet_name: String(locator.sheet_name || ''),
+    };
+  }, [activeRenderExt, activeTraceHit]);
+
+  useEffect(() => {
+    if (!previewHighlight || !textPreviewRef.current) return;
+    const mark = textPreviewRef.current.querySelector('mark[data-preview-highlight="true"]');
+    if (!mark) return;
+    mark.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [previewHighlight]);
+
+  useEffect(() => {
+    setResultSearchQuery('');
+  }, [activeDoc?.file_hash]);
+
+  useEffect(() => {
+    const panel = assistantDialogRef.current;
+    if (!panel) return;
+    panel.scrollTop = panel.scrollHeight;
+  }, [assistantDialog, assistantQueryLoading]);
+
+  useEffect(() => {
+    if (activeSourceFile) {
+      setIsUploaderDragOver(false);
+    }
+  }, [activeSourceFile]);
+
+  const requestSummary = async (doc: DocumentResult) => {
+    if (!doc) return;
+    const seq = ++summaryRequestSeqRef.current;
+    setSummaryDocName(doc.file_name);
+    setActiveSummaryLoading(true);
+    try {
+      const response = await fetch('/extract/summarize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_name: doc.file_name,
+          result: doc.result,
+          diagnostics: doc.diagnostics ?? {},
+          errors: doc.errors ?? [],
+          soft_warnings: doc.soft_warnings ?? [],
+          trace_hits: doc.trace_hits ?? [],
+          max_chars: 520,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error('摘要生成失败');
+      }
+      const payload = (await response.json()) as SummarizeResponse;
+      if (seq !== summaryRequestSeqRef.current) return;
+      setActiveSummaryText((payload.summary || "").trim() || "暂无摘要。");
+    } catch (error) {
+      if (seq !== summaryRequestSeqRef.current) return;
+      const fallback = String(doc.errors?.[0] ?? '').trim();
+      setActiveSummaryText(fallback || "暂时无法生成摘要，请稍后重试。");
+    } finally {
+      if (seq === summaryRequestSeqRef.current) {
+        setActiveSummaryLoading(false);
+      }
+    }
+  };
+
+  const requestTraceHits = async (doc: DocumentResult, fieldKey?: string | null) => {
+    if (!doc) return;
+    const seq = ++traceRequestSeqRef.current;
+    setTraceLoading(true);
+    setTraceError('');
+    try {
+      const response = await fetch('/extract/trace/locate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          document: doc,
+          field_name: fieldKey || undefined,
+          top_k: 40,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error('溯源定位失败');
+      }
+      const payload = (await response.json()) as TraceLocateResponse;
+      if (seq !== traceRequestSeqRef.current) return;
+      const hits = Array.isArray(payload.hits) ? payload.hits : [];
+      setTraceHits(hits.length > 0 ? hits : toTraceHits(doc, fieldKey));
+    } catch (error) {
+      if (seq !== traceRequestSeqRef.current) return;
+      setTraceHits(toTraceHits(doc, fieldKey));
+      setTraceError(error instanceof Error ? error.message : '溯源定位失败');
+    } finally {
+      if (seq === traceRequestSeqRef.current) {
+        setTraceLoading(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!activeDoc) {
+      setSummaryDocName('');
+      setActiveSummaryText('');
+      setActiveSummaryLoading(false);
+      return;
+    }
+    void requestSummary(activeDoc);
+  }, [activeDoc?.file_hash]);
+
+  useEffect(() => {
+    if (!activeDoc) {
+      setTraceHits([]);
+      setTraceError('');
+      setTraceLoading(false);
+      setActiveTraceKey('');
+      return;
+    }
+    if (Array.isArray(activeDoc.trace_hits) && activeDoc.trace_hits.length > 0) {
+      setTraceHits(toTraceHits(activeDoc, activeFieldKey));
+      setTraceError('');
+      setTraceLoading(false);
+      return;
+    }
+    void requestTraceHits(activeDoc, activeFieldKey);
+  }, [activeDoc?.file_hash, activeFieldKey]);
+
+  useEffect(() => {
+    if (!activeDoc) {
+      setAssistantStatus('idle');
+      setAssistantMessage("等待生成可执行建议。");
+      return;
+    }
+    if (assistantActionable) {
+      setAssistantStatus('idle');
+      setAssistantMessage("检测到异常或软告警，请确认是否接受当前结果，或执行回滚后重试。");
+    } else {
+      setAssistantStatus('idle');
+      setAssistantMessage("当前批次无需执行变更，结果可直接使用。");
+    }
+  }, [activeDoc?.file_hash, assistantActionable]);
+
+  useEffect(() => {
+    setAssistantInput('');
+    setAssistantAnswer('');
+    setAssistantWarnings([]);
+    setAssistantDialog([]);
+    setAssistantQueryLoading(false);
+    setOfficePreviewMap({});
+    setActiveTraceKey('');
+  }, [activeDoc?.file_hash]);
+
   const fieldItems = useMemo<FieldItem[]>(() => {
     if (!activeDoc) return [];
 
     const entries = Object.entries(activeDoc.result) as Array<[string, ExtractionEntity]>;
-    return entries.map(([fieldName, entity]) => ({
+    const meaningful = entries.filter(([, entity]) => {
+      if (!entity) return false;
+      const value = entity.value;
+      if (value == null) return false;
+      const text = String(value).trim();
+      if (!text || text.toLowerCase() === 'null') return false;
+      const conf = Number(entity.confidence ?? 0);
+      return Number.isFinite(conf) && conf >= 0.2;
+    });
+
+    return meaningful.map(([fieldName, entity]) => ({
       bbox: Array.isArray(entity.bbox) ? entity.bbox : [],
       key: fieldName,
       label: toFieldLabel(fieldName),
-      valueText: entity.value == null ? 'null' : String(entity.value),
+      valueText: String(entity.value),
       confidence: entity.confidence ?? 0,
       refId: entity.source_ref_id,
       pageNumber: toPageNumber(Array.isArray(entity.bbox) ? entity.bbox : []),
     }));
   }, [activeDoc]);
+  const filteredFieldItems = useMemo(() => {
+    const q = resultSearchQuery.trim().toLowerCase();
+    if (!q) return fieldItems;
+    return fieldItems.filter((item) => {
+      const key = String(item.key || '').toLowerCase();
+      const label = String(item.label || '').toLowerCase();
+      const value = String(item.valueText || '').toLowerCase();
+      return key.includes(q) || label.includes(q) || value.includes(q);
+    });
+  }, [fieldItems, resultSearchQuery]);
+  const hasResultSearch = resultSearchQuery.trim().length > 0;
+  const resultCountText = useMemo(() => {
+    if (fieldItems.length === 0) return '';
+    if (!hasResultSearch) return `${fieldItems.length} 个字段`;
+    return `${filteredFieldItems.length} / ${fieldItems.length} 个字段`;
+  }, [fieldItems.length, filteredFieldItems.length, hasResultSearch]);
+  const canCopyFilteredResults = filteredFieldItems.length > 0;
+  const filteredResultsClipboardText = useMemo(
+    () =>
+      filteredFieldItems
+        .map((item, idx) => `${idx + 1}. ${item.label} (${item.key})\n${item.valueText}`)
+        .join('\n\n'),
+    [filteredFieldItems]
+  );
 
   const inferredPdfPageCount = useMemo(() => {
-    if (activeExt !== 'pdf') return 1;
+    if (activeRenderExt !== 'pdf') return 1;
     const maxByRefs = fieldItems.reduce((maxPage, item) => {
       if (item.pageNumber == null) return maxPage;
       return Math.max(maxPage, item.pageNumber);
     }, 1);
-    return Math.max(1, maxByRefs);
-  }, [activeExt, fieldItems]);
+    const maxByTrace = traceHits.reduce((maxPage, hit) => {
+      const page = Number(hit.page || 0);
+      if (!Number.isFinite(page) || page < 1) return maxPage;
+      return Math.max(maxPage, Math.round(page));
+    }, 1);
+    return Math.max(1, maxByRefs, maxByTrace, pdfPreviewPageCount);
+  }, [activeRenderExt, fieldItems, pdfPreviewPageCount, traceHits]);
 
-  const currentPdfPage = Math.min(Math.max(pdfPage, 1), inferredPdfPageCount);
+  const currentPdfPage = Math.min(Math.max(pdfViewportPage, 1), inferredPdfPageCount);
 
   useEffect(() => {
-    if (activeExt !== 'pdf') return;
-    if (pdfPage !== currentPdfPage) {
-      setPdfPage(currentPdfPage);
+    if (activeRenderExt !== 'pdf') return;
+    if (pdfViewportPage !== currentPdfPage) {
+      setPdfViewportPage(currentPdfPage);
     }
-  }, [activeExt, currentPdfPage, pdfPage]);
+  }, [activeRenderExt, currentPdfPage, pdfViewportPage]);
 
   const overlayItems = useMemo(() => {
-    if (activeExt !== 'pdf') {
-      return fieldItems.filter((item) => item.bbox.length === 5);
+    const drawable = activeRenderExt === 'pdf' || IMAGE_EXTENSIONS.has(activeRenderExt);
+    if (!drawable) return [];
+    if (activeRenderExt !== 'pdf') {
+      return fieldItems.filter((item) => hasMeaningfulBox(item.bbox));
     }
-    return fieldItems.filter((item) => item.bbox.length === 5 && item.pageNumber === currentPdfPage);
-  }, [activeExt, currentPdfPage, fieldItems]);
+    return fieldItems.filter(
+      (item) => hasMeaningfulBox(item.bbox) && item.pageNumber === currentPdfPage
+    );
+  }, [activeRenderExt, currentPdfPage, fieldItems]);
+
+  const overlayTraceItems = useMemo(() => {
+    const drawable = activeRenderExt === 'pdf' || IMAGE_EXTENSIONS.has(activeRenderExt);
+    if (!drawable) return [];
+    const filtered = traceHits.filter((hit) => {
+      const bbox = Array.isArray(hit.bbox) ? hit.bbox : [];
+      if (!hasMeaningfulBox(bbox)) return false;
+      if (String(hit.object_type || '').toLowerCase() === 'field') return false;
+      if (activeRenderExt !== 'pdf') return true;
+      const page = Number(hit.page || bbox[0] || 0);
+      return Number.isFinite(page) && Math.round(page) === currentPdfPage;
+    });
+    return filtered.slice(0, 24);
+  }, [traceHits, activeRenderExt, currentPdfPage]);
 
   const avgConfidence = useMemo(() => {
     if (fieldItems.length === 0) return 0;
@@ -264,59 +1639,645 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     return Math.round((total / fieldItems.length) * 100);
   }, [fieldItems]);
 
-  const onSelectFiles = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const incomingRaw = Array.from(event.target.files ?? []);
+  const traceTypeStats = useMemo(() => {
+    const stats = {
+      field: 0,
+      table: 0,
+      image: 0,
+      other: 0,
+    };
+
+    traceHits.forEach((hit) => {
+      const typ = getTraceDisplayKind(hit);
+      if (typ === 'field') {
+        stats.field += 1;
+      } else if (typ === 'table') {
+        stats.table += 1;
+      } else if (typ === 'image') {
+        stats.image += 1;
+      } else {
+        stats.other += 1;
+      }
+    });
+
+    return stats;
+  }, [traceHits]);
+
+  const assistantActivityKey = useMemo(
+    () =>
+      JSON.stringify({
+        summary: activeSummaryText,
+        summaryLoading: activeSummaryLoading,
+        dialogCount: assistantDialog.length,
+        lastDialogId: assistantDialog[assistantDialog.length - 1]?.id ?? '',
+        assistantAnswer,
+        assistantWarnings: assistantWarnings.join('|'),
+        assistantMessage,
+        assistantQueryLoading,
+        assistantStatus,
+      }),
+    [
+      activeSummaryText,
+      activeSummaryLoading,
+      assistantDialog,
+      assistantAnswer,
+      assistantWarnings,
+      assistantMessage,
+      assistantQueryLoading,
+      assistantStatus,
+    ]
+  );
+  const resultsActivityKey = useMemo(
+    () =>
+      JSON.stringify({
+        activeDocHash: activeDoc?.file_hash ?? '',
+        documentCount: documents.length,
+        fieldCount: fieldItems.length,
+        traceCount: traceHits.length,
+        errorMessage,
+        softWarningCount: activeDoc?.soft_warnings?.length ?? 0,
+      }),
+    [activeDoc?.file_hash, activeDoc?.soft_warnings?.length, documents.length, errorMessage, fieldItems.length, traceHits.length]
+  );
+
+  useEffect(() => {
+    if (smartUnitTab === 'assistant' && assistantTabUnread) {
+      setAssistantTabUnread(false);
+    }
+    if (smartUnitTab === 'results' && resultsTabUnread) {
+      setResultsTabUnread(false);
+    }
+  }, [assistantTabUnread, resultsTabUnread, smartUnitTab]);
+
+  useEffect(() => {
+    const hasAssistantActivity =
+      activeSummaryLoading ||
+      assistantQueryLoading ||
+      Boolean(activeSummaryText.trim()) ||
+      assistantDialog.length > 0 ||
+      assistantWarnings.length > 0 ||
+      Boolean(assistantAnswer.trim());
+    if (!hasAssistantActivity) {
+      assistantActivityRef.current = assistantActivityKey;
+      return;
+    }
+    if (
+      assistantActivityRef.current &&
+      assistantActivityRef.current !== assistantActivityKey &&
+      smartUnitTab !== 'assistant'
+    ) {
+      setAssistantTabUnread(true);
+    }
+    assistantActivityRef.current = assistantActivityKey;
+  }, [
+    activeSummaryLoading,
+    activeSummaryText,
+    assistantActivityKey,
+    assistantAnswer,
+    assistantDialog.length,
+    assistantQueryLoading,
+    assistantWarnings.length,
+    smartUnitTab,
+  ]);
+
+  useEffect(() => {
+    const hasResultActivity =
+      Boolean(activeDoc) ||
+      documents.length > 0 ||
+      fieldItems.length > 0 ||
+      traceHits.length > 0 ||
+      Boolean(errorMessage.trim());
+    if (!hasResultActivity) {
+      resultsActivityRef.current = resultsActivityKey;
+      return;
+    }
+    if (
+      resultsActivityRef.current &&
+      resultsActivityRef.current !== resultsActivityKey &&
+      smartUnitTab !== 'results'
+    ) {
+      setResultsTabUnread(true);
+    }
+    resultsActivityRef.current = resultsActivityKey;
+  }, [activeDoc, documents.length, errorMessage, fieldItems.length, resultsActivityKey, smartUnitTab, traceHits.length]);
+
+  const traceGroups = useMemo(() => {
+    const grouped = {
+      field: [] as Array<{ hit: TraceHit; idx: number }>,
+      table: [] as Array<{ hit: TraceHit; idx: number }>,
+      image: [] as Array<{ hit: TraceHit; idx: number }>,
+      other: [] as Array<{ hit: TraceHit; idx: number }>,
+    };
+    traceHits.forEach((hit, idx) => {
+      const typ = getTraceDisplayKind(hit);
+      if (typ === "field") {
+        grouped.field.push({ hit, idx });
+      } else if (typ === "table") {
+        grouped.table.push({ hit, idx });
+      } else if (typ === "image") {
+        grouped.image.push({ hit, idx });
+      } else {
+        grouped.other.push({ hit, idx });
+      }
+    });
+    return [
+      { key: "field", label: "字段", items: grouped.field },
+      { key: "table", label: "表格", items: grouped.table },
+      { key: "image", label: "图片", items: grouped.image },
+      { key: "other", label: "其他", items: grouped.other },
+    ].filter((group) => group.items.length > 0);
+  }, [traceHits]);
+
+  const tableCount = useMemo(() => {
+    const raw = Number(activeDoc?.diagnostics?.table_count ?? 0);
+    return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 0;
+  }, [activeDoc?.diagnostics?.table_count]);
+
+  const figureCount = useMemo(() => {
+    const raw = Number(activeDoc?.diagnostics?.figure_count ?? 0);
+    return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 0;
+  }, [activeDoc?.diagnostics?.figure_count]);
+
+  const pollOfficePreview = async (key: string, jobId: string, preferredBase = '') => {
+    const maxPoll = 150;
+    let resolvedBase = preferredBase;
+    for (let i = 0; i < maxPoll; i += 1) {
+      if (officePreviewPollRef.current[key] !== jobId) return;
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      let response: Response | null = null;
+      try {
+        const fetchResult = await fetchExtractWithFallback(
+          `/extract/preview/office/status/${encodeURIComponent(jobId)}`,
+          undefined,
+          resolvedBase,
+        );
+        response = fetchResult.response;
+        resolvedBase = fetchResult.usedBase || resolvedBase;
+        officePreviewApiBaseRef.current[key] = resolvedBase;
+      } catch {
+        continue;
+      }
+      if (!response || !response.ok) continue;
+      const payload = await response.json();
+      const status = String(payload.status || '').toLowerCase();
+      if (status === 'completed') {
+        const pdfUrl = toAbsoluteExtractUrl(String(payload.artifact_url || '').trim(), resolvedBase);
+        setOfficePreviewMap((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'completed',
+            jobId,
+            pdfUrl,
+          },
+        }));
+        officePreviewApiBaseRef.current[key] = resolvedBase;
+        delete officePreviewPollRef.current[key];
+        return;
+      }
+      if (status === 'failed') {
+        setOfficePreviewMap((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'failed',
+            jobId,
+            error: String(payload.error || '文档预览转换失败'),
+          },
+        }));
+        delete officePreviewApiBaseRef.current[key];
+        delete officePreviewPollRef.current[key];
+        return;
+      }
+      setOfficePreviewMap((prev) => ({
+        ...prev,
+        [key]: {
+          ...(prev[key] || { status: 'queued' as const }),
+          status: status === 'running' ? 'running' : 'queued',
+          jobId,
+        },
+      }));
+    }
+    if (officePreviewPollRef.current[key] !== jobId) return;
+    setOfficePreviewMap((prev) => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || { status: 'queued' as const }),
+        status: 'failed',
+        jobId,
+        error: '文档预览转换超时',
+      },
+    }));
+    delete officePreviewApiBaseRef.current[key];
+    delete officePreviewPollRef.current[key];
+  };
+
+  const ensureOfficePreview = async (file: File) => {
+    const ext = fileExt(file.name);
+    if (ext !== 'doc' && ext !== 'docx') return;
+    const key = fileIdentityKey(file);
+    if (officePreviewPollRef.current[key]) return;
+    const current = officePreviewMap[key];
+    if (current && (current.status === 'running' || current.status === 'queued' || current.status === 'completed')) {
+      return;
+    }
+    setOfficePreviewMap((prev) => ({
+      ...prev,
+      [key]: { status: 'queued' },
+    }));
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const fetchResult = await fetchExtractWithFallback(
+        '/extract/preview/office/start',
+        {
+          method: 'POST',
+          body: formData,
+        },
+        officePreviewApiBaseRef.current[key] || '',
+      );
+      const response = fetchResult.response;
+      const usedBase = fetchResult.usedBase || '';
+      const payload = await response.json();
+      const status = String(payload.status || '').toLowerCase();
+      const jobId = String(payload.job_id || '').trim();
+      const pdfUrl = toAbsoluteExtractUrl(String(payload.artifact_url || '').trim(), usedBase);
+      if (status === 'completed' && pdfUrl) {
+        setOfficePreviewMap((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'completed',
+            jobId,
+            pdfUrl,
+          },
+        }));
+        officePreviewApiBaseRef.current[key] = usedBase;
+        delete officePreviewPollRef.current[key];
+        return;
+      }
+      if (!jobId) {
+        throw new Error('文档预览任务创建失败');
+      }
+      officePreviewPollRef.current[key] = jobId;
+      officePreviewApiBaseRef.current[key] = usedBase;
+      setOfficePreviewMap((prev) => ({
+        ...prev,
+        [key]: {
+          status: status === 'running' ? 'running' : 'queued',
+          jobId,
+        },
+      }));
+      void pollOfficePreview(key, jobId, usedBase);
+    } catch (error) {
+      delete officePreviewPollRef.current[key];
+      delete officePreviewApiBaseRef.current[key];
+      setOfficePreviewMap((prev) => ({
+        ...prev,
+        [key]: {
+          status: 'failed',
+          error: parseFetchErrorMessage(error),
+        },
+      }));
+    }
+  };
+
+  const applyExtractionDocuments = (docs: DocumentResult[]) => {
+    const documentsWithPreview = docs.map((doc) => {
+      const ext = fileExt(String(doc.file_name || ''));
+      if (ext !== 'doc' && ext !== 'docx') return doc;
+
+      const diagnostics =
+        doc.diagnostics && typeof doc.diagnostics === 'object'
+          ? (doc.diagnostics as Record<string, unknown>)
+          : {};
+      const existingPreviewUrl = String(diagnostics.office_pdf_preview_url || '').trim();
+      if (existingPreviewUrl) return doc;
+
+      const matchedPreview = pickOfficePreviewByFileName(doc.file_name, officePreviewMap);
+      const previewUrl = String(matchedPreview?.pdfUrl || '').trim();
+      if (!previewUrl) return doc;
+
+      return {
+        ...doc,
+        diagnostics: {
+          ...diagnostics,
+          office_pdf_preview_url: previewUrl,
+        },
+      };
+    });
+
+    setDocuments(documentsWithPreview);
+    writeExtractionDocuments(documentsWithPreview);
+    if (useModule4FrontendIngestFallback()) {
+      void ingestModule4Documents(documentsWithPreview).catch((error) => {
+        console.warn('module4 ingest failed', error);
+      });
+    }
+    setActiveDocIndex(0);
+    setPdfViewportPage(1);
+    setPdfScrollRequest(createPdfScrollRequest(1));
+    if (documentsWithPreview.length > 0) {
+      void requestSummary(documentsWithPreview[0]);
+    }
+
+    const firstErrorDoc = documentsWithPreview.find((doc) => doc.errors && doc.errors.length > 0);
+    if (firstErrorDoc) {
+      setErrorMessage(firstErrorDoc.errors.join(' | '));
+      return;
+    }
+
+    const cacheHits = documentsWithPreview.filter((doc) => doc.cached).length;
+    const totalTables = documentsWithPreview.reduce((acc, doc) => {
+      const raw = doc.diagnostics?.table_count;
+      const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
+      return acc + (Number.isFinite(val) ? val : 0);
+    }, 0);
+    const totalFigures = documentsWithPreview.reduce((acc, doc) => {
+      const raw = doc.diagnostics?.figure_count;
+      const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
+      return acc + (Number.isFinite(val) ? val : 0);
+    }, 0);
+    const sourceSet = new Set<string>();
+    const figureSourceSet = new Set<string>();
+    documentsWithPreview.forEach((doc) => {
+      const srcRaw = doc.diagnostics?.table_sources;
+      if (!srcRaw || typeof srcRaw !== 'object') return;
+      Object.keys(srcRaw as Record<string, unknown>).forEach((key) => sourceSet.add(key));
+      const figRaw = doc.diagnostics?.figure_sources;
+      if (figRaw && typeof figRaw === 'object') {
+        Object.keys(figRaw as Record<string, unknown>).forEach((key) => figureSourceSet.add(key));
+      }
+    });
+    const sourceText = sourceSet.size > 0 ? Array.from(sourceSet).slice(0, 3).join(', ') : '未知';
+    const figureSourceText = figureSourceSet.size > 0 ? Array.from(figureSourceSet).slice(0, 3).join(', ') : '未知';
+    const softWarningCount = documentsWithPreview.reduce((acc, doc) => acc + (doc.soft_warnings?.length ?? 0), 0);
+    const autoSchemaDocs = documentsWithPreview.reduce((acc, doc) => {
+      const mode = String(doc.diagnostics?.schema_mode || '');
+      return acc + (mode === 'auto' ? 1 : 0);
+    }, 0);
+    setInfoMessage(
+      `已完成 ${documentsWithPreview.length} 份文档抽取，缓存命中 ${cacheHits} 份，智能字段识别 ${autoSchemaDocs} 份，识别表格 ${totalTables} 张（来源: ${sourceText}），识别图像 ${totalFigures} 张（来源: ${figureSourceText}），软告警 ${softWarningCount} 条。`
+    );
+  };
+
+  const pollExtractionJob = async (jobId: string, preferredBase = '') => {
+    extractionJobPollRef.current = jobId;
+    const maxAttempts = 360;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (extractionJobPollRef.current !== jobId) return;
+      try {
+        const fetchResult = await fetchExtractWithFallback(
+          `/extract/jobs/status/${encodeURIComponent(jobId)}?include_documents=true`,
+          undefined,
+          preferredBase || extractionJobApiBaseRef.current || '',
+        );
+        const usedBase = fetchResult.usedBase || preferredBase || '';
+        extractionJobApiBaseRef.current = usedBase;
+        const payload = (await fetchResult.response.json()) as ExtractionJobState & {
+          progress: ExtractionJobState['progress'];
+          terminal: boolean;
+          documents?: DocumentResult[];
+        };
+        setExtractionJob(payload);
+        setIsProcessing(!payload.terminal);
+
+        const progress = payload.progress;
+        const currentName = String(progress?.current_file_name || '').trim();
+        const currentStage = String(progress?.current_stage || '').trim();
+        const currentPercent = Math.max(0, Math.min(100, Math.round(Number(progress?.progress_ratio || 0) * 100)));
+        if (!payload.terminal) {
+          setInfoMessage(
+            currentName
+              ? `正在处理 ${currentName} · ${currentStage || 'running'} · ${currentPercent}%`
+              : `正在处理文档 · ${currentPercent}%`
+          );
+        }
+
+        if (payload.terminal) {
+          extractionJobPollRef.current = '';
+          if (Array.isArray(payload.documents) && payload.documents.length > 0) {
+            applyExtractionDocuments(payload.documents);
+          } else if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+            setErrorMessage(payload.errors.join(' | '));
+          } else {
+            setInfoMessage('抽取任务已结束，暂无可展示结果。');
+          }
+          return;
+        }
+      } catch (error) {
+        if (extractionJobPollRef.current !== jobId) return;
+        const message =
+          error instanceof Error && String(error.message || '').trim()
+            ? String(error.message || '').trim()
+            : '抽取进度同步失败';
+        if (message.toLowerCase().includes('not found')) {
+          extractionJobPollRef.current = '';
+          setErrorMessage(message);
+          setIsProcessing(false);
+          return;
+        }
+        setInfoMessage('正在同步最新解析进度...');
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    }
+    if (extractionJobPollRef.current === jobId) {
+      setErrorMessage('抽取进度轮询超时，请稍后重试。');
+      extractionJobPollRef.current = '';
+      setIsProcessing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!extractionJob || extractionJob.terminal) return;
+    if (extractionJobPollRef.current === extractionJob.job_id) return;
+    void pollExtractionJob(extractionJob.job_id, extractionJobApiBaseRef.current || '');
+  }, [extractionJob?.job_id, extractionJob?.terminal]);
+
+  useEffect(() => {
+    Object.entries(officePreviewMap).forEach(([key, state]) => {
+      if (!state?.jobId) return;
+      if (state.status !== 'queued' && state.status !== 'running') return;
+      if (officePreviewPollRef.current[key] === state.jobId) return;
+      officePreviewPollRef.current[key] = state.jobId;
+      void pollOfficePreview(key, state.jobId, officePreviewApiBaseRef.current[key] || '');
+    });
+  }, [officePreviewMap]);
+
+  const mergeSelectedFiles = (incomingRaw: File[]) => {
     const incoming = incomingRaw.filter(isAllowedFile);
     const rejectedCount = incomingRaw.length - incoming.length;
     if (incoming.length === 0) {
       if (rejectedCount > 0) {
-        setInfoMessage('未添加任何文件，仅支持 PDF/DOCX/XLSX/TXT/MD。');
+        setInfoMessage("未添加任何文件，仅支持常见文档与图片格式。");
       }
       return;
     }
 
     const byIdentity = new Map<string, File>();
     [...selectedFiles, ...incoming].forEach((file) => {
-      const key = `${file.name}:${file.size}:${file.lastModified}`;
-      byIdentity.set(key, file);
+      byIdentity.set(fileIdentityKey(file), file);
     });
-
     const merged = Array.from(byIdentity.values());
     const limited = merged.slice(0, 5);
-
     setSelectedFiles(limited);
     if (merged.length > 5) {
-      setInfoMessage('批处理上限为 5 个文件，超出部分已忽略。');
+      setInfoMessage("批处理上限为 5 个文件，超出部分已忽略。");
     } else if (rejectedCount > 0) {
-      setInfoMessage(`已忽略 ${rejectedCount} 个不支持的文件，仅支持 PDF/DOCX/XLSX/TXT/MD。`);
+      setInfoMessage(`已忽略 ${rejectedCount} 个不支持的文件，仅支持常见文档与图片格式。`);
     } else {
-      setInfoMessage(`已选择 ${limited.length} 个文件，可开始抽取。`);
+      setInfoMessage(`已选择 ${limited.length} 个文件，可开始提取。`);
     }
+    const selectedKeySet = new Set(limited.map((file) => fileIdentityKey(file)));
+    incoming.forEach((file) => {
+      if (!selectedKeySet.has(fileIdentityKey(file))) return;
+      void ensureOfficePreview(file);
+      scheduleSpreadsheetPreviewWarmup(file);
+    });
+  };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsUploaderDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsUploaderDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsUploaderDragOver(false);
+    const files = Array.from(e.dataTransfer.files) as File[];
+    if (files.length > 0) {
+      mergeSelectedFiles(files);
+    }
+  };
+
+  const onSelectFiles = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const incomingRaw = Array.from(event.target.files ?? []) as File[];
+    mergeSelectedFiles(incomingRaw);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
+  const resetWorkbenchState = (message: string) => {
+    officePreviewPollRef.current = {};
+    officePreviewApiBaseRef.current = {};
+    extractionJobPollRef.current = '';
+    extractionJobApiBaseRef.current = '';
+    persistedSelectedFilesRef.current = [];
+    clearSpreadsheetPreviewWarmupQueue();
+    clearLuckysheetPreviewCache();
+    setOfficePreviewMap({});
+    setExtractionJob(null);
+    setSelectedFileArtifacts({});
+    setSessionRestorePending(false);
+    setDocuments([]);
+    setActiveDocIndex(0);
+    setActiveFieldKey(null);
+    setPreviewUrl(null);
+    setPreviewText('');
+    setPdfViewportPage(1);
+    setPdfScrollRequest(null);
+    setPdfPreviewPageCount(1);
+    setErrorMessage('');
+    setInfoMessage(message);
+    setScale(1);
+    setRotation(0);
+    summaryRequestSeqRef.current += 1;
+    traceRequestSeqRef.current += 1;
+    setSummaryDocName('');
+    setActiveSummaryText('');
+    setActiveSummaryLoading(false);
+    setTraceHits([]);
+    setTraceError('');
+    setTraceLoading(false);
+    setActiveTraceKey('');
+    setAssistantStatus('idle');
+    setAssistantMessage("等待生成可执行建议。");
+    setAssistantInput('');
+    setAssistantAnswer('');
+    setAssistantWarnings([]);
+    setAssistantQueryLoading(false);
+    setAssistantDialog([]);
+    setSmartUnitTab('results');
+    setAssistantTabUnread(false);
+    setResultsTabUnread(false);
+    setShowAssistantHelp(false);
+    setIsPreviewFocused(false);
+    setIsUploaderDragOver(false);
+    setResultSearchQuery('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    clearExtractionDocuments();
+    clearWorkbenchSession();
+  };
+
+  const clearWorkbenchData = () => {
+    if (!canClearWorkbenchData) return;
+    setSelectedFiles([]);
+    resetWorkbenchState('已清空当前页面数据与本地缓存。');
+  };
+
   const removeFile = (index: number) => {
-    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+    const removed = selectedFiles[index];
+    if (!removed) return;
+
+    if (selectedFiles.length <= 1) {
+      setSelectedFiles([]);
+      resetWorkbenchState("文件队列已清空。");
+      return;
+    }
+
+    const key = fileIdentityKey(removed);
+    delete officePreviewPollRef.current[key];
+    delete officePreviewApiBaseRef.current[key];
+    setSelectedFileArtifacts((prev) => {
+      if (!(key in prev)) return prev;
+      const copied = { ...prev };
+      delete copied[key];
+      return copied;
+    });
+    setOfficePreviewMap((map) => {
+      if (!(key in map)) return map;
+      const copied = { ...map };
+      delete copied[key];
+      return copied;
+    });
+
+    const nextFiles = selectedFiles.filter((_, i) => i !== index);
+    setSelectedFiles(nextFiles);
+    setDocuments((prev) => {
+      if (!Array.isArray(prev) || prev.length === 0) return prev;
+      let nextDocs: DocumentResult[] = prev;
+      if (index >= 0 && index < prev.length) {
+        nextDocs = prev.filter((_, i) => i !== index);
+      } else {
+        const removedName = removed.name.trim().toLowerCase();
+        nextDocs = prev.filter((doc) => String(doc.file_name || '').trim().toLowerCase() !== removedName);
+      }
+      writeExtractionDocuments(nextDocs);
+      return nextDocs;
+    });
+    if (activeDocIndex >= nextFiles.length) {
+      setActiveDocIndex(Math.max(0, nextFiles.length - 1));
+    }
+    setActiveFieldKey(null);
+    setInfoMessage(`已移除 ${removed.name}`);
   };
 
   const clearAllFiles = () => {
     setSelectedFiles([]);
-    setDocuments([]);
-    setActiveDocIndex(0);
-    setActiveFieldKey(null);
-    setPdfPage(1);
-    setErrorMessage('');
-    setInfoMessage('文件队列已清空。');
-    setScale(1);
-    setRotation(0);
+    resetWorkbenchState('文件队列已清空。');
   };
 
   const runExtraction = async () => {
     if (selectedFiles.length === 0) {
-      setErrorMessage('请至少上传一个文件。');
+      setErrorMessage("请至少上传一个文件。");
       return;
     }
 
@@ -324,76 +2285,130 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     try {
       schemaObj = JSON.parse(schemaText);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? `规则模板 JSON 格式错误：${error.message}` : '规则模板 JSON 格式错误。');
+      setErrorMessage(error instanceof Error ? `规则模板格式错误：${error.message}` : "规则模板格式错误。");
       return;
     }
 
     setErrorMessage('');
     setActiveFieldKey(null);
     setIsProcessing(true);
-    setInfoMessage(`正在执行 ${selectedFiles.length} 个文件的抽取...`);
+    setDocuments([]);
+    clearExtractionDocuments();
+    setExtractionJob(null);
+    extractionJobPollRef.current = '';
+    extractionJobApiBaseRef.current = '';
+    setSelectedFileArtifacts({});
+    setActiveDocIndex(0);
+    setInfoMessage(`正在提交 ${selectedFiles.length} 个文件的抽取任务...`);
+    setActiveSummaryLoading(true);
+    setActiveSummaryText('已收到抽取任务，正在生成智能摘要...');
+    setSummaryDocName(selectedFiles.length === 1 ? selectedFiles[0].name : '当前批次');
+    setAssistantMessage("任务已提交，解析与摘要正在同步执行。");
+    setAssistantAnswer('');
+    setAssistantWarnings([]);
+    traceRequestSeqRef.current += 1;
+    setTraceHits([]);
+    setTraceError('');
+    setTraceLoading(false);
+    setActiveTraceKey('');
 
     try {
-      const formData = new FormData();
-      selectedFiles.forEach((file) => formData.append('files', file));
-      formData.append('schema', JSON.stringify(schemaObj));
+      const requestJobCreateWithRetry = async (attempts: number) => {
+        let lastError: unknown = null;
+        for (let i = 1; i <= attempts; i += 1) {
+          const formData = new FormData();
+          selectedFiles.forEach((file) => formData.append('files', file));
+          formData.append('schema', JSON.stringify(schemaObj));
+          try {
+            return await fetchExtractWithFallback('/extract/jobs/create', {
+              method: 'POST',
+              body: formData,
+            });
+          } catch (error) {
+            lastError = error;
+            if (i < attempts) {
+              setInfoMessage(`网络抖动，正在重试抽取请求（${i}/${attempts - 1}）...`);
+              await new Promise((resolve) => setTimeout(resolve, 600 * i));
+              continue;
+            }
+          }
+        }
+        throw lastError instanceof Error ? lastError : new Error('抽取请求失败');
+      };
 
-      const response = await fetch('/extract/batch', {
-        method: 'POST',
-        body: formData,
-      });
+      const fetchResult = await requestJobCreateWithRetry(2);
+      const response = fetchResult.response;
+      const usedBase = fetchResult.usedBase || '';
+      extractionJobApiBaseRef.current = usedBase;
 
       if (!response.ok) {
         const message = await response.text();
         throw new Error(message || '抽取请求失败');
       }
 
-      const payload = (await response.json()) as ExtractResponse;
-      if (!payload.documents || payload.documents.length === 0) {
-        throw new Error('后端未返回抽取结果');
+      const payload = await response.json() as ExtractionJobState & { documents?: DocumentResult[] };
+      if (!payload || !payload.job_id) {
+        throw new Error('后端未返回有效的抽取任务。');
       }
 
-      setDocuments(payload.documents);
-      writeExtractionDocuments(payload.documents);
-      setActiveDocIndex(0);
-      setPdfPage(1);
+      const normalizedFiles = Array.isArray(payload.files)
+        ? payload.files.map((item) => ({
+            ...item,
+            artifact_url: toAbsoluteExtractUrl(String(item.artifact_url || '').trim(), usedBase) || item.artifact_url,
+          }))
+        : [];
+      const normalizedJob: ExtractionJobState = {
+        ...payload,
+        files: normalizedFiles,
+        errors: Array.isArray(payload.errors) ? payload.errors : [],
+      };
+      const nextArtifactMap = selectedFiles.reduce<Record<string, { artifactUrl?: string; artifactPath?: string }>>(
+        (acc, file, index) => {
+          const item = normalizedFiles[index];
+          acc[fileIdentityKey(file)] = {
+            artifactUrl: String(item?.artifact_url || '').trim() || undefined,
+            artifactPath: String(item?.artifact_path || '').trim() || undefined,
+          };
+          return acc;
+        },
+        {},
+      );
 
-      const firstErrorDoc = payload.documents.find((doc) => doc.errors && doc.errors.length > 0);
-      if (firstErrorDoc) {
-        setErrorMessage(firstErrorDoc.errors.join(' | '));
+      setSelectedFileArtifacts(nextArtifactMap);
+      setExtractionJob(normalizedJob);
+      setIsProcessing(!normalizedJob.terminal);
+      writeWorkbenchSession(
+        toSessionSnapshot(
+          selectedFiles,
+          0,
+          officePreviewMap,
+          normalizedJob,
+          nextArtifactMap,
+        ),
+      );
+
+      const currentPercent = clampProgressPercent(normalizedJob.progress?.progress_ratio || 0);
+      const currentFileName = String(normalizedJob.progress?.current_file_name || '').trim();
+      setInfoMessage(
+        currentFileName
+          ? `已提交任务，正在处理 ${currentFileName} · ${currentPercent}%`
+          : `已提交任务，等待后端开始解析 · ${currentPercent}%`
+      );
+
+      if (normalizedJob.terminal) {
+        if (Array.isArray(payload.documents) && payload.documents.length > 0) {
+          applyExtractionDocuments(payload.documents);
+        } else if (normalizedJob.errors.length > 0) {
+          setErrorMessage(normalizedJob.errors.join(' | '));
+        }
       } else {
-        const cacheHits = payload.documents.filter((doc) => doc.cached).length;
-        const totalTables = payload.documents.reduce((acc, doc) => {
-          const raw = doc.diagnostics?.table_count;
-          const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
-          return acc + (Number.isFinite(val) ? val : 0);
-        }, 0);
-        const totalFigures = payload.documents.reduce((acc, doc) => {
-          const raw = doc.diagnostics?.figure_count;
-          const val = typeof raw === 'number' ? raw : Number(raw ?? 0);
-          return acc + (Number.isFinite(val) ? val : 0);
-        }, 0);
-        const sourceSet = new Set<string>();
-        const figureSourceSet = new Set<string>();
-        payload.documents.forEach((doc) => {
-          const srcRaw = doc.diagnostics?.table_sources;
-          if (!srcRaw || typeof srcRaw !== 'object') return;
-          Object.keys(srcRaw as Record<string, unknown>).forEach((key) => sourceSet.add(key));
-          const figRaw = doc.diagnostics?.figure_sources;
-          if (figRaw && typeof figRaw === 'object') {
-            Object.keys(figRaw as Record<string, unknown>).forEach((key) => figureSourceSet.add(key));
-          }
-        });
-        const sourceText = sourceSet.size > 0 ? Array.from(sourceSet).slice(0, 3).join(', ') : 'n/a';
-        const figureSourceText = figureSourceSet.size > 0 ? Array.from(figureSourceSet).slice(0, 3).join(', ') : 'n/a';
-        setInfoMessage(
-          `已完成 ${payload.documents.length} 份文档抽取，缓存命中 ${cacheHits} 份，识别表格 ${totalTables} 张（来源: ${sourceText}），识别图像 ${totalFigures} 张（来源: ${figureSourceText}）。`
-        );
+        void pollExtractionJob(normalizedJob.job_id, usedBase);
       }
     } catch (error) {
       console.error(error);
       setErrorMessage(error instanceof Error ? error.message : '抽取失败');
-    } finally {
+      setActiveSummaryLoading(false);
+      setActiveSummaryText("抽取失败，无法生成摘要。");
       setIsProcessing(false);
     }
   };
@@ -407,7 +2422,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `module2-extraction-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    anchor.download = `模块二抽取结果_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -415,12 +2430,20 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const handleZoomIn = () => setScale((prev) => Math.min(prev + 0.1, 2.5));
   const handleZoomOut = () => setScale((prev) => Math.max(prev - 0.1, 0.5));
   const handleRotate = () => setRotation((prev) => (prev + 90) % 360);
+  const jumpToPdfPage = (page: number | null | undefined) => {
+    if (activeRenderExt !== 'pdf') return;
+    const rawPage = Number(page || 0);
+    if (!Number.isFinite(rawPage) || rawPage < 1) return;
+    const safePage = Math.min(Math.max(1, Math.round(rawPage)), inferredPdfPageCount);
+    setPdfViewportPage(safePage);
+    setPdfScrollRequest(createPdfScrollRequest(safePage));
+  };
   const handlePrevPdfPage = () => {
-    setPdfPage((prev) => Math.max(1, prev - 1));
+    jumpToPdfPage(currentPdfPage - 1);
     setActiveFieldKey(null);
   };
   const handleNextPdfPage = () => {
-    setPdfPage((prev) => Math.min(inferredPdfPageCount, prev + 1));
+    jumpToPdfPage(currentPdfPage + 1);
     setActiveFieldKey(null);
   };
   const handleResetView = () => {
@@ -428,157 +2451,647 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setRotation(0);
   };
 
-  return (
-    <div className="relative h-[calc(100vh-2rem)] flex gap-4 overflow-hidden p-2 text-foreground isolate">
-      {/* Background Ambience - Enhances Glassmorphism */}
-      <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-blue-100/40 dark:bg-primary/10 rounded-full blur-[120px] pointer-events-none -z-10 animate-[pulse_8s_infinite]" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] bg-indigo-100/40 dark:bg-blue-600/10 rounded-full blur-[100px] pointer-events-none -z-10 animate-[pulse_10s_infinite_reverse]" />
+  const writeClipboard = async (text: string, successHint: string) => {
+    const payload = String(text || '').trim();
+    if (!payload) return;
+    try {
+      await navigator.clipboard.writeText(payload);
+      setInfoMessage(successHint);
+      return;
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = payload;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setInfoMessage(successHint);
+    }
+  };
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".pdf,.docx,.xlsx,.txt,.md"
-        multiple
-        className="hidden"
-        onChange={onSelectFiles}
-      />
+  const tablePreviewToTsv = (headers: string[], rows: string[][]) => {
+    const lines: string[] = [];
+    if (headers.length > 0) {
+      lines.push(headers.join('\t'));
+    }
+    rows.forEach((row) => lines.push(row.join('\t')));
+    return lines.join('\n');
+  };
 
-      {/* LEFT SIDEBAR: Controls & Inputs */}
-      <div className="w-[340px] flex flex-col gap-4 min-w-[300px] shrink-0">
-        {/* Brand Header */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 relative overflow-hidden group shadow-sm border border-slate-100 dark:border-slate-800">
-            <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity duration-500">
-                <ScanLine size={80} className="text-primary rotate-12" />
-            </div>
-            <div className="relative z-10">
-                <div className="flex items-center gap-3 mb-3">
-                    <div className="p-2.5 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400">
-                        <FileText size={22} strokeWidth={2.5} />
-                    </div>
-                    <h2 className="text-xl font-bold font-['Microsoft_YaHei'] tracking-tight text-slate-800 dark:text-slate-100">
-                        智能文档解析
-                    </h2>
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-medium font-['Microsoft_YaHei']">
-                    基于 Gemini 多模态大模型的文档结构化抽取引擎。支持 PDF/DOCX/XLSX/TXT/MD 批量处理与字段级溯源。
-                </p>
-            </div>
-        </div>
+  const handleAssistantConfirm = () => {
+    if (!assistantActionable) {
+      setAssistantStatus('confirmed');
+      setAssistantMessage("已确认：当前无需执行操作。");
+      return;
+    }
+    setAssistantStatus('confirmed');
+    setAssistantMessage("已确认保留当前抽取结果。");
+  };
+  const handleAssistantRollback = () => {
+    if (!assistantActionable) {
+      setAssistantStatus('rolled_back');
+      setAssistantMessage("回滚请求已忽略：当前无可回滚项。");
+      return;
+    }
+    setAssistantStatus('rolled_back');
+    setActiveFieldKey(null);
+    setTraceHits(toTraceHits(activeDoc, null));
+    setAssistantMessage("已执行回滚：定位高亮已重置，你可以重新选择字段或重新抽取。");
+  };
 
-        {/* Action Panel */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl flex-1 flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800 shadow-sm">
-            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                <h3 className="text-sm font-bold font-['Microsoft_YaHei'] flex items-center gap-2 text-slate-700 dark:text-slate-200">
-                    <Layers size={16} className="text-blue-500" />
-                    任务队列
-                </h3>
-                <span className={cn(
-                    "text-[10px] px-2.5 py-1 rounded-full font-bold transition-colors",
-                    selectedFiles.length > 0 ? "bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400" : "bg-slate-100 dark:bg-slate-800 text-slate-400"
-                )}>
-                    {selectedFiles.length}/5
-                </span>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3">
-                {selectedFiles.length === 0 ? (
-                    <div 
-                        onClick={() => fileInputRef.current?.click()}
-                        className="h-full min-h-[160px] border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl flex flex-col items-center justify-center text-slate-400 hover:border-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-all cursor-pointer group p-6 text-center"
-                    >
-                        <div className="w-16 h-16 rounded-full bg-slate-50 dark:bg-slate-800 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-blue-100 dark:group-hover:bg-blue-900/30 group-hover:text-blue-600 transition-all duration-300">
-                            <UploadCloud size={32} />
-                        </div>
-                        <p className="text-sm font-bold font-['Microsoft_YaHei'] text-slate-600 dark:text-slate-300 group-hover:text-blue-600 transition-colors">点击上传文档</p>
-                        <p className="text-[10px] opacity-60 mt-2 font-['Microsoft_YaHei']">支持 PDF, DOCX, XLSX, TXT, MD</p>
-                        <p className="text-[10px] opacity-40 mt-1 font-['Microsoft_YaHei']">每次最多上传 5 个文件</p>
-                    </div>
-                ) : (
-                    <div className="space-y-3">
-                        <button 
-                            onClick={() => fileInputRef.current?.click()}
-                            className="w-full border border-dashed border-slate-200 dark:border-slate-700 rounded-xl p-3 flex items-center justify-center gap-2 text-xs font-bold text-slate-500 hover:border-blue-400 hover:text-blue-600 hover:bg-blue-50/50 transition-all group"
-                        >
-                            <div className="p-1 rounded bg-slate-100 dark:bg-slate-800 group-hover:bg-white transition-colors">
-                                <UploadCloud size={14} /> 
-                            </div>
-                            添加更多文件
-                        </button>
-                        {selectedFiles.map((file, index) => (
-                            <div key={`${file.name}:${index}`} className="flex items-center justify-between p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 group hover:border-blue-200 hover:bg-white dark:hover:bg-slate-800 hover:shadow-sm transition-all">
-                                <div className="flex items-center gap-3 overflow-hidden">
-                                    <div className="w-10 h-10 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center text-slate-400 group-hover:text-blue-500 transition-colors shadow-sm">
-                                        <File size={18} />
-                                    </div>
-                                    <div className="flex flex-col min-w-0">
-                                        <span className="text-xs font-bold truncate text-slate-700 dark:text-slate-200">{file.name}</span>
-                                        <span className="text-[10px] text-slate-400 font-mono">{(file.size / 1024).toFixed(1)} KB</span>
-                                    </div>
-                                </div>
-                                <button onClick={() => removeFile(index)} className="opacity-0 group-hover:opacity-100 p-2 hover:bg-red-50 hover:text-red-500 rounded-lg transition-all">
-                                    <Trash2 size={16} />
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
+  const runAssistantInstruction = async () => {
+    const instruction = assistantInput.trim();
+    if (!activeDoc) {
+      setAssistantWarnings(["当前没有可用文档，请先完成抽取。"]);
+      return;
+    }
+    if (!instruction) {
+      setAssistantWarnings(["请输入具体提取需求后再发送。"]);
+      return;
+    }
 
-            <div className="p-5 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-4">
-                 <div className="flex gap-3">
-                    <button 
-                        onClick={() => setShowSchema(!showSchema)}
-                        className={cn(
-                            "flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-bold border transition-all",
-                            showSchema 
-                            ? "bg-blue-50 border-blue-200 text-blue-600 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-400" 
-                            : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 hover:border-slate-300 hover:bg-slate-50"
-                        )}
-                    >
-                        <Settings size={14} />
-                        {showSchema ? '隐藏规则' : '配置规则'}
-                    </button>
-                    {selectedFiles.length > 0 && (
-                        <button 
-                            onClick={clearAllFiles}
-                            className="px-4 py-3 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200 transition-all"
-                        >
-                            清空
-                        </button>
-                    )}
-                 </div>
-                 
-                 <button
-                    onClick={runExtraction}
-                    disabled={isProcessing || selectedFiles.length === 0}
-                    className={cn(
-                        'w-full flex items-center justify-center gap-2 rounded-xl py-4 text-sm font-bold shadow-lg transition-all active:scale-[0.98] relative overflow-hidden',
-                        isProcessing || selectedFiles.length === 0
-                        ? 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600 cursor-not-allowed shadow-none'
-                        : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-blue-500/25 hover:shadow-blue-500/40 hover:brightness-110'
-                    )}
-                >
-                    {isProcessing && (
-                         <div className="absolute inset-0 bg-white/20 animate-[shimmer_2s_infinite] skew-x-12 -translate-x-full" />
-                    )}
-                    {isProcessing ? <Loader2 size={18} className="animate-spin" /> : <PlayCircle size={18} />}
-                    {isProcessing ? '正在智能抽取...' : '开始抽取'}
-                </button>
-            </div>
+    const persistRequested = /(入库|落库|保存|存储|写入数据库|写库)/.test(instruction);
+    const userDialogMsg: AssistantDialogMessage = {
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role: 'user',
+      content: instruction,
+    };
+    setAssistantDialog((prev) => [...prev, userDialogMsg]);
+    setAssistantQueryLoading(true);
+    setAssistantWarnings([]);
+    try {
+      const response = await fetch('/extract/assistant/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          document: activeDoc,
+          summary: activeSummaryText,
+          user_instruction: instruction,
+          persist: persistRequested,
+          top_k: 16,
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || '助手处理失败');
+      }
+
+      const payload = (await response.json()) as AssistantQueryResponse;
+      const nextAnswer = (payload.answer || "").trim() || "助手已完成处理。";
+      setAssistantAnswer(nextAnswer);
+      setAssistantMessage(nextAnswer);
+      setAssistantWarnings(Array.isArray(payload.warnings) ? payload.warnings : []);
+      setAssistantDialog((prev) => [
+        ...prev,
+        {
+          id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'assistant',
+          content: nextAnswer,
+        },
+      ]);
+      if (Array.isArray(payload.matched_trace_hits) && payload.matched_trace_hits.length > 0) {
+        setTraceHits(payload.matched_trace_hits);
+      }
+      if (Array.isArray(payload.matched_fields) && payload.matched_fields.length > 0) {
+        const firstField = String(payload.matched_fields[0].field_name || '').trim();
+        if (firstField) {
+          setActiveFieldKey(firstField);
+        }
+        const firstPage = Number(payload.matched_fields[0].page || 0);
+        if (activeRenderExt === 'pdf' && Number.isFinite(firstPage) && firstPage > 0) {
+          jumpToPdfPage(firstPage);
+        }
+      }
+      if (payload.persisted) {
+        setInfoMessage(`助手已完成数据库写入，共 ${payload.persisted_rows} 条记录。`);
+      }
+      setAssistantInput('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '助手处理失败';
+      setAssistantWarnings([message]);
+      const failedAnswer = "助手处理失败，请检查指令后重试。";
+      setAssistantAnswer(failedAnswer);
+      setAssistantDialog((prev) => [
+        ...prev,
+        {
+          id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'assistant',
+          content: failedAnswer,
+        },
+      ]);
+    } finally {
+      setAssistantQueryLoading(false);
+    }
+  };
+
+  const workbenchGridClass = showLeftPanel
+    ? "grid h-full flex-1 min-h-0 items-stretch gap-3 grid-cols-[216px_minmax(0,1fr)_336px] grid-rows-[minmax(0,1fr)] transition-[grid-template-columns] duration-300 ease-out"
+    : "grid h-full flex-1 min-h-0 items-stretch gap-3 grid-cols-[minmax(0,1fr)_336px] grid-rows-[minmax(0,1fr)] transition-[grid-template-columns] duration-300 ease-out";
+  const rightPanelClass = "flex h-full min-h-0 w-full min-w-0 shrink-0 self-stretch flex-col";
+  const pendingExtractionCount = selectedFiles.length;
+  const showBatchExtractAction = pendingExtractionCount > 0;
+  const extractionOverallPercent = clampProgressPercent(extractionJob?.progress?.progress_ratio || 0);
+  const batchExtractLabel = isProcessing
+    ? `正在提取（${extractionOverallPercent}%）`
+    : pendingExtractionCount > 1
+      ? `开始批量提取（${pendingExtractionCount}）`
+      : '开始提取';
+  const smartUnitTrackClass = cn(
+    "flex h-full w-[200%] transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform",
+    smartUnitTab === 'results' ? "translate-x-0" : "-translate-x-1/2"
+  );
+  const showTraceOverlay = false;
+  const previewControlsDisabled = !hasPreviewContent;
+  const previewFocusButtonTitle = '聚焦预览并隐藏全局文件夹';
+  const restoreFolderButtonTitle = '展开全局文件夹并退出聚焦预览';
+  const assistantPanel = (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-transparent">
+      <div className="px-4 py-3 bg-transparent">
+        <div className="flex items-center justify-between">
+          <h3 className="flex items-center gap-2 text-xs font-bold text-slate-600 uppercase tracking-wider dark:text-slate-300">
+            <Sparkles size={14} className="text-blue-600 dark:text-blue-400" />
+            智能助手
+          </h3>
+          <button
+            onClick={() => setShowAssistantHelp(true)}
+            className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-blue-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-blue-400"
+            aria-label="查看助手功能说明"
+          >
+            <HelpCircle size={14} />
+          </button>
         </div>
       </div>
 
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div ref={assistantDialogRef} data-testid="module2-assistant-dialog" className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 custom-scrollbar">
+          {/* Summary Section */}
+          <div className="rounded-2xl border border-slate-200/50 bg-white/40 px-5 py-4 text-xs leading-relaxed text-slate-600 shadow-sm backdrop-blur-md transition-all hover:bg-white/60 dark:border-slate-800/50 dark:bg-slate-900/40 dark:text-slate-300 dark:hover:bg-slate-900/60">
+            <div className="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+              <img src={smartSummaryIcon} alt="智能摘要" className="h-4 w-4 object-contain" />
+              智能摘要
+            </div>
+            <p data-testid="module2-summary-text" className="whitespace-pre-wrap break-words font-medium text-slate-700 dark:text-slate-200">
+              {activeSummaryLoading ? (
+                <span className="flex items-center gap-2 text-slate-500">
+                  <Loader2 size={12} className="animate-spin" />
+                  正在生成文档摘要...
+                </span>
+              ) : (
+                activeSummaryText || "上传文件并执行抽取后，摘要会自动展示。"
+              )}
+            </p>
+          </div>
+
+          {/* Chat History */}
+          {assistantDialog.map((msg) => (
+            <div
+              key={msg.id}
+              className={cn(
+                "flex gap-3 max-w-[90%]",
+                msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto"
+              )}
+            >
+              <div className={cn(
+                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm ring-1 ring-inset ring-black/5 backdrop-blur-sm",
+                msg.role === 'assistant'
+                  ? "bg-white/80 text-blue-600 dark:bg-slate-800/80 dark:text-blue-400"
+                  : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+              )}>
+                {msg.role === 'assistant' ? <Bot size={16} /> : <div className="text-[10px] font-bold">ME</div>}
+              </div>
+              <div className={cn(
+                "rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm break-words whitespace-pre-wrap ring-1 ring-inset backdrop-blur-md transition-all hover:shadow-md",
+                msg.role === 'assistant'
+                  ? "rounded-tl-none bg-white/80 ring-slate-200/50 text-slate-700 dark:bg-slate-900/80 dark:ring-slate-700/50 dark:text-slate-200"
+                  : "rounded-tr-none bg-blue-600 ring-blue-600 text-white shadow-blue-500/20 hover:bg-blue-700"
+              )}>
+                {msg.content}
+              </div>
+            </div>
+          ))}
+
+          {/* Loading State */}
+          {assistantQueryLoading && (
+            <div className="flex gap-3 mr-auto max-w-[90%]">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 shadow-sm ring-1 ring-inset ring-black/5 backdrop-blur-sm text-blue-600 dark:bg-slate-800/80 dark:text-blue-400">
+                <Bot size={16} />
+              </div>
+              <div className="bg-white/80 backdrop-blur-md px-4 py-4 rounded-2xl rounded-tl-none shadow-sm ring-1 ring-inset ring-slate-200/50 dark:bg-slate-900/80 dark:ring-slate-700/50 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></span>
+              </div>
+            </div>
+          )}
+
+          {/* Assistant Answer (Legacy support) */}
+          {assistantAnswer && !assistantDialog.some(m => m.content === assistantAnswer) && (
+            <div data-testid="module2-assistant-answer" className="rounded-xl border border-blue-200 bg-blue-50/50 px-3 py-2.5 text-[11px] text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+              {assistantAnswer}
+            </div>
+          )}
+
+          {/* Warnings */}
+          {assistantWarnings.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50/50 px-3 py-2.5 text-[11px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              {assistantWarnings.join('；')}
+            </div>
+          )}
+
+          {/* Spacer for scrolling */}
+          <div className="h-4" />
+        </div>
+
+        {/* Input Area */}
+        <div className="border-t border-slate-100/50 bg-white/60 p-4 backdrop-blur-md dark:border-slate-800/50 dark:bg-slate-900/60">
+          <div className="relative group">
+            <textarea
+              ref={assistantInputRef}
+              data-testid="module2-assistant-input"
+              value={assistantInput}
+              onChange={(e) => setAssistantInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (!assistantQueryLoading && activeDoc) {
+                    void runAssistantInstruction();
+                  }
+                }
+              }}
+              placeholder={activeDoc ? "输入需求，回车发送..." : "请先抽取文档..."}
+              className="max-h-24 min-h-[40px] w-full resize-none rounded-2xl border-none bg-slate-100/80 px-4 py-2.5 pr-10 text-xs leading-relaxed text-slate-700 shadow-inner outline-none transition-all focus:bg-white focus:ring-2 focus:ring-blue-500/20 dark:bg-slate-800/80 dark:text-slate-200 dark:focus:bg-slate-900"
+            />
+            <button
+              type="button"
+              data-testid="module2-assistant-send"
+              onClick={() => void runAssistantInstruction()}
+              disabled={assistantQueryLoading || !activeDoc || !assistantInput.trim()}
+              className={cn(
+                'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-full transition-all duration-200',
+                assistantQueryLoading || !activeDoc || !assistantInput.trim()
+                  ? 'cursor-not-allowed bg-slate-200 text-slate-400 dark:bg-slate-700 dark:text-slate-500'
+                  : 'bg-blue-600 text-white shadow-md shadow-blue-500/30 hover:bg-blue-700 hover:shadow-lg hover:scale-105 active:scale-95'
+              )}
+            >
+              {assistantQueryLoading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} className="ml-0.5" />}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const isPageBased = useMemo(() => {
+    return (
+      activeRenderExt === 'pdf' ||
+      activeExt === 'doc' ||
+      activeExt === 'docx' ||
+      IMAGE_EXTENSIONS.has(activeExt)
+    );
+  }, [activeRenderExt, activeExt]);
+
+  return (
+    <div className="relative flex h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-100 p-1.5 text-foreground dark:border-slate-700 dark:bg-slate-950">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.doc,.docx,.xlsx,.txt,.md,.png,.jpg,.jpeg,.bmp,.webp,.tif,.tiff"
+        multiple
+        className="hidden"
+        data-testid="module2-file-input"
+        onChange={onSelectFiles}
+      />
+
+      <div className={workbenchGridClass}>
+        {showLeftPanel && (
+          <div
+            id="module2-left-panel"
+            data-testid="module2-left-panel"
+            className="flex h-full min-h-0 flex-col gap-2"
+          >
+            <div 
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={cn(
+                "flex flex-1 min-h-[300px] flex-col overflow-hidden rounded-xl border bg-slate-50 shadow-sm transition-colors duration-200 dark:bg-slate-900",
+                isUploaderDragOver 
+                  ? "border-blue-400 ring-2 ring-blue-200 dark:border-blue-600 dark:ring-blue-800"
+                  : "border-slate-200 dark:border-slate-700"
+              )}
+            >
+              <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
+                <FolderOpen size={18} className="text-slate-700 dark:text-slate-300" />
+                <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                  全局文件夹
+                </h3>
+              </div>
+
+              {selectedFiles.length > 0 && (
+                <div className="border-b border-slate-100 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                  >
+                    <Plus size={16} />
+                    添加新文件
+                  </button>
+                </div>
+              )}
+
+              <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 p-0 custom-scrollbar dark:bg-slate-950/30">
+                {selectedFiles.length === 0 ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 py-8 text-center text-slate-400 opacity-60">
+                    <FolderOpen size={24} className="text-slate-300 dark:text-slate-600" />
+                    <p className="text-xs">请在主视窗上传文件</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {selectedFiles.map((file, index) => {
+                      const isActive = activeSourceFile && fileIdentityKey(activeSourceFile) === fileIdentityKey(file);
+                      const ext = file.name.split('.').pop()?.toLowerCase();
+                      
+                      let FileIcon = File;
+                      let iconColorClass = "text-slate-500";
+                      
+                      if (ext === 'pdf') {
+                        FileIcon = FileText;
+                        iconColorClass = "text-red-500";
+                      } else if (['xls', 'xlsx', 'csv'].includes(ext || '')) {
+                        FileIcon = FileSpreadsheet;
+                        iconColorClass = "text-emerald-500";
+                      } else if (['doc', 'docx'].includes(ext || '')) {
+                        FileIcon = FileText;
+                        iconColorClass = "text-blue-500";
+                      } else if (['jpg', 'jpeg', 'png', 'gif'].includes(ext || '')) {
+                        FileIcon = FileImage;
+                        iconColorClass = "text-purple-500";
+                      }
+
+                      // Status Logic
+                      const doc = documents[index];
+                      const jobFile = pickExtractionJobFileState(extractionJob, file, index);
+                      let statusText = "等待队列...";
+                      let statusColor = "text-slate-400";
+                      let StatusIndicator = <div className="h-2 w-2 rounded-full bg-slate-300 dark:bg-slate-600" />;
+                      
+                      if (jobFile && !extractionJob?.terminal) {
+                         const progress = clampProgressPercent(jobFile.progress_ratio);
+                         const message = String(jobFile.message || jobFile.stage || '正在解析').trim() || '正在解析';
+                         if (jobFile.status === 'failed') {
+                             statusText = jobFile.error ? `解析失败：${jobFile.error}` : '解析失败';
+                             statusColor = "text-red-500";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-red-500" />;
+                         } else if (jobFile.status === 'completed') {
+                             statusText = jobFile.message || '解析完成';
+                             statusColor = "text-emerald-600";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-emerald-500" />;
+                         } else {
+                             statusText = progress > 0 ? `${message} ${progress}%` : message;
+                             statusColor = jobFile.status === 'queued' ? "text-slate-400" : "text-slate-500";
+                             StatusIndicator = (
+                               <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                                 <div
+                                   className="h-full bg-blue-500 transition-all duration-500"
+                                   style={{ width: `${Math.max(progress, jobFile.status === 'queued' ? 8 : 4)}%` }}
+                                 />
+                               </div>
+                             );
+                         }
+                      } else if (jobFile) {
+                         if (jobFile.status === 'failed') {
+                             statusText = jobFile.error ? `解析失败：${jobFile.error}` : '解析失败';
+                             statusColor = "text-red-500";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-red-500" />;
+                         } else if (jobFile.status === 'completed') {
+                             statusText = jobFile.message || '解析完成';
+                             statusColor = "text-emerald-600";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-emerald-500" />;
+                         }
+                      } else if (doc) {
+                         if (doc.errors.length > 0) {
+                             statusText = "解析异常";
+                             statusColor = "text-red-500";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-red-500" />;
+                         } else {
+                             statusText = "解析完成";
+                             statusColor = "text-emerald-600";
+                             StatusIndicator = <div className="h-2 w-2 rounded-full bg-emerald-500" />;
+                         }
+                      }
+
+                      return (
+                        <div 
+                          key={`${file.name}:${index}`}
+                          onClick={() => setActiveDocIndex(index)}
+                          className={cn(
+                            "group relative flex cursor-pointer items-start gap-3 bg-white px-4 py-3 transition-colors hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800",
+                            isActive && "bg-slate-100 dark:bg-slate-800"
+                          )}
+                        >
+                          {isActive && (
+                              <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-600 dark:bg-blue-500" />
+                          )}
+
+                          <div className="mt-0.5 shrink-0">
+                            <FileIcon size={24} className={iconColorClass} strokeWidth={1.5} />
+                          </div>
+                          
+                          <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                  <p className={cn("truncate text-sm font-bold text-slate-700 dark:text-slate-200", isActive && "text-slate-900 dark:text-white")}>
+                                      {file.name}
+                                  </p>
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      removeFile(index);
+                                    }}
+                                    className="hidden rounded p-1 text-slate-400 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:block group-hover:opacity-100 dark:hover:bg-red-900/20"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                              </div>
+                              
+                              <div className="mt-1 flex min-w-0 items-center gap-2">
+                                  {StatusIndicator}
+                                  <span className={cn("min-w-0 truncate text-[10px] font-medium", statusColor)}>
+                                      {statusText}
+                                  </span>
+                              </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-slate-200 p-3 dark:border-slate-700">
+                <div className="flex">
+                  <button
+                    onClick={() => setShowSchema(!showSchema)}
+                    className={cn(
+                      'flex w-full items-center justify-center rounded-lg border px-2.5 py-2 text-xs font-bold transition-colors',
+                      showSchema
+                        ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-300'
+                        : 'border-slate-300 bg-white text-slate-700 hover:border-blue-200 hover:text-blue-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:text-blue-300'
+                    )}
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <Settings size={13} />
+                      {showSchema ? '收起规则' : '配置规则'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            {false && (
+            <div className="absolute bottom-2 right-2 z-30 flex h-[36vh] w-[372px] min-h-[280px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white p-3 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
+                  <Bot size={16} className="text-blue-500" />
+                  沉浸式伴聊助手（智能桥接）
+                </h3>
+                <button
+                  onClick={() => setShowAssistantHelp(true)}
+                  className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-blue-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-blue-400"
+                  aria-label="查看助手功能说明"
+                >
+                  <HelpCircle size={14} />
+                </button>
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div ref={assistantDialogRef} data-testid="module2-assistant-dialog" className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 custom-scrollbar">
+                  {/* Summary Section */}
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-[11px] leading-relaxed text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-200">
+                    <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold text-blue-600 dark:text-blue-300">
+                      <Sparkles size={11} />
+                      智能摘要
+                    </div>
+                    <p data-testid="module2-summary-text" className="whitespace-pre-wrap break-words">
+                      {activeSummaryLoading ? "正在生成文档摘要..." : (activeSummaryText || "上传文件并执行抽取后，摘要会自动展示。")}
+                    </p>
+                  </div>
+
+                  {/* Chat History */}
+                  {assistantDialog.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={cn(
+                        "flex gap-2 max-w-[95%]",
+                        msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto"
+                      )}
+                    >
+                      <div className={cn(
+                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-full mt-0.5",
+                        msg.role === 'assistant' 
+                          ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400" 
+                          : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                      )}>
+                        {msg.role === 'assistant' ? <Bot size={12} /> : <div className="text-[10px] font-bold">我</div>}
+                      </div>
+                      <div className={cn(
+                        "rounded-2xl px-3 py-2 text-[11px] leading-relaxed shadow-sm break-words whitespace-pre-wrap",
+                        msg.role === 'assistant'
+                          ? "rounded-tl-none bg-white border border-slate-100 text-slate-700 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200"
+                          : "rounded-tr-none bg-blue-600 text-white"
+                      )}>
+                        {msg.content}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Loading State */}
+                  {assistantQueryLoading && (
+                    <div className="flex gap-2 mr-auto max-w-[90%]">
+                       <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 mt-0.5">
+                        <Bot size={12} />
+                      </div>
+                      <div className="bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 px-3 py-2.5 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-1">
+                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce"></span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Assistant Answer (Legacy support if needed, but better integrated above) */}
+                  {assistantAnswer && !assistantDialog.some(m => m.content === assistantAnswer) && (
+                     <div data-testid="module2-assistant-answer" className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-2 text-[11px] text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                        {assistantAnswer}
+                     </div>
+                  )}
+                  
+                  {/* Warnings */}
+                  {assistantWarnings.length > 0 && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                      {assistantWarnings.join('；')}
+                    </div>
+                  )}
+
+                  {/* Spacer for scrolling */}
+                  <div className="h-2" />
+                </div>
+
+                {/* Input Area */}
+                <div className="border-t border-slate-200 bg-slate-50/50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
+
+
+                  <div className="relative">
+                    <textarea
+                      ref={assistantInputRef}
+                      data-testid="module2-assistant-input"
+                      value={assistantInput}
+                      onChange={(e) => setAssistantInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          if (!assistantQueryLoading && activeDoc) {
+                            void runAssistantInstruction();
+                          }
+                        }
+                      }}
+                      placeholder={activeDoc ? "输入需求，回车发送..." : "请先抽取文档..."}
+                      className="max-h-24 min-h-[40px] w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 pr-9 text-xs leading-relaxed text-slate-700 outline-none transition-colors focus:border-blue-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:border-blue-600"
+                    />
+                    <button
+                      type="button"
+                      data-testid="module2-assistant-send"
+                      onClick={() => void runAssistantInstruction()}
+                      disabled={assistantQueryLoading || !activeDoc || !assistantInput.trim()}
+                      className={cn(
+                        'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
+                        assistantQueryLoading || !activeDoc || !assistantInput.trim()
+                          ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600'
+                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                      )}
+                    >
+                      {assistantQueryLoading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>)}
+          </div>
+        )}
+
+
       {/* CENTER: Workbench Area */}
-      <div className="flex-1 flex flex-col gap-4 min-w-0 relative">
+      <div className="relative flex h-full min-h-0 flex-col gap-2">
         {/* Schema Editor Overlay */}
         {showSchema && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 w-[90%] max-w-2xl z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl shadow-2xl rounded-2xl animate-in slide-in-from-top-4 fade-in duration-200 flex flex-col max-h-[500px] border border-slate-200 dark:border-slate-700 overflow-hidden ring-1 ring-slate-900/5">
                     <div className="p-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
                     <h3 className="text-xs font-bold font-['Microsoft_YaHei'] flex items-center gap-2 text-slate-700 dark:text-slate-200">
-                        <Braces size={14} className="text-blue-500" /> JSON 提取规则配置
+                        <Braces size={14} className="text-blue-500" /> 规则模板配置
                     </h3>
                     <div className="flex gap-2">
-                            <button onClick={() => setSchemaText(JSON.stringify(DEFAULT_SCHEMA, null, 2))} className="text-[10px] text-blue-500 hover:underline px-2 font-medium">恢复默认</button>
+                            <button onClick={() => setSchemaText(JSON.stringify(DEFAULT_SCHEMA, null, 2))} className="text-[10px] text-blue-500 hover:underline px-2 font-medium">恢复智能规则</button>
                             <button onClick={() => setShowSchema(false)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors text-slate-500"><X size={14}/></button>
                     </div>
                     </div>
@@ -592,170 +3105,399 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         )}
 
         {/* Main Canvas with Floating Toolbar */}
-        <div className="flex-1 relative overflow-hidden flex flex-col bg-slate-50/50 dark:bg-slate-950/50 rounded-2xl border border-slate-200/60 dark:border-slate-800 group isolate">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
             {/* Dot Grid Background */}
-            <div className="absolute inset-0 opacity-[0.4] dark:opacity-[0.1] pointer-events-none -z-10" 
+            <div className="absolute inset-0 opacity-0 pointer-events-none -z-10" 
                  style={{ backgroundImage: 'radial-gradient(circle, #cbd5e1 1.5px, transparent 1.5px)', backgroundSize: '24px 24px' }}>
             </div>
 
-            {/* Floating Toolbar */}
-            <div className="absolute top-6 left-1/2 -translate-x-1/2 z-40 h-12 pl-4 pr-2 rounded-2xl bg-white dark:bg-slate-900 shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-slate-200 dark:border-slate-700 flex items-center gap-2 transition-all select-none max-w-[98%]">
-                <div className="flex items-center gap-1 overflow-hidden pl-0 min-w-0 flex-1">
-                     {activeDoc ? (
-                        <>
-                            <div className="flex flex-col min-w-0 max-w-[180px]">
-                                <span className="text-sm font-bold font-['Microsoft_YaHei'] truncate text-slate-900 dark:text-slate-100">{activeDoc.file_name}</span>
-                                <span className="text-[10px] font-bold font-['Microsoft_YaHei'] text-slate-500 flex items-center gap-1.5">
-                                    <span className={cn("w-2 h-2 rounded-full shrink-0", activeDoc.cached ? "bg-emerald-500" : "bg-amber-500")} />
-                                    <span className="truncate">{activeDoc.cached ? "已缓存" : "实时预览"}</span>
-                                </span>
-                            </div>
-                        </>
+            {/* Fixed Header Toolbar */}
+            <div className="relative z-20 flex w-full items-center gap-2 border-b border-slate-200 bg-slate-50 px-2.5 py-2 sm:px-3 dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                     {showLeftPanel && (
+                        <button
+                          type="button"
+                          onClick={() => setIsPreviewFocused(true)}
+                          className="group inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent text-blue-600 transition-all duration-200 active:scale-95 hover:border-slate-200 hover:bg-white hover:text-blue-700 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:text-blue-400 dark:hover:border-slate-700 dark:hover:bg-slate-800"
+                          title={previewFocusButtonTitle}
+                          aria-label={previewFocusButtonTitle}
+                          aria-pressed={false}
+                          aria-expanded={showLeftPanel}
+                          aria-controls="module2-left-panel"
+                          data-testid="module2-preview-focus-toggle"
+                        >
+                          <span className="transition-transform duration-200 ease-out group-hover:scale-105">
+                            <Maximize size={16} strokeWidth={2.2} />
+                          </span>
+                        </button>
+                      )}
+
+                     {!showLeftPanel && (
+                        <motion.button
+                          type="button"
+                          layout
+                          initial={{ opacity: 0, x: -8 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ duration: 0.18, ease: 'easeOut' }}
+                          onClick={() => setIsPreviewFocused(false)}
+                          className="ml-1 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 shadow-sm transition-all duration-200 hover:border-blue-200 hover:bg-blue-50/60 hover:text-blue-700 hover:shadow-md active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:bg-slate-800 dark:hover:text-blue-300"
+                          title={restoreFolderButtonTitle}
+                          aria-label={restoreFolderButtonTitle}
+                          aria-controls="module2-left-panel"
+                          aria-expanded={false}
+                          data-testid="module2-restore-left-panel"
+                        >
+                          <FolderOpen size={14} />
+                          <span className="hidden sm:inline">全局文件夹</span>
+                        </motion.button>
+                      )}
+
+                     {activeDoc || activeSourceFile ? (
+                        <div className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-bold font-['Microsoft_YaHei'] text-slate-900 dark:text-slate-100">{activeDisplayName}</span>
+                            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] font-bold font-['Microsoft_YaHei'] text-slate-500">
+                                {activeDoc ? (
+                                    <>
+                                        <span className={cn("h-2 w-2 rounded-full shrink-0", activeDoc.cached ? "bg-emerald-500" : "bg-amber-500")} />
+                                        <span className="truncate">{activeDoc.cached ? "已缓存" : "实时预览"}</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span className="h-2 w-2 rounded-full shrink-0 bg-blue-500" />
+                                        <span className="truncate">待提取</span>
+                                    </>
+                                )}
+                            </span>
+                        </div>
                      ) : (
-                         <div className="flex items-center gap-1 text-slate-900 dark:text-slate-100 pl-0 pr-1">
-                           <Maximize size={16} strokeWidth={2.5} className="shrink-0" />
-                           <span className="text-sm font-bold font-['Microsoft_YaHei'] whitespace-nowrap">
-                               {isSidebarCollapsed ? "预览视窗" : "预览"}
+                         <div className="flex min-w-0 items-center gap-2 text-slate-900 dark:text-slate-100">
+                           <span className="truncate text-sm font-bold font-['Microsoft_YaHei']">
+                               {isSidebarCollapsed ? "预览视窗" : "文档预览"}
                            </span>
                         </div>
                      )}
                 </div>
 
-                <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0" />
+                <div className="ml-auto flex min-w-0 items-center gap-2 sm:gap-2.5">
+                  <div className="flex items-center gap-1">
+                    <button
+                        onClick={handleZoomOut}
+                        disabled={previewControlsDisabled}
+                        className={cn(
+                          "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                          previewControlsDisabled
+                            ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
+                            : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                        )}
+                        title="缩小"
+                        aria-label="缩小预览"
+                    >
+                      <ZoomOut size={16} strokeWidth={2}/>
+                    </button>
+                    <span className="w-9 shrink-0 text-center text-xs font-bold font-mono text-slate-900 dark:text-slate-100">{Math.round(scale * 100)}%</span>
+                    <button
+                        onClick={handleZoomIn}
+                        disabled={previewControlsDisabled}
+                        className={cn(
+                          "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                          previewControlsDisabled
+                            ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
+                            : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                        )}
+                        title="放大"
+                        aria-label="放大预览"
+                    >
+                      <ZoomIn size={16} strokeWidth={2}/>
+                    </button>
+                    <button
+                        onClick={handleRotate}
+                        disabled={previewControlsDisabled}
+                        className={cn(
+                          "p-1.5 rounded-lg transition-colors ml-0.5 active:scale-95 shrink-0",
+                          previewControlsDisabled
+                            ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
+                            : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                        )}
+                        title="旋转"
+                        aria-label="旋转预览"
+                    >
+                      <RotateCw size={16} strokeWidth={2}/>
+                    </button>
+                    <button
+                        onClick={handleResetView}
+                        disabled={previewControlsDisabled}
+                        className={cn(
+                          "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                          previewControlsDisabled
+                            ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
+                            : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                        )}
+                        title="重置视图"
+                        aria-label="重置预览视图"
+                    >
+                      <RefreshCcw size={16} strokeWidth={2}/>
+                    </button>
 
-                <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={handleZoomOut} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-700 hover:text-blue-700 transition-all active:scale-95 shrink-0"><ZoomOut size={16} strokeWidth={2}/></button>
-                    <span className="text-xs font-bold font-mono w-10 text-center text-slate-900 dark:text-slate-100 shrink-0">{Math.round(scale * 100)}%</span>
-                    <button onClick={handleZoomIn} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-700 hover:text-blue-700 transition-all active:scale-95 shrink-0"><ZoomIn size={16} strokeWidth={2}/></button>
-                    <button onClick={handleRotate} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-700 hover:text-blue-700 transition-all ml-0.5 active:scale-95 shrink-0"><RotateCw size={16} strokeWidth={2}/></button>
-                    <button onClick={handleResetView} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-700 hover:text-blue-700 transition-all active:scale-95 shrink-0" title="重置视图"><Maximize size={16} strokeWidth={2}/></button>
-                </div>
-
-                <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0" />
-
-                {activeExt === 'pdf' && (
-                    <>
-                        <div className="flex items-center gap-1 shrink-0">
-                            <button
-                                onClick={handlePrevPdfPage}
-                                disabled={currentPdfPage <= 1}
-                                className={cn(
-                                    "p-2 rounded-xl transition-all active:scale-95 shrink-0",
-                                    currentPdfPage > 1
-                                        ? "text-slate-700 hover:text-blue-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                        : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
-                                )}
-                                title="Previous page"
-                            >
-                                <ChevronRight size={16} className="rotate-180" />
-                            </button>
-                            <span className="text-xs font-bold font-mono min-w-[64px] text-center text-slate-900 dark:text-slate-100 shrink-0">
-                                P{currentPdfPage}/{inferredPdfPageCount}
-                            </span>
-                            <button
-                                onClick={handleNextPdfPage}
-                                disabled={currentPdfPage >= inferredPdfPageCount}
-                                className={cn(
-                                    "p-2 rounded-xl transition-all active:scale-95 shrink-0",
-                                    currentPdfPage < inferredPdfPageCount
-                                        ? "text-slate-700 hover:text-blue-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                        : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
-                                )}
-                                title="Next page"
-                            >
-                                <ChevronRight size={16} />
-                            </button>
-                        </div>
-                        <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 shrink-0" />
-                    </>
-                )}
-
-                <button
-                    onClick={exportResults}
-                    disabled={documents.length === 0}
-                    className={cn(
-                        "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap",
-                        documents.length > 0
-                        ? "bg-blue-600 text-white hover:bg-blue-700 hover:shadow-blue-500/25"
-                        : "opacity-100 bg-slate-100 dark:bg-slate-800 text-slate-500 cursor-not-allowed"
+                    {activeRenderExt === 'pdf' && (
+                        <>
+                            <div className="mx-1.5 h-5 w-px shrink-0 bg-slate-200 dark:bg-slate-600" />
+                            <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                    onClick={handlePrevPdfPage}
+                                    disabled={currentPdfPage <= 1}
+                                    className={cn(
+                                        "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                                        currentPdfPage > 1
+                                            ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-200"
+                                            : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                    )}
+                                    title="上一页"
+                                >
+                                    <ChevronRight size={16} className="rotate-180" />
+                                </button>
+                                <span className="min-w-[52px] shrink-0 text-center text-xs font-bold font-mono text-slate-900 dark:text-slate-100">
+                                    {`${currentPdfPage} / ${inferredPdfPageCount}`}
+                                </span>
+                                <button
+                                    onClick={handleNextPdfPage}
+                                    disabled={currentPdfPage >= inferredPdfPageCount}
+                                    className={cn(
+                                        "p-1.5 rounded-lg transition-colors active:scale-95 shrink-0",
+                                        currentPdfPage < inferredPdfPageCount
+                                            ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-200"
+                                            : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                    )}
+                                    title="下一页"
+                                >
+                                    <ChevronRight size={16} />
+                                </button>
+                            </div>
+                        </>
                     )}
-                >
-                    <Download size={14} strokeWidth={2.5} />
-                    <span>导出</span>
-                </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 border-l border-slate-200/80 pl-2 dark:border-slate-700/80">
+                    {showBatchExtractAction && (
+                      <span className="hidden rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-600 sm:inline-flex dark:bg-blue-900/30 dark:text-blue-300">
+                        待处理 {pendingExtractionCount} 份
+                      </span>
+                    )}
+                    {showBatchExtractAction && (
+                        <button
+                            onClick={runExtraction}
+                            data-testid="module2-start-extract"
+                            disabled={isProcessing}
+                            className={cn(
+                                "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap sm:px-3",
+                                isProcessing
+                                ? "bg-slate-100 text-slate-400 cursor-not-allowed dark:bg-slate-800 dark:text-slate-600"
+                                : "bg-blue-600 text-white hover:bg-blue-700 hover:shadow-blue-500/25"
+                            )}
+                        >
+                            {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} strokeWidth={2.5} />}
+                            <span>{batchExtractLabel}</span>
+                        </button>
+                    )}
+                    {documents.length > 0 && (
+                        <button
+                            onClick={exportResults}
+                            disabled={documents.length === 0}
+                            className={cn(
+                                "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap sm:px-3",
+                                documents.length > 0
+                                ? "bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-blue-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                                : "opacity-50 bg-slate-50 text-slate-400 cursor-not-allowed dark:bg-slate-900 dark:text-slate-600"
+                            )}
+                        >
+                            <Download size={14} strokeWidth={2.5} />
+                            <span>导出结果</span>
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        onClick={clearWorkbenchData}
+                        data-testid="module2-clear-data"
+                        disabled={!canClearWorkbenchData || isProcessing}
+                        aria-label="清空当前页面数据"
+                        title="一键清空当前页面数据与本地缓存"
+                        className={cn(
+                            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold font-['Microsoft_YaHei'] transition-all shadow-sm active:scale-95 shrink-0 whitespace-nowrap sm:px-3",
+                            canClearWorkbenchData && !isProcessing
+                              ? "border border-red-200 bg-white text-red-600 hover:bg-red-50 hover:border-red-300 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-300 dark:hover:bg-red-950/30"
+                              : "cursor-not-allowed border border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-600"
+                        )}
+                    >
+                        <Trash2 size={14} strokeWidth={2.2} />
+                        <span>清空数据</span>
+                    </button>
+                  </div>
+                </div>
             </div>
 
-            <div className="flex-1 overflow-auto flex items-center justify-center p-8 custom-scrollbar relative z-10">
-                 {!activeDoc ? (
-                   <div className="flex flex-col items-center justify-center h-full select-none pointer-events-none perspective-1000">
-                       {/* Ethereal Floating Stack */}
-                       <div className="relative w-40 h-48 mb-12 transform-style-3d group">
-                           {/* Animated Background Glow */}
-                           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-blue-100/50 dark:bg-blue-500/10 rounded-full blur-[80px] animate-pulse-slow" />
-                           
-                           {/* Card 3 (Bottom) */}
-                           <div className="absolute inset-0 bg-slate-50 dark:bg-slate-800/80 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-lg transform translate-z-[-20px] scale-90 translate-y-4 rotate-[-6deg] opacity-60 transition-transform duration-700 group-hover:rotate-[-12deg] group-hover:translate-y-6" />
-                           
-                           {/* Card 2 (Middle) */}
-                           <div className="absolute inset-0 bg-white dark:bg-slate-900/90 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-xl backdrop-blur-sm transform translate-z-[-10px] scale-95 translate-y-2 rotate-[-3deg] opacity-80 transition-transform duration-700 group-hover:rotate-[-6deg] group-hover:translate-y-3" />
-                           
-                           {/* Card 1 (Top - Main) */}
-                           <div className="absolute inset-0 bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-2xl flex flex-col items-center justify-center overflow-hidden transition-transform duration-700 group-hover:-translate-y-2 group-hover:rotate-2">
-                               {/* Scanning Line Effect */}
-                               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-blue-500/50 to-transparent blur-[2px] animate-scan-slow opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-                               
-                               {/* Abstract Content Skeleton */}
-                               <div className="w-24 space-y-3 opacity-20 dark:opacity-10">
-                                   <div className="h-2 w-12 bg-slate-400 rounded-full" />
-                                   <div className="h-1.5 w-full bg-slate-400 rounded-full" />
-                                   <div className="h-1.5 w-5/6 bg-slate-400 rounded-full" />
-                                   <div className="h-1.5 w-4/6 bg-slate-400 rounded-full" />
-                                   <div className="h-24 w-full bg-slate-100 dark:bg-slate-800 rounded-lg mt-4 border border-slate-200 dark:border-slate-700" />
-                               </div>
-
-                               {/* Floating Plus Icon */}
-                               <div className="absolute inset-0 flex items-center justify-center pt-16">
-                                   <div className="w-14 h-14 rounded-2xl bg-white dark:bg-slate-800 shadow-xl shadow-blue-500/10 border border-slate-100 dark:border-slate-700 flex items-center justify-center text-blue-500 transform transition-transform duration-500 group-hover:scale-110 group-hover:rotate-90 relative overflow-hidden">
-                                       <div className="absolute inset-0 bg-blue-50/50 dark:bg-blue-900/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                       <Plus size={28} strokeWidth={2.5} className="relative z-10" />
-                                   </div>
-                               </div>
-                           </div>
-                       </div>
-
-                       {/* Text Content */}
-                       <div className="text-center space-y-4 relative z-10">
-                           <h3 className="text-xl font-bold font-['Microsoft_YaHei'] tracking-tight text-slate-700 dark:text-slate-200">
-                               智能文档解析
-                           </h3>
-                           <div className="flex items-center justify-center gap-3">
-                               <div className="h-px w-8 bg-gradient-to-r from-transparent to-slate-200 dark:to-slate-700" />
-                               <p className="text-xs text-slate-400 font-medium font-['Microsoft_YaHei']">
-                                   请选择或上传文档以开始深度结构化解析
-                               </p>
-                               <div className="h-px w-8 bg-gradient-to-l from-transparent to-slate-200 dark:to-slate-700" />
-                           </div>
-                       </div>
+            <div className="relative z-10 flex flex-1 items-center justify-center overflow-auto p-1.5 sm:p-3 lg:p-4 custom-scrollbar">
+                 {selectedFiles.length === 0 ? (
+                    <div
+                     data-testid="module2-center-uploader"
+                     onClick={() => fileInputRef.current?.click()}
+                     onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsUploaderDragOver(true);
+                    }}
+                     onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsUploaderDragOver(true);
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsUploaderDragOver(false);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsUploaderDragOver(false);
+                      const dropped = Array.from(e.dataTransfer?.files ?? []) as File[];
+                      mergeSelectedFiles(dropped);
+                    }}
+                    className={cn(
+                      "group relative flex h-full w-full select-none cursor-pointer flex-col items-center justify-center overflow-hidden rounded-3xl border-2 border-dashed bg-slate-50/50 transition-all duration-300",
+                      isUploaderDragOver
+                        ? "border-blue-500 bg-blue-50/70 shadow-lg shadow-blue-500/15 dark:border-blue-400 dark:bg-blue-900/20"
+                        : "border-slate-300 hover:border-blue-400 hover:bg-blue-50/50 hover:shadow-lg hover:shadow-blue-500/5 dark:border-slate-700 dark:bg-slate-900/30 dark:hover:border-blue-500/50 dark:hover:bg-blue-900/10"
+                    )}
+                  >
+                     {/* Creative Background Elements */}
+                     <div className="absolute inset-0 opacity-0 transition-opacity duration-700 group-hover:opacity-100 pointer-events-none">
+                        <div className="absolute left-1/2 top-1/2 h-[300px] w-[300px] -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full bg-blue-100/30 blur-[100px] dark:bg-[#7E92B5]/10" />
+                     </div>
+ 
+                     {/* Main 3D Container */}
+                     <div className="relative z-10 mb-8 h-32 w-32 perspective-[1000px] pointer-events-none">
+                        {/* Floating Card System */}
+                        <div className="relative h-full w-full transition-transform duration-500 group-hover:scale-110">
+                            
+                            {/* Bottom Card - Data Layer */}
+                            <div className="absolute inset-0 rounded-2xl border border-slate-200 bg-white/80 shadow-sm transition-all duration-500 ease-out group-hover:-translate-y-4 group-hover:-translate-x-6 group-hover:-rotate-12 dark:border-slate-700 dark:bg-slate-800/80 flex flex-col p-3 gap-2 opacity-60">
+                                <div className="h-1.5 w-2/3 rounded-full bg-slate-200 dark:bg-slate-600"/>
+                                <div className="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-600"/>
+                                <div className="h-1.5 w-4/5 rounded-full bg-slate-200 dark:bg-slate-600"/>
+                            </div>
+ 
+                            {/* Middle Card - Structure Layer */}
+                            <div className="absolute inset-0 rounded-2xl border border-slate-200 bg-white/90 shadow-md transition-all duration-500 ease-out group-hover:-translate-y-8 group-hover:translate-x-6 group-hover:rotate-12 dark:border-slate-700 dark:bg-slate-800/90 flex items-center justify-center opacity-80">
+                                <div className="h-12 w-16 rounded border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 flex items-center justify-center">
+                                    <ScanLine size={16} className="text-slate-400 dark:text-slate-500" />
+                                </div>
+                            </div>
+ 
+                            {/* Top Card - Action Layer */}
+                            <div className="absolute inset-0 flex items-center justify-center rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 shadow-xl transition-all duration-500 cubic-bezier(0.34, 1.56, 0.64, 1) group-hover:-translate-y-12 group-hover:scale-110 group-hover:shadow-blue-200/50 dark:border-slate-600 dark:from-slate-800 dark:to-slate-900 z-20">
+                                <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-sm border border-slate-100 text-blue-400 transition-all duration-500 group-hover:bg-blue-500 group-hover:text-white group-hover:border-blue-500 group-hover:rotate-0 dark:bg-slate-800 dark:border-slate-700 dark:text-[#8DA3C1]">
+                                    <UploadCloud size={28} className="transition-all duration-500 group-hover:scale-110" />
+                                    {/* Ripple Effect Ring */}
+                                    <div className="absolute inset-0 rounded-2xl border-2 border-blue-200 opacity-0 transition-all duration-700 group-hover:animate-ping group-hover:opacity-100"/>
+                                </div>
+                            </div>
+ 
+                            {/* Shadow Base */}
+                            <div className="absolute -bottom-6 left-1/2 h-4 w-24 -translate-x-1/2 rounded-[100%] bg-slate-400/20 blur-xl transition-all duration-500 group-hover:w-32 group-hover:bg-blue-200/40 dark:bg-black/40 scale-x-150" />
+                        </div>
+                     </div>
+                     
+                     {/* Text Content */}
+                    <div className="relative z-10 text-center transition-transform duration-500 group-hover:translate-y-2">
+                       <h3 className="mb-2 text-lg font-bold text-slate-900 transition-colors group-hover:text-blue-700 dark:text-slate-100 dark:group-hover:text-[#8DA3C1]">
+                           点击或拖拽上传文档
+                       </h3>
+                       <p className="text-xs text-slate-600 transition-colors group-hover:text-slate-700 dark:text-slate-400 dark:group-hover:text-slate-300 mb-3 font-medium">
+                           支持便携文档、文字文档、电子表格、图片等多种格式
+                       </p>
+                       <span className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-200 px-3 py-1 text-[10px] font-bold text-slate-600 transition-all duration-300 group-hover:bg-blue-50 group-hover:text-blue-600 group-hover:border-blue-200 group-hover:shadow-sm dark:bg-slate-800 dark:text-slate-400 dark:group-hover:bg-[#1E293B]/50 dark:group-hover:text-[#8DA3C1]">
+                           <Sparkles size={10} />
+                           智能深度解析 & 溯源定位
+                       </span>
+                    </div>
                    </div>
                 ) : (
-                   <div 
-                       className="relative shadow-2xl dark:shadow-black/50 transition-all duration-300 ease-out origin-center will-change-transform"
-                       style={{ 
-                           transform: `scale(${scale}) rotate(${rotation}deg)`,
-                           transition: isProcessing ? 'none' : 'transform 0.3s ease-out'
-                       }}
-                   >
-                        <div className="w-[595px] h-[842px] relative bg-white dark:bg-[#1a1b26] ring-1 ring-slate-200/50 dark:ring-white/10 shadow-2xl overflow-hidden">
-                            {activeExt === 'pdf' && previewUrl ? (
-                              <iframe
-                                title={`preview-${activeDoc.file_name}`}
-                                src={`${previewUrl}#page=${currentPdfPage}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-                                className="absolute inset-0 w-full h-full border-0 pointer-events-none"
+                   <div
+                        className={cn(
+                          "relative w-full origin-center transition-all duration-300 ease-out will-change-transform",
+                          activeRenderExt === 'pdf'
+                            ? "h-full max-w-[1140px]"
+                          : isPageBased 
+                            ? "max-w-[940px] shadow-2xl dark:shadow-black/50" 
+                            : "h-full min-h-0 flex flex-col"
+                        )}
+                        style={activeRenderExt === 'pdf'
+                          ? undefined
+                          : {
+                              transform: `scale(${scale}) rotate(${rotation}deg)`,
+                              transition: isProcessing ? 'none' : 'transform 0.3s ease-out',
+                            }}
+                    >
+                         <div className={cn(
+                           "relative w-full overflow-hidden bg-white dark:bg-[#1a1b26]",
+                           activeRenderExt === 'pdf'
+                             ? "h-full rounded-[20px] ring-1 ring-slate-200/60 shadow-2xl dark:ring-white/10"
+                             : isPageBased 
+                             ? "aspect-[595/842] ring-1 ring-slate-200/50 shadow-2xl dark:ring-white/10" 
+                             : "flex-1 rounded-xl ring-1 ring-slate-200/50 shadow-sm dark:ring-white/10"
+                         )}>
+                            {activeRenderExt === 'pdf' && previewUrl ? (
+                              <PdfCanvasPreview
+                                key={`${activePreviewIdentity}:${previewUrl}`}
+                                src={previewUrl}
+                                scale={scale}
+                                rotation={rotation}
+                                scrollRequest={pdfScrollRequest}
+                                onPageCount={setPdfPreviewPageCount}
+                                onVisiblePageChange={setPdfViewportPage}
                               />
-                            ) : ['txt', 'md'].includes(activeExt) ? (
-                              <div className="absolute inset-0 p-6 overflow-auto bg-slate-50/70 dark:bg-slate-900/60">
+                            ) : (activeExt === 'doc' || activeExt === 'docx') ? (
+                              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-50/70 p-6 text-center dark:bg-slate-900/60">
+                                <div className="rounded-xl border border-slate-200 bg-white/90 px-4 py-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                                  {activeOfficePreview?.status === 'failed'
+                                    ? (activeOfficePreview.error || '文档预览转换失败，请先执行抽取或重新上传。')
+                                    : (activeOfficePreview?.status === 'completed'
+                                      ? '文档已转换完成，正在加载预览...'
+                                      : '后端正在将文档异步转换为预览，请稍候...')}
+                                </div>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                                  支持文字文档，转换完成后自动切换为预览。
+                                </p>
+                              </div>
+                            ) : IMAGE_EXTENSIONS.has(activeExt) && previewUrl ? (
+                              <div className="absolute inset-0 flex items-center justify-center bg-slate-50/70 dark:bg-slate-900/60 p-6">
+                                <img
+                                  src={previewUrl}
+                                  alt={activeDisplayName}
+                                  className="max-h-full max-w-full object-contain rounded-md shadow-sm"
+                                />
+                              </div>
+                            ) : activeRenderExt === 'xlsx' ? (
+                              <div className="absolute inset-0 min-h-0 overflow-hidden bg-slate-50/70 p-0.5 dark:bg-slate-900/60 sm:p-1">
+                                <LuckysheetPreview
+                                  file={activeSourceFile}
+                                  locator={xlsxLocatorHint}
+                                  className="h-full min-h-0 rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
+                                />
+                              </div>
+                            ) : ['txt', 'md'].includes(activeRenderExt) ? (
+                              <div ref={textPreviewRef} className="absolute inset-0 p-6 overflow-auto bg-slate-50/70 dark:bg-slate-900/60">
                                 <pre className="text-[10px] leading-5 whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-200">
-                                  {previewText || '文本预览加载中...'}
+                                  {previewHighlight ? (
+                                    <>
+                                      {previewHighlight.before}
+                                      <mark data-preview-highlight="true" className="rounded bg-amber-200/80 px-0.5 text-slate-900 dark:bg-amber-400/40 dark:text-slate-100">
+                                        {previewHighlight.hit}
+                                      </mark>
+                                      {previewHighlight.after}
+                                    </>
+                                  ) : (
+                                    previewText || '文本预览加载中...'
+                                  )}
                                 </pre>
                               </div>
                             ) : (
@@ -763,21 +3505,19 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                 <div className="w-14 h-14 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center mb-4 text-slate-500">
                                   <FileText size={26} />
                                 </div>
-                                <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-2">{activeDoc.file_name}</h4>
+                                <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-2">{activeDisplayName}</h4>
                                 <p className="text-[11px] text-slate-500 dark:text-slate-400 max-w-[320px] leading-relaxed">
                                   {activeSourceFile
-                                    ? '当前格式暂不支持浏览器内预览（DOCX/XLSX），已保留抽取定位层与字段明细。'
-                                    : '未找到本地原始文件（可能为缓存结果），仅展示字段定位层与抽取结果。'}
+                                    ? "当前格式暂不支持浏览器内预览，已保留抽取定位层与字段明细。"
+                                    : "未找到本地原始文件（可能为缓存结果），仅展示字段定位层与抽取结果。"}
                                 </p>
                               </div>
                             )}
 
-                            <div className="absolute inset-0 flex items-center justify-center opacity-[0.04] pointer-events-none">
-                                <span className="text-6xl font-bold uppercase tracking-widest text-slate-900 dark:text-slate-100 rotate-45 select-none">{activeDoc.file_name}</span>
-                            </div>
 
-                            {/* Bounding Boxes */}
-                            {overlayItems.map((item) => {
+
+                            {/* Bounding Boxes (hidden by default for cleaner trace view) */}
+                              {showTraceOverlay && overlayItems.map((item) => {
                                const box = toPercentBox(item.bbox);
                                const isActive = activeFieldKey === item.key;
                                return (
@@ -805,11 +3545,40 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                       )}>
                                           <div className="font-bold">
                                             {item.label}
-                                            {item.pageNumber ? ` (P${item.pageNumber})` : ''}
+                                            {item.pageNumber ? `（第${item.pageNumber}页）` : ''}
                                           </div>
-                                          <div className="text-slate-300 text-[9px]">{Math.floor(item.confidence * 100)}% Confidence</div>
+                                          <div className="text-slate-500 dark:text-slate-400 text-[9px] font-medium">{Math.floor(item.confidence * 100)}% 置信度</div>
                                           <div className="absolute bottom-[-4px] left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 rotate-45"></div>
                                       </div>
+                                  </div>
+                                );
+                              })}
+
+                              {showTraceOverlay && overlayTraceItems.map((hit, idx) => {
+                                const rawBox = Array.isArray(hit.bbox) ? hit.bbox : [];
+                                const typ = hit.object_type;
+                                const box = toPercentBox(rawBox);
+                                const label = getTraceDisplayKind(hit) === 'table' ? '表格溯源' : getTraceDisplayKind(hit) === 'image' ? '图片溯源' : '溯源';
+                                const traceKey = toTraceHitKey(hit, idx);
+                                const isTraceActive = traceKey === activeTraceKey;
+                                return (
+                                  <div
+                                    key={`trace-${traceKey}`}
+                                    style={{
+                                      left: `${box.x}%`,
+                                      top: `${box.y}%`,
+                                      width: `${box.w}%`,
+                                      height: `${box.h}%`,
+                                    }}
+                                    className={cn(
+                                      'absolute border border-dashed rounded-sm z-[9] pointer-events-none transition-all',
+                                      typ === 'figure' ? 'border-amber-500/80 bg-amber-400/10' : 'border-emerald-500/80 bg-emerald-400/10',
+                                      isTraceActive && 'ring-2 ring-blue-500/70 border-blue-500 bg-blue-500/10'
+                                    )}
+                                  >
+                                    <div className="absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-slate-900/90 text-white text-[9px] whitespace-nowrap">
+                                      {label}
+                                    </div>
                                   </div>
                                 );
                               })}
@@ -819,195 +3588,695 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             </div>
             
             {/* Context Bar */}
-            <div className="h-9 border-t border-border/50 bg-white/60 dark:bg-slate-900/60 backdrop-blur-md flex items-center justify-between px-4 text-[10px] text-muted-foreground z-20">
-                <div className="flex items-center gap-4">
-                     <span>{infoMessage}</span>
+            <div className="z-20 flex h-8 items-center justify-between border-t border-slate-200 bg-slate-50 px-3 text-[10px] text-slate-500 sm:px-4 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+                <div className="flex min-w-0 items-center gap-2 sm:gap-4">
+                     <span data-testid="module2-info-message" className="truncate">{infoMessage}</span>
                 </div>
                 {activeDoc && (
-                    <div className="font-mono opacity-50">
-                        REF: {activeDoc.file_hash.substring(0, 8)}...
+                    <div className="hidden font-mono opacity-50 sm:block">
+                        引用编号: {activeDoc.file_hash.substring(0, 8)}...
                     </div>
                 )}
             </div>
         </div>
+
+
       </div>
 
-      {/* RIGHT SIDEBAR: Results & Stats */}
-      <div className="w-[320px] flex flex-col gap-4 min-w-[300px] shrink-0">
-         {/* KPI Cards */}
-         <div className="grid grid-cols-2 gap-3">
-             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex flex-col justify-between h-24 relative overflow-hidden group hover:shadow-md transition-all">
-                <div className="absolute -right-3 -bottom-3 opacity-[0.03] group-hover:opacity-[0.08] transition-opacity rotate-12 text-blue-600">
-                    <FileText size={80} />
-                </div>
-                <div className="flex items-center gap-2 mb-1">
-                    <div className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400">
-                        <Layers size={14} />
-                    </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">处理文档</span>
-                </div>
-                <div className="flex items-baseline gap-1 mt-1">
-                    <span className="text-3xl font-bold text-slate-800 dark:text-slate-100 tracking-tight">{documents.length}</span>
-                    <span className="text-xs text-slate-400 font-medium">份</span>
-                </div>
-                <div className="h-1 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden mt-1">
-                     <div className="h-full bg-blue-500 transition-all duration-1000 ease-out" style={{ width: documents.length > 0 ? '100%' : '0%' }}></div>
-                </div>
-             </div>
-             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex flex-col justify-between h-24 relative overflow-hidden group hover:shadow-md transition-all">
-                <div className="absolute -right-3 -bottom-3 opacity-[0.03] group-hover:opacity-[0.08] transition-opacity rotate-12 text-emerald-600">
-                    <CheckCircle2 size={80} />
-                </div>
-                <div className="flex items-center gap-2 mb-1">
-                    <div className={cn("p-1.5 rounded-lg", avgConfidence > 80 ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400" : "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400")}>
-                        <Zap size={14} />
-                    </div>
-                    <span className="text-[10px] font-bold font-['Microsoft_YaHei'] uppercase tracking-wider text-slate-500">平均置信度</span>
-                </div>
-                <div className="flex items-baseline gap-1 mt-1">
-                    <span className={cn("text-3xl font-bold tracking-tight transition-colors", avgConfidence > 80 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
-                        {avgConfidence}
-                    </span>
-                    <span className="text-xs text-slate-400 font-medium">%</span>
-                </div>
-                <div className="h-1 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden mt-1">
-                     <div className={cn("h-full transition-all duration-1000 ease-out", avgConfidence > 80 ? "bg-emerald-500" : "bg-amber-500")} style={{ width: `${avgConfidence}%` }}></div>
-                </div>
-             </div>
-         </div>
-
-         {/* Document Switcher (if multiple) */}
-         {documents.length > 1 && (
-             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2 max-h-32 overflow-y-auto custom-scrollbar space-y-1 shadow-sm">
-                 {documents.map((doc, idx) => (
-                     <button
-                        key={idx}
-                        onClick={() => { setActiveDocIndex(idx); setActiveFieldKey(null); }}
-                        className={cn(
-                            "w-full text-left px-3 py-2.5 rounded-xl text-xs flex items-center justify-between transition-all border",
-                            activeDocIndex === idx 
-                            ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-bold border-blue-100 dark:border-blue-800" 
-                            : "bg-transparent border-transparent hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
-                        )}
-                     >
-                        <span className="truncate max-w-[180px]">{doc.file_name}</span>
-                        <div className="flex items-center gap-2">
-                             {doc.errors.length > 0 && <AlertCircle size={12} className="text-red-500" />}
-                             <span className="text-[10px] opacity-50 font-mono">#{idx + 1}</span>
+      {/* 右侧：结果面板 */}
+      <div className={rightPanelClass}>
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-2xl border border-white/20 bg-white/90 shadow-2xl shadow-slate-300/30 backdrop-blur-xl ring-1 ring-slate-200/80 dark:bg-slate-900/90 dark:shadow-slate-900/50 dark:border-white/10 dark:ring-0">
+          <div className="border-b border-slate-200/60 bg-slate-50/50 px-4 py-2 dark:border-white/10 dark:bg-slate-800/50">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="flex items-center gap-2 text-lg font-bold text-slate-800 dark:text-slate-100">
+                  <img src={smartUnitIcon} alt="智能处理单元" className="h-10 w-10 object-contain" />
+                  智能处理单元
+                </h3>
+              </div>
+              <div className="relative isolate">
+                <svg className="absolute h-0 w-0" aria-hidden="true">
+                  <defs>
+                    <filter id="gooey-tabs">
+                      <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur" />
+                      <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo" />
+                      <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+                    </filter>
+                  </defs>
+                </svg>
+                
+                <div
+                  className="inline-flex h-8 shrink-0 items-center rounded-full bg-slate-100/80 p-1 dark:bg-slate-800/80"
+                  role="tablist"
+                  aria-label="智能处理单元视图切换"
+                >
+                  <div 
+                    className="absolute inset-0 z-0 flex items-center p-1" 
+                    style={{ filter: 'url(#gooey-tabs)' }}
+                    aria-hidden="true"
+                  >
+                    {[
+                      { id: 'results', label: '结果', unread: resultsTabUnread },
+                      { id: 'assistant', label: '助手', unread: assistantTabUnread }
+                    ].map((tab) => {
+                      const isActive = smartUnitTab === tab.id;
+                      return (
+                        <div key={tab.id} className="relative flex h-6 items-center justify-center px-3">
+                          <span className="invisible text-xs font-bold whitespace-nowrap opacity-0 flex items-center gap-1.5">
+                            {tab.label}
+                            {tab.unread && <span className="h-1.5 w-1.5" />}
+                          </span>
+                          {isActive && (
+                            <motion.div
+                              layoutId="smartUnitTabBlob"
+                              className="absolute inset-0 rounded-full bg-white dark:bg-slate-900"
+                              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                            />
+                          )}
                         </div>
-                     </button>
-                 ))}
-             </div>
-         )}
+                      );
+                    })}
+                  </div>
 
-         {/* Fields List */}
-         <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm">
-            <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex items-center justify-between">
-                 <h3 className="text-sm font-bold flex items-center gap-2 text-slate-800 dark:text-slate-200">
-                    <ScanLine size={16} className="text-blue-500" />
-                    抽取结果
-                 </h3>
-                 {fieldItems.length > 0 && (
-                     <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-slate-400 font-medium">共 {fieldItems.length} 个字段</span>
-                     </div>
-                 )}
+                  <div className="relative z-10 flex items-center">
+                    {[
+                      { id: 'results', label: '结果', unread: resultsTabUnread },
+                      { id: 'assistant', label: '助手', unread: assistantTabUnread }
+                    ].map((tab) => {
+                      const isActive = smartUnitTab === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive}
+                          onClick={() => setSmartUnitTab(tab.id as any)}
+                          className={cn(
+                            'relative inline-flex h-6 items-center justify-center rounded-full px-3 text-xs font-bold transition-colors duration-200 ease-out whitespace-nowrap',
+                            isActive
+                              ? 'text-blue-600 dark:text-blue-400'
+                              : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                          )}
+                        >
+                          <span className="flex items-center gap-1.5">
+                            {tab.label}
+                            {tab.unread && (
+                              <span className="h-1.5 w-1.5 rounded-full bg-red-500 ring-1 ring-white dark:ring-slate-900" aria-hidden="true" />
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
+          </div>
 
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3 bg-slate-50/30 dark:bg-slate-900/30">
-                 {/* Error Banner */}
-                 {errorMessage && (
-                    <div className="p-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 text-red-600 dark:text-red-400 text-xs font-bold flex gap-2 items-start animate-in slide-in-from-top-2">
-                        <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                        <span className="leading-relaxed">{errorMessage}</span>
-                    </div>
-                 )}
-
-                 {!activeDoc && !errorMessage && (
-                     <div className="h-full flex flex-col items-center justify-center text-slate-300 dark:text-slate-700 gap-4">
-                         <div className="p-4 rounded-full bg-slate-50 dark:bg-slate-800 mb-2">
-                            <Search size={32} strokeWidth={1.5} />
-                         </div>
-                         <div className="text-center space-y-1">
-                             <p className="text-xs font-bold text-slate-500 dark:text-slate-400">暂无数据</p>
-                             <p className="text-[10px] text-slate-400 dark:text-slate-600">请先在左侧开始抽取任务</p>
-                         </div>
-                     </div>
-                 )}
-
-                 {activeDoc && activeDoc.errors.length > 0 && (
-                    <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800 text-amber-600 dark:text-amber-400 text-xs space-y-1">
-                        {activeDoc.errors.map((e, i) => (
-                            <div key={i} className="flex gap-2">
-                                <AlertCircle size={12} className="mt-0.5 shrink-0" />
-                                <span>{e}</span>
-                            </div>
-                        ))}
-                    </div>
-                 )}
-
-                 {fieldItems.map((item) => (
-                    <div
-                        key={item.key}
-                        onClick={() => {
-                          setActiveFieldKey(item.key);
-                          if (activeExt === 'pdf' && item.pageNumber) {
-                            setPdfPage(item.pageNumber);
-                          }
-                        }}
-                        onMouseEnter={() => setActiveFieldKey(item.key)}
-                        onMouseLeave={() => setActiveFieldKey(null)}
-                        className={cn(
-                            "group rounded-xl border p-3 transition-all duration-200 cursor-pointer relative overflow-hidden",
-                            activeFieldKey === item.key
-                            ? "border-blue-500 shadow-md scale-[1.02] bg-white dark:bg-slate-900 ring-1 ring-blue-500 z-10"
-                            : "border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-blue-200 hover:shadow-sm"
-                        )}
+          <div className="flex-1 min-h-0 overflow-hidden bg-transparent">
+            <div className={smartUnitTrackClass}>
+              <section className="h-full w-1/2 min-w-0 p-0" aria-label="抽取结果视图">
+                <div className="flex h-full min-h-0 flex-col overflow-hidden bg-transparent">
+          <div className="px-4 py-3 bg-transparent">
+            <div className="flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-wider dark:text-slate-400">
+                <ScanLine size={14} className="text-slate-400 dark:text-slate-500" />
+                抽取结果
+              </h3>
+              <span className="rounded-full bg-slate-100/50 px-2 py-0.5 text-[10px] font-bold text-slate-500 backdrop-blur-sm dark:bg-slate-800/50 dark:text-slate-400">{resultCountText}</span>
+            </div>
+            {fieldItems.length > 0 && (
+              <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+                <span className="flex items-center justify-center rounded-lg bg-emerald-50/50 px-2 py-1.5 font-bold text-emerald-700 backdrop-blur-sm ring-1 ring-emerald-500/10 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20">
+                  平均置信度 {avgConfidence}%
+                </span>
+                <span className="flex items-center justify-center rounded-lg bg-blue-50/50 px-2 py-1.5 font-bold text-blue-700 backdrop-blur-sm ring-1 ring-blue-500/10 dark:bg-blue-500/10 dark:text-blue-400 dark:ring-blue-500/20">
+                  表格 {tableCount} / 图片 {figureCount}
+                </span>
+              </div>
+            )}
+            {activeDoc && fieldItems.length > 0 && (
+              <div className="mt-3 flex items-center gap-2">
+                <div className="relative flex-1 group">
+                  <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-blue-500" />
+                  <input
+                    type="text"
+                    value={resultSearchQuery}
+                    onChange={(e) => setResultSearchQuery(e.target.value)}
+                    className="h-8 w-full rounded-full border-none bg-slate-100/80 pl-9 pr-8 text-xs text-slate-700 placeholder:text-slate-400 ring-1 ring-slate-200/50 transition-all focus:bg-white focus:ring-2 focus:ring-blue-500/20 dark:bg-slate-800/50 dark:text-slate-200 dark:ring-slate-700/50 dark:focus:bg-slate-800"
+                    placeholder="搜索字段..."
+                    aria-label="搜索抽取结果"
+                  />
+                  {hasResultSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setResultSearchQuery('')}
+                      className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                      aria-label="清空抽取结果搜索"
                     >
-                        {activeFieldKey === item.key && (
-                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500 animate-in fade-in"></div>
-                        )}
-                        
-                        <div className="flex justify-between items-start mb-1.5">
-                            <span className={cn(
-                                "text-[10px] font-bold font-['Microsoft_YaHei'] uppercase tracking-wider transition-colors",
-                                activeFieldKey === item.key ? "text-blue-600 dark:text-blue-400" : "text-slate-500 dark:text-slate-400"
-                            )}>
-                                {item.label}
-                            </span>
-                            <div className="flex items-center gap-1.5">
-                                {activeExt === 'pdf' && item.pageNumber && (
-                                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded-full border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300">
-                                    P{item.pageNumber}
-                                  </span>
-                                )}
-                                <span className={cn(
-                                    "text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-full border",
-                                    item.confidence > 0.8 
-                                    ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-800" 
-                                    : "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-800"
-                                )}>
-                                    {Math.floor(item.confidence * 100)}%
-                                </span>
-                            </div>
-                        </div>
-                        
-                        <div className="text-sm font-medium text-slate-800 dark:text-slate-200 break-all leading-snug font-mono">
-                            {item.valueText}
-                        </div>
-                        
-                        {/* Interactive Confidence Bar */}
-                        <div className="mt-2.5 h-1 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                            <div 
-                                className={cn("h-full rounded-full transition-all duration-500", item.confidence > 0.8 ? "bg-emerald-500" : "bg-amber-500")}
-                                style={{ width: `${item.confidence * 100}%` }}
-                            ></div>
-                        </div>
-                    </div>
-                 ))}
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void writeClipboard(
+                      filteredResultsClipboardText,
+                      hasResultSearch
+                        ? `已复制 ${filteredFieldItems.length} 条筛选结果。`
+                        : `已复制 ${filteredFieldItems.length} 条抽取结果。`
+                    )
+                  }
+                  disabled={!canCopyFilteredResults}
+                  className={cn(
+                    'inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] transition-colors',
+                    canCopyFilteredResults
+                      ? 'border-slate-200 text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300'
+                      : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500'
+                  )}
+                  aria-label="复制当前结果列表"
+                >
+                  <Copy size={12} />
+                  复制全部
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex min-h-0 max-h-[42%] flex-col overflow-hidden rounded-xl border border-slate-200/50 bg-white/40 px-4 pt-2 pb-3 shadow-sm backdrop-blur-md dark:border-slate-800/50 dark:bg-slate-900/40">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-wider dark:text-slate-400">
+                <LocateFixed size={14} className={cn("text-slate-400", traceHits.length > 0 && "text-blue-500 dark:text-blue-400")} />
+                溯源定位
+              </div>
             </div>
-         </div>
+
+            {(traceTypeStats.field > 0 || traceTypeStats.table > 0 || traceTypeStats.image > 0 || traceTypeStats.other > 0) && (
+              <div className="mb-2 flex flex-wrap gap-1.5 text-[10px]">
+                {traceTypeStats.field > 0 && <span className="inline-flex items-center rounded-full bg-blue-50/80 px-2 py-0.5 font-medium text-blue-600 ring-1 ring-inset ring-blue-500/10 dark:bg-blue-900/20 dark:text-blue-300">字段 {traceTypeStats.field}</span>}
+                {traceTypeStats.table > 0 && <span className="inline-flex items-center rounded-full bg-emerald-50/80 px-2 py-0.5 font-medium text-emerald-600 ring-1 ring-inset ring-emerald-500/10 dark:bg-emerald-900/20 dark:text-emerald-300">表格 {traceTypeStats.table}</span>}
+                {traceTypeStats.image > 0 && <span className="inline-flex items-center rounded-full bg-amber-50/80 px-2 py-0.5 font-medium text-amber-600 ring-1 ring-inset ring-amber-500/10 dark:bg-amber-900/20 dark:text-amber-300">图片 {traceTypeStats.image}</span>}
+                {traceTypeStats.other > 0 && <span className="inline-flex items-center rounded-full bg-slate-100/80 px-2 py-0.5 font-medium text-slate-600 ring-1 ring-inset ring-slate-500/10 dark:bg-slate-700 dark:text-slate-300">其他 {traceTypeStats.other}</span>}
+              </div>
+            )}
+
+            {traceError && (
+              <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-700 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                {traceError}
+              </p>
+            )}
+
+            {traceHits.length > 0 ? (
+              <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 custom-scrollbar">
+                {traceGroups.map((group) => (
+                  <div key={`trace-group-${group.key}`} className="mb-3 last:mb-0">
+                    <div className="sticky top-0 z-10 mb-1.5 bg-slate-50/95 px-2 py-1 text-[10px] font-bold text-slate-400 backdrop-blur dark:bg-slate-900/95 dark:text-slate-500">
+                      {group.label}
+                    </div>
+                    <div className="space-y-1.5 px-1">
+                {group.items.map(({ hit, idx }) => {
+                  const objectType = String(hit.object_type || "field").toLowerCase();
+                  const displayKind = getTraceDisplayKind(hit);
+                  const objectLabel = getTraceDisplayLabel(hit);
+                  const objectId = String(hit.object_id || "");
+                  const page = toTracePage(hit);
+                  const snippet = String(hit.snippet || "");
+                  const traceKey = toTraceHitKey(hit, idx);
+                  const isActiveTrace = activeTraceKey === traceKey;
+                  const artifactUrl = resolveArtifactUrl(hit);
+                  const locator = (hit.locator ?? {}) as Record<string, unknown>;
+                  const tablePreview = (locator.table_preview ?? {}) as Record<string, unknown>;
+                  const tableHeaders = Array.isArray(tablePreview.headers)
+                    ? tablePreview.headers.map((x) => String(x ?? ''))
+                    : [];
+                  const tableRows = Array.isArray(tablePreview.rows)
+                    ? tablePreview.rows.map((row) =>
+                        Array.isArray(row) ? row.map((cell) => String(cell ?? '')) : []
+                      )
+                    : [];
+                  const figureKeyPoints = Array.isArray(locator.key_points)
+                    ? locator.key_points.map((x) => String(x ?? '')).filter(Boolean).slice(0, 3)
+                    : [];
+                  const figureModesRaw = Array.isArray(locator.content_modes)
+                    ? locator.content_modes.map((x) => String(x ?? '').trim().toLowerCase()).filter(Boolean)
+                    : [];
+                  const figureModes = figureModesRaw.slice(0, 4);
+                  const modeLabelMap: Record<string, string> = {
+                    dataframe: '数据表',
+                    topology: '拓扑',
+                    text: '文本',
+                    visual: '视觉',
+                  };
+                  const figureDataframe = (locator.dataframe ?? {}) as Record<string, unknown>;
+                  const figureDfHeaders = Array.isArray(figureDataframe.headers)
+                    ? figureDataframe.headers.map((x) => String(x ?? '')).filter(Boolean).slice(0, 8)
+                    : [];
+                  const figureDfRows = Array.isArray(figureDataframe.rows)
+                    ? figureDataframe.rows
+                        .map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? '')) : []))
+                        .filter((row) => row.length > 0)
+                        .slice(0, 3)
+                    : [];
+                  const figureTopology = (locator.topology ?? {}) as Record<string, unknown>;
+                  const figureTopologyNodes = Array.isArray(figureTopology.nodes) ? figureTopology.nodes.length : 0;
+                  const figureTopologyEdges = Array.isArray(figureTopology.edges) ? figureTopology.edges.length : 0;
+                  const figureTextBlocks = Array.isArray(locator.text_blocks)
+                    ? locator.text_blocks.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 3)
+                    : [];
+                  const locatorHints: string[] = [];
+                  const sheetName = String(locator.sheet_name || '').trim();
+                  if (sheetName) locatorHints.push(`工作表：${sheetName}`);
+                  const tableRow = Number(locator.row_index || 0);
+                  if (Number.isFinite(tableRow) && tableRow > 0) locatorHints.push(`行：${Math.round(tableRow)}`);
+                  const tableCol = Number(locator.col_index || 0);
+                  if (Number.isFinite(tableCol) && tableCol > 0) locatorHints.push(`列：${Math.round(tableCol)}`);
+                  const paragraphIndex = Number(locator.paragraph_index || 0);
+                  if (Number.isFinite(paragraphIndex) && paragraphIndex > 0) locatorHints.push(`段落：${Math.round(paragraphIndex)}`);
+                  const chunkIndex = Number(locator.chunk_index || 0);
+                  if (Number.isFinite(chunkIndex) && chunkIndex > 0) locatorHints.push(`片段：${Math.round(chunkIndex)}`);
+                  const lineStart = Number(locator.line_start || 0);
+                  const lineEnd = Number(locator.line_end || 0);
+                  if (Number.isFinite(lineStart) && lineStart > 0) {
+                    const rangeText = Number.isFinite(lineEnd) && lineEnd >= lineStart
+                      ? `${Math.round(lineStart)}-${Math.round(lineEnd)}`
+                      : `${Math.round(lineStart)}`;
+                    locatorHints.push(`行号：${rangeText}`);
+                  }
+                  const locatorSummary = locatorHints.join(' 路 ');
+                  return (
+                    <div
+                      key={`trace-list-${traceKey}`}
+                      onClick={() => {
+                        setActiveTraceKey(traceKey);
+                        if (objectType === "field" && objectId) {
+                          setActiveFieldKey(objectId);
+                        }
+                        if (activeRenderExt === "pdf" && Number.isFinite(page) && page > 0) {
+                          jumpToPdfPage(page);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        setActiveTraceKey(traceKey);
+                        if (objectType === "field" && objectId) {
+                          setActiveFieldKey(objectId);
+                        }
+                        if (activeRenderExt === "pdf" && Number.isFinite(page) && page > 0) {
+                          jumpToPdfPage(page);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      className={cn(
+                        "group relative w-full rounded-xl border border-transparent bg-white/60 px-3 py-2.5 text-left transition-all hover:bg-white hover:shadow-md hover:shadow-slate-200/50 hover:ring-1 hover:ring-slate-200/50 dark:bg-slate-800/40 dark:hover:bg-slate-800 dark:hover:ring-slate-700",
+                        isActiveTrace && "bg-blue-50 ring-1 ring-blue-200 dark:bg-blue-900/30 dark:ring-blue-800"
+                      )}
+                    >
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                           <span className={cn(
+                             "flex h-5 items-center justify-center rounded-md px-1.5 text-[10px] font-bold uppercase tracking-wider",
+                             displayKind === 'field' ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300" :
+                             displayKind === 'table' ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" :
+                             displayKind === 'image' ? "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300" :
+                             "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                           )}>
+                             {objectLabel}
+                           </span>
+                           {activeRenderExt === 'pdf' && page > 0 && (
+                             <span className="flex items-center gap-0.5 text-[10px] font-medium text-slate-400">
+                               <span className="opacity-50">Page</span>
+                               <span>{Math.round(page)}</span>
+                             </span>
+                           )}
+                        </div>
+                        <span className="text-[10px] font-medium text-slate-400 opacity-0 transition-opacity group-hover:opacity-100">{Math.round((Number(hit.confidence || 0) || 0) * 100)}%</span>
+                      </div>
+                      <p className="line-clamp-2 text-[11px] leading-relaxed text-slate-700 dark:text-slate-200">
+                        {snippet || objectId || "溯源片段"}
+                      </p>
+                      {locatorSummary && (
+                        <div className="mt-2 flex items-center gap-1.5">
+                          <div className="h-1 w-1 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+                          <p className="truncate text-[10px] text-slate-500 dark:text-slate-400">
+                            {locatorSummary}
+                          </p>
+                        </div>
+                      )}
+
+                      {objectType === 'figure' && figureModes.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {figureModes.map((mode) => (
+                            <span
+                              key={`${traceKey}-mode-${mode}`}
+                              className="rounded-md bg-amber-50/50 px-1.5 py-0.5 text-[10px] text-amber-700/80 ring-1 ring-inset ring-amber-600/10 dark:bg-amber-900/20 dark:text-amber-300"
+                            >
+                              {modeLabelMap[mode] || mode}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {artifactUrl && (
+                        <div className="mt-2 overflow-hidden rounded-md border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
+                          <a href={artifactUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                            <img
+                              src={artifactUrl}
+                              alt={`${objectLabel}-preview-${idx + 1}`}
+                              className="h-40 w-full object-contain bg-white p-1 dark:bg-slate-900 sm:h-56"
+                              loading="lazy"
+                            />
+                          </a>
+                        </div>
+                      )}
+
+                      {displayKind === 'table' && tableRows.length > 0 && (
+                        <div className="mt-2 overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
+                          <table className="min-w-full text-[11px] text-slate-700 dark:text-slate-200">
+                            <thead className="bg-slate-100 dark:bg-slate-800">
+                              <tr>
+                                {(tableHeaders.length > 0 ? tableHeaders : tableRows[0]).map((header, hIdx) => (
+                                  <th key={`tbl-h-${idx}-${hIdx}`} className="border-b border-r border-slate-200 px-1.5 py-1 text-left font-bold dark:border-slate-700">
+                                    {header || `列${hIdx + 1}`}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tableRows.slice(0, 3).map((row, rIdx) => (
+                                <tr key={`tbl-r-${idx}-${rIdx}`} className="odd:bg-white even:bg-slate-50 dark:odd:bg-slate-900 dark:even:bg-slate-800/50">
+                                  {(tableHeaders.length > 0 ? tableHeaders : row).map((_, cIdx) => (
+                                    <td key={`tbl-c-${idx}-${rIdx}-${cIdx}`} className="max-w-[180px] border-b border-r border-slate-100 px-1.5 py-1 align-top break-words dark:border-slate-800">
+                                      {String(row[cIdx] ?? "").trim() || "—"}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {objectType === 'figure' && figureKeyPoints.length > 0 && (
+                        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                          {figureKeyPoints.join("；")}
+                        </div>
+                      )}
+
+                      {objectType === 'figure' && figureDfRows.length > 0 && (
+                        <div className="mt-2 overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
+                          <table className="min-w-full text-[10px] text-slate-700 dark:text-slate-200">
+                            <thead className="bg-slate-100 dark:bg-slate-800">
+                              <tr>
+                                {(figureDfHeaders.length > 0 ? figureDfHeaders : figureDfRows[0]).map((header, hIdx) => (
+                                  <th key={`fig-df-h-${idx}-${hIdx}`} className="border-b border-r border-slate-200 px-1.5 py-1 text-left font-bold dark:border-slate-700">
+                                    {header || `列${hIdx + 1}`}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {figureDfRows.map((row, rIdx) => (
+                                <tr key={`fig-df-r-${idx}-${rIdx}`} className="odd:bg-white even:bg-slate-50 dark:odd:bg-slate-900 dark:even:bg-slate-800/50">
+                                  {(figureDfHeaders.length > 0 ? figureDfHeaders : row).map((_, cIdx) => (
+                                    <td key={`fig-df-c-${idx}-${rIdx}-${cIdx}`} className="max-w-[160px] border-b border-r border-slate-100 px-1.5 py-1 align-top break-words dark:border-slate-800">
+                                      {String(row[cIdx] ?? "").trim() || "—"}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {objectType === 'figure' && (figureTopologyNodes > 0 || figureTopologyEdges > 0) && (
+                        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                          {`拓扑节点 ${figureTopologyNodes} · 拓扑连边 ${figureTopologyEdges}`}
+                        </div>
+                      )}
+
+                      {objectType === 'figure' && figureTextBlocks.length > 0 && (
+                        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                          {figureTextBlocks.join("；")}
+                        </div>
+                      )}
+
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void writeClipboard(snippet || objectId || "", "已复制溯源片段。");
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-1.5 py-1 text-[10px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
+                        >
+                          <Copy size={11} />
+                          复制片段
+                        </button>
+                        {displayKind === 'table' && tableRows.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void writeClipboard(
+                                tablePreviewToTsv(
+                                  tableHeaders.length > 0 ? tableHeaders : tableRows[0],
+                                  tableRows
+                                ),
+                                "已复制表格内容（制表符分隔格式）。"
+                              );
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-1.5 py-1 text-[10px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
+                          >
+                            <Copy size={11} />
+                            复制表格
+                          </button>
+                        )}
+                        {artifactUrl && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void writeClipboard(artifactUrl, "已复制截图链接。");
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-1.5 py-1 text-[10px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
+                          >
+                            <Copy size={11} />
+                            {"复制链接"}
+                          </button>
+                        )}
+                        {artifactUrl && (
+                          <a
+                            href={artifactUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-1.5 py-1 text-[10px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
+                          >
+                            <ExternalLink size={11} />
+                            查看截图
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-400 dark:text-slate-500">暂无相关溯源信息</p>
+            )}
+          </div>
+
+          <div className="flex-1 min-h-0 space-y-2 overflow-y-auto custom-scrollbar bg-transparent px-4 pb-4">
+            {errorMessage && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+                <div className="flex items-start gap-2">
+                  <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                  <span>{errorMessage}</span>
+                </div>
+              </div>
+            )}
+
+            {!activeDoc && !errorMessage && (
+              <div className="flex h-full flex-col items-center justify-center text-center select-none">
+                <ScanLine size={32} strokeWidth={1} className="mb-2 opacity-20 text-slate-400 dark:text-slate-500" />
+                <p className="text-xs text-slate-400 dark:text-slate-500">暂无抽取结果</p>
+              </div>
+            )}
+
+            {activeDoc && activeDoc.errors.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                {activeDoc.errors.map((e, i) => (
+                  <div key={i} className="flex gap-2">
+                    <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                    <span>{e}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeDoc && (activeDoc.soft_warnings?.length ?? 0) > 0 && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                {(activeDoc.soft_warnings ?? []).slice(0, 4).map((warn, i) => (
+                  <div key={i} className="flex gap-2">
+                    <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                    <span>{warn}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeDoc && fieldItems.length === 0 && !errorMessage && (
+              <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/30 p-8 text-center backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/30">
+                <div className="rounded-full bg-slate-100 p-3 ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+                  <FileText size={24} className="text-slate-400 dark:text-slate-500" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-slate-600 dark:text-slate-300">暂无结构化字段</p>
+                  <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">请检查文档内容或调整提取规则</p>
+                </div>
+              </div>
+            )}
+
+            {activeDoc && fieldItems.length > 0 && filteredFieldItems.length === 0 && !errorMessage && (
+              <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
+                 <Search size={20} className="text-slate-300 dark:text-slate-600" />
+                 <p className="text-xs text-slate-500 dark:text-slate-400">未找到匹配 "{resultSearchQuery}" 的字段</p>
+                 <button 
+                   onClick={() => setResultSearchQuery('')}
+                   className="text-[10px] text-blue-500 hover:underline"
+                 >
+                   清除搜索
+                 </button>
+              </div>
+            )}
+
+            {filteredFieldItems.map((item) => (
+              <div
+                key={item.key}
+                onClick={() => {
+                  setActiveFieldKey(item.key);
+                  const hitIndex = traceHits.findIndex(
+                    (hit) =>
+                      String(hit.object_type || '').toLowerCase() === 'field' &&
+                      String(hit.object_id || '').toLowerCase() === item.key.toLowerCase()
+                  );
+                  if (hitIndex >= 0) {
+                    const hit = traceHits[hitIndex];
+                    setActiveTraceKey(toTraceHitKey(hit, hitIndex));
+                  }
+                  if (activeRenderExt === "pdf" && item.pageNumber) {
+                    jumpToPdfPage(item.pageNumber);
+                  }
+                }}
+                onMouseEnter={() => setActiveFieldKey(item.key)}
+                onMouseLeave={() => setActiveFieldKey(null)}
+                className={cn(
+                  "group relative cursor-pointer rounded-xl border p-3 transition-all duration-300",
+                  activeFieldKey === item.key
+                    ? "border-blue-500/50 bg-blue-50/40 shadow-md ring-1 ring-blue-500/20 backdrop-blur-md dark:bg-blue-900/30 dark:ring-blue-500/30"
+                    : "border-slate-200/50 bg-white/40 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-white/60 hover:shadow-lg hover:shadow-slate-200/40 backdrop-blur-sm dark:border-slate-800/50 dark:bg-slate-900/40 dark:hover:border-blue-800 dark:hover:bg-slate-800/60 dark:hover:shadow-none"
+                )}
+              >
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className={cn(
+                    "text-[10px] font-bold uppercase tracking-wider transition-colors",
+                    activeFieldKey === item.key ? "text-blue-600 dark:text-blue-400" : "text-slate-500 group-hover:text-blue-500 dark:text-slate-400 dark:group-hover:text-blue-400"
+                  )}>
+                    {item.label}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {activeRenderExt === "pdf" && item.pageNumber && (
+                      <span className="flex items-center gap-0.5 rounded-md bg-slate-100/50 px-1.5 py-0.5 text-[9px] font-medium text-slate-500 dark:bg-slate-800/50 dark:text-slate-400">
+                        P{item.pageNumber}
+                      </span>
+                    )}
+                    <span
+                      className={cn(
+                        "flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold shadow-sm ring-1 ring-inset backdrop-blur-sm",
+                        item.confidence > 0.8
+                          ? "bg-emerald-50/50 text-emerald-600 ring-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/30"
+                          : "bg-amber-50/50 text-amber-600 ring-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/30"
+                      )}
+                    >
+                      {item.confidence > 0.8 ? <CheckCircle2 size={8} /> : <AlertCircle size={8} />}
+                      {Math.floor(item.confidence * 100)}%
+                    </span>
+                  </div>
+                </div>
+
+                <div className="break-all rounded-lg bg-slate-50/50 px-2.5 py-2 font-mono text-sm leading-relaxed text-slate-700 ring-1 ring-inset ring-slate-200/50 transition-colors group-hover:bg-white/80 group-hover:ring-blue-100 dark:bg-slate-950/30 dark:text-slate-300 dark:ring-slate-800 dark:group-hover:bg-slate-950/50 dark:group-hover:ring-blue-900/30">
+                  {item.valueText}
+                </div>
+              </div>
+            ))}
+          </div>
+                </div>
+              </section>
+              <section className="h-full w-1/2 min-w-0 p-2" aria-label="任务助手视图">
+                {assistantPanel}
+              </section>
+            </div>
+          </div>
+        </div>
       </div>
+    </div>
+      {showAssistantHelp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95 duration-200">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center justify-between border-b border-slate-100 p-4 dark:border-slate-800">
+              <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <Bot className="text-blue-500" size={20} />
+                信息提取助手功能说明
+              </h3>
+              <button 
+                onClick={() => setShowAssistantHelp(false)}
+                className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300 transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              <div className="flex gap-3">
+                <div className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-bold">1</div>
+                <div>
+                  <h4 className="font-bold text-slate-800 dark:text-slate-200 mb-1">智能解析与提取</h4>
+                  <p>上传文档后，助手会自动分析文档结构，你可以直接查看右侧提取结果，或在下方对话框输入指令（如“提取发票金额”）进行定向提取。</p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <div className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full bg-purple-50 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400 font-bold">2</div>
+                <div>
+                  <h4 className="font-bold text-slate-800 dark:text-slate-200 mb-1">多模态溯源定位</h4>
+                  <p>点击提取结果中的字段，系统会自动定位到文档原文位置。支持文字、表格、印章及图片的精准溯源。</p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <div className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 font-bold">3</div>
+                <div>
+                  <h4 className="font-bold text-slate-800 dark:text-slate-200 mb-1">交互式结果修正</h4>
+                  <p>如果对结果不满意，可直接告诉助手“金额不对，应该是示例值”，助手会根据反馈进行修正并重新定位。</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-slate-50 p-4 text-center dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
+              <button 
+                onClick={() => setShowAssistantHelp(false)}
+                className="px-6 py-2 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-500/20 text-sm"
+              >
+                开始使用
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

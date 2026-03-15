@@ -465,14 +465,14 @@ const sendEmailCode = async (contact, code, type = 'forgot') => {
           <div style="background:#f1f5f9;border-radius:12px;padding:20px;text-align:center;margin:24px 0;">
             <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#2563eb;">${code}</span>
           </div>
-          <p style="color:#64748b;font-size:13px;">楠岃瘉鐮?<strong>5 鍒嗛挓</strong>鍐呮湁鏁堬紝璇峰嬁娉勯湶缁欎粬浜恒€?/p>
-          <p style="color:#94a3b8;font-size:12px;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:16px;">濡傛灉杩欎笉鏄偍鏈汉鐨勬搷浣滐紝璇峰拷鐣ユ閭欢銆?/p>
+          <p style="color:#64748b;font-size:13px;">验证码在<strong>5 分钟</strong>内有效，请勿泄露给他人。</p>
+          <p style="color:#94a3b8;font-size:12px;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:16px;">如果这不是您本人的操作，请忽略此邮件。</p>
         </div>
       `,
     });
     return { ok: true };
   } catch (err) {
-    console.error('閭欢鍙戦€佸け璐?', err);
+    console.error('邮件发送失败:', err);
     return { ok: false, error: 'Email send failed. Please retry later.' };
   }
 };
@@ -499,7 +499,7 @@ app.post('/api/register', async (req, res) => {
   if (Date.now() > stored.expiresAt) {
     delete verificationCodes[phone];
     delete verificationCodes[email];
-    return res.status(400).json({ error: '楠岃瘉鐮佸凡杩囨湡锛岃閲嶆柊鑾峰彇' });
+    return res.status(400).json({ error: '验证码已过期，请重新获取' });
   }
   if (stored.code !== code) {
     return res.status(400).json({ error: 'Invalid verification code.' });
@@ -651,7 +651,7 @@ app.post('/api/forgot/reset', async (req, res) => {
   const newPassword = normalizeStr(req.body?.newPassword);
 
   if (!contact || !code || !newPassword) {
-    return res.status(400).json({ error: '璇峰～鍐欐墍鏈夊繀濉」' });
+    return res.status(400).json({ error: '请填写所有必填项' });
   }
   if (newPassword.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters.' });
@@ -663,7 +663,7 @@ app.post('/api/forgot/reset', async (req, res) => {
   }
   if (Date.now() > stored.expiresAt) {
     delete verificationCodes[contact];
-    return res.status(400).json({ error: '楠岃瘉鐮佸凡杩囨湡锛岃閲嶆柊鑾峰彇' });
+    return res.status(400).json({ error: '验证码已过期，请重新获取' });
   }
   if (stored.code !== code) {
     return res.status(400).json({ error: 'Invalid verification code.' });
@@ -688,7 +688,7 @@ app.post('/api/register/send-code', async (req, res) => {
   const isPhone = /^1[3-9]\d{9}$/.test(contact);
 
   if (!contact || (!isEmail && !isPhone)) {
-    return res.status(400).json({ error: '璇疯緭鍏ユ湁鏁堢殑閭鍦板潃鎴栨墜鏈哄彿' });
+    return res.status(400).json({ error: '请输入有效的邮箱地址或手机号' });
   }
 
   const quota = checkSendCodeQuota(req, contact);
@@ -726,7 +726,7 @@ app.post('/api/register/send-code', async (req, res) => {
 });
 
 // ------------------------------------------------------------
-// 馃 Vercel AI SDK: Global AI Assistant Route
+// 🤖 Vercel AI SDK: Global AI Assistant Route
 // ------------------------------------------------------------
 const google = createGoogleGenerativeAI({
   apiKey: process.env.GEMINI_API_KEY,

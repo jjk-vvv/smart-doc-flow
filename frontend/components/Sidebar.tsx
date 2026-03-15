@@ -83,19 +83,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const menuItems = [
-    { id: 'dashboard', label: '指挥控制台', sub: 'Command Center', icon: LayoutGrid },
+    { id: 'dashboard', label: '指挥控制台', sub: '指挥中心', icon: LayoutGrid },
     { 
       id: 'deepread', 
       label: '智能文档解析', 
-      sub: 'Deep Parsing', 
+      sub: '深度解析', 
       icon: FileSearch,
       subItems: [
         { id: 'deepread_interaction', label: '文档智能操作交互模块', icon: Bot },
         { id: 'deepread_extraction', label: '非结构化文档信息需求模块', icon: FileText }
       ]
     },
-    { id: 'fusion', label: '多源数据融合', sub: 'Data Fusion', icon: Database },
-    { id: 'nexus', label: '全域知识图谱', sub: 'Knowledge Graph', icon: GitGraph },
+    { id: 'fusion', label: '多源数据融合', sub: '数据融合', icon: Database },
+    { id: 'nexus', label: '全域知识图谱', sub: '知识图谱', icon: GitGraph },
   ];
 
   return (
@@ -136,7 +136,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             isCollapsed ? "w-10 h-10" : "w-12 h-12"
           )}>
             <div className="absolute inset-0 bg-primary/5 opacity-0 dark:opacity-100 rounded-xl pointer-events-none" />
-            <img src={LogoImage} alt="Logo" className={cn(
+            <img src={LogoImage} alt="平台徽标" className={cn(
               "object-contain drop-shadow-sm relative z-10",
               isCollapsed ? "w-7 h-7" : "w-9 h-9"
             )} />
@@ -242,17 +242,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   isParentActive && "opacity-100"
                 )}></div>
 
-                <Icon size={20} className={cn(
-                  "relative z-10 transition-colors duration-300 shrink-0",
-                  isParentActive ? 'text-black dark:text-white' : 'group-hover/nav:text-foreground'
-                )} />
+                <Icon 
+                  size={20} 
+                  strokeWidth={isParentActive ? 2.5 : 2}
+                  className={cn(
+                    "relative z-10 transition-colors duration-300 shrink-0",
+                    isParentActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 group-hover/nav:text-slate-900 dark:group-hover/nav:text-slate-200'
+                  )} 
+                />
 
                 {/* Label — hidden when collapsed */}
                 <div className={cn(
                   "text-left relative z-10 transition-all duration-300 flex items-center justify-between",
                   isCollapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100 flex-1"
                 )}>
-                  <div className={cn("text-sm tracking-tight transition-colors whitespace-nowrap font-['Microsoft_YaHei']", isParentActive ? "font-bold text-black dark:text-white" : "font-medium text-black dark:text-white")}>
+                  <div className={cn("text-sm tracking-tight transition-colors whitespace-nowrap font-['Microsoft_YaHei']", isParentActive ? "font-bold text-blue-900 dark:text-blue-100" : "font-medium text-slate-600 dark:text-slate-400 group-hover/nav:text-slate-900 dark:group-hover/nav:text-slate-200")}>
                     {item.label}
                   </div>
                   {hasSubItems && (
@@ -264,7 +268,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
 
                 {isParentActive && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-1 bg-black dark:bg-white rounded-r-full" />
+                  <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-1 bg-blue-600 dark:bg-blue-400 rounded-r-full shadow-[0_0_12px_rgba(37,99,235,0.3)] dark:shadow-[0_0_12px_rgba(96,165,250,0.3)]" />
                 )}
               </button>
 
@@ -287,18 +291,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             onClick={(e) => {
                               e.stopPropagation(); 
                               setActiveTab(sub.id);
+                              // Auto-collapse sidebar when clicking these specific modules
+                              if (['deepread_interaction', 'deepread_extraction'].includes(sub.id)) {
+                                toggleCollapse();
+                              }
                             }}
                             className={cn(
                               "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm transition-all font-['Microsoft_YaHei'] border relative overflow-hidden group/sub",
                               isSubActive
-                                ? "bg-gradient-to-r from-blue-50/50 to-transparent dark:from-blue-500/10 dark:to-transparent text-black dark:text-blue-400 border-transparent font-bold"
+                                ? "bg-gradient-to-r from-blue-100/50 to-transparent dark:from-blue-500/20 dark:to-transparent text-blue-700 dark:text-blue-300 border-transparent font-bold"
                                 : "text-slate-500 dark:text-slate-400 border-transparent hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 font-medium"
                             )}
                           >
                             {/* Sub-item indicator/icon if needed, or just text */}
                              <div className={cn(
-                                "w-1.5 h-1.5 rounded-full transition-colors",
-                                isSubActive ? "bg-blue-600 dark:bg-blue-400" : "bg-slate-300 dark:bg-slate-600 group-hover/sub:bg-slate-400"
+                                "w-1.5 h-1.5 rounded-full transition-all duration-300",
+                                isSubActive ? "bg-blue-600 dark:bg-blue-400 shadow-[0_0_8px_rgba(37,99,235,0.4)] scale-125" : "bg-slate-300 dark:bg-slate-600 group-hover/sub:bg-blue-400/50"
                              )} />
                             <span className="truncate">{sub.label}</span>
                           </button>

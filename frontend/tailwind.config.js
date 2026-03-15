@@ -87,6 +87,10 @@ module.exports = {
             strokeDashoffset: "-20",
           },
         },
+        "pulse-slow": {
+          "0%, 100%": { opacity: "1" },
+          "50%": { opacity: "0.5" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
@@ -96,6 +100,7 @@ module.exports = {
         "flow-particle": "flow-particle 2s ease-in-out infinite",
         "flow-particle-fast": "flow-particle-fast 1s ease-in-out infinite",
         dash: "dash 1s linear infinite",
+        "pulse-slow": "pulse-slow 4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',

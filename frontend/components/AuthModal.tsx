@@ -86,10 +86,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onLoginSucc
                 onLoginSuccess(data.user);
                 onClose();
             } else {
-                setLoginError(data.error || 'Login failed');
+                setLoginError(data.error || '登录失败');
             }
         } catch (err) {
-            setLoginError('Network error');
+            setLoginError('网络错误');
         }
     };
 
@@ -389,7 +389,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onLoginSucc
                             </div>
 
                             <div className="space-y-2">
-                                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">QQ邮箱</label>
+                                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">联系邮箱</label>
                                 <div className="relative">
                                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                                     <input
@@ -427,7 +427,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onLoginSucc
                                                     : "bg-primary/10 text-primary hover:bg-primary/20"
                                             )}
                                         >
-                                            {isSendingCode ? '发送中' : countdown > 0 ? `${countdown}s 后重发` : '获取验证码'}
+                                            {isSendingCode ? '发送中' : countdown > 0 ? `${countdown}秒后重发` : '获取验证码'}
                                         </button>
                                     </div>
                                 </div>
@@ -537,7 +537,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onLoginSucc
                                                 : "bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30"
                                         )}
                                     >
-                                        {isSendingCode ? '发送中...' : countdown > 0 ? `${countdown}s 后重发` : '获取验证码'}
+                                        {isSendingCode ? '发送中...' : countdown > 0 ? `${countdown}秒后重发` : '获取验证码'}
                                     </button>
                                 </div>
                             </div>

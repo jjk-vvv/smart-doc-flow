@@ -95,20 +95,20 @@ const buildRadarData = (documents: ExtractionDocument[]) => {
 const buildLogText = (documents: ExtractionDocument[], updatedAt: string | null): string => {
   const at = updatedAt ? new Date(updatedAt).toLocaleString() : "--";
   if (documents.length === 0) {
-    return `[${at}] Waiting for extraction payload...\nNo documents have been extracted yet.`;
+    return `[${at}] 暂无抽取记录。\n请先在“非结构化文档信息需求模块”上传并抽取文档。`;
   }
 
   const lines: string[] = [];
-  lines.push(`[${at}] Loaded ${documents.length} extracted documents.`);
+  lines.push(`[${at}] 已加载 ${documents.length} 份抽取文档。`);
   for (const doc of documents.slice(0, 6)) {
     const fieldCount = Object.keys(doc.result || {}).length;
     const errCount = doc.errors.length;
     lines.push(
-      `- ${doc.file_name} | track=${doc.track} | fields=${fieldCount} | errors=${errCount} | cached=${doc.cached ? "yes" : "no"}`
+      `- ${doc.file_name} | 轨道=${doc.track} | 字段=${fieldCount} | 异常=${errCount} | 缓存=${doc.cached ? "是" : "否"}`
     );
   }
   if (documents.length > 6) {
-    lines.push(`... and ${documents.length - 6} more documents.`);
+    lines.push(`... 其余 ${documents.length - 6} 份文档已省略。`);
   }
   return lines.join("\n");
 };
@@ -210,7 +210,7 @@ export const Dashboard: React.FC = () => {
                   <BrainCircuit className="w-10 h-10 text-primary drop-shadow-[0_0_10px_rgba(56,189,248,0.5)]" />
                   <div className="absolute inset-0 border border-primary rounded-full animate-ping opacity-20" />
                 </div>
-                <span className="text-sm font-bold font-['Microsoft_YaHei'] text-primary tracking-widest absolute -bottom-10 whitespace-nowrap">MAOA 引擎</span>
+                <span className="text-sm font-bold font-['Microsoft_YaHei'] text-primary tracking-widest absolute -bottom-10 whitespace-nowrap">认知分析引擎</span>
               </div>
               <div className="flex-1 max-w-[120px] relative mx-2 h-20 flex flex-col justify-center gap-4 px-1">
                 <div className="h-[1px] bg-primary/10 relative overflow-hidden w-full">
@@ -250,7 +250,7 @@ export const Dashboard: React.FC = () => {
                 <PolarGrid stroke="var(--border)" />
                 <PolarAngleAxis dataKey="subject" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600, fontFamily: "Microsoft YaHei" }} />
                 <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
-                <Radar name="Index" dataKey="A" stroke="hsl(var(--destructive))" strokeWidth={2} fill="hsl(var(--destructive))" fillOpacity={0.3} />
+                <Radar name="质量指数" dataKey="A" stroke="hsl(var(--destructive))" strokeWidth={2} fill="hsl(var(--destructive))" fillOpacity={0.3} />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: "rgba(15, 23, 42, 0.9)",

@@ -61,7 +61,7 @@ const toRows = (documents: ExtractionDocument[]): GridRow[] => {
   const rows: GridRow[] = [];
 
   for (const doc of documents) {
-    const fileBase = doc.file_name || "unknown";
+    const fileBase = doc.file_name || "未知文档";
     for (const [fieldName, entity] of Object.entries(doc.result || {})) {
       const e = entity as ExtractionEntity;
       const value = e.value;
@@ -73,7 +73,7 @@ const toRows = (documents: ExtractionDocument[]): GridRow[] => {
       rows.push({
         id: `${doc.file_hash || fileBase}-${fieldName}`,
         item: fieldName,
-        valueText: value == null ? "null" : String(value),
+        valueText: value == null ? "空值" : String(value),
         numericValue,
         dateText: toDateText(value),
         sourceDoc: fileBase,
@@ -87,9 +87,9 @@ const toRows = (documents: ExtractionDocument[]): GridRow[] => {
 };
 
 const statusLabel = (status: RowStatus): string => {
-  if (status === "VERIFIED") return "Verified";
-  if (status === "MISMATCH") return "Mismatch";
-  return "Pending";
+  if (status === "VERIFIED") return "已校验";
+  if (status === "MISMATCH") return "待复核";
+  return "待补全";
 };
 
 const sortRows = (rows: GridRow[], sortBy: SortBy): GridRow[] => {
@@ -139,7 +139,7 @@ export const FusionGrid: React.FC = () => {
   );
 
   const rows = useMemo(() => sortRows(filteredRows, sortBy), [filteredRows, sortBy]);
-  const latestDocName = useMemo(() => (documents[0]?.file_name ? documents[0].file_name : "No documents"), [documents]);
+  const latestDocName = useMemo(() => (documents[0]?.file_name ? documents[0].file_name : "暂无文档"), [documents]);
   const updatedAtText = useMemo(() => (updatedAt ? new Date(updatedAt).toLocaleString() : "--"), [updatedAt]);
   const totalAmount = useMemo(() => rows.reduce((acc, row) => acc + (row.numericValue == null ? 0 : row.numericValue), 0), [rows]);
   const verifiedCount = useMemo(() => rows.filter((row) => row.status === "VERIFIED").length, [rows]);
@@ -201,7 +201,7 @@ export const FusionGrid: React.FC = () => {
               <span className={cn("w-1.5 h-1.5 rounded-full", rows.length > 0 ? "bg-emerald-500" : "bg-slate-500")} />
             </h2>
             <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[10px] text-muted-foreground font-mono font-['Microsoft_YaHei'] font-bold">Last update: {updatedAtText}</span>
+              <span className="text-[10px] text-muted-foreground font-mono font-['Microsoft_YaHei'] font-bold">最近更新：{updatedAtText}</span>
             </div>
           </div>
         </div>
@@ -212,7 +212,7 @@ export const FusionGrid: React.FC = () => {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search field/value/doc"
+              placeholder="搜索字段 / 值 / 来源文档"
               className="h-8 w-56 rounded-lg border border-white/20 bg-white/30 dark:bg-white/5 pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary/50"
             />
           </div>
@@ -222,15 +222,15 @@ export const FusionGrid: React.FC = () => {
             onChange={(event) => setSortBy(event.target.value as SortBy)}
             className="h-8 rounded-lg border border-white/20 bg-white/30 dark:bg-white/5 px-2 text-xs text-foreground outline-none focus:border-primary/50"
           >
-            <option value="CONF_DESC">Confidence desc</option>
-            <option value="CONF_ASC">Confidence asc</option>
-            <option value="FIELD">Field name</option>
+            <option value="CONF_DESC">置信度降序</option>
+            <option value="CONF_ASC">置信度升序</option>
+            <option value="FIELD">字段名排序</option>
           </select>
 
           <button
             className="p-2 text-muted-foreground hover:text-primary transition-colors hover:bg-white/20 dark:hover:bg-white/5 rounded-lg border border-transparent hover:border-white/20 dark:hover:border-white/10"
             onClick={downloadJson}
-            title="Export JSON"
+            title="导出结构化数据"
           >
             <Download size={18} />
           </button>
@@ -240,16 +240,16 @@ export const FusionGrid: React.FC = () => {
       <div className="h-11 border-b border-white/10 dark:border-white/10 px-4 flex items-center justify-between bg-white/20 dark:bg-white/5 relative z-10">
         <div className="flex items-center rounded-lg border border-white/20 dark:border-white/10 overflow-hidden">
           <button className={cn("px-2 py-1.5 text-[10px] font-bold font-['Microsoft_YaHei']", filter === "ALL" ? "bg-primary/20 text-primary" : "text-muted-foreground")} onClick={() => setFilter("ALL")}>
-            ALL
+            全部
           </button>
           <button className={cn("px-2 py-1.5 text-[10px] font-bold font-['Microsoft_YaHei']", filter === "VERIFIED" ? "bg-emerald-500/20 text-emerald-500" : "text-muted-foreground")} onClick={() => setFilter("VERIFIED")}>
-            VERIFIED
+            已校验
           </button>
           <button className={cn("px-2 py-1.5 text-[10px] font-bold font-['Microsoft_YaHei']", filter === "MISMATCH" ? "bg-red-500/20 text-red-500" : "text-muted-foreground")} onClick={() => setFilter("MISMATCH")}>
-            MISMATCH
+            待复核
           </button>
           <button className={cn("px-2 py-1.5 text-[10px] font-bold font-['Microsoft_YaHei']", filter === "PENDING" ? "bg-slate-500/20 text-slate-300" : "text-muted-foreground")} onClick={() => setFilter("PENDING")}>
-            PENDING
+            待补全
           </button>
         </div>
 
@@ -257,10 +257,10 @@ export const FusionGrid: React.FC = () => {
           {selectedCount > 0 && (
             <button onClick={() => setSelectedRows([])} className="h-7 px-2 rounded-md text-[10px] text-muted-foreground border border-white/20 hover:bg-white/10 flex items-center gap-1">
               <X size={12} />
-              Clear selection
+              清空选择
             </button>
           )}
-          <span className="text-[10px] text-muted-foreground font-mono">Rows: {rows.length}</span>
+          <span className="text-[10px] text-muted-foreground font-mono">行数：{rows.length}</span>
         </div>
       </div>
 
@@ -275,17 +275,17 @@ export const FusionGrid: React.FC = () => {
                     allVisibleSelected ? "bg-primary border-primary text-black" : "border-muted-foreground/20"
                   )}
                   onClick={toggleSelectAllVisible}
-                  title={allVisibleSelected ? "Unselect all visible rows" : "Select all visible rows"}
+                  title={allVisibleSelected ? "取消全选当前可见行" : "全选当前可见行"}
                 >
                   {allVisibleSelected && <CheckCircle2 size={10} />}
                 </button>
               </th>
-              <th className="p-4 font-bold">Field</th>
-              <th className="p-4 font-bold">Value</th>
-              <th className="p-4 font-bold">Date</th>
-              <th className="p-4 font-bold">Source doc</th>
-              <th className="p-4 font-bold">Confidence</th>
-              <th className="p-4 font-bold">Status</th>
+              <th className="p-4 font-bold">字段</th>
+              <th className="p-4 font-bold">值</th>
+              <th className="p-4 font-bold">日期</th>
+              <th className="p-4 font-bold">来源文档</th>
+              <th className="p-4 font-bold">置信度</th>
+              <th className="p-4 font-bold">状态</th>
               <th className="p-4 w-10" />
             </tr>
           </thead>
@@ -362,21 +362,13 @@ export const FusionGrid: React.FC = () => {
               ))}
             </AnimatePresence>
 
-            {rows.length === 0 &&
-              [1, 2, 3].map((ghost) => (
-                <tr key={`ghost-${ghost}`} className="border-b border-white/5 opacity-30">
-                  <td className="p-4 text-center">
-                    <div className="w-4 h-4 border border-white/10 rounded mx-auto" />
-                  </td>
-                  <td className="p-4"><div className="h-4 w-32 bg-white/10 rounded animate-pulse" /></td>
-                  <td className="p-4"><div className="h-4 w-20 bg-white/10 rounded animate-pulse" /></td>
-                  <td className="p-4"><div className="h-4 w-24 bg-white/10 rounded animate-pulse" /></td>
-                  <td className="p-4"><div className="h-4 w-28 bg-white/10 rounded animate-pulse" /></td>
-                  <td className="p-4"><div className="h-4 w-16 bg-white/10 rounded animate-pulse" /></td>
-                  <td className="p-4"><div className="h-4 w-20 bg-white/10 rounded animate-pulse" /></td>
-                  <td className="p-4" />
-                </tr>
-              ))}
+            {rows.length === 0 && (
+              <tr className="border-b border-white/5">
+                <td colSpan={8} className="p-10 text-center text-sm text-muted-foreground">
+                  暂无可展示的融合结果，请先完成文档抽取。
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -384,23 +376,23 @@ export const FusionGrid: React.FC = () => {
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-2xl rounded-full px-6 py-2.5 flex items-center gap-6 z-20 hover:scale-105 transition-transform duration-300">
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-[10px] text-muted-foreground font-bold font-['Microsoft_YaHei']">Fusion engine online</span>
+          <span className="text-[10px] text-muted-foreground font-bold font-['Microsoft_YaHei']">融合引擎在线</span>
         </div>
         <div className="w-px h-4 bg-white/20 dark:bg-white/10" />
         <div className="flex items-center gap-4 text-[10px] font-mono font-bold font-['Microsoft_YaHei'] text-muted-foreground">
           <span>
-            Selected: <span className="text-foreground">{selectedCount}</span>
+            已选：<span className="text-foreground">{selectedCount}</span>
           </span>
           <span>
-            Verified: <span className="text-foreground">{verifiedCount}</span>
+            已校验：<span className="text-foreground">{verifiedCount}</span>
           </span>
         </div>
         <div className="w-px h-4 bg-white/20 dark:bg-white/10" />
         <div className="flex gap-4 text-[10px] font-mono font-bold font-['Microsoft_YaHei']">
           <span className="text-muted-foreground">
-            Total: <span className="text-foreground">{totalAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+            合计：<span className="text-foreground">{totalAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
           </span>
-          <span className="text-slate-400">Rows: {rows.length}</span>
+          <span className="text-slate-400">行数：{rows.length}</span>
         </div>
       </div>
     </div>

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractionStorage:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool: Optional[asyncpg.Pool] = None
+        self._memory_cache: Dict[str, Dict[str, Any]] = {}
+        self._assistant_memory_history: List[Dict[str, Any]] = []
+        self._degraded_memory_mode = False
+        self._last_connect_error = ""
         self._sync_commit_off = os.getenv("MODULE2_SYNC_COMMIT_OFF", "false").lower() in {"1", "true", "yes"}
         self._cache_unlogged = os.getenv("MODULE2_CACHE_UNLOGGED", "false").lower() in {"1", "true", "yes"}
         self._staging_unlogged = os.getenv("MODULE2_STAGING_UNLOGGED", "true").lower() in {"1", "true", "yes"}
@@ -18,8 +25,17 @@ class ExtractionStorage:
     async def connect(self) -> None:
         min_pool = max(1, int(os.getenv("MODULE2_DB_POOL_MIN", "2")))
         max_pool = max(min_pool, int(os.getenv("MODULE2_DB_POOL_MAX", "20")))
-        self._pool = await asyncpg.create_pool(self._dsn, min_size=min_pool, max_size=max_pool)
-        await self._init_schema()
+        try:
+            self._pool = await asyncpg.create_pool(self._dsn, min_size=min_pool, max_size=max_pool)
+            await self._init_schema()
+            self._degraded_memory_mode = False
+            self._last_connect_error = ""
+        except Exception as exc:
+            # Fallback for local/dev environments without PostgreSQL.
+            self._pool = None
+            self._degraded_memory_mode = True
+            self._last_connect_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("module2 storage downgraded to memory mode: %s", self._last_connect_error)
 
     async def close(self) -> None:
         if self._pool:
@@ -27,7 +43,8 @@ class ExtractionStorage:
 
     async def check_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
         if not self._pool:
-            raise RuntimeError("DB pool is not initialized")
+            payload = self._memory_cache.get(cache_key)
+            return dict(payload) if isinstance(payload, dict) else None
 
         query = "SELECT extraction_json FROM document_extractions WHERE file_hash = $1"
         async with self._pool.acquire() as conn:
@@ -41,7 +58,8 @@ class ExtractionStorage:
 
     async def save_extraction_result(self, cache_key: str, payload: Dict[str, Any]) -> None:
         if not self._pool:
-            raise RuntimeError("DB pool is not initialized")
+            self._memory_cache[cache_key] = dict(payload)
+            return
 
         final_upsert = """
             INSERT INTO document_extractions (file_hash, extraction_json)
@@ -105,6 +123,82 @@ class ExtractionStorage:
                     )
 
                 await conn.execute(final_upsert, cache_key, serialized)
+
+    async def save_assistant_interaction(self, payload: Dict[str, Any]) -> int:
+        record = dict(payload)
+        if not self._pool:
+            self._assistant_memory_history.append(record)
+            return 1
+
+        sql = """
+            INSERT INTO extraction_assistant_history (
+                file_hash, file_name, user_instruction, summary_text, matched_json
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb)
+        """
+        file_hash = str(record.get("file_hash", "") or "")
+        file_name = str(record.get("file_name", "") or "")
+        user_instruction = str(record.get("user_instruction", "") or "")
+        summary_text = str(record.get("summary_text", "") or "")
+        matched_json = json.dumps(record.get("matched", []), ensure_ascii=False)
+        async with self._pool.acquire() as conn:
+            await conn.execute(sql, file_hash, file_name, user_instruction, summary_text, matched_json)
+        return 1
+
+    @staticmethod
+    def _parse_command_rows(command_tag: str) -> int:
+        text = str(command_tag or "").strip()
+        if not text:
+            return 0
+        parts = text.split()
+        if not parts:
+            return 0
+        try:
+            return int(parts[-1])
+        except Exception:
+            return 0
+
+    async def clear_runtime_cache(self) -> Dict[str, int]:
+        memory_cache_count = len(self._memory_cache)
+        assistant_mem_count = len(self._assistant_memory_history)
+        self._memory_cache.clear()
+        self._assistant_memory_history.clear()
+
+        out: Dict[str, int] = {
+            "memory_cache": memory_cache_count,
+            "assistant_memory": assistant_mem_count,
+            "document_extractions": 0,
+            "field_staging": 0,
+            "table_staging": 0,
+            "assistant_history": 0,
+        }
+        if not self._pool:
+            return out
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                out["document_extractions"] = self._parse_command_rows(
+                    await conn.execute("DELETE FROM document_extractions")
+                )
+                out["field_staging"] = self._parse_command_rows(
+                    await conn.execute("DELETE FROM extraction_field_staging")
+                )
+                out["table_staging"] = self._parse_command_rows(
+                    await conn.execute("DELETE FROM extraction_table_staging")
+                )
+                out["assistant_history"] = self._parse_command_rows(
+                    await conn.execute("DELETE FROM extraction_assistant_history")
+                )
+        return out
+
+    def diagnostics(self) -> Dict[str, Any]:
+        return {
+            "db_connected": bool(self._pool is not None),
+            "degraded_memory_mode": bool(self._degraded_memory_mode),
+            "last_connect_error": self._last_connect_error,
+            "memory_cache_size": len(self._memory_cache),
+            "assistant_memory_size": len(self._assistant_memory_history),
+        }
 
     @staticmethod
     def _to_field_staging_records(cache_key: str, payload: Dict[str, Any]) -> List[Tuple[Any, ...]]:
@@ -270,6 +364,19 @@ class ExtractionStorage:
 
             CREATE INDEX IF NOT EXISTS idx_extraction_table_staging_table_id
                 ON extraction_table_staging (table_id);
+
+            CREATE {staging_mode} TABLE IF NOT EXISTS extraction_assistant_history (
+                id BIGSERIAL PRIMARY KEY,
+                file_hash TEXT,
+                file_name TEXT,
+                user_instruction TEXT NOT NULL,
+                summary_text TEXT,
+                matched_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_extraction_assistant_history_file_hash
+                ON extraction_assistant_history (file_hash);
         """
 
         async with self._pool.acquire() as conn:

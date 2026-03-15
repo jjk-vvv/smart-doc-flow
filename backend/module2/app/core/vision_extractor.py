@@ -31,7 +31,7 @@ class GeminiVisionExtractor:
         self.retry_count = max(0, int(retry_count))
         self.enable_cache = bool(enable_cache)
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
-        self.prompt_version = "v2_visual_first_structured_rebuild"
+        self.prompt_version = "v3_visual_first_multimodal_structured"
 
     @property
     def ready(self) -> bool:
@@ -106,6 +106,7 @@ class GeminiVisionExtractor:
             "Task: analyze one cropped figure/chart ROI image and output structured JSON.\n"
             "Internal layered workflow:\n"
             "1) Visual pass: identify figure type, title/caption, axes, legend, key entities.\n"
+            "2) Modality pass: classify evidence channels from [dataframe, topology, text, visual].\n"
             "2) Context pass: inject nearby text and domain hints to resolve abbreviations.\n"
             "3) Consistency pass: keep only visible claims; no hallucination.\n"
             "Rules:\n"
@@ -117,10 +118,14 @@ class GeminiVisionExtractor:
             "\"title\":\"\","
             "\"caption\":\"\","
             "\"type\":\"chart|diagram|photo|other\","
+            "\"content_modes\":[\"dataframe|topology|text|visual\"],"
             "\"axes\":{\"x\":\"\",\"y\":\"\"},"
             "\"legend\":[\"...\"],"
             "\"insights\":[\"...\"],"
             "\"key_values\":[{\"name\":\"\",\"value\":\"\",\"unit\":\"\"}],"
+            "\"dataframe\":{\"headers\":[\"...\"],\"rows\":[[\"...\"]]},"
+            "\"topology\":{\"nodes\":[{\"id\":\"\",\"label\":\"\",\"type\":\"\"}],\"edges\":[{\"source\":\"\",\"target\":\"\",\"label\":\"\"}]},"
+            "\"text_blocks\":[\"...\"],"
             "\"confidence\":0.0"
             "}"
             "}\n"

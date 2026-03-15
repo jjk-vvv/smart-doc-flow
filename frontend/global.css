@@ -137,3 +137,16 @@
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground));
 }
+
+.module2-luckysheet-preview,
+.module2-luckysheet-preview > [id^="module2-luckysheet-"] {
+  min-width: 0;
+  min-height: 0;
+}
+
+.module2-luckysheet-preview .luckysheet {
+  position: absolute !important;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+}

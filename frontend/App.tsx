@@ -7,8 +7,19 @@ import { BrainCircuit } from 'lucide-react';
 type AuthUser = { name: string; email: string } | null;
 let meRequestPromise: Promise<AuthUser> | null = null;
 const ME_REQUEST_TIMEOUT_MS = 6000;
+const AUTH_PROBE_ENV = import.meta.env.VITE_ENABLE_AUTH_PROBE;
+
+const shouldProbeAuth = () => {
+  if (AUTH_PROBE_ENV === '1') return true;
+  if (AUTH_PROBE_ENV === '0') return false;
+  const host = window.location.hostname.toLowerCase();
+  return !(host === '127.0.0.1' || host === 'localhost');
+};
 
 const fetchCurrentUser = (): Promise<AuthUser> => {
+  if (!shouldProbeAuth()) {
+    return Promise.resolve(null);
+  }
   if (!meRequestPromise) {
     const request = fetch('/api/me')
       .then((res) => (res.ok ? res.json() : null))
@@ -47,10 +58,12 @@ const UserGuide = lazy(() =>
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [isDark, setIsDark] = useState(false); // Default to light mode as requested
+  const [isDark, setIsDark] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [user, setUser] = useState<AuthUser>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
+
+  const isFullPage = activeTab === 'guide';
 
   const handleLoginSuccess = (loggedInUser: { name: string; email: string }) => {
     setUser(loggedInUser);
@@ -79,13 +92,6 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Automatically collapse sidebar when entering User Guide
-  useEffect(() => {
-    if (activeTab === 'guide') {
-      setIsSidebarCollapsed(true);
-    }
-  }, [activeTab]);
-
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
@@ -110,7 +116,7 @@ const App: React.FC = () => {
     <div className="h-[calc(100vh-2rem)] flex items-center justify-center rounded-xl border border-border/40 bg-background/60">
       <div className="flex items-center gap-3 text-sm text-muted-foreground">
         <BrainCircuit size={18} className="animate-pulse text-primary" />
-        <span>Loading module...</span>
+        <span>模块加载中...</span>
       </div>
     </div>
   );
@@ -124,20 +130,26 @@ const App: React.FC = () => {
         {/* Ambient Background Glows */}
         <div className="fixed top-0 left-0 w-[500px] h-[500px] bg-primary/5 rounded-full blur-[120px] -translate-x-1/2 -translate-y-1/2 pointer-events-none z-0"></div>
 
-        <Sidebar
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          isDark={isDark}
-          toggleTheme={() => setIsDark(!isDark)}
-          isCollapsed={isSidebarCollapsed}
-          toggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-          user={user}
-          setUser={setUser}
-          showLoginModal={showLoginModal}
-          setShowLoginModal={setShowLoginModal}
-        />
+        {!isFullPage && (
+          <Sidebar
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            isDark={isDark}
+            toggleTheme={() => setIsDark(!isDark)}
+            isCollapsed={isSidebarCollapsed}
+            toggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            user={user}
+            setUser={setUser}
+            showLoginModal={showLoginModal}
+            setShowLoginModal={setShowLoginModal}
+          />
+        )}
 
-        <main className={`flex-1 transition-all duration-300 relative z-10 p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`}>
+        <main className={`flex-1 transition-all duration-300 relative z-10 ${
+          isFullPage 
+            ? 'w-full p-0' 
+            : `p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`
+        }`}>
           <Suspense fallback={loadingFallback}>{renderContent()}</Suspense>
         </main>
       </div>

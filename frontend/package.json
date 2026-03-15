@@ -1,15 +1,19 @@
 {
-  "name": "a23:-maoa-insight-system",
+  "name": "smart-doc-flow",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node ./node_modules/vite/bin/vite.js",
+    "dev": "node ./node_modules/vite/bin/vite.js --host 0.0.0.0 --port 3000 --strictPort --force",
     "build": "node ./node_modules/vite/bin/vite.js build",
-    "preview": "node ./node_modules/vite/bin/vite.js preview"
+    "preview": "node ./node_modules/vite/bin/vite.js preview --host 0.0.0.0 --port 3000 --strictPort",
+    "module2:realistic": "node ./e2e/module2_realistic_sim.mjs",
+    "module2:frontend-realistic": "node ./e2e/module2_frontend_realistic_playwright.mjs"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.99",
+    "@react-three/fiber": "^9.1.2",
+    "@react-three/postprocessing": "^3.0.4",
     "@tailwindcss/postcss": "^4.1.18",
     "ai": "^6.0.97",
     "body-parser": "^2.2.2",
@@ -19,6 +23,7 @@
     "eventsource-parser": "^3.0.6",
     "express": "^5.2.1",
     "framer-motion": "^12.34.0",
+    "jquery": "^4.0.0",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "0.292.0",
     "mammoth": "^1.11.0",
@@ -27,14 +32,18 @@
     "recharts": "2.12.0",
     "resend": "^6.9.2",
     "tailwind-merge": "^3.4.1",
+    "three": "^0.172.0",
     "twilio": "^5.12.1",
     "xlsx": "^0.18.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "@types/three": "^0.172.0",
+    "@types/xlsx": "^0.0.35",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.24",
+    "playwright": "^1.54.2",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "~5.8.2",

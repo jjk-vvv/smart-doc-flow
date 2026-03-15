@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { X, Send, Bot, Sparkles, RotateCcw } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { readExtractionDocuments, readExtractionUpdatedAt, type ExtractionDocument } from '@/lib/extractionStore';
