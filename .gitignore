@@ -23,6 +23,7 @@ yarn-error.log*
 frontend/.npm-cache/
 backend/auth/node_modules/
 .runlogs/
+.codex-temp/
 .venv-*/
 
 # IDE

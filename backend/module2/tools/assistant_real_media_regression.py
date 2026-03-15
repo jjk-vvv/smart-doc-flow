@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import json
 import sys
+import types
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,10 +24,62 @@ if str(MODULE2_ROOT) not in sys.path:
 
 load_dotenv(MODULE2_ROOT / ".env", override=False)
 
-from app.assistant.service import AssistantService
 from app.core.parser import parse_document_in_subprocess
 from app.db.storage import ExtractionStorage
-from app.schemas import AssistantChatStreamRequest, DocumentExtractionResponse, ExtractionResult
+from app.schemas import DocumentExtractionResponse, ExtractionResult
+
+
+def _load_module_from_pyc(module_name: str, pyc_path: Path) -> types.ModuleType:
+    spec = importlib.util.spec_from_file_location(module_name, pyc_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load sourceless module: {module_name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _resolve_assistant_service_class() -> type:
+    assistant_dir = MODULE2_ROOT / "app" / "assistant"
+    service_py = assistant_dir / "service.py"
+    if service_py.exists():
+        from app.assistant.service import AssistantService as SourceAssistantService
+
+        return SourceAssistantService
+
+    package_name = "app.assistant"
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(assistant_dir)]
+    sys.modules[package_name] = package
+
+    pyc_dir = assistant_dir / "__pycache__"
+    module_names = ["provider", "prompting", "streaming", "tools", "service"]
+    for module_name in module_names:
+        matches = sorted(pyc_dir.glob(f"{module_name}.cpython-*.pyc"))
+        if not matches:
+            raise FileNotFoundError(f"Missing cached assistant module: {module_name}")
+        module = _load_module_from_pyc(f"{package_name}.{module_name}", matches[0])
+        setattr(package, module_name, module)
+
+    service_module = sys.modules[f"{package_name}.service"]
+    assistant_service = getattr(service_module, "AssistantService")
+    setattr(package, "AssistantService", assistant_service)
+    return assistant_service
+
+
+AssistantService = _resolve_assistant_service_class()
+
+
+@dataclass
+class AssistantChatStreamRequestCompat:
+    document: DocumentExtractionResponse
+    summary: str = ""
+    user_message: str = ""
+    session_id: Optional[str] = None
+    persist: bool = False
+    top_k: int = 12
+    enable_web_search: Optional[bool] = None
+    extraction_payload: Dict[str, Any] = field(default_factory=dict)
 
 
 EXCEL_PATH = next((REPO_ROOT / "datasets" / "Excel").glob("*空气质量*.xlsx"))
@@ -178,7 +233,7 @@ async def _ask(
     question: str,
     session_id: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    request = AssistantChatStreamRequest(
+    request = AssistantChatStreamRequestCompat(
         document=document,
         summary="",
         user_message=question,
