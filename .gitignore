@@ -22,6 +22,8 @@ yarn-error.log*
 .trae/
 frontend/.npm-cache/
 backend/auth/node_modules/
+.runlogs/
+.venv-*/
 
 # IDE
 .vscode/
@@ -50,6 +52,7 @@ cts15-selected_ancillary_compounds-r-final-rev.pdf
 
 # Module2 local cache artifacts
 backend/module2/.cache/
+backend/module2/artifacts/
 backend/module2/tools/generated_tests/
 .npm-local-cache/
 logs/
