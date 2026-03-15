@@ -5,6 +5,7 @@
     "dev:backend": "node backend/auth/server.cjs"
   },
   "dependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "nodemailer": "^8.0.1"
   }
 }
