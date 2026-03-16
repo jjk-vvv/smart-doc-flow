@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 SourceType = Literal["module2", "module3", "manual", "api"]
@@ -14,11 +14,30 @@ AlertStatus = Literal["open", "ack", "resolved", "false_positive"]
 RuleKind = Literal["deterministic", "semantic", "anomaly"]
 
 
+class UploadSyncFile(BaseModel):
+    file_name: str
+    file_hash: str
+    artifact_path: Optional[str] = None
+    artifact_url: Optional[str] = None
+    storage_path: Optional[str] = None
+    mime_type: Optional[str] = None
+    text_content: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class IngestRequest(BaseModel):
     tenant_id: str = ""
     source: SourceType = "module2"
     source_batch_key: Optional[str] = None
-    documents: List[Dict[str, Any]] = Field(default_factory=list, min_length=1)
+    graph_mode: str = "hybrid"
+    documents: List[Dict[str, Any]] = Field(default_factory=list)
+    uploads: List[UploadSyncFile] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_has_input(self) -> "IngestRequest":
+        if self.documents or self.uploads:
+            return self
+        raise ValueError("At least one of documents or uploads is required")
 
 
 class IngestResponse(BaseModel):
@@ -197,10 +216,33 @@ class SimulateResponse(BaseModel):
     summary: str = ""
 
 
+class RuntimeDependencyStatus(BaseModel):
+    configured: bool = False
+    reachable: Optional[bool] = None
+    missing_fields: List[str] = Field(default_factory=list)
+    error_message: Optional[str] = None
+
+
+class GraphRAGRuntimeStatus(BaseModel):
+    ready: bool = False
+    check_mode: str = "basic"
+    python_bin: str = ""
+    python_bin_exists: bool = False
+    graphrag_module_available: bool = False
+    module_error_message: Optional[str] = None
+    prompt_assets_root: str = ""
+    prompt_assets_ok: bool = False
+    missing_prompt_assets: List[str] = Field(default_factory=list)
+    config_missing_fields: List[str] = Field(default_factory=list)
+    oneapi: RuntimeDependencyStatus = Field(default_factory=RuntimeDependencyStatus)
+    neo4j: RuntimeDependencyStatus = Field(default_factory=RuntimeDependencyStatus)
+
+
 class HealthzResponse(BaseModel):
     status: str
     db_connected: bool
     degraded_memory_mode: bool
     jobs_in_queue: int
     last_connect_error: Optional[str] = None
+    graphrag: GraphRAGRuntimeStatus = Field(default_factory=GraphRAGRuntimeStatus)
     now: datetime

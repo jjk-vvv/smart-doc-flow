@@ -8,6 +8,7 @@ import os
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from string import Formatter
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -42,9 +43,12 @@ from app.schemas import (
     RuleUpsertResponse,
     SimulateRequest,
     SimulateResponse,
+    UploadSyncFile,
 )
+from app.services import GraphRAGArtifactImporter, GraphRAGIndexer, GraphRAGWorkspaceBuilder, UploadInputNormalizer, WorkspaceSourceFile
 
-load_dotenv()
+MODULE4_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=MODULE4_ROOT / ".env", override=False, interpolate=False)
 
 SEVERITY_DEFAULT_RISK = {"yellow": 40.0, "orange": 70.0, "red": 90.0}
 SUPPORTED_RULE_KINDS = {"deterministic"}
@@ -287,11 +291,26 @@ def _compact_payload_context(context: Dict[str, Any]) -> Dict[str, Any]:
 def _derived_ingest_batch_key(payload: IngestRequest, tenant_id: Optional[str] = None) -> str:
     if payload.source_batch_key:
         return str(payload.source_batch_key).strip()
-    normalized = {
+    normalized_payload = payload.model_dump(mode="json")
+    normalized: Dict[str, Any] = {
         "tenant_id": tenant_id or payload.tenant_id or _default_tenant(),
         "source": payload.source,
-        "documents": payload.model_dump(mode="json").get("documents", []),
+        "graph_mode": payload.graph_mode,
     }
+    uploads = normalized_payload.get("uploads") if isinstance(normalized_payload.get("uploads"), list) else []
+    if uploads:
+        normalized["uploads"] = [
+            {
+                "file_name": item.get("file_name"),
+                "file_hash": item.get("file_hash"),
+                "artifact_path": item.get("artifact_path"),
+                "storage_path": item.get("storage_path"),
+            }
+            for item in uploads
+            if isinstance(item, dict)
+        ]
+    else:
+        normalized["documents"] = normalized_payload.get("documents", [])
     return _risk_key(_stable_json_dumps(normalized))
 
 
@@ -455,15 +474,57 @@ def _normalize_evidence_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 storage = Module4Storage(os.getenv("MODULE4_DATABASE_DSN", "postgresql://postgres:postgres@localhost:5432/a23"))
 job_tasks: Dict[str, asyncio.Task[Any]] = {}
+upload_input_normalizer = UploadInputNormalizer()
+workspace_builder = GraphRAGWorkspaceBuilder()
+graphrag_indexer = GraphRAGIndexer()
+graphrag_artifact_importer = GraphRAGArtifactImporter()
 
 
-def _count_documents_from_batches(batches: Sequence[Dict[str, Any]]) -> int:
+def _count_inputs_from_batches(batches: Sequence[Dict[str, Any]]) -> int:
     total = 0
     for batch in batches:
         payload = batch.get("raw_payload") if isinstance(batch.get("raw_payload"), dict) else {}
         documents = payload.get("documents") if isinstance(payload.get("documents"), list) else []
-        total += len(documents)
+        uploads = payload.get("uploads") if isinstance(payload.get("uploads"), list) else []
+        total += len(uploads) if uploads else len(documents)
     return total
+
+
+def _merge_result(base: Optional[Dict[str, Any]] = None, **updates: Any) -> Dict[str, Any]:
+    merged = dict(base or {})
+    merged.update({key: value for key, value in updates.items() if value is not None})
+    return merged
+
+
+async def _update_job_stage(
+    job_id: str,
+    *,
+    stage: str,
+    progress: float,
+    base_result: Optional[Dict[str, Any]] = None,
+    **updates: Any,
+) -> None:
+    await storage.update_job(
+        job_id,
+        progress=progress,
+        result=_merge_result(base_result, stage=stage, **updates),
+    )
+
+
+def _update_workspace_manifest(manifest_path: Path, **updates: Any) -> Dict[str, Any]:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload.update(updates)
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+
+def _append_workspace_failures(manifest_path: Path, failures: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = payload.get("files") if isinstance(payload.get("files"), list) else []
+    files.extend(list(failures))
+    payload["files"] = files
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
 
 
 async def _recover_jobs() -> None:
@@ -872,33 +933,248 @@ def _schedule_rebuild_job(job_id: str, payload: RebuildRequest) -> None:
     job_tasks[job_id] = task
 
 
-async def _run_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> None:
+def _failed_manifest_rows(items: Sequence[Any]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for item in items:
+        rows.append(
+            {
+                "file_name": getattr(item, "file_name", "unknown"),
+                "file_hash": getattr(item, "file_hash", ""),
+                "source_kind": getattr(item, "source_kind", "upload"),
+                "input_txt": None,
+                "original_path": getattr(item, "original_path", None),
+                "artifact_path": getattr(item, "artifact_path", None),
+                "artifact_url": getattr(item, "artifact_url", None),
+                "mime_type": getattr(item, "mime_type", None),
+                "text_length": 0,
+                "normalization_status": "failed",
+                "error": getattr(item, "error", "Unknown normalization failure"),
+                "metadata": dict(getattr(item, "metadata", {}) or {}),
+            }
+        )
+    return rows
+
+
+async def _run_document_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> Dict[str, Any]:
     tenant_id = payload.tenant_id or _default_tenant()
     documents = payload.documents
     total = len(documents)
-    agg = {"nodes": 0, "edges": 0, "alerts": 0, "evidence": 0, "documents": total}
+    agg = {
+        "stage": "processing_documents",
+        "nodes": 0,
+        "edges": 0,
+        "alerts": 0,
+        "evidence": 0,
+        "documents": total,
+        "uploads": 0,
+    }
 
     rules = await storage.list_rules(enabled_only=True)
     deterministic_rules = [rule for rule in rules if str(rule.get("rule_kind")).lower() in SUPPORTED_RULE_KINDS]
     field_rules = [rule for rule in deterministic_rules if _rule_scope(rule) == "field"]
     document_rules = [rule for rule in deterministic_rules if _rule_scope(rule) == "document"]
 
+    await _update_job_stage(job_id, stage="processing_documents", progress=1.0, base_result=agg)
+    for idx, doc in enumerate(documents, start=1):
+        counters = await _process_document(
+            tenant_id=tenant_id,
+            batch_id=batch_id,
+            doc=doc,
+            field_rules=field_rules,
+            document_rules=document_rules,
+        )
+        for key, value in counters.items():
+            agg[key] += int(value)
+        progress = round((idx / max(1, total)) * 100.0, 2)
+        await _update_job_stage(job_id, stage="processing_documents", progress=progress, base_result=agg)
+    return agg
+
+
+async def _run_upload_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> Dict[str, Any]:
+    tenant_id = payload.tenant_id or _default_tenant()
+    uploads: List[UploadSyncFile] = list(payload.uploads)
+    base_result: Dict[str, Any] = {
+        "uploads": len(uploads),
+        "documents": 0,
+        "graph_mode": payload.graph_mode,
+    }
+    manifest_path: Optional[Path] = None
+    try:
+        await _update_job_stage(
+            job_id,
+            stage="normalizing_inputs",
+            progress=5.0,
+            base_result=base_result,
+        )
+
+        normalization = await asyncio.to_thread(upload_input_normalizer.normalize_uploads, uploads)
+        failed_rows = _failed_manifest_rows(normalization.failed)
+        base_result = _merge_result(
+            base_result,
+            normalized_files=[item.file_name for item in normalization.normalized],
+            failed_files=failed_rows,
+            normalized_count=len(normalization.normalized),
+            failed_count=len(normalization.failed),
+            partial=normalization.partial,
+        )
+        if not normalization.normalized:
+            raise ValueError("No valid normalized text inputs were produced for this upload batch")
+
+        await _update_job_stage(
+            job_id,
+            stage="preparing_workspace",
+            progress=20.0,
+            base_result=base_result,
+        )
+
+        workspace_files = [
+            WorkspaceSourceFile(
+                file_name=item.file_name,
+                file_hash=item.file_hash,
+                text_content=item.text_content,
+                source_kind=item.source_kind,
+                original_path=item.original_path,
+                artifact_path=item.artifact_path,
+                artifact_url=item.artifact_url,
+                metadata={
+                    **dict(item.metadata or {}),
+                    "mime_type": item.mime_type,
+                },
+            )
+            for item in normalization.normalized
+        ]
+        build = await asyncio.to_thread(
+            workspace_builder.prepare_workspace,
+            tenant_id=tenant_id,
+            batch_id=batch_id,
+            source=payload.source,
+            source_batch_key=payload.source_batch_key or _derived_ingest_batch_key(payload, tenant_id=tenant_id),
+            files=workspace_files,
+            graph_mode=payload.graph_mode,
+        )
+        manifest_path = build.manifest_path
+        if failed_rows:
+            _append_workspace_failures(build.manifest_path, failed_rows)
+        _update_workspace_manifest(
+            build.manifest_path,
+            status="prepared",
+            last_error="",
+            last_index_status="pending",
+            latest_output_dir=None,
+        )
+        base_result = _merge_result(
+            base_result,
+            workspace_id=build.workspace_id,
+            workspace_dir=str(build.workspace_dir),
+            manifest_path=str(build.manifest_path),
+            settings_path=str(build.settings_path),
+            prompt_dir=str(build.prompt_dir),
+        )
+        await _update_job_stage(
+            job_id,
+            stage="validating_runtime",
+            progress=30.0,
+            base_result=base_result,
+        )
+        runtime_probe = await asyncio.to_thread(
+            graphrag_indexer.probe,
+            workspace_builder.runtime,
+            workspace_builder.neo4j,
+            check_remote=True,
+        )
+        _update_workspace_manifest(
+            build.manifest_path,
+            runtime_probe=runtime_probe.as_dict(),
+        )
+        base_result = _merge_result(
+            base_result,
+            runtime_probe=runtime_probe.as_dict(),
+        )
+        if not runtime_probe.ready:
+            raise RuntimeError(f"GraphRAG runtime not ready: {runtime_probe.summary()}")
+        await _update_job_stage(
+            job_id,
+            stage="indexing_graphrag",
+            progress=35.0,
+            base_result=base_result,
+        )
+
+        index_error: Optional[str] = None
+        index_status = "success"
+        try:
+            index_result = await asyncio.to_thread(graphrag_indexer.run, build.workspace_dir)
+        except Exception as exc:
+            recovered_result = await asyncio.to_thread(graphrag_indexer.inspect_output, build.workspace_dir)
+            if not recovered_result.artifacts_dir or not recovered_result.artifacts_dir.exists():
+                raise
+            index_result = recovered_result
+            index_error = f"{type(exc).__name__}: {exc}"
+            index_status = "partial"
+        _update_workspace_manifest(
+            build.manifest_path,
+            status="indexed",
+            last_error=index_error or "",
+            last_index_status=index_status,
+            latest_output_dir=str(index_result.output_dir) if index_result.output_dir else None,
+        )
+        base_result = _merge_result(
+            base_result,
+            command=index_result.command,
+            log_path=str(index_result.log_path),
+            output_dir=str(index_result.output_dir) if index_result.output_dir else None,
+            artifacts_dir=str(index_result.artifacts_dir) if index_result.artifacts_dir else None,
+            reports_dir=str(index_result.reports_dir) if index_result.reports_dir else None,
+            skipped_workflows=index_result.skipped_workflows or None,
+            index_status=index_status,
+            index_error=index_error,
+        )
+        await _update_job_stage(
+            job_id,
+            stage="importing_graph",
+            progress=75.0,
+            base_result=base_result,
+        )
+
+        import_summary = await graphrag_artifact_importer.import_into_storage(
+            storage=storage,
+            tenant_id=tenant_id,
+            batch_id=batch_id,
+            workspace_id=build.workspace_id,
+            artifacts_dir=index_result.artifacts_dir or build.workspace_dir / "output",
+            source_files=build.files,
+        )
+        _update_workspace_manifest(
+            build.manifest_path,
+            status="ready",
+            last_error=index_error or "",
+            last_index_status="partial" if import_summary.partial or index_status == "partial" else "success",
+            latest_output_dir=str(index_result.output_dir) if index_result.output_dir else None,
+        )
+        return _merge_result(
+            base_result,
+            stage="ready",
+            **import_summary.as_dict(),
+        )
+    except Exception as exc:
+        if manifest_path and manifest_path.exists():
+            _update_workspace_manifest(
+                manifest_path,
+                status="failed",
+                last_error=f"{type(exc).__name__}: {exc}",
+                last_index_status="failed",
+            )
+        raise
+
+
+async def _run_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> None:
     await storage.update_job(job_id, status="running", started_at=_now_utc(), progress=1.0)
     try:
-        for idx, doc in enumerate(documents, start=1):
-            counters = await _process_document(
-                tenant_id=tenant_id,
-                batch_id=batch_id,
-                doc=doc,
-                field_rules=field_rules,
-                document_rules=document_rules,
-            )
-            for key, value in counters.items():
-                agg[key] += int(value)
-            progress = round((idx / max(1, total)) * 100.0, 2)
-            await storage.update_job(job_id, progress=progress, result=agg)
+        if payload.uploads:
+            result = await _run_upload_ingest_job(job_id, batch_id, payload)
+        else:
+            result = await _run_document_ingest_job(job_id, batch_id, payload)
 
-        await storage.update_job(job_id, status="success", progress=100.0, result=agg, finished_at=_now_utc())
+        await storage.update_job(job_id, status="success", progress=100.0, result=result, finished_at=_now_utc())
     except asyncio.CancelledError:
         await storage.update_job(
             job_id,
@@ -909,10 +1185,13 @@ async def _run_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) ->
         )
         raise
     except Exception as exc:
+        current_job = await storage.get_job(job_id)
+        current_result = current_job.get("result") if current_job and isinstance(current_job.get("result"), dict) else {}
         await storage.update_job(
             job_id,
             status="failed",
             error_message=f"{type(exc).__name__}: {exc}",
+            result=_merge_result(current_result, stage="failed"),
             finished_at=_now_utc(),
         )
     finally:
@@ -922,9 +1201,10 @@ async def _run_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) ->
 async def _run_rebuild_job(job_id: str, payload: RebuildRequest) -> None:
     tenant_id = payload.tenant_id or _default_tenant()
     batches = await storage.list_ingest_batches(tenant_id=tenant_id)
-    total_docs = _count_documents_from_batches(batches)
+    total_inputs = _count_inputs_from_batches(batches)
     agg = {
-        "documents": total_docs,
+        "documents": total_inputs,
+        "uploads": 0,
         "batches": len(batches),
         "nodes": 0,
         "edges": 0,
@@ -936,29 +1216,24 @@ async def _run_rebuild_job(job_id: str, payload: RebuildRequest) -> None:
     try:
         await storage.delete_tenant_graph_data(tenant_id=tenant_id)
 
-        rules = await storage.list_rules(enabled_only=True)
-        deterministic_rules = [rule for rule in rules if str(rule.get("rule_kind")).lower() in SUPPORTED_RULE_KINDS]
-        field_rules = [rule for rule in deterministic_rules if _rule_scope(rule) == "field"]
-        document_rules = [rule for rule in deterministic_rules if _rule_scope(rule) == "document"]
-
         processed = 0
         for batch in batches:
             batch_id = str(batch.get("batch_id") or "").strip()
             raw_payload = batch.get("raw_payload") if isinstance(batch.get("raw_payload"), dict) else {}
-            documents = raw_payload.get("documents") if isinstance(raw_payload.get("documents"), list) else []
-            for doc in documents:
-                counters = await _process_document(
-                    tenant_id=tenant_id,
-                    batch_id=batch_id,
-                    doc=doc if isinstance(doc, dict) else {},
-                    field_rules=field_rules,
-                    document_rules=document_rules,
-                )
-                for key, value in counters.items():
-                    agg[key] += int(value)
-                processed += 1
-                progress = round((processed / max(1, total_docs)) * 100.0, 2)
-                await storage.update_job(job_id, progress=progress, result=agg)
+            ingest_payload = IngestRequest.model_validate(raw_payload)
+            if ingest_payload.uploads:
+                result = await _run_upload_ingest_job(job_id, batch_id, ingest_payload)
+                agg["uploads"] += len(ingest_payload.uploads)
+                processed += len(ingest_payload.uploads)
+            else:
+                result = await _run_document_ingest_job(job_id, batch_id, ingest_payload)
+                processed += len(ingest_payload.documents)
+
+            for key in ("nodes", "edges", "alerts", "evidence"):
+                agg[key] += int(result.get(key, 0) or 0)
+
+            progress = round((processed / max(1, total_inputs)) * 100.0, 2)
+            await storage.update_job(job_id, progress=progress, result=_merge_result(agg, stage="rebuilding"))
 
         await storage.update_job(job_id, status="success", progress=100.0, result=agg, finished_at=_now_utc())
     except asyncio.CancelledError:
@@ -992,8 +1267,7 @@ def _build_stats(nodes: Sequence[Dict[str, Any]], edges: Sequence[Dict[str, Any]
     )
 
 
-@app.post("/module4/ingest", response_model=IngestResponse)
-async def module4_ingest(payload: IngestRequest, request: Request) -> IngestResponse:
+async def _submit_ingest_job(payload: IngestRequest, request: Request) -> IngestResponse:
     tenant_id = _tenant_from_request(request, payload.tenant_id)
     source_batch_key = _derived_ingest_batch_key(payload, tenant_id=tenant_id)
     existing_batch = await storage.get_ingest_batch(
@@ -1017,11 +1291,19 @@ async def module4_ingest(payload: IngestRequest, request: Request) -> IngestResp
     payload_data = payload.model_dump(mode="json")
     payload_data["tenant_id"] = tenant_id
     payload_data["source_batch_key"] = source_batch_key
+    input_count = len(payload.uploads) if payload.uploads else len(payload.documents)
     job = await storage.create_job(
         tenant_id=tenant_id,
         job_type="ingest",
         status="queued",
-        payload={"source": payload.source, "source_batch_key": source_batch_key, "documents": len(payload.documents)},
+        payload={
+            "source": payload.source,
+            "source_batch_key": source_batch_key,
+            "graph_mode": payload.graph_mode,
+            "documents": len(payload.documents),
+            "uploads": len(payload.uploads),
+            "inputs": input_count,
+        },
     )
     batch = await storage.create_ingest_batch(
         tenant_id=tenant_id,
@@ -1033,6 +1315,18 @@ async def module4_ingest(payload: IngestRequest, request: Request) -> IngestResp
     effective_payload = IngestRequest.model_validate(payload_data)
     _schedule_ingest_job(str(job["job_id"]), str(batch["batch_id"]), effective_payload)
     return IngestResponse(job_id=str(job["job_id"]), batch_id=str(batch["batch_id"]), status=str(job["status"]))
+
+
+@app.post("/module4/ingest", response_model=IngestResponse)
+async def module4_ingest(payload: IngestRequest, request: Request) -> IngestResponse:
+    return await _submit_ingest_job(payload, request)
+
+
+@app.post("/module4/sync/uploads", response_model=IngestResponse)
+async def module4_sync_uploads(payload: IngestRequest, request: Request) -> IngestResponse:
+    if not payload.uploads:
+        raise HTTPException(status_code=400, detail="uploads payload is required")
+    return await _submit_ingest_job(payload, request)
 
 
 @app.get("/module4/jobs/{job_id}", response_model=JobResponse)
@@ -1051,7 +1345,7 @@ async def module4_rebuild(body: RebuildRequest, request: Request) -> RebuildResp
     if not batches:
         raise HTTPException(status_code=404, detail="No ingest batches found for tenant")
 
-    documents = _count_documents_from_batches(batches)
+    documents = _count_inputs_from_batches(batches)
     job = await storage.create_job(
         tenant_id=tenant_id,
         job_type="rebuild_graph",
@@ -1307,15 +1601,27 @@ async def module4_simulate(body: SimulateRequest, request: Request) -> SimulateR
 
 
 @app.get("/module4/healthz", response_model=HealthzResponse)
-async def module4_healthz() -> HealthzResponse:
+async def module4_healthz(probe: str = Query(default="basic")) -> HealthzResponse:
     diag = storage.diagnostics()
     queue_size = await storage.queue_size()
-    degraded = bool(diag.get("degraded_memory_mode")) or not bool(diag.get("db_connected"))
+    check_remote = str(probe or "").strip().lower() == "deep"
+    runtime_probe = await asyncio.to_thread(
+        graphrag_indexer.probe,
+        workspace_builder.runtime,
+        workspace_builder.neo4j,
+        check_remote=check_remote,
+    )
+    degraded = (
+        bool(diag.get("degraded_memory_mode"))
+        or not bool(diag.get("db_connected"))
+        or not runtime_probe.ready
+    )
     return HealthzResponse(
         status="degraded" if degraded else "ok",
         db_connected=bool(diag.get("db_connected")),
         degraded_memory_mode=bool(diag.get("degraded_memory_mode")),
         jobs_in_queue=queue_size,
         last_connect_error=str(diag.get("last_connect_error") or "") or None,
+        graphrag=runtime_probe.as_dict(),
         now=_now_utc(),
     )

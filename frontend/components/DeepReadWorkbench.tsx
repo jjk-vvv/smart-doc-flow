@@ -43,7 +43,6 @@ import {
   type ExtractionEntity,
   type TraceHit,
 } from '../lib/extractionStore';
-import { ingestModule4Documents } from '../lib/module4Api';
 import {
   clearWorkbenchSession,
   readWorkbenchSession,
@@ -54,12 +53,15 @@ import {
   type WorkbenchSessionSnapshot,
 } from '../lib/workbenchSession';
 import { LuckysheetPreview, clearLuckysheetPreviewCache, warmLuckysheetPreview } from './LuckysheetPreview';
-import smartUnitIcon from '../image2.png';
-import smartSummaryIcon from '../image3.png';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const stringifyAsciiSafeJson = (value: unknown): string =>
+  JSON.stringify(value).replace(/[\u0080-\uFFFF]/g, (char) =>
+    `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`
+  );
 
 type PdfScrollRequest = {
   page: number;
@@ -421,6 +423,54 @@ type AssistantQueryResponse = {
   warnings: string[];
 };
 
+type AssistantCitation = {
+  citation_type: string;
+  title: string;
+  page?: number | null;
+  ref_id?: string | null;
+  object_id: string;
+  snippet: string;
+  payload: Record<string, unknown>;
+};
+
+type AssistantObjectLock = {
+  lock_type: string;
+  object_id: string;
+  label: string;
+  page?: number | null;
+  ref_id?: string | null;
+  table_id?: string | null;
+  row_index?: number | null;
+  source_row_index?: number | null;
+  metadata?: Record<string, unknown>;
+};
+
+type AssistantActionPreview = {
+  action_id: string;
+  action_type: string;
+  title: string;
+  description: string;
+  target: string;
+  requires_confirmation: boolean;
+  payload: Record<string, unknown>;
+};
+
+type AssistantSessionMessagePayload = {
+  message_id: string;
+  role: string;
+  message_type: string;
+  content: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+type AssistantSessionResponse = {
+  session_id: string;
+  summary_used: string;
+  current_object_lock?: AssistantObjectLock | null;
+  messages: AssistantSessionMessagePayload[];
+};
+
 type FieldItem = {
   key: string;
   label: string;
@@ -435,12 +485,39 @@ type AssistantDialogMessage = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  messageType?: 'user_message' | 'assistant_text' | 'tool_status' | 'action_preview' | 'system_notice';
+  citations?: AssistantCitation[];
+  actionPreview?: AssistantActionPreview | null;
+  status?: 'streaming' | 'done' | 'error';
+  payload?: Record<string, unknown>;
 };
 
 const DEFAULT_SCHEMA = {
   auto_infer: true,
   prefer_llm: true,
-  max_auto_fields: 12,
+  max_auto_fields: 8,
+};
+
+const ASSISTANT_SESSION_STORAGE_KEY = 'module2_assistant_session_map_v1';
+
+const readAssistantSessionMap = (): Record<string, string> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(ASSISTANT_SESSION_STORAGE_KEY) || '{}';
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeAssistantSessionMap = (value: Record<string, string>) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(ASSISTANT_SESSION_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // ignore
+  }
 };
 
 
@@ -691,22 +768,21 @@ const getViteExtractBase = (): string => {
   }
 };
 
-const useModule4FrontendIngestFallback = (): boolean => {
-  try {
-    const envObj = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-    const raw = String(envObj?.VITE_MODULE4_FRONTEND_INGEST_FALLBACK || '').trim().toLowerCase();
-    return raw === '1' || raw === 'true' || raw === 'yes';
-  } catch {
-    return false;
-  }
-};
-
 const trimTrailingSlash = (value: string) => String(value || '').replace(/\/+$/, '');
 
 const normalizeExtractBase = (raw: string): string => {
   const base = trimTrailingSlash(String(raw || '').trim());
   if (!base) return '';
   return base.endsWith('/extract') ? base.slice(0, -8) : base;
+};
+
+const getLocalStorageExtractBase = (): string => {
+  if (typeof window === 'undefined') return '';
+  try {
+    return String(window.localStorage.getItem('module2_api_base_override') || '').trim();
+  } catch {
+    return '';
+  }
 };
 
 const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
@@ -719,6 +795,7 @@ const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
 
   push(preferredBase);
   push(getViteExtractBase());
+  push(getLocalStorageExtractBase());
 
   if (typeof window !== 'undefined') {
     const protocol = window.location.protocol;
@@ -793,7 +870,15 @@ const fetchExtractWithFallback = async (
 ): Promise<ExtractFetchResult> => {
   const tried: string[] = [];
   let lastError = '';
-  const candidates = ['', ...buildExtractBaseCandidates(preferredBase)];
+  const configuredCandidates = [
+    normalizeExtractBase(preferredBase),
+    normalizeExtractBase(getViteExtractBase()),
+    normalizeExtractBase(getLocalStorageExtractBase()),
+  ].filter(Boolean);
+  const candidates =
+    configuredCandidates.length > 0
+      ? [...buildExtractBaseCandidates(preferredBase), '']
+      : ['', ...buildExtractBaseCandidates(preferredBase)];
 
   for (const base of candidates) {
     if (tried.includes(base)) continue;
@@ -997,6 +1082,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const [assistantAnswer, setAssistantAnswer] = useState('');
   const [assistantWarnings, setAssistantWarnings] = useState<string[]>([]);
   const [assistantDialog, setAssistantDialog] = useState<AssistantDialogMessage[]>([]);
+  const [assistantSessionId, setAssistantSessionId] = useState('');
+  const [assistantCurrentLock, setAssistantCurrentLock] = useState<AssistantObjectLock | null>(null);
   const [smartUnitTab, setSmartUnitTab] = useState<'results' | 'assistant'>('results');
   const [assistantTabUnread, setAssistantTabUnread] = useState(false);
   const [resultsTabUnread, setResultsTabUnread] = useState(false);
@@ -1022,6 +1109,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const extractionJobPollRef = useRef<string>('');
   const extractionJobApiBaseRef = useRef<string>('');
   const persistedSelectedFilesRef = useRef<PersistedWorkbenchFile[]>([]);
+  const assistantAbortRef = useRef<AbortController | null>(null);
   const assistantActivityRef = useRef('');
   const resultsActivityRef = useRef('');
 
@@ -1149,6 +1237,64 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       .reverse();
     return Array.from(new Set(pool)).slice(0, 6);
   }, [assistantDialog]);
+
+  const persistAssistantSessionForFile = (fileHash: string, sessionId: string) => {
+    const fileKey = String(fileHash || '').trim();
+    const sessionKey = String(sessionId || '').trim();
+    if (!fileKey || !sessionKey) return;
+    const current = readAssistantSessionMap();
+    current[fileKey] = sessionKey;
+    writeAssistantSessionMap(current);
+  };
+
+  const clearAssistantSessionForFile = (fileHash: string) => {
+    const fileKey = String(fileHash || '').trim();
+    if (!fileKey) return;
+    const current = readAssistantSessionMap();
+    if (!(fileKey in current)) return;
+    delete current[fileKey];
+    writeAssistantSessionMap(current);
+  };
+
+  const toAssistantDialogMessage = (message: AssistantSessionMessagePayload): AssistantDialogMessage => {
+    const role = String(message.role || '').trim().toLowerCase() === 'user' ? 'user' : 'assistant';
+    const payload = message.payload && typeof message.payload === 'object' ? message.payload : {};
+    const messageTypeRaw = String(message.message_type || '').trim();
+    const normalizedType: AssistantDialogMessage['messageType'] =
+      messageTypeRaw === 'tool_status' || messageTypeRaw === 'action_preview' || messageTypeRaw === 'system_notice'
+        ? messageTypeRaw
+        : role === 'user'
+          ? 'user_message'
+          : 'assistant_text';
+    const citations = Array.isArray((payload as Record<string, unknown>).citations)
+      ? ((payload as Record<string, unknown>).citations as AssistantCitation[])
+      : [];
+    const actionPreviewRaw = (payload as Record<string, unknown>).action_preview;
+    const actionPreview = actionPreviewRaw && typeof actionPreviewRaw === 'object'
+      ? actionPreviewRaw as AssistantActionPreview
+      : null;
+    return {
+      id: String(message.message_id || `assistant-${Date.now()}`),
+      role,
+      content: String(message.content || ''),
+      messageType: normalizedType,
+      citations,
+      actionPreview,
+      status: 'done',
+      payload: payload as Record<string, unknown>,
+    };
+  };
+
+  const updateAssistantDialogMessage = (
+    messageId: string,
+    updater: (current: AssistantDialogMessage) => AssistantDialogMessage
+  ) => {
+    const targetId = String(messageId || '').trim();
+    if (!targetId) return;
+    setAssistantDialog((prev) =>
+      prev.map((item) => (item.id === targetId ? updater(item) : item))
+    );
+  };
 
   const applyAssistantInstruction = (instruction: string) => {
     const text = String(instruction || '').trim();
@@ -1421,19 +1567,26 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setSummaryDocName(doc.file_name);
     setActiveSummaryLoading(true);
     try {
-      const response = await fetch('/extract/summarize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          file_name: doc.file_name,
-          result: doc.result,
-          diagnostics: doc.diagnostics ?? {},
-          errors: doc.errors ?? [],
-          soft_warnings: doc.soft_warnings ?? [],
-          trace_hits: doc.trace_hits ?? [],
-          max_chars: 520,
-        }),
-      });
+      const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
+      const fetchResult = await fetchExtractWithFallback(
+        '/extract/summarize',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_name: doc.file_name,
+            result: doc.result,
+            diagnostics: doc.diagnostics ?? {},
+            errors: doc.errors ?? [],
+            soft_warnings: doc.soft_warnings ?? [],
+            trace_hits: doc.trace_hits ?? [],
+            max_chars: 520,
+          }),
+        },
+        preferredBase,
+      );
+      extractionJobApiBaseRef.current = fetchResult.usedBase || preferredBase;
+      const response = fetchResult.response;
       if (!response.ok) {
         throw new Error('摘要生成失败');
       }
@@ -1457,15 +1610,22 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setTraceLoading(true);
     setTraceError('');
     try {
-      const response = await fetch('/extract/trace/locate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          document: doc,
-          field_name: fieldKey || undefined,
-          top_k: 40,
-        }),
-      });
+      const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
+      const fetchResult = await fetchExtractWithFallback(
+        '/extract/trace/locate',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            document: doc,
+            field_name: fieldKey || undefined,
+            top_k: 40,
+          }),
+        },
+        preferredBase,
+      );
+      extractionJobApiBaseRef.current = fetchResult.usedBase || preferredBase;
+      const response = fetchResult.response;
       if (!response.ok) {
         throw new Error('溯源定位失败');
       }
@@ -1527,13 +1687,63 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   }, [activeDoc?.file_hash, assistantActionable]);
 
   useEffect(() => {
+    assistantAbortRef.current?.abort();
+    assistantAbortRef.current = null;
     setAssistantInput('');
     setAssistantAnswer('');
     setAssistantWarnings([]);
     setAssistantDialog([]);
     setAssistantQueryLoading(false);
+    setAssistantSessionId('');
+    setAssistantCurrentLock(null);
     setOfficePreviewMap({});
     setActiveTraceKey('');
+    const fileHash = String(activeDoc?.file_hash || '').trim();
+    if (!activeDoc || !fileHash) {
+      return;
+    }
+    const storedSessionId = String(readAssistantSessionMap()[fileHash] || '').trim();
+    if (!storedSessionId) {
+      return;
+    }
+    let cancelled = false;
+    const hydrateSession = async () => {
+      try {
+        const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
+        const fetchResult = await fetchExtractWithFallback(
+          '/extract/assistant/session',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              document: activeDoc,
+              summary: activeSummaryText,
+              session_id: storedSessionId,
+            }),
+          },
+          preferredBase,
+        );
+        extractionJobApiBaseRef.current = fetchResult.usedBase || preferredBase;
+        const response = fetchResult.response;
+        if (!response.ok) {
+          throw new Error('助手会话恢复失败');
+        }
+        const payload = (await response.json()) as AssistantSessionResponse;
+        if (cancelled) return;
+        setAssistantSessionId(String(payload.session_id || '').trim());
+        setAssistantCurrentLock(payload.current_object_lock ?? null);
+        if (Array.isArray(payload.messages) && payload.messages.length > 0) {
+          setAssistantDialog(payload.messages.map(toAssistantDialogMessage));
+        }
+      } catch {
+        if (cancelled) return;
+        clearAssistantSessionForFile(fileHash);
+      }
+    };
+    void hydrateSession();
+    return () => {
+      cancelled = true;
+    };
   }, [activeDoc?.file_hash]);
 
   const fieldItems = useMemo<FieldItem[]>(() => {
@@ -1966,11 +2176,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
     setDocuments(documentsWithPreview);
     writeExtractionDocuments(documentsWithPreview);
-    if (useModule4FrontendIngestFallback()) {
-      void ingestModule4Documents(documentsWithPreview).catch((error) => {
-        console.warn('module4 ingest failed', error);
-      });
-    }
     setActiveDocIndex(0);
     setPdfViewportPage(1);
     setPdfScrollRequest(createPdfScrollRequest(1));
@@ -2020,8 +2225,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
   const pollExtractionJob = async (jobId: string, preferredBase = '') => {
     extractionJobPollRef.current = jobId;
-    const maxAttempts = 360;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const pollIntervalMs = 1200;
+    const pollTimeoutMs = 45 * 60 * 1000;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < pollTimeoutMs) {
       if (extractionJobPollRef.current !== jobId) return;
       try {
         const fetchResult = await fetchExtractWithFallback(
@@ -2076,10 +2283,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         }
         setInfoMessage('正在同步最新解析进度...');
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      await new Promise((resolve) => window.setTimeout(resolve, pollIntervalMs));
     }
     if (extractionJobPollRef.current === jobId) {
-      setErrorMessage('抽取进度轮询超时，请稍后重试。');
+      setErrorMessage('抽取进度轮询超时，请稍后重试或检查后端日志。');
       extractionJobPollRef.current = '';
       setIsProcessing(false);
     }
@@ -2092,7 +2299,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   }, [extractionJob?.job_id, extractionJob?.terminal]);
 
   useEffect(() => {
-    Object.entries(officePreviewMap).forEach(([key, state]) => {
+    Object.entries(officePreviewMap as Record<string, OfficePreviewState>).forEach(([key, state]) => {
       if (!state?.jobId) return;
       if (state.status !== 'queued' && state.status !== 'running') return;
       if (officePreviewPollRef.current[key] === state.jobId) return;
@@ -2318,7 +2525,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         for (let i = 1; i <= attempts; i += 1) {
           const formData = new FormData();
           selectedFiles.forEach((file) => formData.append('files', file));
-          formData.append('schema', JSON.stringify(schemaObj));
+          formData.append('schema', stringifyAsciiSafeJson(schemaObj));
           try {
             return await fetchExtractWithFallback('/extract/jobs/create', {
               method: 'POST',
@@ -2502,7 +2709,362 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setAssistantMessage("已执行回滚：定位高亮已重置，你可以重新选择字段或重新抽取。");
   };
 
+  const syncAssistantEvidence = (
+    citations: AssistantCitation[],
+    nextLock?: AssistantObjectLock | null,
+  ) => {
+    const normalizedCitations = Array.isArray(citations) ? citations : [];
+    const effectiveLock = nextLock === undefined ? assistantCurrentLock : nextLock;
+    if (nextLock !== undefined) {
+      setAssistantCurrentLock(nextLock);
+    }
+    if (!activeDoc) return;
+
+    const docHits = Array.isArray(activeDoc.trace_hits) ? activeDoc.trace_hits : [];
+    const matched = new Map<string, TraceHit>();
+    normalizedCitations.forEach((citation) => {
+      const objectType =
+        citation.citation_type === 'field'
+          ? 'field'
+          : citation.citation_type === 'table'
+            ? 'table'
+            : citation.citation_type === 'figure'
+              ? 'figure'
+              : '';
+      const refId = String(citation.ref_id || '').trim();
+      const objectId = String(citation.object_id || '').trim().toLowerCase();
+      const exactHits = docHits.filter((hit) => {
+        const hitObjectType = String(hit.object_type || '').trim().toLowerCase();
+        const hitObjectId = String(hit.object_id || '').trim().toLowerCase();
+        const hitRefId = String(hit.ref_id || '').trim();
+        if (refId && hitRefId === refId) return true;
+        if (!objectId) return false;
+        if (hitObjectId !== objectId) return false;
+        return !objectType || hitObjectType === objectType;
+      });
+      if (exactHits.length > 0) {
+        exactHits.forEach((hit, idx) => {
+          matched.set(toTraceHitKey(hit, idx), hit);
+        });
+        return;
+      }
+      const payload = citation.payload && typeof citation.payload === 'object'
+        ? citation.payload
+        : {};
+      const synthetic: TraceHit = {
+        file_name: activeDoc.file_name,
+        file_hash: activeDoc.file_hash,
+        object_type: objectType || 'other',
+        object_id: String(citation.object_id || ''),
+        ref_id: refId || undefined,
+        page: citation.page ?? undefined,
+        snippet: String(citation.snippet || citation.title || '').trim(),
+        confidence: 0.99,
+        locator: payload,
+        artifact_url: typeof payload.artifact_url === 'string' ? payload.artifact_url : undefined,
+        artifact_path: typeof payload.artifact_path === 'string' ? payload.artifact_path : undefined,
+      };
+      matched.set(toTraceHitKey(synthetic, matched.size), synthetic);
+    });
+
+    if (matched.size > 0) {
+      setTraceHits(Array.from(matched.values()));
+    } else if (effectiveLock?.table_id) {
+      const lockedHits = docHits.filter(
+        (hit) =>
+          String(hit.object_type || '').trim().toLowerCase() === 'table'
+          && String(hit.object_id || '').trim().toLowerCase() === String(effectiveLock.table_id || '').trim().toLowerCase()
+      );
+      if (lockedHits.length > 0) {
+        setTraceHits(lockedHits);
+      }
+    }
+
+    const firstFieldCitation = normalizedCitations.find((item) => item.citation_type === 'field');
+    if (firstFieldCitation?.object_id) {
+      setActiveFieldKey(String(firstFieldCitation.object_id).trim() || null);
+    } else if (effectiveLock?.lock_type === 'table_row') {
+      setActiveFieldKey(null);
+    }
+
+    const targetPage = Number(
+      effectiveLock?.page
+      ?? normalizedCitations.find((item) => Number(item.page || 0) > 0)?.page
+      ?? 0
+    );
+    if (activeRenderExt === 'pdf' && Number.isFinite(targetPage) && targetPage > 0) {
+      jumpToPdfPage(targetPage);
+    }
+  };
+
+  const renderAssistantCitations = (citations?: AssistantCitation[] | null, compact = false) => {
+    if (!Array.isArray(citations) || citations.length === 0) return null;
+    return (
+      <div className={cn("mt-2.5 space-y-2", compact && "mt-2 space-y-1.5")}>
+        {citations.slice(0, compact ? 3 : 5).map((citation, idx) => {
+          const payload = citation.payload && typeof citation.payload === 'object'
+            ? citation.payload
+            : {};
+          const rowIndex = Number(payload.row_index || 0);
+          const sourceRowIndex = Number(payload.source_row_index || 0);
+          const figureId = String(payload.figure_id || citation.object_id || '').trim();
+          const keyPoints = Array.isArray(payload.key_points)
+            ? payload.key_points.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+          const header = String(payload.header || '').trim();
+          const value = String(payload.value || '').trim();
+          const summaryBits = [
+            citation.page ? `第 ${citation.page} 页` : '',
+            citation.ref_id ? `ref_id: ${citation.ref_id}` : '',
+            rowIndex > 0 ? `表内第 ${rowIndex} 行` : '',
+            sourceRowIndex > 0 ? `原始第 ${sourceRowIndex} 行` : '',
+            header ? `列: ${header}` : '',
+            figureId && citation.citation_type === 'figure' ? `figure_id: ${figureId}` : '',
+          ].filter(Boolean);
+          return (
+            <button
+              key={`${citation.object_id}:${citation.ref_id || idx}`}
+              type="button"
+              onClick={() => syncAssistantEvidence([citation])}
+              className={cn(
+                "w-full rounded-xl border border-slate-200/80 bg-slate-50/80 px-3 py-2 text-left transition-colors hover:border-blue-300 hover:bg-blue-50/70 dark:border-slate-700/80 dark:bg-slate-950/60 dark:hover:border-blue-500/60 dark:hover:bg-slate-900",
+                compact && "rounded-lg px-2.5 py-2"
+              )}
+              title="定位到该引用证据"
+            >
+              <div className="flex items-start gap-2">
+                <div className={cn(
+                  "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white text-slate-500 ring-1 ring-inset ring-slate-200/70 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700/70",
+                  compact && "h-5 w-5 rounded-md"
+                )}>
+                  {citation.citation_type === 'table' ? (
+                    <FileSpreadsheet size={compact ? 11 : 12} />
+                  ) : citation.citation_type === 'figure' ? (
+                    <FileImage size={compact ? 11 : 12} />
+                  ) : (
+                    <FileText size={compact ? 11 : 12} />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className={cn(
+                      "text-[11px] font-semibold text-slate-700 dark:text-slate-100",
+                      compact && "text-[10px]"
+                    )}>
+                      {citation.title || citation.object_id || '引用证据'}
+                    </span>
+                    <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-500 ring-1 ring-inset ring-slate-200/80 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700/80">
+                      {citation.citation_type || 'other'}
+                    </span>
+                  </div>
+                  {summaryBits.length > 0 && (
+                    <div className="mt-1 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+                      {summaryBits.join(' · ')}
+                    </div>
+                  )}
+                  {value && citation.citation_type === 'table' && (
+                    <div className="mt-1 text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                      当前值：{value}
+                    </div>
+                  )}
+                  {keyPoints.length > 0 && (
+                    <div className="mt-1 text-[10px] leading-relaxed text-slate-600 dark:text-slate-300">
+                      要点：{keyPoints.slice(0, 3).join('；')}
+                    </div>
+                  )}
+                  {!!citation.snippet && (
+                    <div className="mt-1 line-clamp-3 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+                      {citation.snippet}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderAssistantActionPreview = (preview?: AssistantActionPreview | null, compact = false) => {
+    if (!preview) return null;
+    const payload = preview.payload && typeof preview.payload === 'object' ? preview.payload : {};
+    const matchedFields = Array.isArray(payload.matched_fields)
+      ? payload.matched_fields.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    return (
+      <div className={cn(
+        "mt-2.5 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-3.5 py-3 text-left dark:border-amber-900/70 dark:bg-amber-950/20",
+        compact && "mt-2 rounded-xl px-3 py-2.5"
+      )}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-slate-900 dark:text-amber-300 dark:ring-amber-900/70">
+            动作预览
+          </span>
+          <span className="text-[10px] text-amber-700/90 dark:text-amber-200/80">
+            {preview.requires_confirmation ? '需确认后执行' : '可直接执行'}
+          </span>
+        </div>
+        <div className="mt-2 text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+          {preview.title || '数据库动作预览'}
+        </div>
+        {preview.description && (
+          <div className="mt-1 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
+            {preview.description}
+          </div>
+        )}
+        <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-slate-600 dark:text-slate-300">
+          {preview.action_type && (
+            <span className="rounded-full bg-white px-2 py-0.5 ring-1 ring-inset ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+              类型：{preview.action_type}
+            </span>
+          )}
+          {preview.target && (
+            <span className="rounded-full bg-white px-2 py-0.5 ring-1 ring-inset ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+              目标：{preview.target}
+            </span>
+          )}
+          {matchedFields.length > 0 && (
+            <span className="rounded-full bg-white px-2 py-0.5 ring-1 ring-inset ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+              字段：{matchedFields.slice(0, 4).join('、')}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderAssistantDialogMessage = (msg: AssistantDialogMessage, compact = false) => {
+    const isAssistant = msg.role === 'assistant';
+    const detail = String(msg.payload?.detail || '').trim();
+    const toolName = String(msg.payload?.tool_name || '').trim();
+    const toolStatus = String(msg.payload?.status || '').trim();
+    const isToolStatus = msg.messageType === 'tool_status';
+    const contentText = String(msg.content || '').trim();
+    return (
+      <div
+        key={msg.id}
+        className={cn(
+          compact ? "flex gap-2 max-w-[95%]" : "flex gap-3 max-w-[90%]",
+          isAssistant ? "mr-auto" : "ml-auto flex-row-reverse"
+        )}
+      >
+        <div className={cn(
+          compact
+            ? "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
+            : "flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm ring-1 ring-inset ring-black/5 backdrop-blur-sm",
+          isAssistant
+            ? compact
+              ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+              : "bg-white/80 text-blue-600 dark:bg-slate-800/80 dark:text-blue-400"
+            : compact
+              ? "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+              : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+        )}>
+          {isAssistant ? <Bot size={compact ? 12 : 16} /> : <div className="text-[10px] font-bold">{compact ? '我' : 'ME'}</div>}
+        </div>
+        <div className="min-w-0">
+          <div className={cn(
+            compact
+              ? "rounded-2xl px-3 py-2 text-[11px] leading-relaxed shadow-sm break-words whitespace-pre-wrap"
+              : "rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm break-words whitespace-pre-wrap ring-1 ring-inset backdrop-blur-md transition-all hover:shadow-md",
+            isAssistant
+              ? isToolStatus
+                ? compact
+                  ? "rounded-tl-none border border-amber-200 bg-amber-50/90 text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/20 dark:text-amber-100"
+                  : "rounded-tl-none bg-amber-50/90 ring-amber-200/70 text-amber-800 dark:bg-amber-950/20 dark:ring-amber-900/60 dark:text-amber-100"
+                : compact
+                  ? "rounded-tl-none bg-white border border-slate-100 text-slate-700 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200"
+                  : "rounded-tl-none bg-white/80 ring-slate-200/50 text-slate-700 dark:bg-slate-900/80 dark:ring-slate-700/50 dark:text-slate-200"
+              : compact
+                ? "rounded-tr-none bg-blue-600 text-white"
+                : "rounded-tr-none bg-blue-600 ring-blue-600 text-white shadow-blue-500/20 hover:bg-blue-700"
+          )}>
+            {isToolStatus && (
+              <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px] font-semibold">
+                <span className="uppercase tracking-wide">工具状态</span>
+                {toolName && (
+                  <span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[9px] text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-slate-900/80 dark:text-amber-200 dark:ring-amber-900/60">
+                    {toolName}
+                  </span>
+                )}
+                {toolStatus && (
+                  <span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[9px] text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-slate-900/80 dark:text-amber-200 dark:ring-amber-900/60">
+                    {toolStatus}
+                  </span>
+                )}
+              </div>
+            )}
+            {contentText ? (
+              <span>{contentText}</span>
+            ) : msg.status === 'streaming' && isAssistant ? (
+              <span className="flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.3s]"></span>
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.15s]"></span>
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce"></span>
+              </span>
+            ) : (
+              <span className="text-slate-400 dark:text-slate-500">暂无内容</span>
+            )}
+            {detail && isToolStatus && (
+              <div className="mt-1 text-[10px] leading-relaxed text-amber-700/90 dark:text-amber-100/80">
+                {detail}
+              </div>
+            )}
+            {msg.status === 'streaming' && isAssistant && contentText && (
+              <div className="mt-2 text-[10px] text-slate-400 dark:text-slate-500">
+                正在继续生成回答...
+              </div>
+            )}
+          </div>
+          {isAssistant && renderAssistantCitations(msg.citations, compact)}
+          {isAssistant && renderAssistantActionPreview(msg.actionPreview, compact)}
+        </div>
+      </div>
+    );
+  };
+
+  const renderAssistantLockBanner = (compact = false) => {
+    if (!assistantCurrentLock) return null;
+    const rowIndex = Number(assistantCurrentLock.row_index || 0);
+    const sourceRowIndex = Number(assistantCurrentLock.source_row_index || 0);
+    const meta = assistantCurrentLock.metadata && typeof assistantCurrentLock.metadata === 'object'
+      ? assistantCurrentLock.metadata
+      : {};
+    const header = String(meta.header || '').trim();
+    const bits = [
+      assistantCurrentLock.page ? `第 ${assistantCurrentLock.page} 页` : '',
+      rowIndex > 0 ? `表内第 ${rowIndex} 行` : '',
+      sourceRowIndex > 0 ? `原始第 ${sourceRowIndex} 行` : '',
+      header ? `当前列: ${header}` : '',
+    ].filter(Boolean);
+    return (
+      <div className={cn(
+        "rounded-2xl border border-blue-200/70 bg-blue-50/80 px-4 py-3 text-xs text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/20 dark:text-blue-100",
+        compact && "rounded-xl px-3 py-2 text-[11px]"
+      )}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-700 ring-1 ring-inset ring-blue-200 dark:bg-slate-900 dark:text-blue-300 dark:ring-blue-900/70">
+            上下文锁定
+          </span>
+          <span className="font-semibold">
+            {assistantCurrentLock.label || assistantCurrentLock.object_id || '当前对象'}
+          </span>
+        </div>
+        {bits.length > 0 && (
+          <div className="mt-1.5 text-[11px] leading-relaxed text-blue-800/90 dark:text-blue-100/80">
+            {bits.join(' · ')}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const runAssistantInstruction = async () => {
+    if (assistantQueryLoading) {
+      assistantAbortRef.current?.abort();
+      return;
+    }
     const instruction = assistantInput.trim();
     if (!activeDoc) {
       setAssistantWarnings(["当前没有可用文档，请先完成抽取。"]);
@@ -2514,75 +3076,288 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     }
 
     const persistRequested = /(入库|落库|保存|存储|写入数据库|写库)/.test(instruction);
+    const webRequested = /(联网|搜索|查一下|最新|最近|政策|法规|新闻|web|google|bing)/i.test(instruction);
     const userDialogMsg: AssistantDialogMessage = {
       id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'user',
       content: instruction,
+      messageType: 'user_message',
+      status: 'done',
     };
-    setAssistantDialog((prev) => [...prev, userDialogMsg]);
+    const pendingAssistantId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const pendingAssistantMsg: AssistantDialogMessage = {
+      id: pendingAssistantId,
+      role: 'assistant',
+      content: '',
+      messageType: 'assistant_text',
+      citations: [],
+      actionPreview: null,
+      status: 'streaming',
+      payload: {},
+    };
+    setAssistantDialog((prev) => [...prev, userDialogMsg, pendingAssistantMsg]);
     setAssistantQueryLoading(true);
     setAssistantWarnings([]);
+    setAssistantAnswer('');
+    setAssistantInput('');
+
+    const controller = new AbortController();
+    assistantAbortRef.current = controller;
+    const fileHash = String(activeDoc.file_hash || '').trim();
+    const restoredSessionId = fileHash ? String(readAssistantSessionMap()[fileHash] || '').trim() : '';
+    let streamMessageId = pendingAssistantId;
+
     try {
-      const response = await fetch('/extract/assistant/query', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          document: activeDoc,
-          summary: activeSummaryText,
-          user_instruction: instruction,
-          persist: persistRequested,
-          top_k: 16,
-        }),
-      });
+      const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
+      const fetchResult = await fetchExtractWithFallback(
+        '/extract/assistant/chat/stream',
+        {
+          method: 'POST',
+          headers: {
+            'Accept': 'text/event-stream',
+            'Content-Type': 'application/json',
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            document: activeDoc,
+            summary: activeSummaryText,
+            user_message: instruction,
+            session_id: assistantSessionId || restoredSessionId || undefined,
+            persist: persistRequested,
+            top_k: 16,
+            enable_web_search: webRequested,
+            current_object_lock: assistantCurrentLock || undefined,
+          }),
+        },
+        preferredBase,
+      );
+      extractionJobApiBaseRef.current = fetchResult.usedBase || preferredBase;
+      const response = fetchResult.response;
       if (!response.ok) {
         const text = await response.text();
         throw new Error(text || '助手处理失败');
       }
+      if (!response.body) {
+        throw new Error('助手流式响应为空');
+      }
 
-      const payload = (await response.json()) as AssistantQueryResponse;
-      const nextAnswer = (payload.answer || "").trim() || "助手已完成处理。";
-      setAssistantAnswer(nextAnswer);
-      setAssistantMessage(nextAnswer);
-      setAssistantWarnings(Array.isArray(payload.warnings) ? payload.warnings : []);
-      setAssistantDialog((prev) => [
-        ...prev,
-        {
-          id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          role: 'assistant',
-          content: nextAnswer,
-        },
-      ]);
-      if (Array.isArray(payload.matched_trace_hits) && payload.matched_trace_hits.length > 0) {
-        setTraceHits(payload.matched_trace_hits);
-      }
-      if (Array.isArray(payload.matched_fields) && payload.matched_fields.length > 0) {
-        const firstField = String(payload.matched_fields[0].field_name || '').trim();
-        if (firstField) {
-          setActiveFieldKey(firstField);
+      const decoder = new TextDecoder();
+      const reader = response.body.getReader();
+      let buffer = '';
+
+      const commitSseEvent = (eventName: string, rawData: string) => {
+        const normalizedEvent = String(eventName || 'message').trim() || 'message';
+        let parsed: Record<string, unknown> = {};
+        if (rawData.trim()) {
+          try {
+            const value = JSON.parse(rawData);
+            parsed = value && typeof value === 'object' ? value as Record<string, unknown> : { value };
+          } catch {
+            parsed = { raw: rawData };
+          }
         }
-        const firstPage = Number(payload.matched_fields[0].page || 0);
-        if (activeRenderExt === 'pdf' && Number.isFinite(firstPage) && firstPage > 0) {
-          jumpToPdfPage(firstPage);
+
+        if (normalizedEvent === 'assistant_start') {
+          const nextSessionId = String(parsed.session_id || '').trim();
+          const nextAssistantId = String(parsed.assistant_message_id || '').trim();
+          if (nextSessionId) {
+            setAssistantSessionId(nextSessionId);
+            if (fileHash) {
+              persistAssistantSessionForFile(fileHash, nextSessionId);
+            }
+          }
+          if (nextAssistantId && nextAssistantId !== streamMessageId) {
+            const previousId = streamMessageId;
+            streamMessageId = nextAssistantId;
+            setAssistantDialog((prev) =>
+              prev.map((item) => (item.id === previousId ? { ...item, id: nextAssistantId } : item))
+            );
+          }
+          return;
         }
+
+        if (normalizedEvent === 'tool_status') {
+          const toolMessage: AssistantDialogMessage = {
+            id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'assistant',
+            content: String(parsed.message || '工具已执行').trim(),
+            messageType: 'tool_status',
+            citations: [],
+            actionPreview: null,
+            status: 'done',
+            payload: {
+              tool_name: parsed.tool_name,
+              status: parsed.status,
+              detail: parsed.detail,
+            },
+          };
+          setAssistantDialog((prev) => [...prev, toolMessage]);
+          return;
+        }
+
+        if (normalizedEvent === 'citation_bundle') {
+          const citations = Array.isArray(parsed.citations)
+            ? parsed.citations as AssistantCitation[]
+            : [];
+          const nextLock = parsed.current_object_lock && typeof parsed.current_object_lock === 'object'
+            ? parsed.current_object_lock as AssistantObjectLock
+            : null;
+          updateAssistantDialogMessage(streamMessageId, (current) => ({
+            ...current,
+            citations: citations.length > 0 ? citations : current.citations,
+            payload: {
+              ...(current.payload || {}),
+              current_object_lock: nextLock,
+            },
+          }));
+          syncAssistantEvidence(citations, nextLock);
+          return;
+        }
+
+        if (normalizedEvent === 'action_preview') {
+          const preview = parsed && typeof parsed === 'object'
+            ? parsed as AssistantActionPreview
+            : null;
+          updateAssistantDialogMessage(streamMessageId, (current) => ({
+            ...current,
+            actionPreview: preview,
+            payload: {
+              ...(current.payload || {}),
+              action_preview: preview,
+            },
+          }));
+          return;
+        }
+
+        if (normalizedEvent === 'assistant_delta') {
+          const deltaText = String(parsed.text || '');
+          updateAssistantDialogMessage(streamMessageId, (current) => ({
+            ...current,
+            content: `${current.content || ''}${deltaText}`,
+            status: 'streaming',
+          }));
+          return;
+        }
+
+        if (normalizedEvent === 'assistant_done') {
+          const citations = Array.isArray(parsed.citations)
+            ? parsed.citations as AssistantCitation[]
+            : [];
+          const actionPreview = parsed.action_preview && typeof parsed.action_preview === 'object'
+            && Object.keys(parsed.action_preview as Record<string, unknown>).length > 0
+            ? parsed.action_preview as AssistantActionPreview
+            : null;
+          const nextLock = parsed.current_object_lock && typeof parsed.current_object_lock === 'object'
+            && Object.keys(parsed.current_object_lock as Record<string, unknown>).length > 0
+            ? parsed.current_object_lock as AssistantObjectLock
+            : null;
+          const nextAnswer = String(parsed.answer || '').trim() || '助手已完成处理。';
+          setAssistantAnswer(nextAnswer);
+          setAssistantMessage(nextAnswer);
+          setAssistantWarnings(Array.isArray(parsed.warnings) ? parsed.warnings.map((item) => String(item || '')) : []);
+          updateAssistantDialogMessage(streamMessageId, (current) => ({
+            ...current,
+            content: nextAnswer,
+            messageType: 'assistant_text',
+            citations: citations.length > 0 ? citations : current.citations,
+            actionPreview: actionPreview ?? current.actionPreview ?? null,
+            status: 'done',
+            payload: {
+              ...(current.payload || {}),
+              route: parsed.route,
+              warnings: parsed.warnings,
+              current_object_lock: nextLock,
+            },
+          }));
+          syncAssistantEvidence(citations, nextLock);
+          return;
+        }
+
+        if (normalizedEvent === 'assistant_error') {
+          const message = String(parsed.message || parsed.error || '助手处理失败').trim();
+          throw new Error(message);
+        }
+      };
+
+      const flushBuffer = () => {
+        const normalized = buffer.replace(/\r\n/g, '\n');
+        const blocks = normalized.split('\n\n');
+        buffer = blocks.pop() || '';
+        blocks.forEach((block) => {
+          const lines = block.split('\n').map((line) => line.trimEnd()).filter(Boolean);
+          if (lines.length === 0) return;
+          let eventName = 'message';
+          const dataLines: string[] = [];
+          lines.forEach((line) => {
+            if (line.startsWith('event:')) {
+              eventName = line.slice(6).trim();
+              return;
+            }
+            if (line.startsWith('data:')) {
+              dataLines.push(line.slice(5).trim());
+            }
+          });
+          commitSseEvent(eventName, dataLines.join('\n'));
+        });
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        flushBuffer();
       }
-      if (payload.persisted) {
-        setInfoMessage(`助手已完成数据库写入，共 ${payload.persisted_rows} 条记录。`);
+      buffer += decoder.decode();
+      flushBuffer();
+      if (buffer.trim()) {
+        commitSseEvent('message', buffer.trim());
       }
-      setAssistantInput('');
     } catch (error) {
-      const message = error instanceof Error ? error.message : '助手处理失败';
-      setAssistantWarnings([message]);
-      const failedAnswer = "助手处理失败，请检查指令后重试。";
-      setAssistantAnswer(failedAnswer);
-      setAssistantDialog((prev) => [
-        ...prev,
-        {
-          id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          role: 'assistant',
-          content: failedAnswer,
-        },
-      ]);
+      if (controller.signal.aborted) {
+        setAssistantWarnings(["本次回答已停止。"]);
+        setAssistantDialog((prev) =>
+          prev.flatMap((item) => {
+            if (item.id !== streamMessageId) return [item];
+            if (String(item.content || '').trim()) {
+              return [{ ...item, status: 'done' }];
+            }
+            return [];
+          })
+        );
+      } else {
+        const message = error instanceof Error ? error.message : '助手处理失败';
+        setAssistantWarnings([message]);
+        const failedAnswer = "助手处理失败，请检查指令后重试。";
+        setAssistantAnswer(failedAnswer);
+        setAssistantDialog((prev) => {
+          const hasTarget = prev.some((item) => item.id === streamMessageId);
+          if (!hasTarget) {
+            return [
+              ...prev,
+              {
+                id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                role: 'assistant',
+                content: failedAnswer,
+                messageType: 'assistant_text',
+                status: 'error',
+              },
+            ];
+          }
+          return prev.map((item) =>
+            item.id === streamMessageId
+              ? {
+                  ...item,
+                  content: String(item.content || '').trim() || failedAnswer,
+                  status: 'error',
+                }
+              : item
+          );
+        });
+      }
     } finally {
+      if (assistantAbortRef.current === controller) {
+        assistantAbortRef.current = null;
+      }
       setAssistantQueryLoading(false);
     }
   };
@@ -2630,7 +3405,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           {/* Summary Section */}
           <div className="rounded-2xl border border-slate-200/50 bg-white/40 px-5 py-4 text-xs leading-relaxed text-slate-600 shadow-sm backdrop-blur-md transition-all hover:bg-white/60 dark:border-slate-800/50 dark:bg-slate-900/40 dark:text-slate-300 dark:hover:bg-slate-900/60">
             <div className="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-              <img src={smartSummaryIcon} alt="智能摘要" className="h-4 w-4 object-contain" />
+              <Sparkles size={14} />
               智能摘要
             </div>
             <p data-testid="module2-summary-text" className="whitespace-pre-wrap break-words font-medium text-slate-700 dark:text-slate-200">
@@ -2645,47 +3420,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             </p>
           </div>
 
-          {/* Chat History */}
-          {assistantDialog.map((msg) => (
-            <div
-              key={msg.id}
-              className={cn(
-                "flex gap-3 max-w-[90%]",
-                msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto"
-              )}
-            >
-              <div className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm ring-1 ring-inset ring-black/5 backdrop-blur-sm",
-                msg.role === 'assistant'
-                  ? "bg-white/80 text-blue-600 dark:bg-slate-800/80 dark:text-blue-400"
-                  : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-              )}>
-                {msg.role === 'assistant' ? <Bot size={16} /> : <div className="text-[10px] font-bold">ME</div>}
-              </div>
-              <div className={cn(
-                "rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm break-words whitespace-pre-wrap ring-1 ring-inset backdrop-blur-md transition-all hover:shadow-md",
-                msg.role === 'assistant'
-                  ? "rounded-tl-none bg-white/80 ring-slate-200/50 text-slate-700 dark:bg-slate-900/80 dark:ring-slate-700/50 dark:text-slate-200"
-                  : "rounded-tr-none bg-blue-600 ring-blue-600 text-white shadow-blue-500/20 hover:bg-blue-700"
-              )}>
-                {msg.content}
-              </div>
-            </div>
-          ))}
+          {renderAssistantLockBanner()}
 
-          {/* Loading State */}
-          {assistantQueryLoading && (
-            <div className="flex gap-3 mr-auto max-w-[90%]">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 shadow-sm ring-1 ring-inset ring-black/5 backdrop-blur-sm text-blue-600 dark:bg-slate-800/80 dark:text-blue-400">
-                <Bot size={16} />
-              </div>
-              <div className="bg-white/80 backdrop-blur-md px-4 py-4 rounded-2xl rounded-tl-none shadow-sm ring-1 ring-inset ring-slate-200/50 dark:bg-slate-900/80 dark:ring-slate-700/50 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></span>
-              </div>
-            </div>
-          )}
+          {/* Chat History */}
+          {assistantDialog.map((msg) => renderAssistantDialogMessage(msg))}
 
           {/* Assistant Answer (Legacy support) */}
           {assistantAnswer && !assistantDialog.some(m => m.content === assistantAnswer) && (
@@ -2728,15 +3466,18 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
               type="button"
               data-testid="module2-assistant-send"
               onClick={() => void runAssistantInstruction()}
-              disabled={assistantQueryLoading || !activeDoc || !assistantInput.trim()}
+              disabled={!activeDoc || (!assistantQueryLoading && !assistantInput.trim())}
               className={cn(
                 'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-full transition-all duration-200',
-                assistantQueryLoading || !activeDoc || !assistantInput.trim()
+                !activeDoc || (!assistantQueryLoading && !assistantInput.trim())
                   ? 'cursor-not-allowed bg-slate-200 text-slate-400 dark:bg-slate-700 dark:text-slate-500'
-                  : 'bg-blue-600 text-white shadow-md shadow-blue-500/30 hover:bg-blue-700 hover:shadow-lg hover:scale-105 active:scale-95'
+                  : assistantQueryLoading
+                    ? 'bg-amber-500 text-white shadow-md shadow-amber-500/30 hover:bg-amber-600 hover:shadow-lg hover:scale-105 active:scale-95'
+                    : 'bg-blue-600 text-white shadow-md shadow-blue-500/30 hover:bg-blue-700 hover:shadow-lg hover:scale-105 active:scale-95'
               )}
+              title={assistantQueryLoading ? "停止本次回答" : "发送"}
             >
-              {assistantQueryLoading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} className="ml-0.5" />}
+              {assistantQueryLoading ? <X size={12} /> : <Send size={12} className="ml-0.5" />}
             </button>
           </div>
         </div>
@@ -2978,47 +3719,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     </p>
                   </div>
 
-                  {/* Chat History */}
-                  {assistantDialog.map((msg) => (
-                    <div
-                      key={msg.id}
-                      className={cn(
-                        "flex gap-2 max-w-[95%]",
-                        msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto"
-                      )}
-                    >
-                      <div className={cn(
-                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-full mt-0.5",
-                        msg.role === 'assistant' 
-                          ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400" 
-                          : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
-                      )}>
-                        {msg.role === 'assistant' ? <Bot size={12} /> : <div className="text-[10px] font-bold">我</div>}
-                      </div>
-                      <div className={cn(
-                        "rounded-2xl px-3 py-2 text-[11px] leading-relaxed shadow-sm break-words whitespace-pre-wrap",
-                        msg.role === 'assistant'
-                          ? "rounded-tl-none bg-white border border-slate-100 text-slate-700 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200"
-                          : "rounded-tr-none bg-blue-600 text-white"
-                      )}>
-                        {msg.content}
-                      </div>
-                    </div>
-                  ))}
+                  {renderAssistantLockBanner(true)}
 
-                  {/* Loading State */}
-                  {assistantQueryLoading && (
-                    <div className="flex gap-2 mr-auto max-w-[90%]">
-                       <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 mt-0.5">
-                        <Bot size={12} />
-                      </div>
-                      <div className="bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 px-3 py-2.5 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-1">
-                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                        <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce"></span>
-                      </div>
-                    </div>
-                  )}
+                  {/* Chat History */}
+                  {assistantDialog.map((msg) => renderAssistantDialogMessage(msg, true))}
 
                   {/* Assistant Answer (Legacy support if needed, but better integrated above) */}
                   {assistantAnswer && !assistantDialog.some(m => m.content === assistantAnswer) && (
@@ -3063,15 +3767,18 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                       type="button"
                       data-testid="module2-assistant-send"
                       onClick={() => void runAssistantInstruction()}
-                      disabled={assistantQueryLoading || !activeDoc || !assistantInput.trim()}
+                      disabled={!activeDoc || (!assistantQueryLoading && !assistantInput.trim())}
                       className={cn(
                         'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
-                        assistantQueryLoading || !activeDoc || !assistantInput.trim()
+                        !activeDoc || (!assistantQueryLoading && !assistantInput.trim())
                           ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600'
-                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                          : assistantQueryLoading
+                            ? 'bg-amber-500 text-white hover:bg-amber-600'
+                            : 'bg-blue-600 text-white hover:bg-blue-700'
                       )}
+                      title={assistantQueryLoading ? "停止本次回答" : "发送"}
                     >
-                      {assistantQueryLoading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                      {assistantQueryLoading ? <X size={12} /> : <Send size={12} />}
                     </button>
                   </div>
                 </div>
@@ -3610,7 +4317,9 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="flex items-center gap-2 text-lg font-bold text-slate-800 dark:text-slate-100">
-                  <img src={smartUnitIcon} alt="智能处理单元" className="h-10 w-10 object-contain" />
+                  <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 via-cyan-500 to-emerald-500 text-white shadow-lg shadow-cyan-500/25">
+                    <Bot size={20} />
+                  </span>
                   智能处理单元
                 </h3>
               </div>
@@ -3764,7 +4473,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             )}
           </div>
 
-          <div className="flex min-h-0 max-h-[42%] flex-col overflow-hidden rounded-xl border border-slate-200/50 bg-white/40 px-4 pt-2 pb-3 shadow-sm backdrop-blur-md dark:border-slate-800/50 dark:bg-slate-900/40">
+          <div data-testid="module2-trace-panel" className="flex min-h-0 max-h-[42%] flex-col overflow-hidden rounded-xl border border-slate-200/50 bg-white/40 px-4 pt-2 pb-3 shadow-sm backdrop-blur-md dark:border-slate-800/50 dark:bg-slate-900/40">
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-wider dark:text-slate-400">
                 <LocateFixed size={14} className={cn("text-slate-400", traceHits.length > 0 && "text-blue-500 dark:text-blue-400")} />
@@ -3790,8 +4499,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             {traceHits.length > 0 ? (
               <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 custom-scrollbar">
                 {traceGroups.map((group) => (
-                  <div key={`trace-group-${group.key}`} className="mb-3 last:mb-0">
-                    <div className="sticky top-0 z-10 mb-1.5 bg-slate-50/95 px-2 py-1 text-[10px] font-bold text-slate-400 backdrop-blur dark:bg-slate-900/95 dark:text-slate-500">
+                  <div key={`trace-group-${group.key}`} data-testid={`module2-trace-group-${group.key}`} className="mb-3 last:mb-0">
+                    <div data-testid="module2-trace-group-label" className="sticky top-0 z-10 mb-1.5 bg-slate-50/95 px-2 py-1 text-[10px] font-bold text-slate-400 backdrop-blur dark:bg-slate-900/95 dark:text-slate-500">
                       {group.label}
                     </div>
                     <div className="space-y-1.5 px-1">
@@ -3867,6 +4576,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                   return (
                     <div
                       key={`trace-list-${traceKey}`}
+                      data-testid="module2-trace-card"
                       onClick={() => {
                         setActiveTraceKey(traceKey);
                         if (objectType === "field" && objectId) {
@@ -3943,6 +4653,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                         <div className="mt-2 overflow-hidden rounded-md border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
                           <a href={artifactUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
                             <img
+                              data-testid="module2-trace-artifact-image"
                               src={artifactUrl}
                               alt={`${objectLabel}-preview-${idx + 1}`}
                               className="h-40 w-full object-contain bg-white p-1 dark:bg-slate-900 sm:h-56"
@@ -3953,7 +4664,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                       )}
 
                       {displayKind === 'table' && tableRows.length > 0 && (
-                        <div className="mt-2 overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
+                        <div data-testid="module2-trace-table-preview" className="mt-2 overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
                           <table className="min-w-full text-[11px] text-slate-700 dark:text-slate-200">
                             <thead className="bg-slate-100 dark:bg-slate-800">
                               <tr>
@@ -3986,7 +4697,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                       )}
 
                       {objectType === 'figure' && figureDfRows.length > 0 && (
-                        <div className="mt-2 overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
+                        <div data-testid="module2-trace-figure-dataframe" className="mt-2 overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
                           <table className="min-w-full text-[10px] text-slate-700 dark:text-slate-200">
                             <thead className="bg-slate-100 dark:bg-slate-800">
                               <tr>

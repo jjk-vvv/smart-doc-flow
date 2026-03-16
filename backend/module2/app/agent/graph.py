@@ -5,11 +5,20 @@ import json
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, TypedDict
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
+
+from app.assistant.provider import (
+    OpenAICompatibleChatProvider,
+    extract_json_object,
+    resolve_llm_api_key,
+    resolve_llm_base_url,
+    resolve_llm_model,
+)
 
 
 SYSTEM_PROMPT = """You are an expert document data extraction agent.
@@ -39,6 +48,11 @@ Core rules:
 Return JSON only.
 """
 
+JSON_REPAIR_SYSTEM_PROMPT = """You repair assistant output into one valid JSON object.
+Return JSON only.
+Do not add markdown fences, explanations, or any extra text outside the JSON object.
+"""
+
 
 class LLMField(BaseModel):
     value: Any = None
@@ -66,28 +80,52 @@ class AgentState(TypedDict):
 class ExtractionGraph:
     def __init__(self, llm: Optional[ChatGoogleGenerativeAI] = None) -> None:
         temperature = float(os.getenv("MODULE2_LLM_TEMPERATURE", "0"))
-        primary_model = os.getenv(
-            "MODULE2_LLM_MODEL",
-            os.getenv("MODULE2_GEMINI_MODEL", "gemini-3-flash-preview"),
-        )
+        primary_model = resolve_llm_model(default="gemini-3-pro")
         fallback_models = [
             m.strip()
             for m in os.getenv(
                 "MODULE2_LLM_MODEL_FALLBACKS",
-                "gemini-2.5-flash,gemini-2.0-flash-lite,gemini-1.5-flash-latest",
+                "",
             ).split(",")
             if m.strip()
         ]
         self._model_candidates = [primary_model] + [m for m in fallback_models if m != primary_model]
         self._temperature = temperature
-        self._api_key = ((os.getenv("GEMINI_API_KEY", "") or "").strip() or (os.getenv("GOOGLE_API_KEY", "") or "").strip())
+        self._base_url = resolve_llm_base_url()
+        self._api_key = resolve_llm_api_key()
+        self._max_tokens = max(512, int(os.getenv("MODULE2_ASSISTANT_MAX_TOKENS", "1600")))
+        self._json_retry_count = max(1, int(os.getenv("MODULE2_ASSISTANT_JSON_RETRY_COUNT", "3")))
+        self._json_max_tokens = max(self._max_tokens, int(os.getenv("MODULE2_ASSISTANT_JSON_MAX_TOKENS", "4096")))
+        self._timeout_sec = max(
+            10.0,
+            float(
+                os.getenv(
+                    "MODULE2_ASSISTANT_TIMEOUT_SEC",
+                    os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "90"),
+                )
+            ),
+        )
+        debug_dir_raw = str(os.getenv("MODULE2_ASSISTANT_DEBUG_DIR", ".runlogs/module2-llm-debug") or "").strip()
+        self._debug_dir = Path(debug_dir_raw).resolve() if debug_dir_raw else None
         self._llm_disabled_reason: Optional[str] = None
+        self._provider: Optional[OpenAICompatibleChatProvider] = None
         if llm is not None:
             self.llm = llm
             self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
         else:
             has_key = bool(self._api_key)
-            if has_key:
+            if self._base_url and has_key:
+                self.llm = None
+                self.structured_llm = None
+                self._provider = OpenAICompatibleChatProvider(
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                    model=primary_model,
+                    temperature=temperature,
+                    max_tokens=self._max_tokens,
+                    timeout_sec=self._timeout_sec,
+                )
+            elif has_key:
                 self.llm = ChatGoogleGenerativeAI(
                     model=primary_model,
                     temperature=temperature,
@@ -97,7 +135,7 @@ class ExtractionGraph:
             else:
                 self.llm = None
                 self.structured_llm = None
-                self._llm_disabled_reason = "missing_google_api_key"
+                self._llm_disabled_reason = "missing_gemini_api_key"
         self.graph = self._build_graph()
 
     async def run(self, state: AgentState) -> AgentState:
@@ -235,103 +273,109 @@ class ExtractionGraph:
         if not focus_fields:
             return state
 
-        table_context = self._build_table_context(tables, state.get("field_hints", {}), focus_fields)
-        if not table_context:
-            return state
-
         max_table_refs = max(300, int(os.getenv("MODULE2_TABLE_ALLOWED_REFS_MAX", "1200")))
         allowed_table_refs = self._collect_table_ref_ids(tables, max_refs=max_table_refs)
         if not allowed_table_refs:
             return state
 
         correction_context = "\n".join(state["errors"][-5:]) if state["errors"] else "None"
-        correction_fields = sorted(error_fields) if error_fields else []
-        user_prompt = (
-            "Table profile summary:\n"
-            f"{state.get('table_summary', '')}\n\n"
-            "Target Schema:\n"
-            f"{json.dumps(focus_fields, ensure_ascii=False)}\n\n"
-            "Fields requiring correction first:\n"
-            f"{json.dumps(correction_fields, ensure_ascii=False)}\n\n"
-            "Table context JSON:\n"
-            f"{table_context}\n\n"
-            "Allowed table ref_id candidates:\n"
-            f"{json.dumps(allowed_table_refs, ensure_ascii=False)}\n\n"
-            "Previous validation errors to correct:\n"
-            f"{correction_context}\n\n"
-            "Extraction rules:\n"
-            "- Match field aliases, synonymous headers, abbreviations, and unit-bearing labels.\n"
-            "- Use row labels, column labels, merged headers, same-row context, and nearby cells together.\n"
-            "- Prefer the most explicit grounded value and correct previous validation errors first.\n"
-            "- If evidence is insufficient, return null instead of guessing.\n\n"
-            "Return strictly as JSON using: {\"fields\": {field_name: {\"value\": ..., \"ref_id\": ...}}}."
-        )
-
         table_timeout_sec = max(5.0, float(os.getenv("MODULE2_TABLE_EXTRACT_TIMEOUT_SEC", "60")))
-        try:
-            payload = await asyncio.wait_for(
-                self._invoke_with_model_fallback(
-                    [
-                        {"role": "system", "content": TABLE_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ]
-                ),
-                timeout=table_timeout_sec,
-            )
-        except asyncio.TimeoutError:
-            self._push_soft_warning(state, f"table_extract_timeout: exceeded {table_timeout_sec:.1f}s")
-            return state
-        except Exception as exc:
-            self._push_soft_warning(state, f"table_extract_error: {type(exc).__name__}: {exc}")
-            return state
-
         max_field_chars = max(80, int(os.getenv("MODULE2_MAX_FIELD_CHARS", "300")))
         table_ref_lookup = self._table_ref_lookup(tables)
+        field_batches = self._chunk_target_fields(
+            focus_fields,
+            env_name="MODULE2_TABLE_EXTRACT_BATCH_SIZE",
+            default_size=4,
+        )
 
-        for field_name in focus_fields.keys():
-            existing = extracted.get(field_name, {})
-            if (
-                field_name not in error_fields
-                and existing.get("value") is not None
-                and existing.get("source_ref_id") in state["bbox_map"]
-            ):
+        for batch_fields in field_batches:
+            table_context = self._build_table_context(tables, state.get("field_hints", {}), batch_fields)
+            if not table_context:
+                continue
+            correction_fields = [name for name in sorted(error_fields) if name in batch_fields]
+            user_prompt = (
+                "Table profile summary:\n"
+                f"{state.get('table_summary', '')}\n\n"
+                "Target Schema:\n"
+                f"{json.dumps(batch_fields, ensure_ascii=False)}\n\n"
+                "Fields requiring correction first:\n"
+                f"{json.dumps(correction_fields, ensure_ascii=False)}\n\n"
+                "Table context JSON:\n"
+                f"{table_context}\n\n"
+                "Allowed table ref_id candidates:\n"
+                f"{json.dumps(allowed_table_refs, ensure_ascii=False)}\n\n"
+                "Previous validation errors to correct:\n"
+                f"{correction_context}\n\n"
+                "Extraction rules:\n"
+                "- Match field aliases, synonymous headers, abbreviations, and unit-bearing labels.\n"
+                "- Use row labels, column labels, merged headers, same-row context, and nearby cells together.\n"
+                "- Prefer the most explicit grounded value and correct previous validation errors first.\n"
+                "- If evidence is insufficient, return null instead of guessing.\n\n"
+                "Return strictly as JSON using: {\"fields\": {field_name: {\"value\": ..., \"ref_id\": ...}}}."
+            )
+
+            try:
+                payload = await asyncio.wait_for(
+                    self._invoke_with_model_fallback(
+                        [
+                            {"role": "system", "content": TABLE_SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        purpose="table_extract",
+                    ),
+                    timeout=table_timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                self._push_soft_warning(state, f"table_extract_timeout: exceeded {table_timeout_sec:.1f}s")
+                continue
+            except Exception as exc:
+                self._push_soft_warning(state, f"table_extract_error: {type(exc).__name__}: {exc}")
                 continue
 
-            expected_type = focus_fields.get(field_name)
-            item = payload.fields.get(field_name, LLMField())
-            coerced_value, coerced = self._coerce_value(item.value, expected_type)
-            ref_id = item.ref_id
-            ref_valid = bool(ref_id and ref_id in state["bbox_map"] and ref_id in allowed_table_refs)
-            expected_str = str(expected_type).lower()
-            if ref_valid:
-                cell = table_ref_lookup.get(str(ref_id), {})
-                numeric_value = cell.get("numeric_value")
-                if expected_str in {"number", "float", "double"} and isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
-                    coerced_value = float(numeric_value)
-                    coerced = True
-                elif expected_str in {"integer", "int"} and isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
-                    coerced_value = int(round(float(numeric_value)))
-                    coerced = True
-                elif expected_str in {"string", "str", "text", "date", "datetime", "timestamp"}:
-                    cell_text = str(cell.get("text", "")).strip()
-                    if cell_text:
-                        coerced_value = cell_text
+            for field_name in batch_fields.keys():
+                existing = extracted.get(field_name, {})
+                if (
+                    field_name not in error_fields
+                    and existing.get("value") is not None
+                    and existing.get("source_ref_id") in state["bbox_map"]
+                ):
+                    continue
+
+                expected_type = batch_fields.get(field_name)
+                item = payload.fields.get(field_name, LLMField())
+                coerced_value, coerced = self._coerce_value(item.value, expected_type)
+                ref_id = item.ref_id
+                ref_valid = bool(ref_id and ref_id in state["bbox_map"] and ref_id in allowed_table_refs)
+                expected_str = str(expected_type).lower()
+                if ref_valid:
+                    cell = table_ref_lookup.get(str(ref_id), {})
+                    numeric_value = cell.get("numeric_value")
+                    if expected_str in {"number", "float", "double"} and isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
+                        coerced_value = float(numeric_value)
                         coerced = True
-            if not ref_valid or coerced_value is None:
-                continue
+                    elif expected_str in {"integer", "int"} and isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
+                        coerced_value = int(round(float(numeric_value)))
+                        coerced = True
+                    elif expected_str in {"string", "str", "text", "date", "datetime", "timestamp"}:
+                        cell_text = str(cell.get("text", "")).strip()
+                        if cell_text:
+                            coerced_value = cell_text
+                            coerced = True
+                if not ref_valid or coerced_value is None:
+                    continue
 
-            if isinstance(coerced_value, str) and len(coerced_value) > max_field_chars:
-                coerced_value = coerced_value[:max_field_chars].rstrip()
-                coerced = True
+                if isinstance(coerced_value, str) and len(coerced_value) > max_field_chars:
+                    coerced_value = coerced_value[:max_field_chars].rstrip()
+                    coerced = True
 
-            bbox = state["bbox_map"].get(ref_id, [0.0, 0.0, 0.0, 0.0, 0.0])
-            confidence = min(0.99, self._estimate_confidence(coerced_value, expected_type, True, coerced) + 0.08)
-            extracted[field_name] = {
-                "value": coerced_value,
-                "confidence": confidence,
-                "source_ref_id": ref_id,
-                "bbox": bbox,
-            }
+                bbox = state["bbox_map"].get(ref_id, [0.0, 0.0, 0.0, 0.0, 0.0])
+                confidence = min(0.99, self._estimate_confidence(coerced_value, expected_type, True, coerced) + 0.08)
+                extracted[field_name] = {
+                    "value": coerced_value,
+                    "confidence": confidence,
+                    "source_ref_id": ref_id,
+                    "bbox": bbox,
+                }
 
         state["results"] = extracted
         return state
@@ -354,96 +398,104 @@ class ExtractionGraph:
             return state
 
         correction_context = "\n".join(state["errors"][-5:]) if state["errors"] else "None"
-        compact_markdown = self._build_context(state["markdown"], pending_fields)
         max_allowed_refs = max(260, int(os.getenv("MODULE2_ALLOWED_REFS_MAX", "1200")))
         allowed_refs = list(state["bbox_map"].keys())[:max_allowed_refs]
         prev_summary = self._results_summary(existing)
-        correction_fields = sorted(error_fields) if error_fields else []
-
-        user_prompt = (
-            "Document Markdown:\n"
-            f"{compact_markdown}\n\n"
-            "Target Schema:\n"
-            f"{json.dumps(pending_fields, ensure_ascii=False)}\n\n"
-            "Fields requiring correction first:\n"
-            f"{json.dumps(correction_fields, ensure_ascii=False)}\n\n"
-            "Table profile summary:\n"
-            f"{state.get('table_summary', '')}\n\n"
-            "Field-to-table hints:\n"
-            f"{json.dumps(state.get('field_hints', {}), ensure_ascii=False)}\n\n"
-            "Already extracted fields:\n"
-            f"{prev_summary}\n\n"
-            "Allowed ref_id candidates:\n"
-            f"{json.dumps(allowed_refs, ensure_ascii=False)}\n\n"
-            "Previous validation errors to correct:\n"
-            f"{correction_context}\n\n"
-            "Extraction rules:\n"
-            "- Recognize field aliases, synonymous labels, abbreviations, nearby label-value pairs, and multi-line entities.\n"
-            "- For table-heavy evidence, trust header/row context and field-to-table hints before broad prose guesses.\n"
-            "- Preserve the source meaning for amounts, dates, IDs, organization names, people, and locations.\n"
-            "- Prefer the most direct grounded candidate from the allowed ref_id list.\n"
-            "- If evidence is insufficient, return null instead of guessing.\n\n"
-            "Return strictly as JSON using: {\"fields\": {field_name: {\"value\": ..., \"ref_id\": ...}}}.\n"
-            "Do not fabricate values or ref_id. If missing, set value/ref_id to null."
-        )
 
         field_timeout_sec = max(8.0, float(os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "90")))
-        try:
-            payload = await asyncio.wait_for(
-                self._invoke_with_model_fallback(
-                    [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ]
-                ),
-                timeout=field_timeout_sec,
-            )
-        except asyncio.TimeoutError:
-            self._push_soft_warning(state, f"field_extract_timeout: exceeded {field_timeout_sec:.1f}s")
-            return state
-        except Exception as exc:
-            self._push_soft_warning(state, f"field_extract_error: {type(exc).__name__}: {exc}")
-            return state
-
         max_field_chars = max(80, int(os.getenv("MODULE2_MAX_FIELD_CHARS", "300")))
-        for field_name in pending_fields.keys():
-            if field_name not in error_fields and existing.get(field_name, {}).get("value") is not None:
+        field_batches = self._chunk_target_fields(
+            pending_fields,
+            env_name="MODULE2_FIELD_EXTRACT_BATCH_SIZE",
+            default_size=4,
+        )
+
+        for batch_fields in field_batches:
+            compact_markdown = self._build_context(state["markdown"], batch_fields)
+            correction_fields = [name for name in sorted(error_fields) if name in batch_fields]
+            user_prompt = (
+                "Document Markdown:\n"
+                f"{compact_markdown}\n\n"
+                "Target Schema:\n"
+                f"{json.dumps(batch_fields, ensure_ascii=False)}\n\n"
+                "Fields requiring correction first:\n"
+                f"{json.dumps(correction_fields, ensure_ascii=False)}\n\n"
+                "Table profile summary:\n"
+                f"{state.get('table_summary', '')}\n\n"
+                "Field-to-table hints:\n"
+                f"{json.dumps(state.get('field_hints', {}), ensure_ascii=False)}\n\n"
+                "Already extracted fields:\n"
+                f"{prev_summary}\n\n"
+                "Allowed ref_id candidates:\n"
+                f"{json.dumps(allowed_refs, ensure_ascii=False)}\n\n"
+                "Previous validation errors to correct:\n"
+                f"{correction_context}\n\n"
+                "Extraction rules:\n"
+                "- Recognize field aliases, synonymous labels, abbreviations, nearby label-value pairs, and multi-line entities.\n"
+                "- For table-heavy evidence, trust header/row context and field-to-table hints before broad prose guesses.\n"
+                "- Preserve the source meaning for amounts, dates, IDs, organization names, people, and locations.\n"
+                "- Prefer the most direct grounded candidate from the allowed ref_id list.\n"
+                "- If evidence is insufficient, return null instead of guessing.\n\n"
+                "Return strictly as JSON using: {\"fields\": {field_name: {\"value\": ..., \"ref_id\": ...}}}.\n"
+                "Do not fabricate values or ref_id. If missing, set value/ref_id to null."
+            )
+
+            try:
+                payload = await asyncio.wait_for(
+                    self._invoke_with_model_fallback(
+                        [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        purpose="field_extract",
+                    ),
+                    timeout=field_timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                self._push_soft_warning(state, f"field_extract_timeout: exceeded {field_timeout_sec:.1f}s")
+                continue
+            except Exception as exc:
+                self._push_soft_warning(state, f"field_extract_error: {type(exc).__name__}: {exc}")
                 continue
 
-            expected_type = pending_fields.get(field_name)
-            item = payload.fields.get(field_name, LLMField())
-            coerced_value, coerced = self._coerce_value(item.value, expected_type)
-            ref_id = item.ref_id
-            ref_valid = bool(ref_id and ref_id in state["bbox_map"])
-            expected_str = str(expected_type).lower()
-            if ref_valid:
-                cell = table_ref_lookup.get(str(ref_id), {})
-                numeric_value = cell.get("numeric_value")
-                if expected_str in {"number", "float", "double"} and isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
-                    coerced_value = float(numeric_value)
-                    coerced = True
-                elif expected_str in {"integer", "int"} and isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
-                    coerced_value = int(round(float(numeric_value)))
-                    coerced = True
-                elif expected_str in {"string", "str", "text", "date", "datetime", "timestamp"}:
-                    cell_text = str(cell.get("text", "")).strip()
-                    if cell_text:
-                        coerced_value = cell_text
-                        coerced = True
-            if not ref_valid:
-                coerced_value = None
-            elif isinstance(coerced_value, str) and len(coerced_value) > max_field_chars:
-                coerced_value = coerced_value[:max_field_chars].rstrip()
-                coerced = True
+            for field_name in batch_fields.keys():
+                if field_name not in error_fields and existing.get(field_name, {}).get("value") is not None:
+                    continue
 
-            bbox = state["bbox_map"].get(ref_id, [0.0, 0.0, 0.0, 0.0, 0.0]) if ref_valid else [0.0, 0.0, 0.0, 0.0, 0.0]
-            confidence = self._estimate_confidence(coerced_value, expected_type, ref_valid, coerced)
-            existing[field_name] = {
-                "value": coerced_value,
-                "confidence": confidence,
-                "source_ref_id": ref_id,
-                "bbox": bbox,
-            }
+                expected_type = batch_fields.get(field_name)
+                item = payload.fields.get(field_name, LLMField())
+                coerced_value, coerced = self._coerce_value(item.value, expected_type)
+                ref_id = item.ref_id
+                ref_valid = bool(ref_id and ref_id in state["bbox_map"])
+                expected_str = str(expected_type).lower()
+                if ref_valid:
+                    cell = table_ref_lookup.get(str(ref_id), {})
+                    numeric_value = cell.get("numeric_value")
+                    if expected_str in {"number", "float", "double"} and isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
+                        coerced_value = float(numeric_value)
+                        coerced = True
+                    elif expected_str in {"integer", "int"} and isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
+                        coerced_value = int(round(float(numeric_value)))
+                        coerced = True
+                    elif expected_str in {"string", "str", "text", "date", "datetime", "timestamp"}:
+                        cell_text = str(cell.get("text", "")).strip()
+                        if cell_text:
+                            coerced_value = cell_text
+                            coerced = True
+                if not ref_valid:
+                    coerced_value = None
+                elif isinstance(coerced_value, str) and len(coerced_value) > max_field_chars:
+                    coerced_value = coerced_value[:max_field_chars].rstrip()
+                    coerced = True
+
+                bbox = state["bbox_map"].get(ref_id, [0.0, 0.0, 0.0, 0.0, 0.0]) if ref_valid else [0.0, 0.0, 0.0, 0.0, 0.0]
+                confidence = self._estimate_confidence(coerced_value, expected_type, ref_valid, coerced)
+                existing[field_name] = {
+                    "value": coerced_value,
+                    "confidence": confidence,
+                    "source_ref_id": ref_id,
+                    "bbox": bbox,
+                }
 
         state["results"] = existing
         state["errors"] = []
@@ -856,7 +908,68 @@ class ExtractionGraph:
                     lookup[ref_id] = cell
         return lookup
 
-    async def _invoke_with_model_fallback(self, messages: List[Dict[str, str]]) -> LLMExtractionPayload:
+    @staticmethod
+    def _chunk_target_fields(
+        target_fields: Dict[str, Any],
+        *,
+        env_name: str,
+        default_size: int = 4,
+    ) -> List[Dict[str, Any]]:
+        if not target_fields:
+            return []
+        batch_size = max(1, int(os.getenv(env_name, str(default_size)) or default_size))
+        items = list(target_fields.items())
+        return [dict(items[index : index + batch_size]) for index in range(0, len(items), batch_size)]
+
+    async def invoke_json_object(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        max_tokens: Optional[int] = None,
+        purpose: str = "json_object",
+    ) -> Dict[str, Any]:
+        if self._provider is not None:
+            return await self._invoke_provider_json_object(messages, max_tokens=max_tokens, purpose=purpose)
+
+        if self.llm is None:
+            reason = self._llm_disabled_reason or "llm_unavailable"
+            raise RuntimeError(f"llm_disabled:{reason}")
+
+        last_exc: Exception | None = None
+        for model_index, model_name in enumerate(self._model_candidates):
+            if model_index == 0:
+                llm = self.llm
+            else:
+                llm = ChatGoogleGenerativeAI(
+                    model=model_name,
+                    temperature=self._temperature,
+                    google_api_key=self._api_key,
+                )
+            try:
+                raw_resp = await llm.ainvoke(messages)
+                payload_dict = extract_json_object(getattr(raw_resp, "content", raw_resp))
+                if isinstance(payload_dict, dict):
+                    return payload_dict
+                raise RuntimeError("llm returned non-json content")
+            except Exception as exc:
+                last_exc = exc
+                if self._is_model_not_found_error(exc):
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("llm provider unavailable")
+
+    async def _invoke_with_model_fallback(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        purpose: str = "field_extract",
+    ) -> LLMExtractionPayload:
+        if self._provider is not None:
+            payload_dict = await self.invoke_json_object(messages, max_tokens=self._max_tokens, purpose=purpose)
+            return self._payload_from_dict(payload_dict)
+
         if self.structured_llm is None:
             reason = self._llm_disabled_reason or "llm_unavailable"
             raise RuntimeError(f"llm_disabled:{reason}")
@@ -883,6 +996,457 @@ class ExtractionGraph:
                 raise
 
         raise last_exc
+
+    async def _invoke_provider_json_object(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        max_tokens: Optional[int] = None,
+        purpose: str,
+    ) -> Dict[str, Any]:
+        last_exc: Exception | None = None
+        for model_name in self._model_candidates:
+            provider = OpenAICompatibleChatProvider(
+                base_url=self._base_url,
+                api_key=self._api_key,
+                model=model_name,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                timeout_sec=self._timeout_sec,
+            )
+            try:
+                return await self._invoke_provider_json_with_retry(
+                    provider,
+                    messages,
+                    max_tokens=max_tokens,
+                    purpose=purpose,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if self._is_model_not_found_error(exc):
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("llm provider unavailable")
+
+    async def _invoke_provider_json_with_retry(
+        self,
+        provider: OpenAICompatibleChatProvider,
+        messages: List[Dict[str, str]],
+        *,
+        max_tokens: Optional[int],
+        purpose: str,
+    ) -> Dict[str, Any]:
+        last_result: Optional[Any] = None
+        last_exc: Exception | None = None
+        best_partial_payload: Optional[Dict[str, Any]] = None
+        best_partial_score = 0
+        token_candidates = self._json_token_candidates(max_tokens)
+        for token_budget in token_candidates:
+            try:
+                result = await self._complete_provider_json_attempt(
+                    provider,
+                    messages,
+                    max_tokens=token_budget,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if self._is_model_not_found_error(exc):
+                    raise
+                continue
+
+            last_result = result
+            payload_dict = extract_json_object(result.content)
+            if isinstance(payload_dict, dict):
+                return payload_dict
+
+            partial_payload = self._recover_truncated_json_output(result.content, purpose=purpose)
+            partial_score = self._partial_payload_score(partial_payload, purpose=purpose)
+            if partial_score > best_partial_score:
+                best_partial_payload = partial_payload
+                best_partial_score = partial_score
+
+            if self._finish_reason_is_length(result.finish_reason):
+                self._write_json_debug_artifact(
+                    purpose=purpose,
+                    provider=provider,
+                    token_budget=token_budget,
+                    result=result,
+                    note="finish_reason=length",
+                )
+                continue
+
+            repaired = await self._repair_provider_json_output(
+                provider,
+                raw_content=result.content,
+                token_budget=token_budget,
+                purpose=purpose,
+            )
+            if isinstance(repaired, dict):
+                return repaired
+
+            self._write_json_debug_artifact(
+                purpose=purpose,
+                provider=provider,
+                token_budget=token_budget,
+                result=result,
+                note="non_json_content",
+            )
+
+        if isinstance(best_partial_payload, dict) and best_partial_score > 0:
+            return best_partial_payload
+        if last_result is not None:
+            raise RuntimeError("llm returned non-json content")
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("llm provider returned empty response")
+
+    async def _complete_provider_json_attempt(
+        self,
+        provider: OpenAICompatibleChatProvider,
+        messages: List[Dict[str, str]],
+        *,
+        max_tokens: int,
+    ):
+        try:
+            return await asyncio.to_thread(
+                provider.complete,
+                messages=messages,
+                temperature=self._temperature,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            if not self._is_response_format_unsupported_error(exc):
+                raise
+        return await asyncio.to_thread(
+            provider.complete,
+            messages=messages,
+            temperature=self._temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def _repair_provider_json_output(
+        self,
+        provider: OpenAICompatibleChatProvider,
+        *,
+        raw_content: str,
+        token_budget: int,
+        purpose: str,
+    ) -> Optional[Dict[str, Any]]:
+        raw = str(raw_content or "").strip()
+        if not raw:
+            return None
+        payload = extract_json_object(raw)
+        if isinstance(payload, dict):
+            return payload
+
+        fallback_shape = json.dumps(self._empty_json_shape(purpose), ensure_ascii=False)
+        repair_messages = [
+            {"role": "system", "content": JSON_REPAIR_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "Convert the following assistant output into one valid JSON object.\n"
+                    "Preserve recovered keys and values when they are unambiguous.\n"
+                    f"If the content is incomplete or cannot be repaired safely, return exactly {fallback_shape}.\n\n"
+                    f"Assistant output:\n{raw}"
+                ),
+            },
+        ]
+        repair_budget = min(self._json_max_tokens, max(512, min(token_budget, 2048)))
+        try:
+            repair_result = await self._complete_provider_json_attempt(
+                provider,
+                repair_messages,
+                max_tokens=repair_budget,
+            )
+        except Exception:
+            return None
+        repaired = extract_json_object(repair_result.content)
+        if isinstance(repaired, dict):
+            return repaired
+        self._write_json_debug_artifact(
+            purpose=f"{purpose}_repair",
+            provider=provider,
+            token_budget=repair_budget,
+            result=repair_result,
+            note="repair_non_json",
+        )
+        return None
+
+    def _json_token_candidates(self, requested_max_tokens: Optional[int]) -> List[int]:
+        start_tokens = max(512, int(requested_max_tokens or self._max_tokens))
+        hard_cap = max(start_tokens, self._json_max_tokens)
+        candidates: List[int] = []
+        current = start_tokens
+        for _ in range(self._json_retry_count):
+            if current not in candidates:
+                candidates.append(current)
+            if current >= hard_cap:
+                break
+            current = min(hard_cap, max(current + 512, int(current * 1.7)))
+        if hard_cap not in candidates:
+            candidates.append(hard_cap)
+        return candidates
+
+    @staticmethod
+    def _finish_reason_is_length(reason: Any) -> bool:
+        return str(reason or "").strip().lower() == "length"
+
+    @staticmethod
+    def _empty_json_shape(purpose: str) -> Dict[str, Any]:
+        label = str(purpose or "").strip().lower()
+        if "schema" in label:
+            return {"fields": []}
+        if "field" in label or "table" in label:
+            return {"fields": {}}
+        return {}
+
+    @classmethod
+    def _recover_truncated_json_output(cls, raw_content: str, *, purpose: str) -> Optional[Dict[str, Any]]:
+        raw = str(raw_content or "").strip()
+        if not raw:
+            return None
+        label = str(purpose or "").strip().lower()
+        if "schema" in label:
+            recovered_fields = cls._recover_truncated_schema_fields(raw)
+            return {"fields": recovered_fields} if recovered_fields else None
+        if "field" in label or "table" in label:
+            recovered_field_map = cls._recover_truncated_field_map(raw)
+            return {"fields": recovered_field_map} if recovered_field_map else None
+        return None
+
+    @staticmethod
+    def _partial_payload_score(payload: Optional[Dict[str, Any]], *, purpose: str) -> int:
+        if not isinstance(payload, dict):
+            return 0
+        label = str(purpose or "").strip().lower()
+        fields = payload.get("fields")
+        if "schema" in label and isinstance(fields, list):
+            return len([item for item in fields if isinstance(item, dict)])
+        if ("field" in label or "table" in label) and isinstance(fields, dict):
+            return len(fields)
+        return 0
+
+    @staticmethod
+    def _skip_json_whitespace(raw: str, pos: int) -> int:
+        limit = len(raw)
+        while pos < limit and raw[pos] in {" ", "\t", "\r", "\n"}:
+            pos += 1
+        return pos
+
+    @staticmethod
+    def _parse_json_string_at(raw: str, pos: int) -> Tuple[Optional[str], int]:
+        if pos < 0 or pos >= len(raw) or raw[pos] != '"':
+            return None, pos
+        idx = pos + 1
+        escape = False
+        while idx < len(raw):
+            ch = raw[idx]
+            if escape:
+                escape = False
+                idx += 1
+                continue
+            if ch == "\\":
+                escape = True
+                idx += 1
+                continue
+            if ch == '"':
+                token = raw[pos : idx + 1]
+                try:
+                    return json.loads(token), idx + 1
+                except Exception:
+                    return None, idx + 1
+            idx += 1
+        return None, len(raw)
+
+    @staticmethod
+    def _find_balanced_json_end(raw: str, start: int) -> Optional[int]:
+        if start < 0 or start >= len(raw):
+            return None
+        opener = raw[start]
+        closer = "}" if opener == "{" else "]" if opener == "[" else ""
+        if not closer:
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        for idx in range(start, len(raw)):
+            ch = raw[idx]
+            if in_string:
+                if escape:
+                    escape = False
+                    continue
+                if ch == "\\":
+                    escape = True
+                    continue
+                if ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == opener:
+                depth += 1
+                continue
+            if ch == closer:
+                depth -= 1
+                if depth == 0:
+                    return idx + 1
+        return None
+
+    @classmethod
+    def _recover_truncated_schema_fields(cls, raw: str) -> List[Dict[str, Any]]:
+        anchor = raw.find('"fields"')
+        if anchor < 0:
+            return []
+        array_start = raw.find("[", anchor)
+        if array_start < 0:
+            return []
+
+        recovered: List[Dict[str, Any]] = []
+        pos = array_start + 1
+        while pos < len(raw):
+            pos = cls._skip_json_whitespace(raw, pos)
+            if pos >= len(raw) or raw[pos] == "]":
+                break
+            if raw[pos] == ",":
+                pos += 1
+                continue
+            if raw[pos] != "{":
+                pos += 1
+                continue
+            item_end = cls._find_balanced_json_end(raw, pos)
+            if item_end is None:
+                break
+            try:
+                item = json.loads(raw[pos:item_end])
+            except Exception:
+                pos = item_end
+                continue
+            if isinstance(item, dict):
+                field_name = str(item.get("field_name") or "").strip()
+                if field_name:
+                    recovered.append(
+                        {
+                            "field_name": field_name,
+                            "field_type": str(item.get("field_type") or "string").strip() or "string",
+                        }
+                    )
+            pos = item_end
+        return recovered
+
+    @classmethod
+    def _recover_truncated_field_map(cls, raw: str) -> Dict[str, Dict[str, Any]]:
+        anchor = raw.find('"fields"')
+        if anchor < 0:
+            return {}
+        object_start = raw.find("{", anchor)
+        if object_start < 0:
+            return {}
+
+        recovered: Dict[str, Dict[str, Any]] = {}
+        pos = object_start + 1
+        while pos < len(raw):
+            pos = cls._skip_json_whitespace(raw, pos)
+            if pos >= len(raw) or raw[pos] == "}":
+                break
+            if raw[pos] == ",":
+                pos += 1
+                continue
+            field_name, next_pos = cls._parse_json_string_at(raw, pos)
+            if not field_name:
+                pos += 1
+                continue
+            pos = cls._skip_json_whitespace(raw, next_pos)
+            if pos >= len(raw) or raw[pos] != ":":
+                break
+            pos = cls._skip_json_whitespace(raw, pos + 1)
+            if pos >= len(raw) or raw[pos] != "{":
+                break
+            value_end = cls._find_balanced_json_end(raw, pos)
+            if value_end is None:
+                break
+            try:
+                parsed_item = json.loads(raw[pos:value_end])
+            except Exception:
+                pos = value_end
+                continue
+            if isinstance(parsed_item, dict):
+                recovered[str(field_name)] = parsed_item
+            pos = value_end
+        return recovered
+
+    @staticmethod
+    def _is_response_format_unsupported_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "response_format" in text and (
+            "unsupported" in text
+            or "not support" in text
+            or "unknown" in text
+            or "invalid" in text
+        )
+
+    def _write_json_debug_artifact(
+        self,
+        *,
+        purpose: str,
+        provider: OpenAICompatibleChatProvider,
+        token_budget: int,
+        result: Any,
+        note: str,
+    ) -> None:
+        if self._debug_dir is None:
+            return
+        try:
+            day_dir = self._debug_dir / datetime.now().strftime("%Y%m%d")
+            day_dir.mkdir(parents=True, exist_ok=True)
+            safe_purpose = re.sub(r"[^a-z0-9_.-]+", "_", str(purpose or "json").lower()).strip("_") or "json"
+            safe_model = re.sub(r"[^a-z0-9_.-]+", "_", str(provider.model or "model").lower()).strip("_") or "model"
+            stamp = datetime.now().strftime("%H%M%S_%f")
+            target = day_dir / f"{stamp}_{safe_purpose}_{safe_model}.json"
+            target.write_text(
+                json.dumps(
+                    {
+                        "purpose": purpose,
+                        "note": note,
+                        "model": provider.model,
+                        "token_budget": token_budget,
+                        "finish_reason": getattr(result, "finish_reason", ""),
+                        "content": getattr(result, "content", ""),
+                        "raw": getattr(result, "raw", {}),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _payload_from_dict(payload: Dict[str, Any]) -> LLMExtractionPayload:
+        normalized_payload = dict(payload or {})
+        fields_raw = normalized_payload.get("fields")
+        if isinstance(fields_raw, dict):
+            normalized_fields: Dict[str, Dict[str, Any]] = {}
+            for field_name, field_value in fields_raw.items():
+                key = str(field_name or "").strip()
+                if not key:
+                    continue
+                if isinstance(field_value, dict):
+                    normalized_fields[key] = field_value
+                else:
+                    normalized_fields[key] = {
+                        "value": field_value,
+                        "ref_id": None,
+                    }
+            normalized_payload["fields"] = normalized_fields
+        if hasattr(LLMExtractionPayload, "model_validate"):
+            return LLMExtractionPayload.model_validate(normalized_payload)
+        return LLMExtractionPayload.parse_obj(normalized_payload)
 
     @staticmethod
     def _is_model_not_found_error(exc: Exception) -> bool:

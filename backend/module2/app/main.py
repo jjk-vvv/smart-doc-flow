@@ -25,18 +25,25 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+MODULE2_ROOT = Path(__file__).resolve().parents[1]
+
+# Always load Module 2's own env file so uvicorn startup from repo root
+# does not silently miss the module-specific LLM/timeout settings.
+load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=False)
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
+from app.assistant.service import AssistantService
 from app.agent.graph import AgentState, ExtractionGraph
 from app.core.office_pdf import convert_doc_bytes_to_docx, convert_word_bytes_to_pdf, is_word_file
 from app.core.parser import parse_document_in_subprocess
 from app.db.storage import ExtractionStorage
 from app.schemas import (
+    AssistantChatStreamRequest,
+    AssistantSessionRequest,
+    AssistantSessionResponse,
     AssistantQueryRequest,
     AssistantQueryResponse,
     BatchExtractionResponse,
@@ -60,6 +67,10 @@ module4_sync_metrics: Dict[str, Any] = {
     "failed_batches": 0,
     "last_error": "",
     "last_success_at": 0.0,
+    "last_job_id": "",
+    "last_batch_id": "",
+    "last_endpoint": "",
+    "last_source_batch_key": "",
 }
 
 
@@ -213,6 +224,7 @@ app.add_middleware(
 
 storage = ExtractionStorage(os.getenv("MODULE2_DATABASE_DSN", "postgresql://postgres:postgres@localhost:5432/a23"))
 graph = ExtractionGraph()
+assistant_service = AssistantService(storage)
 bridge_jobs: Dict[str, BridgeJobState] = {}
 bridge_request_index: Dict[str, str] = {}
 bridge_lock = asyncio.Lock()
@@ -279,6 +291,73 @@ def _normalize_schema_fields(fields: Dict[str, Any], max_fields: int) -> Dict[st
         if len(out) >= max_fields:
             break
     return out
+
+
+def _repair_latin1_utf8_mojibake(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return raw
+    try:
+        repaired = raw.encode("latin-1").decode("utf-8")
+    except Exception:
+        return raw
+    return repaired if repaired else raw
+
+
+def _schema_payload_score(schema_obj: Any) -> Tuple[int, int, int]:
+    if not isinstance(schema_obj, dict):
+        return (-1, -1, -1)
+    raw_fields = _schema_target_fields(schema_obj)
+    normalized = _normalize_schema_fields(raw_fields, max_fields=max(8, min(64, len(raw_fields) or 8)))
+    cjk_hits = sum(
+        sum(1 for ch in str(name) if "\u4e00" <= ch <= "\u9fff")
+        for name in normalized.keys()
+    )
+    return (len(normalized), cjk_hits, len(raw_fields))
+
+
+def _parse_schema_form_json(raw_schema: str) -> Dict[str, Any]:
+    candidates: List[str] = []
+    seen: Set[str] = set()
+
+    def _add_candidate(text: str) -> None:
+        candidate = str(text or "")
+        if candidate in seen:
+            return
+        seen.add(candidate)
+        candidates.append(candidate)
+
+    _add_candidate(raw_schema)
+    _add_candidate(_repair_latin1_utf8_mojibake(raw_schema))
+
+    best_obj: Optional[Dict[str, Any]] = None
+    best_score: Tuple[int, int, int] = (-1, -1, -1)
+    first_json_error: Optional[json.JSONDecodeError] = None
+    non_dict_payload: Any = None
+
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            if first_json_error is None:
+                first_json_error = exc
+            continue
+        if not isinstance(payload, dict):
+            if non_dict_payload is None:
+                non_dict_payload = payload
+            continue
+        score = _schema_payload_score(payload)
+        if score > best_score:
+            best_obj = payload
+            best_score = score
+
+    if best_obj is not None:
+        return best_obj
+    if non_dict_payload is not None:
+        raise HTTPException(status_code=400, detail="Schema must be a JSON object")
+    if first_json_error is not None:
+        raise HTTPException(status_code=400, detail=f"Invalid schema JSON: {first_json_error}") from first_json_error
+    raise HTTPException(status_code=400, detail="Invalid schema JSON")
 
 
 def _extract_text_for_schema(markdown: str, table_blocks: List[Dict[str, Any]], max_chars: int = 16000) -> str:
@@ -531,8 +610,9 @@ async def _infer_schema_fields_llm(
     table_blocks: List[Dict[str, Any]],
     max_fields: int,
 ) -> Dict[str, str]:
+    provider = getattr(graph, "_provider", None)
     llm = getattr(graph, "llm", None)
-    if llm is None:
+    if provider is None and llm is None:
         return {}
 
     is_xlsx = file_name.lower().endswith(".xlsx")
@@ -560,34 +640,45 @@ async def _infer_schema_fields_llm(
         "Keep field names in the original document language whenever possible."
     )
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    timeout_sec = max(6.0, float(os.getenv("MODULE2_AUTO_SCHEMA_LLM_TIMEOUT_SEC", "90")))
+    max_output_tokens = max(512, int(os.getenv("MODULE2_AUTO_SCHEMA_LLM_MAX_TOKENS", "1400")))
     try:
-        invoke_coro = llm.ainvoke(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-        )
-        raw_resp = await asyncio.wait_for(invoke_coro, timeout=max(6.0, float(os.getenv("MODULE2_AUTO_SCHEMA_LLM_TIMEOUT_SEC", "16"))))
+        if provider is not None:
+            payload = await asyncio.wait_for(
+                graph.invoke_json_object(
+                    messages,
+                    max_tokens=max_output_tokens,
+                    purpose="schema_planner",
+                ),
+                timeout=timeout_sec,
+            )
+        else:
+            invoke_coro = llm.ainvoke(messages)
+            raw_resp = await asyncio.wait_for(invoke_coro, timeout=timeout_sec)
+
+            content_raw: Any = getattr(raw_resp, "content", raw_resp)
+            if isinstance(content_raw, list):
+                chunks: List[str] = []
+                for item in content_raw:
+                    if isinstance(item, dict):
+                        text = str(item.get("text") or "").strip()
+                        if text:
+                            chunks.append(text)
+                    else:
+                        text = str(item or "").strip()
+                        if text:
+                            chunks.append(text)
+                content_text = "\n".join(chunks).strip()
+            else:
+                content_text = str(content_raw or "").strip()
+            payload = _extract_json_payload(content_text)
     except Exception:
         return {}
 
-    content_raw: Any = getattr(raw_resp, "content", raw_resp)
-    if isinstance(content_raw, list):
-        chunks: List[str] = []
-        for item in content_raw:
-            if isinstance(item, dict):
-                text = str(item.get("text") or "").strip()
-                if text:
-                    chunks.append(text)
-            else:
-                text = str(item or "").strip()
-                if text:
-                    chunks.append(text)
-        content_text = "\n".join(chunks).strip()
-    else:
-        content_text = str(content_raw or "").strip()
-
-    payload = _extract_json_payload(content_text)
     raw_fields = payload.get("fields")
     if not isinstance(raw_fields, list):
         return {}
@@ -974,6 +1065,36 @@ def _write_artifact_bytes(*, data: bytes, file_name: str, sub_dir: str, ext: str
     target.write_bytes(data)
     fragment = str(target.relative_to(root)).replace("\\", "/")
     return fragment, _artifact_url_from_fragment(fragment)
+
+
+def _write_json_artifact(*, payload: Dict[str, Any], file_name: str, sub_dir: str) -> Tuple[str, str]:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return _write_artifact_bytes(data=data, file_name=file_name, sub_dir=sub_dir, ext=".json")
+
+
+def _persist_assistant_payload_artifact(
+    *,
+    file_name: str,
+    file_hash: str,
+    table_blocks: List[Dict[str, Any]],
+    figure_blocks: List[Dict[str, Any]],
+) -> Tuple[str, str]:
+    payload = {
+        "version": "module2-assistant-payload-v1",
+        "file_name": file_name,
+        "file_hash": file_hash,
+        "tables": table_blocks,
+        "figures": figure_blocks,
+    }
+    try:
+        return _write_json_artifact(
+            payload=payload,
+            file_name=f"{Path(file_name).stem}_assistant_payload",
+            sub_dir=f"assistant_payload/{file_hash[:12]}",
+        )
+    except Exception as exc:
+        logger.warning("failed to persist assistant payload artifact for %s: %s", file_name, exc)
+        return "", ""
 
 
 def _office_preview_timeout_sec() -> float:
@@ -1918,6 +2039,20 @@ def _normalize_soft_warnings(value: Any) -> List[str]:
     return out
 
 
+def _strip_recovered_extract_warnings(warnings: List[str], *, quality_ok: bool, quick_fallback: bool) -> List[str]:
+    if not quality_ok or quick_fallback:
+        return _normalize_soft_warnings(warnings)
+    noisy_prefixes = (
+        "table_extract_error:",
+        "field_extract_error:",
+        "table_extract_timeout:",
+        "field_extract_timeout:",
+    )
+    return _normalize_soft_warnings(
+        [item for item in warnings if not any(str(item or "").startswith(prefix) for prefix in noisy_prefixes)]
+    )
+
+
 def _artifact_root_dir() -> Path:
     root = Path(os.getenv("MODULE2_ARTIFACT_ROOT_DIR", "backend/module2/.cache")).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -1933,6 +2068,16 @@ def _safe_artifact_path(path_fragment: str) -> Path:
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid artifact path")
     return target
+
+
+def _absolute_artifact_storage_path(path_fragment: str) -> str:
+    fragment = str(path_fragment or "").strip()
+    if not fragment:
+        return ""
+    try:
+        return str(_safe_artifact_path(fragment))
+    except HTTPException:
+        return ""
 
 
 def _head_response_for_file(file_path: Path) -> Response:
@@ -2037,6 +2182,19 @@ def _spawn_module4_sync_task(*, source: str, tenant_id: str, documents: List[Any
     )
 
 
+def _spawn_module4_upload_sync_task(*, source: str, tenant_id: str, uploads: List[Dict[str, Any]], source_batch_key: str) -> None:
+    _track_module4_sync_task(
+        asyncio.create_task(
+            _sync_uploads_to_module4(
+                source=source,
+                tenant_id=tenant_id,
+                uploads=uploads,
+                source_batch_key=source_batch_key,
+            )
+        )
+    )
+
+
 def _module4_normalize_documents(documents: List[Any]) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for item in documents:
@@ -2044,6 +2202,19 @@ def _module4_normalize_documents(documents: List[Any]) -> List[Dict[str, Any]]:
             raw = item.model_dump(mode="json")
         elif isinstance(item, dict):
             raw = dict(item)
+        else:
+            continue
+        normalized.append(raw if isinstance(raw, dict) else {})
+    return normalized
+
+
+def _module4_normalize_uploads(uploads: List[Any]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for item in uploads:
+        if isinstance(item, dict):
+            raw = dict(item)
+        elif hasattr(item, "model_dump"):
+            raw = item.model_dump(mode="json")
         else:
             continue
         normalized.append(raw if isinstance(raw, dict) else {})
@@ -2062,6 +2233,31 @@ def _module4_source_batch_key(
         "tenant_id": tenant_id,
         "seed": seed,
         "documents": _module4_normalize_documents(documents),
+    }
+    digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return digest[:32]
+
+
+def _module4_upload_source_batch_key(
+    *,
+    source: str,
+    tenant_id: str,
+    uploads: List[Any],
+    seed: str,
+) -> str:
+    payload = {
+        "source": source,
+        "tenant_id": tenant_id,
+        "seed": seed,
+        "uploads": [
+            {
+                "file_name": item.get("file_name"),
+                "file_hash": item.get("file_hash"),
+                "artifact_path": item.get("artifact_path"),
+                "storage_path": item.get("storage_path"),
+            }
+            for item in _module4_normalize_uploads(uploads)
+        ],
     }
     digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     return digest[:32]
@@ -2105,9 +2301,20 @@ async def _sync_documents_to_module4(
             status, body = await asyncio.to_thread(_post)
             if status >= 400:
                 raise RuntimeError(f"HTTP {status}: {body[:300]}")
+            response_payload: Dict[str, Any] = {}
+            try:
+                loaded = json.loads(body)
+                if isinstance(loaded, dict):
+                    response_payload = loaded
+            except Exception:
+                response_payload = {}
             module4_sync_metrics["succeeded_batches"] = int(module4_sync_metrics.get("succeeded_batches", 0)) + 1
             module4_sync_metrics["last_error"] = ""
             module4_sync_metrics["last_success_at"] = time.time()
+            module4_sync_metrics["last_job_id"] = str(response_payload.get("job_id") or "")
+            module4_sync_metrics["last_batch_id"] = str(response_payload.get("batch_id") or "")
+            module4_sync_metrics["last_endpoint"] = "/module4/ingest"
+            module4_sync_metrics["last_source_batch_key"] = str(source_batch_key or "")
             logger.info(
                 "module2 synced %s document(s) to module4 tenant=%s source=%s batch=%s attempt=%s/%s",
                 len(normalized_docs),
@@ -2153,6 +2360,107 @@ async def _sync_documents_to_module4(
             module4_sync_metrics["failed_batches"] = int(module4_sync_metrics.get("failed_batches", 0)) + 1
             module4_sync_metrics["last_error"] = message[:400]
             logger.warning("module2 -> module4 sync failed: %s", message)
+            return
+
+
+async def _sync_uploads_to_module4(
+    *,
+    source: str,
+    tenant_id: str,
+    uploads: List[Dict[str, Any]],
+    source_batch_key: str,
+) -> None:
+    if not _module4_sync_enabled():
+        return
+
+    normalized_uploads = _module4_normalize_uploads(uploads)
+    if not normalized_uploads:
+        return
+    module4_sync_metrics["attempted_batches"] = int(module4_sync_metrics.get("attempted_batches", 0)) + 1
+
+    payload = {
+        "tenant_id": tenant_id,
+        "source": source,
+        "source_batch_key": source_batch_key,
+        "graph_mode": "hybrid",
+        "uploads": normalized_uploads,
+    }
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    url = f"{_module4_base_url()}/module4/sync/uploads"
+    headers = _module4_headers(tenant_id)
+    timeout_sec = _module4_sync_timeout_sec()
+    attempts = _module4_sync_retries() + 1
+
+    def _post() -> Tuple[int, str]:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return int(getattr(resp, "status", 200) or 200), body
+
+    for attempt in range(1, attempts + 1):
+        try:
+            status, body = await asyncio.to_thread(_post)
+            if status >= 400:
+                raise RuntimeError(f"HTTP {status}: {body[:300]}")
+            response_payload: Dict[str, Any] = {}
+            try:
+                loaded = json.loads(body)
+                if isinstance(loaded, dict):
+                    response_payload = loaded
+            except Exception:
+                response_payload = {}
+            module4_sync_metrics["succeeded_batches"] = int(module4_sync_metrics.get("succeeded_batches", 0)) + 1
+            module4_sync_metrics["last_error"] = ""
+            module4_sync_metrics["last_success_at"] = time.time()
+            module4_sync_metrics["last_job_id"] = str(response_payload.get("job_id") or "")
+            module4_sync_metrics["last_batch_id"] = str(response_payload.get("batch_id") or "")
+            module4_sync_metrics["last_endpoint"] = "/module4/sync/uploads"
+            module4_sync_metrics["last_source_batch_key"] = str(source_batch_key or "")
+            logger.info(
+                "module2 synced %s upload(s) to module4 tenant=%s source=%s batch=%s attempt=%s/%s",
+                len(normalized_uploads),
+                tenant_id,
+                source,
+                source_batch_key,
+                attempt,
+                attempts,
+            )
+            return
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+            retryable = _module4_sync_retryable_status(int(getattr(exc, "code", 0) or 0))
+            message = f"HTTPError {getattr(exc, 'code', 'unknown')}: {detail[:400]}"
+            if attempt < attempts and retryable:
+                delay = _module4_sync_delay_sec(attempt)
+                logger.warning(
+                    "module2 -> module4 upload sync failed, retrying in %.1fs (%s/%s): %s",
+                    delay,
+                    attempt,
+                    attempts,
+                    message,
+                )
+                await asyncio.sleep(delay)
+                continue
+            module4_sync_metrics["failed_batches"] = int(module4_sync_metrics.get("failed_batches", 0)) + 1
+            module4_sync_metrics["last_error"] = message
+            logger.warning("module2 -> module4 upload sync failed: %s", message)
+            return
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            if attempt < attempts:
+                delay = _module4_sync_delay_sec(attempt)
+                logger.warning(
+                    "module2 -> module4 upload sync exception, retrying in %.1fs (%s/%s): %s",
+                    delay,
+                    attempt,
+                    attempts,
+                    message,
+                )
+                await asyncio.sleep(delay)
+                continue
+            module4_sync_metrics["failed_batches"] = int(module4_sync_metrics.get("failed_batches", 0)) + 1
+            module4_sync_metrics["last_error"] = message[:400]
+            logger.warning("module2 -> module4 upload sync failed: %s", message)
             return
 
 
@@ -3043,7 +3351,20 @@ async def _process_single_doc_bytes(
         cached_trace_stats = cached_trace_stats_raw if isinstance(cached_trace_stats_raw, dict) else {}
         cached_track = str(decision.cached_payload.get("track", decision.track))
         cached_diag_raw = decision.cached_payload.get("diagnostics", decision.cached_payload.get("metrics", {}))
-        cached_diag = cached_diag_raw if isinstance(cached_diag_raw, dict) else {}
+        cached_diag = dict(cached_diag_raw) if isinstance(cached_diag_raw, dict) else {}
+        cached_tables = decision.cached_payload.get("tables") if isinstance(decision.cached_payload.get("tables"), list) else []
+        cached_figures = decision.cached_payload.get("figures") if isinstance(decision.cached_payload.get("figures"), list) else []
+        if (cached_tables or cached_figures) and not str(cached_diag.get("assistant_payload_artifact_path") or "").strip():
+            artifact_path, artifact_url = _persist_assistant_payload_artifact(
+                file_name=file_name,
+                file_hash=decision.file_hash,
+                table_blocks=cached_tables,
+                figure_blocks=cached_figures,
+            )
+            if artifact_path:
+                cached_diag["assistant_payload_artifact_path"] = artifact_path
+                cached_diag["assistant_payload_artifact_url"] = artifact_url
+                cached_diag["assistant_payload_version"] = "module2-assistant-payload-v1"
         return DocumentExtractionResponse(
             file_name=file_name,
             file_hash=decision.file_hash,
@@ -3146,6 +3467,13 @@ async def _process_single_doc_bytes(
                         parse_extract_total - min_word_extract_timeout,
                     )
                     extract_timeout_sec = max(8.0, parse_extract_total - parse_timeout_sec)
+
+    # Keep the outer graph timeout from being lower than the inner field-extraction timeout,
+    # otherwise non-PDF flows can terminate the graph before the provider call finishes.
+    extract_timeout_sec = max(
+        extract_timeout_sec,
+        max(8.0, float(os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "90"))),
+    )
 
     parse_t0 = time.perf_counter()
     parse_track = decision.track
@@ -3321,6 +3649,17 @@ async def _process_single_doc_bytes(
                 markdown, refs, tables = parsed
                 return markdown, refs, tables, [], {}
         raise ValueError("Unexpected parse output shape")
+
+    if parse_track == "VisualTrack" and parse_input_name.lower().endswith(".pdf"):
+        parse_timeout_sec = max(
+            parse_timeout_sec,
+            float(
+                os.getenv(
+                    "MODULE2_PDF_VISUAL_PARSE_TIMEOUT_SEC",
+                    os.getenv("MODULE2_MINERU_TIMEOUT_SEC", "900"),
+                )
+            ),
+        )
 
     _emit_progress("parsing", 0.32, f"正在解析文档版面：{parse_input_name}")
     try:
@@ -3574,6 +3913,11 @@ async def _process_single_doc_bytes(
         soft_warnings.append(f"quality_gate_degraded:{'|'.join(degraded_reasons)}")
     else:
         soft_warnings.append("quality_gate_ok")
+    soft_warnings = _strip_recovered_extract_warnings(
+        soft_warnings,
+        quality_ok=not degraded_reasons,
+        quick_fallback=used_quick_fallback,
+    )
     soft_warnings = _normalize_soft_warnings(soft_warnings)
 
     if parse_input_name.lower().endswith(".pdf"):
@@ -3673,6 +4017,18 @@ async def _process_single_doc_bytes(
         diagnostics["nonpdf_budget"] = nonpdf_budget
         diagnostics["nonpdf_elapsed_ms"] = total_ms
 
+    if table_blocks or figure_blocks:
+        artifact_path, artifact_url = _persist_assistant_payload_artifact(
+            file_name=file_name,
+            file_hash=decision.file_hash,
+            table_blocks=table_blocks,
+            figure_blocks=figure_blocks,
+        )
+        if artifact_path:
+            diagnostics["assistant_payload_artifact_path"] = artifact_path
+            diagnostics["assistant_payload_artifact_url"] = artifact_url
+            diagnostics["assistant_payload_version"] = "module2-assistant-payload-v1"
+
     response = DocumentExtractionResponse(
         file_name=file_name,
         file_hash=decision.file_hash,
@@ -3753,7 +4109,7 @@ async def _read_upload_file_bytes(file: UploadFile) -> Tuple[str, bytes]:
 async def _run_extraction_job(
     *,
     job_id: str,
-    loaded_files: List[Tuple[str, bytes, str, str, str]],
+    loaded_files: List[Tuple[str, bytes, str, str, str, str]],
     schema_obj: Dict[str, Any],
     schema_digest: str,
     max_retries: int,
@@ -3767,7 +4123,10 @@ async def _run_extraction_job(
         job.status = "running"
         job.updated_at = time.time()
 
-    for file_index, (file_name, file_bytes, file_hash, artifact_path, artifact_url) in enumerate(loaded_files, start=1):
+    for file_index, (file_name, file_bytes, file_hash, artifact_path, artifact_url, _mime_type) in enumerate(
+        loaded_files,
+        start=1,
+    ):
         def _update_progress(stage: str, ratio: float, message: str, extra: Dict[str, Any]) -> None:
             async def _mutate() -> None:
                 async with extraction_lock:
@@ -3777,11 +4136,12 @@ async def _run_extraction_job(
                     job_state.updated_at = time.time()
                     if 0 <= (file_index - 1) < len(job_state.files):
                         file_state = job_state.files[file_index - 1]
+                        # Do not mark a file as completed from progress callbacks alone.
+                        # The final completion state is only trustworthy after the document
+                        # has been appended and the job counters have been updated.
                         next_status = "running"
                         if stage == "queued":
                             next_status = "queued"
-                        elif stage in {"completed", "cached"}:
-                            next_status = "completed"
                         elif stage == "failed":
                             next_status = "failed"
                         if not (file_state.status in {"completed", "failed"} and next_status not in {"completed", "failed"}):
@@ -3862,22 +4222,6 @@ async def _run_extraction_job(
             job.status = "completed"
         job.current_stage = "completed" if job.status == "completed" else ("failed" if job.status == "failed" else job.current_stage)
         job.updated_at = time.time()
-        sync_documents = list(job.documents)
-
-    if sync_documents:
-        resolved_tenant = _module4_tenant(request, tenant_id)
-        source_batch_key = _module4_source_batch_key(
-            source="module2",
-            tenant_id=resolved_tenant,
-            documents=sync_documents,
-            seed=f"extract_job:{schema_digest}:{job_id}",
-        )
-        _spawn_module4_sync_task(
-            source="module2",
-            tenant_id=resolved_tenant,
-            documents=sync_documents,
-            source_batch_key=source_batch_key,
-        )
 
 
 def _error_doc_response(file_name: str, exc: Exception) -> DocumentExtractionResponse:
@@ -3912,14 +4256,9 @@ async def extract_jobs_create(
     if len(files) > 5:
         raise HTTPException(status_code=400, detail="At most 5 files are allowed per batch")
 
-    try:
-        schema_obj = json.loads(schema)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid schema JSON: {exc}") from exc
-    if not isinstance(schema_obj, dict):
-        raise HTTPException(status_code=400, detail="Schema must be a JSON object")
+    schema_obj = _parse_schema_form_json(schema)
 
-    loaded_files: List[Tuple[str, bytes, str, str, str]] = []
+    loaded_files: List[Tuple[str, bytes, str, str, str, str]] = []
     for file in files:
         file_name, file_bytes = await _read_upload_file_bytes(file)
         file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -3930,7 +4269,8 @@ async def extract_jobs_create(
             sub_dir="preview/uploaded",
             ext=ext,
         )
-        loaded_files.append((file_name, file_bytes, file_hash, artifact_path, artifact_url))
+        mime_type = (file.content_type or mimetypes.guess_type(file_name)[0] or "application/octet-stream").strip()
+        loaded_files.append((file_name, file_bytes, file_hash, artifact_path, artifact_url, mime_type))
 
     schema_digest = _schema_hash(schema_obj)
     max_retries = max(0, min(int(os.getenv("MODULE2_MAX_RETRIES", "2")), 6))
@@ -3958,7 +4298,7 @@ async def extract_jobs_create(
                 artifact_path=artifact_path,
                 artifact_url=artifact_url,
             )
-            for file_name, _, file_hash, artifact_path, artifact_url in loaded_files
+            for file_name, _, file_hash, artifact_path, artifact_url, _mime_type in loaded_files
         ],
         documents=[],
         errors=[],
@@ -3967,6 +4307,35 @@ async def extract_jobs_create(
     async with extraction_lock:
         _cleanup_extraction_jobs_locked()
         extraction_jobs[job_id] = job_state
+
+    resolved_tenant = _module4_tenant(request, tenant_id)
+    upload_payload = [
+        {
+            "file_name": file_name,
+            "file_hash": file_hash,
+            "artifact_path": artifact_path,
+            "artifact_url": artifact_url,
+            "storage_path": _absolute_artifact_storage_path(artifact_path),
+            "mime_type": mime_type,
+            "metadata": {
+                "source_job_id": job_id,
+                "artifact_fragment": artifact_path,
+            },
+        }
+        for file_name, _file_bytes, file_hash, artifact_path, artifact_url, mime_type in loaded_files
+    ]
+    upload_batch_key = _module4_upload_source_batch_key(
+        source="module2",
+        tenant_id=resolved_tenant,
+        uploads=upload_payload,
+        seed=f"extract_job_upload:{schema_digest}:{job_id}",
+    )
+    _spawn_module4_upload_sync_task(
+        source="module2",
+        tenant_id=resolved_tenant,
+        uploads=upload_payload,
+        source_batch_key=upload_batch_key,
+    )
 
     asyncio.create_task(
         _run_extraction_job(
@@ -4006,12 +4375,7 @@ async def extract_batch(
     if len(files) > 5:
         raise HTTPException(status_code=400, detail="At most 5 files are allowed per batch")
 
-    try:
-        schema_obj = json.loads(schema)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid schema JSON: {exc}") from exc
-    if not isinstance(schema_obj, dict):
-        raise HTTPException(status_code=400, detail="Schema must be a JSON object")
+    schema_obj = _parse_schema_form_json(schema)
 
     schema_digest = _schema_hash(schema_obj)
     max_retries = max(0, min(int(os.getenv("MODULE2_MAX_RETRIES", "2")), 6))
@@ -4396,6 +4760,24 @@ async def extract_assistant_query(payload: AssistantQueryRequest) -> AssistantQu
     )
 
 
+@app.post("/extract/assistant/session", response_model=AssistantSessionResponse)
+async def extract_assistant_session(payload: AssistantSessionRequest) -> AssistantSessionResponse:
+    return await assistant_service.ensure_session(payload)
+
+
+@app.post("/extract/assistant/chat/stream")
+async def extract_assistant_chat_stream(payload: AssistantChatStreamRequest) -> StreamingResponse:
+    return StreamingResponse(
+        assistant_service.stream_chat(payload),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post("/extract/cache/clear", response_model=CacheClearResponse)
 async def extract_cache_clear() -> CacheClearResponse:
     cache_counts = await storage.clear_runtime_cache()
@@ -4455,6 +4837,10 @@ async def healthz() -> Dict[str, str]:
         "module4_sync_succeeded_batches": str(module4_sync_metrics.get("succeeded_batches", 0)),
         "module4_sync_failed_batches": str(module4_sync_metrics.get("failed_batches", 0)),
         "module4_sync_last_error": str(module4_sync_metrics.get("last_error", "") or ""),
+        "module4_sync_last_job_id": str(module4_sync_metrics.get("last_job_id", "") or ""),
+        "module4_sync_last_batch_id": str(module4_sync_metrics.get("last_batch_id", "") or ""),
+        "module4_sync_last_endpoint": str(module4_sync_metrics.get("last_endpoint", "") or ""),
+        "module4_sync_last_source_batch_key": str(module4_sync_metrics.get("last_source_batch_key", "") or ""),
         "bridge_token_required": str(_bridge_token_required()).lower(),
         "bridge_remote_allow_http": str(_bridge_allow_http_remote()).lower(),
         "storage_db_connected": str(storage.diagnostics().get("db_connected", False)).lower(),

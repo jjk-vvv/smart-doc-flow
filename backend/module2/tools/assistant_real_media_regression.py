@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import importlib.util
@@ -7,7 +8,9 @@ import json
 import sys
 import types
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from types import MethodType
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -26,7 +29,126 @@ load_dotenv(MODULE2_ROOT / ".env", override=False)
 
 from app.core.parser import parse_document_in_subprocess
 from app.db.storage import ExtractionStorage
+from app import schemas as app_schemas
 from app.schemas import DocumentExtractionResponse, ExtractionResult
+
+
+@dataclass
+class AssistantChatStreamRequestCompat:
+    document: DocumentExtractionResponse
+    summary: str = ""
+    user_message: str = ""
+    session_id: Optional[str] = None
+    persist: bool = False
+    top_k: int = 12
+    enable_web_search: Optional[bool] = None
+    current_object_lock: Optional[Dict[str, Any]] = None
+    extraction_payload: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AssistantSessionMessageCompat:
+    role: str
+    content: str
+    created_at: str = ""
+
+
+if not hasattr(app_schemas, "AssistantChatStreamRequest"):
+    setattr(app_schemas, "AssistantChatStreamRequest", AssistantChatStreamRequestCompat)
+if not hasattr(app_schemas, "AssistantSessionMessage"):
+    setattr(app_schemas, "AssistantSessionMessage", AssistantSessionMessageCompat)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_storage_compat(storage: ExtractionStorage) -> None:
+    if not hasattr(storage, "_compat_sessions"):
+        storage._compat_sessions = {}
+    if not hasattr(storage, "_compat_assistant_messages"):
+        storage._compat_assistant_messages = []
+    if not hasattr(storage, "_compat_tool_invocations"):
+        storage._compat_tool_invocations = []
+    if not hasattr(storage, "_compat_saved_facts"):
+        storage._compat_saved_facts = []
+    if not hasattr(storage, "_compat_extraction_payloads"):
+        storage._compat_extraction_payloads = {}
+
+    async def fetch_assistant_session(self: ExtractionStorage, session_id: str) -> Optional[Dict[str, Any]]:
+        return dict(self._compat_sessions.get(str(session_id or "").strip(), {})) or None
+
+    async def upsert_assistant_session(
+        self: ExtractionStorage,
+        *,
+        session_id: str,
+        file_hash: str,
+        file_name: str,
+        summary_text: str,
+        current_object_lock: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **_: Any,
+    ) -> None:
+        self._compat_sessions[str(session_id)] = {
+            "session_id": str(session_id),
+            "file_hash": str(file_hash),
+            "file_name": str(file_name),
+            "summary_text": str(summary_text or ""),
+            "current_object_lock_json": dict(current_object_lock or {}),
+            "metadata": dict(metadata or {}),
+            "updated_at": _utc_now(),
+        }
+
+    async def list_assistant_messages(self: ExtractionStorage, session_id: str, limit: int = 24) -> List[Dict[str, Any]]:
+        items = [item for item in self._compat_assistant_messages if str(item.get("session_id") or "") == str(session_id or "")]
+        return [dict(item) for item in items[-max(1, int(limit or 24)) :]]
+
+    async def save_assistant_message(
+        self: ExtractionStorage,
+        *,
+        session_id: str,
+        message_id: str,
+        role: str,
+        message_type: str,
+        content: str,
+        payload: Optional[Dict[str, Any]] = None,
+        **_: Any,
+    ) -> None:
+        self._compat_assistant_messages.append(
+            {
+                "session_id": str(session_id),
+                "message_id": str(message_id),
+                "role": str(role),
+                "message_type": str(message_type or "assistant_text"),
+                "content": str(content or ""),
+                "payload": dict(payload or {}),
+                "created_at": _utc_now(),
+            }
+        )
+
+    async def query_saved_facts(self: ExtractionStorage, **_: Any) -> List[Dict[str, Any]]:
+        return [dict(item) for item in self._compat_saved_facts]
+
+    async def load_extraction_payload(self: ExtractionStorage, file_hash: str) -> Optional[Dict[str, Any]]:
+        payload = self._compat_extraction_payloads.get(str(file_hash or "").strip())
+        return dict(payload) if isinstance(payload, dict) else None
+
+    async def save_tool_invocation(self: ExtractionStorage, *args: Any, **kwargs: Any) -> None:
+        self._compat_tool_invocations.append(
+            {
+                "args": list(args),
+                "kwargs": dict(kwargs),
+                "created_at": _utc_now(),
+            }
+        )
+
+    storage.fetch_assistant_session = MethodType(fetch_assistant_session, storage)
+    storage.upsert_assistant_session = MethodType(upsert_assistant_session, storage)
+    storage.list_assistant_messages = MethodType(list_assistant_messages, storage)
+    storage.save_assistant_message = MethodType(save_assistant_message, storage)
+    storage.query_saved_facts = MethodType(query_saved_facts, storage)
+    storage.load_extraction_payload = MethodType(load_extraction_payload, storage)
+    storage.save_tool_invocation = MethodType(save_tool_invocation, storage)
 
 
 def _load_module_from_pyc(module_name: str, pyc_path: Path) -> types.ModuleType:
@@ -70,20 +192,37 @@ def _resolve_assistant_service_class() -> type:
 AssistantService = _resolve_assistant_service_class()
 
 
-@dataclass
-class AssistantChatStreamRequestCompat:
-    document: DocumentExtractionResponse
-    summary: str = ""
-    user_message: str = ""
-    session_id: Optional[str] = None
-    persist: bool = False
-    top_k: int = 12
-    enable_web_search: Optional[bool] = None
-    extraction_payload: Dict[str, Any] = field(default_factory=dict)
+def _pick_first_existing(paths: List[Path]) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    raise FileNotFoundError("No existing candidate path found.")
 
 
-EXCEL_PATH = next((REPO_ROOT / "datasets" / "Excel").glob("*空气质量*.xlsx"))
-PDF_PATH = next((MODULE2_ROOT / "artifacts" / "pdf_parse" / "mineru").glob("*/input.pdf"))
+def _resolve_excel_path() -> Path:
+    candidates = sorted((REPO_ROOT / "datasets" / "Excel").glob("*空气质量*.xlsx"))
+    if candidates:
+        return _pick_first_existing(candidates)
+    raise FileNotFoundError("Cannot locate excel regression sample.")
+
+
+def _resolve_pdf_path() -> Path:
+    candidates = sorted((MODULE2_ROOT / "artifacts" / "pdf_parse" / "mineru").glob("*/input.pdf"))
+    if candidates:
+        return _pick_first_existing(candidates)
+    if REPORT_PATH.exists():
+        try:
+            report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+            hinted = Path(str(report.get("pdf_path") or ""))
+            if hinted.exists():
+                return hinted
+        except Exception:
+            pass
+    raise FileNotFoundError("Cannot locate pdf regression sample.")
+
+
+EXCEL_PATH = _resolve_excel_path()
+PDF_PATH = _resolve_pdf_path()
 
 EXCEL_QUESTIONS = [
     {
@@ -111,20 +250,66 @@ IMAGE_QUESTION = {
 }
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run real media assistant regression for Module 2.")
+    parser.add_argument(
+        "--kind",
+        choices=["all", "excel", "pdf", "image"],
+        default="all",
+        help="Which real-media scenario set to run.",
+    )
+    return parser.parse_args()
+
+
 def _decode_stream_frames(frames: List[bytes]) -> Tuple[str, Dict[str, Any]]:
+    text = b"".join(frames).decode("utf-8", errors="ignore")
+    normalized = text.replace("\r\n", "\n")
     answer_parts: List[str] = []
     meta: Dict[str, Any] = {}
-    for frame in frames:
-        text = frame.decode("utf-8", errors="ignore").strip()
-        if not text:
+    tool_names: List[str] = []
+
+    for block in normalized.split("\n\n"):
+        chunk = block.strip()
+        if not chunk:
             continue
-        if text.startswith("0:"):
-            payload = json.loads(text[2:])
-            if isinstance(payload, str) and payload != "[DONE]":
-                answer_parts.append(payload)
-        elif text.startswith("8:"):
-            meta = json.loads(text[2:])
-    return "".join(answer_parts).strip(), meta
+        event_name = "message"
+        data_lines: List[str] = []
+        for line in chunk.split("\n"):
+          stripped = line.strip()
+          if not stripped:
+              continue
+          if stripped.startswith("event:"):
+              event_name = stripped[6:].strip() or "message"
+              continue
+          if stripped.startswith("data:"):
+              data_lines.append(stripped[5:].strip())
+        if not data_lines:
+            continue
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        if event_name == "assistant_start":
+            meta["session_id"] = payload.get("session_id")
+            meta["assistant_message_id"] = payload.get("assistant_message_id")
+        elif event_name == "tool_status":
+            tool_name = str(payload.get("tool_name") or "").strip()
+            if tool_name and tool_name not in tool_names:
+                tool_names.append(tool_name)
+        elif event_name == "assistant_delta":
+            delta_text = str(payload.get("text") or "")
+            if delta_text:
+                answer_parts.append(delta_text)
+        elif event_name == "assistant_done":
+            meta.update(payload)
+
+    if tool_names:
+        meta["tools_used"] = tool_names
+    answer = str(meta.get("answer") or "").strip() or "".join(answer_parts).strip()
+    return answer, meta
 
 
 def _normalize_parse_output(
@@ -249,9 +434,10 @@ async def _ask(
     return _decode_stream_frames(frames)
 
 
-async def main() -> int:
+async def main(kind: str = "all") -> int:
     storage = ExtractionStorage("postgresql://postgres:postgres@localhost:5433/Data_Extraction")
     await storage.connect()
+    _ensure_storage_compat(storage)
     service = AssistantService(storage)
 
     report: Dict[str, Any] = {
@@ -261,80 +447,86 @@ async def main() -> int:
         "results": [],
     }
 
-    excel_doc, excel_payload, excel_parse = _build_document_and_payload(EXCEL_PATH, track="FastTrack")
-    report["excel_parse"] = excel_parse
-    session_id: Optional[str] = None
-    for scenario in EXCEL_QUESTIONS:
-        answer, meta = await _ask(
+    if kind in {"all", "excel"}:
+        excel_doc, excel_payload, excel_parse = _build_document_and_payload(EXCEL_PATH, track="FastTrack")
+        storage._compat_extraction_payloads[excel_doc.file_hash] = dict(excel_payload)
+        report["excel_parse"] = excel_parse
+        session_id: Optional[str] = None
+        for scenario in EXCEL_QUESTIONS:
+            answer, meta = await _ask(
+                service,
+                document=excel_doc,
+                extraction_payload=excel_payload,
+                question=scenario["question"],
+                session_id=session_id,
+            )
+            session_id = str(meta.get("session_id") or session_id or "")
+            report["results"].append(
+                {
+                    "name": scenario["name"],
+                    "kind": "excel",
+                    "question": scenario["question"],
+                    "expected": scenario["expected"],
+                    "answer": answer,
+                    "meta": {
+                        "prompt_version": meta.get("prompt_version"),
+                        "tools_used": meta.get("tools_used"),
+                        "session_id": meta.get("session_id"),
+                    },
+                }
+            )
+
+    if kind in {"all", "pdf"}:
+        pdf_doc, pdf_payload, pdf_parse = _build_document_and_payload(PDF_PATH, track="VisualTrack")
+        storage._compat_extraction_payloads[pdf_doc.file_hash] = dict(pdf_payload)
+        report["pdf_parse"] = pdf_parse
+        pdf_answer, pdf_meta = await _ask(
             service,
-            document=excel_doc,
-            extraction_payload=excel_payload,
-            question=scenario["question"],
-            session_id=session_id,
+            document=pdf_doc,
+            extraction_payload=pdf_payload,
+            question=PDF_QUESTION["question"],
         )
-        session_id = str(meta.get("session_id") or session_id or "")
         report["results"].append(
             {
-                "name": scenario["name"],
-                "kind": "excel",
-                "question": scenario["question"],
-                "expected": scenario["expected"],
-                "answer": answer,
+                "name": PDF_QUESTION["name"],
+                "kind": "pdf",
+                "question": PDF_QUESTION["question"],
+                "expected": PDF_QUESTION["expected"],
+                "answer": pdf_answer,
                 "meta": {
-                    "prompt_version": meta.get("prompt_version"),
-                    "tools_used": meta.get("tools_used"),
-                    "session_id": meta.get("session_id"),
+                    "prompt_version": pdf_meta.get("prompt_version"),
+                    "tools_used": pdf_meta.get("tools_used"),
+                    "session_id": pdf_meta.get("session_id"),
                 },
             }
         )
 
-    pdf_doc, pdf_payload, pdf_parse = _build_document_and_payload(PDF_PATH, track="VisualTrack")
-    report["pdf_parse"] = pdf_parse
-    pdf_answer, pdf_meta = await _ask(
-        service,
-        document=pdf_doc,
-        extraction_payload=pdf_payload,
-        question=PDF_QUESTION["question"],
-    )
-    report["results"].append(
-        {
-            "name": PDF_QUESTION["name"],
-            "kind": "pdf",
-            "question": PDF_QUESTION["question"],
-            "expected": PDF_QUESTION["expected"],
-            "answer": pdf_answer,
-            "meta": {
-                "prompt_version": pdf_meta.get("prompt_version"),
-                "tools_used": pdf_meta.get("tools_used"),
-                "session_id": pdf_meta.get("session_id"),
-            },
-        }
-    )
-
-    image_path = _render_pdf_page_image(PDF_PATH, page_no=4, dpi=180)
-    image_doc, image_payload, image_parse = _build_document_and_payload(image_path, track="FastTrack")
-    report["image_path"] = str(image_path)
-    report["image_parse"] = image_parse
-    image_answer, image_meta = await _ask(
-        service,
-        document=image_doc,
-        extraction_payload=image_payload,
-        question=IMAGE_QUESTION["question"],
-    )
-    report["results"].append(
-        {
-            "name": IMAGE_QUESTION["name"],
-            "kind": "image",
-            "question": IMAGE_QUESTION["question"],
-            "expected": IMAGE_QUESTION["expected"],
-            "answer": image_answer,
-            "meta": {
-                "prompt_version": image_meta.get("prompt_version"),
-                "tools_used": image_meta.get("tools_used"),
-                "session_id": image_meta.get("session_id"),
-            },
-        }
-    )
+    if kind in {"all", "image"}:
+        image_path = _render_pdf_page_image(PDF_PATH, page_no=4, dpi=180)
+        image_doc, image_payload, image_parse = _build_document_and_payload(image_path, track="FastTrack")
+        storage._compat_extraction_payloads[image_doc.file_hash] = dict(image_payload)
+        report["image_path"] = str(image_path)
+        report["image_parse"] = image_parse
+        image_answer, image_meta = await _ask(
+            service,
+            document=image_doc,
+            extraction_payload=image_payload,
+            question=IMAGE_QUESTION["question"],
+        )
+        report["results"].append(
+            {
+                "name": IMAGE_QUESTION["name"],
+                "kind": "image",
+                "question": IMAGE_QUESTION["question"],
+                "expected": IMAGE_QUESTION["expected"],
+                "answer": image_answer,
+                "meta": {
+                    "prompt_version": image_meta.get("prompt_version"),
+                    "tools_used": image_meta.get("tools_used"),
+                    "session_id": image_meta.get("session_id"),
+                },
+            }
+        )
 
     REPORT_PATH.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"report_path": str(REPORT_PATH), "result_count": len(report["results"])}, ensure_ascii=False))
@@ -344,4 +536,5 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    args = _parse_args()
+    raise SystemExit(asyncio.run(main(kind=args.kind)))

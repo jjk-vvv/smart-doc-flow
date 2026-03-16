@@ -25,6 +25,8 @@ backend/auth/node_modules/
 .runlogs/
 .codex-temp/
 .venv-*/
+.agents/
+skills-lock.json
 
 # IDE
 .vscode/
@@ -59,6 +61,8 @@ backend/module2/tools/generated_tests/
 logs/
 frontend/build_log*.txt
 backend/module2/backend/
+backend/module2/tools/assistant_real_media_eval_latest.json
+backend/module4/workspaces/
 
 # Exclude specific documents
 数据库操作步骤优化方案.md

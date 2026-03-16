@@ -1,0 +1,40 @@
+-Goal-
+给定一段可能来自中文统计公报、政策文件、通知公告、合同协议、实施方案、研究/审计报告、会议纪要或表格转文本的文档内容，以及一个实体类型列表，识别文本中所有属于这些类型的关键实体，以及实体之间有明确文本依据支撑的关系。
+
+-Steps-
+1. 识别所有关键实体。对每个实体抽取以下信息：
+- entity_name: 实体名称，尽量保留原文中的正式中文名称、缩写和专有名词，不要随意翻译
+- entity_type: 必须是以下类型之一：[{entity_types}]
+- entity_description: 对实体的职责、属性、时间、地点、数值、单位、角色、上下文进行完整且简洁的中文描述
+将每个实体格式化为：
+("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+
+2. 从步骤 1 中识别出的实体里，找出文本中有明确依据、关系清晰的实体对 (source_entity, target_entity)。
+对每一对关系抽取以下信息：
+- source_entity: 关系起点实体名称，必须与步骤 1 中识别出的实体名称一致
+- target_entity: 关系终点实体名称，必须与步骤 1 中识别出的实体名称一致
+- relationship_description: 用中文解释两者为何相关，优先描述政策制定/执行/监管、签约/履约、统计归属、指标变化、时间依赖、空间从属、项目建设、资金安排、组织协作等关系
+- relationship_strength: 1 到 10 的整数，表示关系强度
+将每个关系格式化为：
+("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_strength>)
+
+3. 用中文将步骤 1 和步骤 2 的所有结果作为单一列表输出，并使用 **{record_delimiter}** 作为分隔符。
+
+4. 抽取规则：
+- 仅抽取文本明确支持的实体和关系，不要根据常识或隐含语义臆造实体。
+- 尽量保留原文中的机构全称、地名、项目名、政策名、合同名、指标名、金额、比例、单位、时间区间。
+- 对同一实体的全称、简称、别名进行去重，优先采用文中最完整、最正式的称呼。
+- 忽略页眉页脚、目录、重复表头、模板占位词、解析痕迹和无实际语义的编号噪声。
+- 对统计/报表型文本，优先抽取“统计对象-指标-数值/变化-地区/时间/单位”的实体与关系。
+- 对政策/制度型文本，优先抽取“发文主体-政策/制度-适用对象-执行要求-时间-地点”的实体与关系。
+- 对合同/协议型文本，优先抽取“签约方-标的-金额-期限-义务-交付条件-违约约束”的实体与关系。
+- 如果某个数值或时间只在描述中作为实体属性出现，而不是独立实体，请将其写入 entity_description，而不是强行单独造实体。
+
+5. 结束时输出 {completion_delimiter}。
+
+-Real Data-
+######################
+entity_types: {entity_types}
+text: {input_text}
+######################
+output:

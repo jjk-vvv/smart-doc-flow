@@ -16,6 +16,11 @@ class ExtractionStorage:
         self._pool: Optional[asyncpg.Pool] = None
         self._memory_cache: Dict[str, Dict[str, Any]] = {}
         self._assistant_memory_history: List[Dict[str, Any]] = []
+        self._assistant_sessions: Dict[str, Dict[str, Any]] = {}
+        self._assistant_messages: List[Dict[str, Any]] = []
+        self._assistant_tool_calls: List[Dict[str, Any]] = []
+        self._assistant_actions: Dict[str, Dict[str, Any]] = {}
+        self._assistant_action_executions: List[Dict[str, Any]] = []
         self._degraded_memory_mode = False
         self._last_connect_error = ""
         self._sync_commit_off = os.getenv("MODULE2_SYNC_COMMIT_OFF", "false").lower() in {"1", "true", "yes"}
@@ -145,6 +150,239 @@ class ExtractionStorage:
             await conn.execute(sql, file_hash, file_name, user_instruction, summary_text, matched_json)
         return 1
 
+    async def load_extraction_payload(self, file_hash: str) -> Optional[Dict[str, Any]]:
+        key = str(file_hash or "").strip()
+        if not key:
+            return None
+
+        if not self._pool:
+            for payload in self._memory_cache.values():
+                if str(payload.get("file_hash", "") or "").strip() == key:
+                    return dict(payload)
+            return None
+
+        sql = """
+            SELECT extraction_json
+            FROM document_extractions
+            WHERE extraction_json->>'file_hash' = $1
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, key)
+        if not row:
+            return None
+        payload = row["extraction_json"]
+        if isinstance(payload, str):
+            return json.loads(payload)
+        return dict(payload) if isinstance(payload, dict) else None
+
+    async def fetch_assistant_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        key = str(session_id or "").strip()
+        if not key:
+            return None
+
+        if not self._pool:
+            payload = self._assistant_sessions.get(key)
+            return dict(payload) if isinstance(payload, dict) else None
+
+        sql = """
+            SELECT session_id, file_hash, file_name, summary_text, current_object_lock_json, metadata_json, created_at, updated_at
+            FROM assist_session
+            WHERE session_id = $1
+            LIMIT 1
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, key)
+        if not row:
+            return None
+        return {
+            "session_id": str(row["session_id"] or ""),
+            "file_hash": str(row["file_hash"] or ""),
+            "file_name": str(row["file_name"] or ""),
+            "summary_text": str(row["summary_text"] or ""),
+            "current_object_lock_json": row["current_object_lock_json"] if isinstance(row["current_object_lock_json"], dict) else {},
+            "metadata_json": row["metadata_json"] if isinstance(row["metadata_json"], dict) else {},
+            "created_at": str(row["created_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    async def upsert_assistant_session(
+        self,
+        *,
+        session_id: str,
+        file_hash: str,
+        file_name: str,
+        summary_text: str,
+        current_object_lock: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        record = {
+            "session_id": str(session_id or "").strip(),
+            "file_hash": str(file_hash or "").strip(),
+            "file_name": str(file_name or "").strip(),
+            "summary_text": str(summary_text or ""),
+            "current_object_lock_json": dict(current_object_lock or {}),
+            "metadata_json": dict(metadata or {}),
+        }
+        if not record["session_id"]:
+            raise ValueError("session_id is required")
+
+        if not self._pool:
+            self._assistant_sessions[record["session_id"]] = {
+                **record,
+                "updated_at": "",
+            }
+            return
+
+        sql = """
+            INSERT INTO assist_session (
+                session_id, file_hash, file_name, summary_text, current_object_lock_json, metadata_json
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+            ON CONFLICT (session_id)
+            DO UPDATE SET
+                file_hash = EXCLUDED.file_hash,
+                file_name = EXCLUDED.file_name,
+                summary_text = EXCLUDED.summary_text,
+                current_object_lock_json = EXCLUDED.current_object_lock_json,
+                metadata_json = EXCLUDED.metadata_json,
+                updated_at = NOW()
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                sql,
+                record["session_id"],
+                record["file_hash"],
+                record["file_name"],
+                record["summary_text"],
+                json.dumps(record["current_object_lock_json"], ensure_ascii=False),
+                json.dumps(record["metadata_json"], ensure_ascii=False),
+            )
+
+    async def list_assistant_messages(self, session_id: str, limit: int = 40) -> List[Dict[str, Any]]:
+        key = str(session_id or "").strip()
+        size = max(1, int(limit or 40))
+        if not key:
+            return []
+
+        if not self._pool:
+            items = [item for item in self._assistant_messages if str(item.get("session_id") or "") == key]
+            return [dict(item) for item in items[-size:]]
+
+        sql = """
+            SELECT message_id, session_id, role, message_type, content_text, payload_json, created_at
+            FROM assist_message
+            WHERE session_id = $1
+            ORDER BY created_at ASC
+            LIMIT $2
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, key, size)
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload_json = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
+            out.append(
+                {
+                    "message_id": str(row["message_id"] or ""),
+                    "session_id": str(row["session_id"] or ""),
+                    "role": str(row["role"] or ""),
+                    "message_type": str(row["message_type"] or "assistant_text"),
+                    "content": str(row["content_text"] or ""),
+                    "payload": payload_json,
+                    "created_at": str(row["created_at"] or ""),
+                }
+            )
+        return out
+
+    async def save_assistant_message(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        role: str,
+        message_type: str,
+        content: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        record = {
+            "session_id": str(session_id or "").strip(),
+            "message_id": str(message_id or "").strip(),
+            "role": str(role or "").strip(),
+            "message_type": str(message_type or "assistant_text").strip(),
+            "content": str(content or ""),
+            "payload": dict(payload or {}),
+            "created_at": "",
+        }
+        if not record["session_id"] or not record["message_id"]:
+            raise ValueError("session_id and message_id are required")
+
+        if not self._pool:
+            self._assistant_messages.append(record)
+            return
+
+        sql = """
+            INSERT INTO assist_message (
+                message_id, session_id, role, message_type, content_text, payload_json
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                sql,
+                record["message_id"],
+                record["session_id"],
+                record["role"],
+                record["message_type"],
+                record["content"],
+                json.dumps(record["payload"], ensure_ascii=False),
+            )
+
+    async def save_tool_invocation(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        tool_name: str,
+        status: str,
+        input_summary: Optional[Dict[str, Any]] = None,
+        output_summary: Optional[Dict[str, Any]] = None,
+        latency_ms: int = 0,
+    ) -> None:
+        record = {
+            "session_id": str(session_id or "").strip(),
+            "message_id": str(message_id or "").strip(),
+            "tool_name": str(tool_name or "").strip(),
+            "status": str(status or "").strip(),
+            "input_summary": dict(input_summary or {}),
+            "output_summary": dict(output_summary or {}),
+            "latency_ms": max(0, int(latency_ms or 0)),
+        }
+        if not record["session_id"] or not record["tool_name"]:
+            return
+
+        if not self._pool:
+            self._assistant_tool_calls.append(record)
+            return
+
+        sql = """
+            INSERT INTO assist_tool_call (
+                session_id, message_id, tool_name, status, input_summary_json, output_summary_json, latency_ms
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                sql,
+                record["session_id"],
+                record["message_id"],
+                record["tool_name"],
+                record["status"],
+                json.dumps(record["input_summary"], ensure_ascii=False),
+                json.dumps(record["output_summary"], ensure_ascii=False),
+                record["latency_ms"],
+            )
+
     @staticmethod
     def _parse_command_rows(command_tag: str) -> int:
         text = str(command_tag or "").strip()
@@ -161,16 +399,30 @@ class ExtractionStorage:
     async def clear_runtime_cache(self) -> Dict[str, int]:
         memory_cache_count = len(self._memory_cache)
         assistant_mem_count = len(self._assistant_memory_history)
+        assistant_session_count = len(self._assistant_sessions)
+        assistant_message_count = len(self._assistant_messages)
+        assistant_tool_call_count = len(self._assistant_tool_calls)
         self._memory_cache.clear()
         self._assistant_memory_history.clear()
+        self._assistant_sessions.clear()
+        self._assistant_messages.clear()
+        self._assistant_tool_calls.clear()
+        self._assistant_actions.clear()
+        self._assistant_action_executions.clear()
 
         out: Dict[str, int] = {
             "memory_cache": memory_cache_count,
             "assistant_memory": assistant_mem_count,
+            "assist_session_memory": assistant_session_count,
+            "assist_message_memory": assistant_message_count,
+            "assist_tool_call_memory": assistant_tool_call_count,
             "document_extractions": 0,
             "field_staging": 0,
             "table_staging": 0,
             "assistant_history": 0,
+            "assist_session": 0,
+            "assist_message": 0,
+            "assist_tool_call": 0,
         }
         if not self._pool:
             return out
@@ -189,6 +441,15 @@ class ExtractionStorage:
                 out["assistant_history"] = self._parse_command_rows(
                     await conn.execute("DELETE FROM extraction_assistant_history")
                 )
+                out["assist_tool_call"] = self._parse_command_rows(
+                    await conn.execute("DELETE FROM assist_tool_call")
+                )
+                out["assist_message"] = self._parse_command_rows(
+                    await conn.execute("DELETE FROM assist_message")
+                )
+                out["assist_session"] = self._parse_command_rows(
+                    await conn.execute("DELETE FROM assist_session")
+                )
         return out
 
     def diagnostics(self) -> Dict[str, Any]:
@@ -198,6 +459,9 @@ class ExtractionStorage:
             "last_connect_error": self._last_connect_error,
             "memory_cache_size": len(self._memory_cache),
             "assistant_memory_size": len(self._assistant_memory_history),
+            "assist_session_memory_size": len(self._assistant_sessions),
+            "assist_message_memory_size": len(self._assistant_messages),
+            "assist_tool_call_memory_size": len(self._assistant_tool_calls),
         }
 
     @staticmethod
@@ -377,6 +641,48 @@ class ExtractionStorage:
 
             CREATE INDEX IF NOT EXISTS idx_extraction_assistant_history_file_hash
                 ON extraction_assistant_history (file_hash);
+
+            CREATE {staging_mode} TABLE IF NOT EXISTS assist_session (
+                session_id TEXT PRIMARY KEY,
+                file_hash TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                summary_text TEXT,
+                current_object_lock_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                metadata_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_assist_session_file_hash
+                ON assist_session (file_hash);
+
+            CREATE {staging_mode} TABLE IF NOT EXISTS assist_message (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                content_text TEXT,
+                payload_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_assist_message_session_id
+                ON assist_message (session_id, created_at);
+
+            CREATE {staging_mode} TABLE IF NOT EXISTS assist_tool_call (
+                id BIGSERIAL PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT,
+                tool_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_summary_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                output_summary_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_assist_tool_call_session_id
+                ON assist_tool_call (session_id, created_at);
         """
 
         async with self._pool.acquire() as conn:

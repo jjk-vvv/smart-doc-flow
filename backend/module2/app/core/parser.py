@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 
 from pypdf import PdfReader
 
+from app.assistant.provider import OpenAICompatibleChatProvider, resolve_llm_api_key, resolve_llm_base_url
 from app.core.layout_mineru import MineruLayoutExtractor
 from app.core.office_pdf import convert_word_bytes_to_pdf
 from app.core.roi_cropper import RoiCropper
@@ -658,7 +659,182 @@ class NativeDocumentParser:
             }
         )
         self._last_parse_stats = stats
+        try:
+            self._merge_docx_chart_xml_into_pdf_figures(file_bytes=file_bytes)
+        except Exception as exc:
+            self._last_parse_stats["docx_chart_xml_merge_error"] = f"{type(exc).__name__}: {exc}"
         return markdown, bbox_map, table_blocks
+
+    def _merge_docx_chart_xml_into_pdf_figures(self, *, file_bytes: bytes) -> None:
+        chart_tables, chart_stats = self._extract_docx_chart_xml_tables(file_bytes)
+        if chart_stats:
+            self._last_parse_stats.update(chart_stats)
+        if not chart_tables or not self._last_figure_blocks:
+            self._last_parse_stats["docx_chart_xml_merged"] = int(chart_stats.get("docx_chart_xml_merged", 0) or 0)
+            return
+
+        merged_figures: FigureBlocks = [dict(item) for item in self._last_figure_blocks]
+        merged_count = 0
+        unmatched_count = 0
+        for table in chart_tables:
+            chart_title = self._normalize_text(str(table.get("chart_title", "") or ""))
+            figure_idx = self._find_matching_pdf_figure_index(chart_title=chart_title, figure_blocks=merged_figures)
+            if figure_idx is None:
+                unmatched_count += 1
+                continue
+            headers, rows = self._table_block_to_dataframe(table)
+            if not headers or not rows:
+                unmatched_count += 1
+                continue
+            figure = dict(merged_figures[figure_idx])
+            dataframe = figure.get("dataframe") if isinstance(figure.get("dataframe"), dict) else {}
+            existing_rows = dataframe.get("rows") if isinstance(dataframe.get("rows"), list) else []
+            if existing_rows:
+                continue
+            figure["dataframe"] = {"headers": headers, "rows": rows}
+            figure["dataframe_source"] = "docx_chart_xml_merge"
+            modes = [
+                self._normalize_text(str(item or "")).lower()
+                for item in (figure.get("content_modes") if isinstance(figure.get("content_modes"), list) else [])
+            ]
+            modes = [item for item in modes if item in {"dataframe", "topology", "text", "visual"}]
+            if "visual" not in modes:
+                modes.append("visual")
+            if "dataframe" not in modes:
+                modes.insert(0, "dataframe")
+            figure["content_modes"] = modes[:4]
+            figure["quality"] = max(0.72, float(figure.get("quality", 0.0) or 0.0))
+            insights = self._safe_text_list(figure.get("insights"), max_items=8, max_len=180)
+            insights.append(f"dataframe: {len(rows)}x{max(len(row) for row in rows)}")
+            figure["insights"] = insights[:8]
+            merged_figures[figure_idx] = figure
+            merged_count += 1
+
+        self._last_figure_blocks = merged_figures
+        self._last_parse_stats["docx_chart_xml_merged"] = merged_count
+        self._last_parse_stats["docx_chart_xml_unmatched"] = unmatched_count
+
+    def _extract_docx_chart_xml_tables(self, file_bytes: bytes) -> Tuple[TableBlocks, Dict[str, Any]]:
+        stats: Dict[str, Any] = {
+            "docx_chart_xml_seen": 0,
+            "docx_chart_xml_parsed": 0,
+            "docx_chart_xml_merged": 0,
+        }
+        if not self.docx_chart_xml_enable:
+            return [], stats
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(file_bytes))
+        except Exception:
+            return [], stats
+
+        tables: TableBlocks = []
+        with zf:
+            chart_files = sorted(
+                [name for name in zf.namelist() if name.startswith("word/charts/") and name.endswith(".xml")]
+            )
+            stats["docx_chart_xml_seen"] = len(chart_files)
+            if not chart_files:
+                return tables, stats
+
+            ns = {
+                "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
+                "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+            }
+            chart_max_series = max(2, int(os.getenv("MODULE2_DOCX_CHART_XML_MAX_SERIES", "10")))
+            chart_max_points = max(6, int(os.getenv("MODULE2_DOCX_CHART_XML_MAX_POINTS", "40")))
+            chart_table_max_rows = max(24, int(os.getenv("MODULE2_DOCX_CHART_XML_TABLE_MAX_ROWS", "220")))
+            for chart_idx, chart_path in enumerate(chart_files, start=1):
+                try:
+                    root = ET.fromstring(zf.read(chart_path))
+                except Exception:
+                    continue
+
+                title_tokens = [
+                    self._normalize_text(str(node.text or ""))
+                    for node in root.findall(".//c:title//a:t", ns)
+                ]
+                title = self._normalize_text(" ".join(item for item in title_tokens if item))
+                if not title:
+                    title = f"DOCX图表 {chart_idx}"
+
+                series_payload = self._extract_docx_chart_series_payload(
+                    root=root,
+                    ns=ns,
+                    max_series=chart_max_series,
+                    max_points=chart_max_points,
+                )
+                if not series_payload:
+                    continue
+
+                chart_table = self._build_docx_chart_table_block(
+                    chart_idx=chart_idx,
+                    title=title,
+                    series_payload=series_payload,
+                    parts=[],
+                    bbox_map={},
+                    max_rows=chart_table_max_rows,
+                )
+                if not chart_table:
+                    continue
+                tables.append(chart_table)
+                stats["docx_chart_xml_parsed"] = int(stats.get("docx_chart_xml_parsed", 0) or 0) + 1
+        return tables, stats
+
+    def _find_matching_pdf_figure_index(self, *, chart_title: str, figure_blocks: FigureBlocks) -> Optional[int]:
+        title_norm = self._normalize_token_for_compare(chart_title)
+        if not title_norm:
+            return None
+        title_marker = self._extract_figure_marker(chart_title)
+        best_idx: Optional[int] = None
+        best_score = 0
+        for idx, figure in enumerate(figure_blocks):
+            caption = self._normalize_text(str(figure.get("caption", "") or ""))
+            caption_norm = self._normalize_token_for_compare(caption)
+            if not caption_norm:
+                continue
+            score = 0
+            if title_norm == caption_norm:
+                score += 100
+            elif title_norm in caption_norm or caption_norm in title_norm:
+                score += 85
+            if title_marker and title_marker == self._extract_figure_marker(caption):
+                score += 35
+            overlap = len(set(title_norm) & set(caption_norm))
+            score += min(20, overlap)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        if best_score < 40:
+            return None
+        return best_idx
+
+    @staticmethod
+    def _extract_figure_marker(text: str) -> str:
+        match = re.search(
+            r"(?:图|fig(?:ure)?)[\s._:-]*([0-9A-Za-z一二三四五六七八九十百千]+)",
+            str(text or ""),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return ""
+        return str(match.group(1) or "").strip().lower()
+
+    def _table_block_to_dataframe(self, table: Dict[str, Any]) -> Tuple[List[str], List[List[str]]]:
+        headers = [self._normalize_text(str(item or "")) for item in (table.get("headers") if isinstance(table.get("headers"), list) else [])]
+        headers = [item for item in headers if item]
+        rows_out: List[List[str]] = []
+        for row in table.get("rows") if isinstance(table.get("rows"), list) else []:
+            if not isinstance(row, dict):
+                continue
+            cells = row.get("cells") if isinstance(row.get("cells"), list) else []
+            ordered = sorted(
+                [cell for cell in cells if isinstance(cell, dict)],
+                key=lambda item: int(item.get("col_index", 0) or 0),
+            )
+            values = [self._normalize_text(str(cell.get("text", "") or "")) for cell in ordered]
+            if any(values):
+                rows_out.append(values)
+        return headers, rows_out
 
     def _parse_pdf_visual_first(
         self,
@@ -673,6 +849,11 @@ class NativeDocumentParser:
 
         vision = self._get_visual_vision_extractor()
         vision_ready = bool(vision.ready)
+        if vision_ready:
+            try:
+                vision.reset_stats()
+            except Exception:
+                pass
 
         probe_pages = min(page_count, max(3, self.visual_probe_pages))
         probe_chars = 0
@@ -863,6 +1044,12 @@ class NativeDocumentParser:
             "visual_table_source": table_source,
             "visual_figure_source": figure_source,
         }
+        if vision_ready:
+            try:
+                self._last_parse_stats["visual_vision_stats"] = vision.get_stats_snapshot()
+                self._last_parse_stats["visual_vision_last_debug"] = vision.get_last_debug()
+            except Exception:
+                pass
         if self._last_mineru_run_meta:
             self._last_parse_stats["mineru_run"] = dict(self._last_mineru_run_meta)
         self._last_figure_blocks = figure_blocks
@@ -1247,20 +1434,23 @@ class NativeDocumentParser:
         topo_nodes = topology.get("nodes") if isinstance(topology.get("nodes"), list) else []
         topo_edges = topology.get("edges") if isinstance(topology.get("edges"), list) else []
         text_blocks = self._safe_text_list(payload.get("text_blocks"), max_items=10, max_len=180)
-        key_values = payload.get("key_values")
-        if isinstance(key_values, list):
-            for item_raw in key_values[:6]:
-                if not isinstance(item_raw, dict):
-                    continue
-                name = self._normalize_text(str(item_raw.get("name", "") or ""))
-                value = self._normalize_text(str(item_raw.get("value", "") or ""))
-                unit = self._normalize_text(str(item_raw.get("unit", "") or ""))
-                if not name and not value:
-                    continue
-                if unit:
-                    insights.append(f"{name}: {value} {unit}".strip())
-                else:
-                    insights.append(f"{name}: {value}".strip())
+        key_values = self._normalize_figure_key_values(payload.get("key_values"), max_items=6)
+        for item_raw in key_values:
+            name = self._normalize_text(item_raw.get("name", ""))
+            value = self._normalize_text(item_raw.get("value", ""))
+            unit = self._normalize_text(item_raw.get("unit", ""))
+            if unit:
+                insights.append(f"{name}: {value} {unit}".strip())
+            else:
+                insights.append(f"{name}: {value}".strip())
+        df_headers, df_rows, dataframe_source = self._coerce_figure_dataframe(
+            headers=df_headers,
+            rows=df_rows,
+            key_values=key_values,
+            fallback_texts=text_blocks + insights,
+            x_axis=x_axis,
+            y_axis=y_axis,
+        )
         if x_axis:
             insights.append(f"x-axis: {x_axis}")
         if y_axis:
@@ -1273,6 +1463,12 @@ class NativeDocumentParser:
             insights.append(f"dataframe: {len(df_rows)}x{max(len(r) for r in df_rows)}")
         if topo_nodes or topo_edges:
             insights.append(f"topology: nodes={len(topo_nodes)}, edges={len(topo_edges)}")
+        if (df_headers and df_rows) and "dataframe" not in content_modes:
+            content_modes.append("dataframe")
+        if (topo_nodes or topo_edges) and "topology" not in content_modes:
+            content_modes.append("topology")
+        if text_blocks and "text" not in content_modes:
+            content_modes.append("text")
         insights = [self._normalize_text(x) for x in insights if self._normalize_text(x)]
         if len(insights) > 8:
             insights = insights[:8]
@@ -1311,6 +1507,7 @@ class NativeDocumentParser:
                 "headers": df_headers,
                 "rows": df_rows,
             },
+            "dataframe_source": dataframe_source,
             "topology": {
                 "nodes": topo_nodes[:20],
                 "edges": topo_edges[:30],
@@ -3347,7 +3544,8 @@ class NativeDocumentParser:
                 if not image_png:
                     continue
 
-                payload = self._gemini_vision_extract_payload(image_png)
+                focus = self._vision_focus_from_page_lines(page_lines.get(page_no, []))
+                payload = self._gemini_vision_extract_payload(image_png, focus=focus)
                 if not payload:
                     consecutive_empty_payload += 1
                     if consecutive_empty_payload >= self.gemini_vision_consecutive_fail_stop:
@@ -3710,6 +3908,90 @@ class NativeDocumentParser:
             out.append(text)
         return out
 
+    def _normalize_figure_key_values(self, values: Any, *, max_items: int = 8) -> List[Dict[str, str]]:
+        if not isinstance(values, list):
+            return []
+        out: List[Dict[str, str]] = []
+        for item in values[:max_items]:
+            if not isinstance(item, dict):
+                continue
+            name = self._normalize_text(str(item.get("name", "") or ""))
+            value = self._normalize_text(str(item.get("value", "") or ""))
+            unit = self._normalize_text(str(item.get("unit", "") or ""))
+            if not name and not value:
+                continue
+            out.append({"name": name, "value": value, "unit": unit})
+        return out
+
+    def _coerce_figure_dataframe(
+        self,
+        *,
+        headers: List[str],
+        rows: List[List[str]],
+        key_values: List[Dict[str, str]],
+        fallback_texts: List[str],
+        x_axis: str = "",
+        y_axis: str = "",
+    ) -> Tuple[List[str], List[List[str]], str]:
+        normalized_headers = [self._normalize_text(str(x or "")) for x in headers if self._normalize_text(str(x or ""))]
+        normalized_rows: List[List[str]] = []
+        for row in rows[:8]:
+            vals = [self._normalize_text(str(cell or "")) for cell in row[:10]]
+            if any(vals):
+                normalized_rows.append(vals)
+
+        if normalized_rows:
+            if not normalized_headers:
+                max_cols = max((len(row) for row in normalized_rows), default=0)
+                if max_cols == 2 and (x_axis or y_axis):
+                    normalized_headers = [
+                        self._normalize_text(x_axis or "维度"),
+                        self._normalize_text(y_axis or "数值"),
+                    ]
+                elif max_cols == 3:
+                    normalized_headers = ["指标", "值", "单位"]
+                elif max_cols > 0:
+                    normalized_headers = [f"列{i + 1}" for i in range(max_cols)]
+            return normalized_headers[:10], normalized_rows[:8], "model"
+
+        key_value_rows: List[List[str]] = []
+        for item in key_values[:8]:
+            name = self._normalize_text(item.get("name", ""))
+            value = self._normalize_text(item.get("value", ""))
+            unit = self._normalize_text(item.get("unit", ""))
+            if not name and not value:
+                continue
+            key_value_rows.append([name or f"指标{len(key_value_rows) + 1}", value, unit])
+        if key_value_rows:
+            return ["指标", "值", "单位"], key_value_rows[:8], "key_values"
+
+        parsed_rows: List[List[str]] = []
+        for raw in fallback_texts[:10]:
+            text = self._normalize_text(str(raw or ""))
+            if not text:
+                continue
+            m = re.match(
+                r"^(.{1,72}?)[：:]\s*([-+]?(?:\d[\d,]*\.?\d*|\d*\.?\d+)(?:[%％‰])?)\s*([A-Za-z\u4e00-\u9fa5/°℃μ\-]{0,18})$",
+                text,
+            )
+            if not m:
+                m = re.match(
+                    r"^(.{1,56}?)\s+([-+]?(?:\d[\d,]*\.?\d*|\d*\.?\d+)(?:[%％‰])?)\s*([A-Za-z\u4e00-\u9fa5/°℃μ\-]{0,18})$",
+                    text,
+                )
+            if not m:
+                continue
+            label = self._normalize_text(m.group(1))
+            value = self._normalize_text(m.group(2))
+            unit = self._normalize_text(m.group(3))
+            if not label or not value:
+                continue
+            parsed_rows.append([label, value, unit])
+        if parsed_rows:
+            return ["指标", "值", "单位"], parsed_rows[:8], "text_blocks"
+
+        return normalized_headers[:10], [], "none"
+
     def _infer_figures_from_page_lines(
         self,
         page_lines: Dict[int, List[str]],
@@ -3816,6 +4098,23 @@ class NativeDocumentParser:
                 vals = [self._normalize_text(str(v or "")) for v in row[:10]]
                 if any(vals):
                     df_rows.append(vals)
+            key_values = self._normalize_figure_key_values(figure_raw.get("key_values"), max_items=6)
+            for item in key_values:
+                name = self._normalize_text(item.get("name", ""))
+                value = self._normalize_text(item.get("value", ""))
+                unit = self._normalize_text(item.get("unit", ""))
+                if unit:
+                    insights.append(f"{name}: {value} {unit}".strip())
+                else:
+                    insights.append(f"{name}: {value}".strip())
+            df_headers, df_rows, dataframe_source = self._coerce_figure_dataframe(
+                headers=df_headers,
+                rows=df_rows,
+                key_values=key_values,
+                fallback_texts=text_blocks + key_points + insights,
+                x_axis=x_axis,
+                y_axis=y_axis,
+            )
             if df_headers and df_rows:
                 insights.append(f"dataframe: {len(df_rows)}x{max(len(r) for r in df_rows)}")
 
@@ -3906,6 +4205,7 @@ class NativeDocumentParser:
                         "headers": df_headers,
                         "rows": df_rows,
                     },
+                    "dataframe_source": dataframe_source,
                     "topology": {
                         "nodes": topo_nodes,
                         "edges": topo_edges,
@@ -3918,6 +4218,24 @@ class NativeDocumentParser:
     def _merge_figure_blocks(self, left: FigureBlocks, right: FigureBlocks) -> FigureBlocks:
         if not left and not right:
             return []
+
+        def _figure_deep_score(item: Dict[str, Any]) -> int:
+            score = 0
+            key_points = item.get("key_points") if isinstance(item.get("key_points"), list) else []
+            insights = item.get("insights") if isinstance(item.get("insights"), list) else []
+            text_blocks = item.get("text_blocks") if isinstance(item.get("text_blocks"), list) else []
+            dataframe = item.get("dataframe") if isinstance(item.get("dataframe"), dict) else {}
+            df_rows = dataframe.get("rows") if isinstance(dataframe.get("rows"), list) else []
+            if key_points:
+                score += min(3, len(key_points))
+            if insights:
+                score += min(2, len(insights))
+            if text_blocks:
+                score += 1
+            if df_rows:
+                score += 4
+            return score
+
         merged: Dict[Tuple[int, str], Dict[str, Any]] = {}
         passthrough: List[Dict[str, Any]] = []
         for figure in list(left) + list(right):
@@ -3953,6 +4271,21 @@ class NativeDocumentParser:
         for page_no in sorted(by_page.keys()):
             items = by_page.get(page_no, [])
             caption_items = [x for x in items if "_caption" in str(x.get("source", ""))]
+            rich_items = [x for x in items if _figure_deep_score(x) > 0]
+            if rich_items:
+                if caption_items:
+                    caption_candidates = [str(x.get("caption") or "").strip() for x in caption_items if str(x.get("caption") or "").strip()]
+                    first_caption = caption_candidates[0] if caption_candidates else ""
+                    merged_rich: List[Dict[str, Any]] = []
+                    for item in rich_items:
+                        candidate = dict(item)
+                        if (not str(candidate.get("caption") or "").strip()) and first_caption:
+                            candidate["caption"] = first_caption
+                        merged_rich.append(candidate)
+                    pruned.extend(merged_rich)
+                else:
+                    pruned.extend(rich_items)
+                continue
             if caption_items:
                 # OCR/native caption items are generally more stable on scanned pages;
                 # avoid double-counting with additional vision figures on the same page.
@@ -3981,28 +4314,125 @@ class NativeDocumentParser:
         except Exception:
             return b""
 
-    def _gemini_vision_extract_payload(self, image_png: bytes) -> Optional[Dict[str, Any]]:
-        text = self._gemini_vision_generate(image_png)
+    def _vision_focus_from_page_lines(self, lines: List[str]) -> str:
+        cue_text = " ".join([str(line or "") for line in lines[:40]])
+        figure_hits = sum(1 for line in lines[:32] if self._contains_figure_marker(str(line or "")))
+        figure_like = self._looks_like_figure_cue_text(cue_text) or figure_hits >= 2
+        table_like = self._looks_like_table_cue_text(cue_text)
+        if figure_like and not table_like:
+            return "figure"
+        if table_like and not figure_like:
+            return "table"
+        return "mixed"
+
+    def _gemini_vision_extract_payload(self, image_png: bytes, focus: str = "mixed") -> Optional[Dict[str, Any]]:
+        text = self._gemini_vision_generate(image_png, focus=focus)
         if not text:
             return None
         return self._extract_json_object(text)
 
-    def _gemini_vision_generate(self, image_png: bytes) -> str:
+    def _gemini_vision_generate(self, image_png: bytes, focus: str = "mixed") -> str:
         api_key = self._gemini_api_key()
         if not api_key:
             return ""
 
-        prompt = (
-            "Extract visible structured information from this page image. "
-            "Return strict JSON only with shape: "
-            "{\"tables\":[{\"title\":\"\",\"headers\":[\"...\"],\"rows\":[[\"...\"],...],\"confidence\":0.0}],"
-            "\"figures\":[{\"title\":\"\",\"type\":\"chart|diagram|photo|other\",\"caption\":\"\",\"key_points\":[\"...\"],"
-            "\"axes\":{\"x\":\"\",\"y\":\"\"},\"legend\":[\"...\"],\"confidence\":0.0}],"
-            "\"insights\":[\"...\"]}. "
-            "Use empty arrays when absent. "
-            "Do not include markdown fences."
-        )
-        model = self.gemini_vision_model.strip() or "gemini-2.5-flash"
+        focus_key = str(focus or "mixed").strip().lower()
+        if focus_key not in {"mixed", "table", "figure"}:
+            focus_key = "mixed"
+
+        if focus_key == "figure":
+            prompt = (
+                "Extract visible figure and chart information from this page image. "
+                "Return strict JSON only, with no markdown fences. "
+                "Return at most 4 figures. Do not return tables. "
+                "Use this exact schema: "
+                "{\"tables\":[],"
+                "\"figures\":[{"
+                "\"title\":\"\","
+                "\"type\":\"chart|diagram|photo|other\","
+                "\"caption\":\"\","
+                "\"content_modes\":[\"dataframe|topology|text|visual\"],"
+                "\"key_points\":[\"...\"],"
+                "\"key_values\":[{\"name\":\"\",\"value\":\"\",\"unit\":\"\"}],"
+                "\"axes\":{\"x\":\"\",\"y\":\"\"},"
+                "\"legend\":[\"...\"],"
+                "\"text_blocks\":[\"...\"],"
+                "\"dataframe\":{\"headers\":[\"...\"],\"rows\":[[\"...\"],...]},"
+                "\"topology\":{\"nodes\":[{\"id\":\"\",\"label\":\"\",\"type\":\"\"}],\"edges\":[{\"source\":\"\",\"target\":\"\",\"label\":\"\"}]},"
+                "\"confidence\":0.0"
+                "}],"
+                "\"insights\":[\"...\"]}. "
+                "Keep output compact. For each figure, keep at most 4 key points, 4 text blocks, 6 dataframe rows, and 6 dataframe headers. "
+                "If exact numeric values are visible, prefer dataframe and key_values over long prose. "
+                "Do not invent values that are not visible."
+            )
+        elif focus_key == "table":
+            prompt = (
+                "Extract visible table information from this page image. "
+                "Return strict JSON only, with no markdown fences. "
+                "Return at most 3 tables. Do not return figures. "
+                "Use this exact schema: "
+                "{\"tables\":[{"
+                "\"title\":\"\","
+                "\"caption\":\"\","
+                "\"headers\":[\"...\"],"
+                "\"rows\":[[\"...\"],...],"
+                "\"notes\":[\"...\"],"
+                "\"confidence\":0.0"
+                "}],"
+                "\"figures\":[],"
+                "\"insights\":[\"...\"]}. "
+                "Keep output compact. For each table, keep at most 8 rows and 8 columns. "
+                "Do not invent values that are not visible."
+            )
+        else:
+            prompt = (
+                "Extract visible structured information from this page image. "
+                "Return strict JSON only, with no markdown fences. "
+                "Use this exact schema: "
+                "{\"tables\":[{\"title\":\"\",\"caption\":\"\",\"headers\":[\"...\"],\"rows\":[[\"...\"],...],\"notes\":[\"...\"],\"confidence\":0.0}],"
+                "\"figures\":[{\"title\":\"\",\"type\":\"chart|diagram|photo|other\",\"caption\":\"\",\"content_modes\":[\"dataframe|topology|text|visual\"],"
+                "\"key_points\":[\"...\"],\"key_values\":[{\"name\":\"\",\"value\":\"\",\"unit\":\"\"}],\"axes\":{\"x\":\"\",\"y\":\"\"},"
+                "\"legend\":[\"...\"],\"text_blocks\":[\"...\"],\"dataframe\":{\"headers\":[\"...\"],\"rows\":[[\"...\"],...]},"
+                "\"topology\":{\"nodes\":[{\"id\":\"\",\"label\":\"\",\"type\":\"\"}],\"edges\":[{\"source\":\"\",\"target\":\"\",\"label\":\"\"}]},\"confidence\":0.0}],"
+                "\"insights\":[\"...\"]}. "
+                "Keep output compact. Return at most 2 tables and 3 figures. "
+                "For charts, keep at most 6 dataframe rows and 6 headers. "
+                "Do not invent values that are not visible."
+            )
+
+        model = self.gemini_vision_model.strip() or "gemini-3-pro"
+        base_url = resolve_llm_base_url()
+        if base_url:
+            provider = OpenAICompatibleChatProvider(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                temperature=0.0,
+                max_tokens=self.gemini_vision_max_output_tokens,
+                timeout_sec=self.gemini_vision_timeout_sec,
+            )
+            if not provider.configured:
+                return ""
+            data_url = f"data:image/png;base64,{base64.b64encode(image_png).decode('ascii')}"
+            try:
+                result = provider.complete(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": data_url}},
+                            ],
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=self.gemini_vision_max_output_tokens,
+                )
+            except Exception:
+                return ""
+            return str(result.content or "").strip()
+
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{urllib.parse.quote(model, safe='')}:generateContent"
@@ -4087,6 +4517,36 @@ class NativeDocumentParser:
                 return payload
         except json.JSONDecodeError:
             pass
+
+        start = raw.find("{")
+        if start >= 0:
+            depth = 0
+            in_string = False
+            escape_next = False
+            for index, ch in enumerate(raw[start:], start=start):
+                if in_string:
+                    if escape_next:
+                        escape_next = False
+                    elif ch == "\\":
+                        escape_next = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+                if ch == '"':
+                    in_string = True
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        chunk = raw[start : index + 1]
+                        try:
+                            payload = json.loads(chunk)
+                            if isinstance(payload, dict):
+                                return payload
+                        except json.JSONDecodeError:
+                            pass
 
         starts = [idx for idx, ch in enumerate(raw) if ch == "{"]
         ends = [idx for idx, ch in enumerate(raw) if ch == "}"]
@@ -5100,7 +5560,14 @@ class NativeDocumentParser:
                 )
                 out_cells.append(out)
             if out_cells:
-                decorated.append({"row_index": row_idx, "cells": out_cells})
+                source_row_index = int(row.get("row_index", row_idx) or row_idx)
+                decorated.append(
+                    {
+                        "row_index": row_idx,
+                        "source_row_index": source_row_index,
+                        "cells": out_cells,
+                    }
+                )
                 row_idx += 1
         return decorated
 
@@ -6372,6 +6839,12 @@ class NativeDocumentParser:
             return result
 
         cleaned = re.sub(r"[,\uFF0C\s]", "", raw)
+        numeric_matches = list(re.finditer(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", cleaned))
+        if len(numeric_matches) > 1:
+            # Composite OCR cells like "1730.4万人，固定资产原价8610.0亿" are too ambiguous
+            # to coerce into one stable numeric_value here. Keep them as text so later
+            # extraction can treat them as cautious evidence instead of a confident wrong number.
+            return result
         sci_text = cleaned.replace("×", "x").replace("X", "x").replace("＊", "x").replace("−", "-")
         sci_match = re.search(r"([-+]?\d*\.?\d+)\s*[x*]\s*10(?:\^)?\s*([-+]?\d+)", sci_text)
         if sci_match:
@@ -6384,7 +6857,7 @@ class NativeDocumentParser:
             except (ValueError, OverflowError):
                 return result
         else:
-            m = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", cleaned)
+            m = numeric_matches[0] if numeric_matches else None
             if not m:
                 return result
             try:
@@ -6392,14 +6865,15 @@ class NativeDocumentParser:
             except (ValueError, OverflowError):
                 return result
 
+        suffix = cleaned[m.end() :] if not sci_match and m else ""
         scale = 1.0
-        if "\u4ebf" in raw:
+        if suffix.startswith("\u4ebf"):
             scale *= 1e8
-        elif "\u4e07" in raw:
+        elif suffix.startswith("\u4e07"):
             scale *= 1e4
-        elif "\u5343" in raw:
+        elif suffix.startswith("\u5343"):
             scale *= 1e3
-        elif "\u767e" in raw:
+        elif suffix.startswith("\u767e"):
             scale *= 1e2
 
         try:

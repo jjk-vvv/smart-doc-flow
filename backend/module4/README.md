@@ -10,6 +10,13 @@ Global knowledge graph and risk intelligence service.
 pip install -r requirements.txt
 ```
 
+Module 4 GraphRAG execution is aligned to the project `ragtest` baseline and now expects:
+
+- `graphrag==0.3.0`
+- `pandas`
+- `neo4j`
+- `pyarrow`
+
 2. Copy environment file:
 
 ```powershell
@@ -31,6 +38,27 @@ uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
 ```powershell
 npm run dev:module4
 ```
+
+## Runtime Readiness
+
+Use the health endpoint to distinguish a basic local runtime check from a deeper dependency reachability check:
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8100/module4/healthz
+Invoke-WebRequest http://127.0.0.1:8100/module4/healthz?probe=deep
+```
+
+`probe=basic` reports whether Module 4 has the local prerequisites to run GraphRAG:
+
+- python executable available
+- `graphrag` importable in that python runtime
+- prompt assets present
+- GraphRAG runtime configuration populated
+
+`probe=deep` additionally attempts to reach:
+
+- OneAPI status endpoint derived from `MODULE4_GRAPHRAG_API_BASE`
+- Neo4j using the configured credentials
 
 ## Main APIs
 
@@ -70,4 +98,5 @@ Rules are stored in `module4.rules` and are applied during `ingest`.
 - `POST /module4/rebuild` clears tenant graph data and replays saved ingest batches for that tenant.
 - In-flight ingest / rebuild jobs are re-queued on graceful shutdown so they can be recovered on the next startup when PostgreSQL is available.
 - `GET /module4/healthz` returns `status=degraded` when the service is running in memory fallback mode.
+- `GET /module4/healthz` also reports GraphRAG runtime readiness. Use `probe=deep` when you want live OneAPI and Neo4j reachability checks.
 - Tenant-scoped APIs can resolve tenant from request body/query or the `X-Tenant-Id` header.

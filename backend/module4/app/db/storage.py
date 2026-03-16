@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,64 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _rewrite_localhost_dsn(dsn: str, replacement_host: str = "127.0.0.1") -> str | None:
+    raw = str(dsn or "").strip()
+    if not raw:
+        return None
+    try:
+        parts = urlsplit(raw)
+    except Exception:
+        return None
+    if not parts.scheme or not parts.hostname or parts.hostname.lower() != "localhost":
+        return None
+
+    auth = ""
+    if parts.username is not None:
+        auth = parts.username
+        if parts.password is not None:
+            auth = f"{auth}:{parts.password}"
+        auth = f"{auth}@"
+    host = replacement_host
+    if parts.port is not None:
+        host = f"{host}:{parts.port}"
+    rewritten = SplitResult(
+        scheme=parts.scheme,
+        netloc=f"{auth}{host}",
+        path=parts.path,
+        query=parts.query,
+        fragment=parts.fragment,
+    )
+    return urlunsplit(rewritten)
+
+
+def _dsn_connection_candidates(dsn: str) -> List[str]:
+    raw = str(dsn or "").strip()
+    if not raw:
+        return []
+    candidates = [raw]
+    fallback = _rewrite_localhost_dsn(raw)
+    if fallback and fallback not in candidates:
+        candidates.append(fallback)
+    return candidates
+
+
+async def _configure_asyncpg_connection(conn: Any) -> None:
+    await conn.set_type_codec(
+        "json",
+        schema="pg_catalog",
+        encoder=json.dumps,
+        decoder=json.loads,
+        format="text",
+    )
+    await conn.set_type_codec(
+        "jsonb",
+        schema="pg_catalog",
+        encoder=json.dumps,
+        decoder=json.loads,
+        format="text",
+    )
+
+
 class Module4Storage:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -145,10 +204,25 @@ class Module4Storage:
             import asyncpg
 
             connect_timeout = _safe_float(os.getenv("MODULE4_DB_CONNECT_TIMEOUT_SEC", "3"), 3.0)
-            self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=10, timeout=connect_timeout)
-            await self._init_schema()
-            self._degraded_memory_mode = False
-            self._last_connect_error = ""
+            connect_errors: List[str] = []
+            for candidate_dsn in _dsn_connection_candidates(self._dsn):
+                try:
+                    self._pool = await asyncpg.create_pool(
+                        candidate_dsn,
+                        min_size=1,
+                        max_size=10,
+                        timeout=connect_timeout,
+                        init=_configure_asyncpg_connection,
+                    )
+                    await self._init_schema()
+                    self._degraded_memory_mode = False
+                    self._last_connect_error = ""
+                    break
+                except Exception as exc:
+                    self._pool = None
+                    connect_errors.append(f"{candidate_dsn} -> {type(exc).__name__}: {exc}")
+            if self._pool is None:
+                raise RuntimeError(" | ".join(connect_errors) or "No valid database connection candidates")
         except Exception as exc:
             self._pool = None
             self._degraded_memory_mode = True

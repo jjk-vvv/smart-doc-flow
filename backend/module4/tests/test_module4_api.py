@@ -7,6 +7,8 @@ import time
 import uuid
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,6 +20,14 @@ os.environ["MODULE4_FORCE_MEMORY_MODE"] = "1"
 import app.main as module4_main  # noqa: E402
 from app.main import app  # noqa: E402
 from app.schemas import IngestRequest  # noqa: E402
+from app.services import (  # noqa: E402
+    GraphRAGDependencyProbe,
+    GraphRAGRuntimeProbe,
+    GraphRAGRuntimeSettings,
+    GraphRAGWorkspaceBuilder,
+    Neo4jSettings,
+    PromptRegistry,
+)
 
 
 def _wait_job_success(client: TestClient, job_id: str, tenant_id: str, timeout_s: float = 6.0) -> dict:
@@ -30,6 +40,11 @@ def _wait_job_success(client: TestClient, job_id: str, tenant_id: str, timeout_s
             return row
         time.sleep(0.05)
     raise AssertionError("job timeout")
+
+
+def _write_parquet(path: Path, rows: list[dict]) -> None:
+    table = pa.Table.from_pylist(rows)
+    pq.write_table(table, path)
 
 
 def test_ingest_graph_alert_and_evidence_flow() -> None:
@@ -146,6 +161,180 @@ def test_repeated_ingest_is_idempotent_for_same_payload() -> None:
         evidence_after = client.get(f"/module4/evidence?tenant_id={tenant_id}&page=1&page_size=50").json()
         assert alerts_after["total"] == alerts_before["total"]
         assert evidence_after["total"] == evidence_before["total"]
+
+
+def test_upload_sync_endpoint_is_idempotent_for_same_uploads(monkeypatch: pytest.MonkeyPatch) -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+    payload = {
+        "tenant_id": tenant_id,
+        "source": "module2",
+        "graph_mode": "hybrid",
+        "uploads": [
+            {
+                "file_name": "upload.txt",
+                "file_hash": f"hash-{uuid.uuid4().hex[:8]}",
+                "artifact_path": "D:/artifacts/upload.txt",
+                "artifact_url": "/artifacts/upload.txt",
+                "mime_type": "text/plain",
+            }
+        ],
+    }
+
+    async def fake_run_upload_ingest_job(job_id: str, batch_id: str, ingest_payload: IngestRequest) -> dict:
+        return {
+            "stage": "ready",
+            "workspace_id": f"ws-{batch_id[:8]}",
+            "workspace_dir": "D:/module4/workspaces/test",
+            "uploads": len(ingest_payload.uploads),
+            "documents": 0,
+            "nodes": 3,
+            "edges": 2,
+            "communities": 1,
+        }
+
+    monkeypatch.setattr(module4_main, "_run_upload_ingest_job", fake_run_upload_ingest_job)
+
+    with TestClient(app) as client:
+        first = client.post("/module4/sync/uploads", json=payload)
+        assert first.status_code == 200, first.text
+        first_job = _wait_job_success(client, first.json()["job_id"], tenant_id)
+        assert first_job["status"] == "success"
+        assert first_job["result"]["uploads"] == 1
+        assert first_job["result"]["workspace_id"].startswith("ws-")
+
+        second = client.post("/module4/sync/uploads", json=payload)
+        assert second.status_code == 200, second.text
+        second_payload = second.json()
+        assert second_payload["job_id"] == first.json()["job_id"]
+        assert second_payload["batch_id"] == first.json()["batch_id"]
+        assert second_payload["status"] == "success"
+
+
+def test_upload_sync_falls_back_to_partial_artifacts_when_indexing_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+
+    runtime = GraphRAGRuntimeSettings(
+        module4_root=MODULE4_DIR,
+        workspaces_root=tmp_path / "workspaces",
+        prompt_assets_root=(MODULE4_DIR / "assets" / "prompts").resolve(),
+        api_base="http://oneapi.example/v1",
+        chat_api_key="chat-secret",
+        chat_model="qwen-turbo",
+        embedding_api_key="embed-secret",
+        embedding_model="text-embedding-v1",
+    )
+    builder = GraphRAGWorkspaceBuilder(
+        runtime=runtime,
+        prompt_registry=PromptRegistry(
+            asset_root=runtime.prompt_assets_root,
+            overrides=runtime.prompt_overrides(),
+        ),
+        neo4j=Neo4jSettings(uri="neo4j://example", username="neo4j", password="secret", database="neo4j"),
+    )
+    monkeypatch.setattr(module4_main, "workspace_builder", builder)
+
+    monkeypatch.setattr(
+        module4_main.graphrag_indexer,
+        "probe",
+        lambda *_args, **_kwargs: GraphRAGRuntimeProbe(
+            ready=True,
+            check_mode="deep",
+            python_bin="python",
+            python_bin_exists=True,
+            graphrag_module_available=True,
+            module_error_message=None,
+            prompt_assets_root=str(runtime.prompt_assets_root),
+            prompt_assets_ok=True,
+            missing_prompt_assets=[],
+            config_missing_fields=[],
+            oneapi=GraphRAGDependencyProbe(configured=True, reachable=True),
+            neo4j=GraphRAGDependencyProbe(configured=True, reachable=True),
+        ),
+    )
+
+    def fake_run(workspace_dir: Path) -> object:
+        artifacts_dir = workspace_dir / "output" / "20260101-000000" / "artifacts"
+        reports_dir = workspace_dir / "output" / "20260101-000000" / "reports"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        _write_parquet(
+            artifacts_dir / "create_base_text_units.parquet",
+            [
+                {
+                    "id": "chunk-1",
+                    "chunk": "Qingniu Town is located in Linhai New District.",
+                    "chunk_id": "chunk-1",
+                    "document_ids": ["doc-1"],
+                    "n_tokens": 16,
+                }
+            ],
+        )
+        graphml = """
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="d0" for="node" attr.name="type" attr.type="string" />
+  <key id="d1" for="node" attr.name="description" attr.type="string" />
+  <key id="d2" for="node" attr.name="source_id" attr.type="string" />
+  <key id="d3" for="edge" attr.name="description" attr.type="string" />
+  <key id="d4" for="edge" attr.name="weight" attr.type="double" />
+  <key id="d5" for="edge" attr.name="source_id" attr.type="string" />
+  <graph edgedefault="undirected">
+    <node id="QINGNIU TOWN">
+      <data key="d0">GEO</data>
+      <data key="d1">A town in Linhai New District</data>
+      <data key="d2">chunk-1</data>
+    </node>
+    <node id="LINHAI NEW DISTRICT">
+      <data key="d0">GEO</data>
+      <data key="d1">A district that contains Qingniu Town</data>
+      <data key="d2">chunk-1</data>
+    </node>
+    <edge source="QINGNIU TOWN" target="LINHAI NEW DISTRICT">
+      <data key="d3">Qingniu Town is located in Linhai New District</data>
+      <data key="d4">2</data>
+      <data key="d5">chunk-1</data>
+    </edge>
+  </graph>
+</graphml>
+""".strip()
+        _write_parquet(artifacts_dir / "create_summarized_entities.parquet", [{"entity_graph": graphml}])
+        raise RuntimeError(f"GraphRAG index failed with exit code 1. See {workspace_dir / 'graphrag-index.log'}")
+
+    monkeypatch.setattr(module4_main.graphrag_indexer, "run", fake_run)
+
+    payload = {
+        "tenant_id": tenant_id,
+        "source": "module2",
+        "graph_mode": "hybrid",
+        "uploads": [
+            {
+                "file_name": "sample.txt",
+                "file_hash": f"hash-{uuid.uuid4().hex[:8]}",
+                "mime_type": "text/plain",
+                "text_content": "Qingniu Town is located in Linhai New District.",
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        ingest_resp = client.post("/module4/sync/uploads", json=payload)
+        assert ingest_resp.status_code == 200, ingest_resp.text
+        final_job = _wait_job_success(client, ingest_resp.json()["job_id"], tenant_id)
+        assert final_job["status"] == "success", final_job
+        assert final_job["result"]["partial"] is True
+        assert final_job["result"]["mode"] == "partial"
+        assert final_job["result"]["index_status"] == "partial"
+
+        graph_resp = client.get(f"/module4/graph?tenant_id={tenant_id}&limit_nodes=100&limit_edges=100")
+        assert graph_resp.status_code == 200
+        graph = graph_resp.json()
+        node_types = {node["node_type"] for node in graph["nodes"]}
+        relation_types = {edge["relation_type"] for edge in graph["edges"]}
+        assert {"Document", "Chunk", "Entity"}.issubset(node_types)
+        assert {"PART_OF", "HAS_ENTITY", "RELATED"}.issubset(relation_types)
 
 
 def test_neighborhood_returns_exact_node_context() -> None:
@@ -303,7 +492,25 @@ def test_job_and_alert_actions_are_tenant_scoped() -> None:
         assert correct_ack.json()["alert"]["status"] == "ack"
 
 
-def test_healthz_reports_degraded_in_memory_mode() -> None:
+def test_healthz_reports_degraded_in_memory_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        module4_main.graphrag_indexer,
+        "probe",
+        lambda *_args, **_kwargs: GraphRAGRuntimeProbe(
+            ready=False,
+            check_mode="basic",
+            python_bin="python",
+            python_bin_exists=False,
+            graphrag_module_available=False,
+            module_error_message="Configured python executable not found: python",
+            prompt_assets_root=str(MODULE4_DIR / "assets" / "prompts"),
+            prompt_assets_ok=True,
+            missing_prompt_assets=[],
+            config_missing_fields=[],
+            oneapi=GraphRAGDependencyProbe(configured=True, reachable=None),
+            neo4j=GraphRAGDependencyProbe(configured=False, reachable=None, missing_fields=["MODULE4_NEO4J_URI"]),
+        ),
+    )
     with TestClient(app) as client:
         resp = client.get("/module4/healthz")
         assert resp.status_code == 200
@@ -312,6 +519,8 @@ def test_healthz_reports_degraded_in_memory_mode() -> None:
         assert payload["db_connected"] is False
         assert payload["degraded_memory_mode"] is True
         assert payload["last_connect_error"]
+        assert payload["graphrag"]["ready"] is False
+        assert payload["graphrag"]["graphrag_module_available"] is False
 
 
 def test_cancelled_ingest_job_is_requeued_for_recovery(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -7,6 +7,9 @@ export type Module4GraphNode = {
   display_name: string;
   confidence: number;
   attrs: Record<string, unknown>;
+  updated_at?: string | null;
+  type_label?: string;
+  category?: string;
 };
 
 export type Module4GraphEdge = {
@@ -18,6 +21,8 @@ export type Module4GraphEdge = {
   confidence: number;
   risk_score: number;
   attrs: Record<string, unknown>;
+  updated_at?: string | null;
+  relation_label?: string;
 };
 
 export type Module4GraphResponse = {
@@ -29,13 +34,15 @@ export type Module4GraphResponse = {
     by_node_type: Record<string, number>;
     by_relation_type: Record<string, number>;
   };
+  source?: string;
+  workspace_id?: string | null;
 };
 
 export type Module4AlertItem = {
   alert_id: string;
   rule_id: string;
-  severity: "yellow" | "orange" | "red";
-  status: "open" | "ack" | "resolved" | "false_positive";
+  severity: 'yellow' | 'orange' | 'red';
+  status: 'open' | 'ack' | 'resolved' | 'false_positive';
   subject_node_id?: string | null;
   title: string;
   summary: string;
@@ -77,6 +84,11 @@ export type Module4IngestResponse = {
   status: string;
 };
 
+export type Module4NodeDetailResponse = {
+  node: Module4GraphNode | null;
+  graph: Module4GraphResponse;
+};
+
 const ensureOk = async (res: Response) => {
   if (res.ok) return;
   const text = await res.text();
@@ -88,15 +100,18 @@ export const ingestModule4Documents = async (
   params?: { tenantId?: string; sourceBatchKey?: string }
 ): Promise<Module4IngestResponse | null> => {
   if (!Array.isArray(documents) || documents.length === 0) return null;
+
   const body: Record<string, unknown> = {
-    source: "module2",
+    source: 'module2',
     documents,
   };
+
   if (params?.tenantId) body.tenant_id = params.tenantId;
   if (params?.sourceBatchKey) body.source_batch_key = params.sourceBatchKey;
-  const res = await fetch("/module4/ingest", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+
+  const res = await fetch('/module4/ingest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   await ensureOk(res);
@@ -111,16 +126,53 @@ export const fetchModule4Graph = async (params?: {
   limitEdges?: number;
 }): Promise<Module4GraphResponse> => {
   const query = new URLSearchParams();
-  if (params?.tenantId) query.set("tenant_id", params.tenantId);
-  if (params?.nodeTypes && params.nodeTypes.length > 0) query.set("node_types", params.nodeTypes.join(","));
-  if (params?.relationTypes && params.relationTypes.length > 0) query.set("relation_types", params.relationTypes.join(","));
-  if (params?.limitNodes) query.set("limit_nodes", String(params.limitNodes));
-  if (params?.limitEdges) query.set("limit_edges", String(params.limitEdges));
+  if (params?.tenantId) query.set('tenant_id', params.tenantId);
+  if (params?.nodeTypes?.length) query.set('node_types', params.nodeTypes.join(','));
+  if (params?.relationTypes?.length) query.set('relation_types', params.relationTypes.join(','));
+  if (params?.limitNodes) query.set('limit_nodes', String(params.limitNodes));
+  if (params?.limitEdges) query.set('limit_edges', String(params.limitEdges));
 
-  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const suffix = query.toString() ? `?${query.toString()}` : '';
   const res = await fetch(`/module4/graph${suffix}`);
   await ensureOk(res);
   return (await res.json()) as Module4GraphResponse;
+};
+
+export const fetchModule4Neighborhood = async (
+  nodeId: string,
+  params?: {
+    tenantId?: string;
+    depth?: number;
+    relationTypes?: string[];
+    limit?: number;
+  }
+): Promise<Module4GraphResponse> => {
+  const query = new URLSearchParams();
+  if (params?.tenantId) query.set('tenant_id', params.tenantId);
+  if (params?.depth) query.set('depth', String(params.depth));
+  if (params?.relationTypes?.length) query.set('relation_types', params.relationTypes.join(','));
+  if (params?.limit) query.set('limit', String(params.limit));
+
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const res = await fetch(`/module4/graph/neighborhood/${encodeURIComponent(nodeId)}${suffix}`);
+  await ensureOk(res);
+  return (await res.json()) as Module4GraphResponse;
+};
+
+export const fetchModule4NodeDetail = async (
+  nodeId: string,
+  params?: { tenantId?: string; depth?: number; limit?: number }
+): Promise<Module4NodeDetailResponse> => {
+  const graph = await fetchModule4Neighborhood(nodeId, {
+    tenantId: params?.tenantId,
+    depth: params?.depth ?? 1,
+    limit: params?.limit ?? 160,
+  });
+
+  return {
+    node: graph.nodes.find((item) => item.node_id === nodeId) ?? null,
+    graph,
+  };
 };
 
 export const fetchModule4Alerts = async (params?: {
@@ -131,12 +183,13 @@ export const fetchModule4Alerts = async (params?: {
   pageSize?: number;
 }): Promise<Module4AlertListResponse> => {
   const query = new URLSearchParams();
-  if (params?.tenantId) query.set("tenant_id", params.tenantId);
-  if (params?.status) query.set("status", params.status);
-  if (params?.severity) query.set("severity", params.severity);
-  if (params?.page) query.set("page", String(params.page));
-  if (params?.pageSize) query.set("page_size", String(params.pageSize));
-  const suffix = query.toString() ? `?${query.toString()}` : "";
+  if (params?.tenantId) query.set('tenant_id', params.tenantId);
+  if (params?.status) query.set('status', params.status);
+  if (params?.severity) query.set('severity', params.severity);
+  if (params?.page) query.set('page', String(params.page));
+  if (params?.pageSize) query.set('page_size', String(params.pageSize));
+
+  const suffix = query.toString() ? `?${query.toString()}` : '';
   const res = await fetch(`/module4/alerts${suffix}`);
   await ensureOk(res);
   return (await res.json()) as Module4AlertListResponse;
@@ -144,13 +197,13 @@ export const fetchModule4Alerts = async (params?: {
 
 export const ackModule4Alert = async (
   alertId: string,
-  actor = "user",
-  comment = "",
+  actor = 'user',
+  comment = '',
   tenantId?: string
 ): Promise<void> => {
   const res = await fetch(`/module4/alerts/${encodeURIComponent(alertId)}/ack`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ actor, comment, tenant_id: tenantId }),
   });
   await ensureOk(res);
@@ -158,14 +211,14 @@ export const ackModule4Alert = async (
 
 export const resolveModule4Alert = async (
   alertId: string,
-  actor = "user",
-  comment = "",
-  resolution = "",
+  actor = 'user',
+  comment = '',
+  resolution = '',
   tenantId?: string
 ): Promise<void> => {
   const res = await fetch(`/module4/alerts/${encodeURIComponent(alertId)}/resolve`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ actor, comment, resolution, tenant_id: tenantId }),
   });
   await ensureOk(res);
@@ -176,10 +229,11 @@ export const fetchModule4EvidenceByEdge = async (
   params?: { tenantId?: string; page?: number; pageSize?: number }
 ): Promise<Module4EvidenceListResponse> => {
   const query = new URLSearchParams();
-  if (params?.tenantId) query.set("tenant_id", params.tenantId);
-  if (params?.page) query.set("page", String(params.page));
-  if (params?.pageSize) query.set("page_size", String(params.pageSize));
-  const suffix = query.toString() ? `?${query.toString()}` : "";
+  if (params?.tenantId) query.set('tenant_id', params.tenantId);
+  if (params?.page) query.set('page', String(params.page));
+  if (params?.pageSize) query.set('page_size', String(params.pageSize));
+
+  const suffix = query.toString() ? `?${query.toString()}` : '';
   const res = await fetch(`/module4/evidence/edge/${encodeURIComponent(edgeId)}${suffix}`);
   await ensureOk(res);
   return (await res.json()) as Module4EvidenceListResponse;
