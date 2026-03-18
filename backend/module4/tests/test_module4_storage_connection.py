@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 MODULE4_DIR = Path(__file__).resolve().parents[1]
 if str(MODULE4_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE4_DIR))
@@ -56,10 +58,9 @@ def test_connect_retries_ipv4_when_localhost_candidate_fails(monkeypatch) -> Non
         "postgresql://postgres:postgres@127.0.0.1:5433/Knowledge_Graph",
     ]
     assert storage.diagnostics()["db_connected"] is True
-    assert storage.diagnostics()["degraded_memory_mode"] is False
 
 
-def test_connect_enters_memory_mode_when_all_candidates_fail(monkeypatch) -> None:
+def test_connect_raises_when_all_candidates_fail(monkeypatch) -> None:
     monkeypatch.setenv("MODULE4_FORCE_MEMORY_MODE", "0")
 
     async def fake_create_pool(dsn: str, **_: object) -> object:
@@ -74,14 +75,22 @@ def test_connect_enters_memory_mode_when_all_candidates_fail(monkeypatch) -> Non
     monkeypatch.setattr(Module4Storage, "_init_schema", _noop)
     monkeypatch.setattr(Module4Storage, "ensure_default_rules", _noop)
 
-    async def _exercise() -> Module4Storage:
+    async def _exercise() -> None:
         storage = Module4Storage("postgresql://postgres:postgres@localhost:5433/Knowledge_Graph")
         await storage.connect()
-        return storage
 
-    storage = asyncio.run(_exercise())
+    with pytest.raises(RuntimeError) as exc_info:
+        asyncio.run(_exercise())
 
-    diagnostics = storage.diagnostics()
-    assert diagnostics["db_connected"] is False
-    assert diagnostics["degraded_memory_mode"] is True
-    assert "127.0.0.1" in str(diagnostics["last_connect_error"])
+    assert "127.0.0.1" in str(exc_info.value)
+
+
+def test_connect_rejects_force_memory_mode(monkeypatch) -> None:
+    monkeypatch.setenv("MODULE4_FORCE_MEMORY_MODE", "1")
+
+    async def _exercise() -> None:
+        storage = Module4Storage("postgresql://postgres:postgres@localhost:5433/Knowledge_Graph")
+        await storage.connect()
+
+    with pytest.raises(RuntimeError, match="no longer supported"):
+        asyncio.run(_exercise())

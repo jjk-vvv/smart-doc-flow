@@ -38,6 +38,44 @@ CREATE TABLE IF NOT EXISTS module4.documents (
   UNIQUE (tenant_id, file_hash)
 );
 
+CREATE TABLE IF NOT EXISTS module4.graph_files (
+  graph_file_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  file_hash TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  workspace_id TEXT,
+  graph_mode TEXT NOT NULL DEFAULT 'hybrid',
+  source TEXT NOT NULL DEFAULT 'module2',
+  status TEXT NOT NULL DEFAULT 'queued',
+  current_job_id UUID REFERENCES module4.jobs(job_id) ON DELETE SET NULL,
+  active_version_id UUID,
+  last_error TEXT,
+  node_count INT NOT NULL DEFAULT 0,
+  edge_count INT NOT NULL DEFAULT 0,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_indexed_at TIMESTAMPTZ,
+  UNIQUE (tenant_id, file_hash)
+);
+
+CREATE TABLE IF NOT EXISTS module4.graph_versions (
+  graph_version_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  graph_file_id UUID NOT NULL REFERENCES module4.graph_files(graph_file_id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  file_hash TEXT NOT NULL,
+  job_id UUID REFERENCES module4.jobs(job_id) ON DELETE SET NULL,
+  workspace_id TEXT,
+  status TEXT NOT NULL DEFAULT 'queued',
+  manifest_path TEXT,
+  output_dir TEXT,
+  artifacts_dir TEXT,
+  reports_dir TEXT,
+  import_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS module4.evidence (
   evidence_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -58,6 +96,8 @@ CREATE TABLE IF NOT EXISTS module4.evidence (
 CREATE TABLE IF NOT EXISTS module4.nodes (
   node_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id TEXT NOT NULL DEFAULT 'default',
+  graph_file_id UUID REFERENCES module4.graph_files(graph_file_id) ON DELETE CASCADE,
+  graph_version_id UUID REFERENCES module4.graph_versions(graph_version_id) ON DELETE SET NULL,
   node_type TEXT NOT NULL,
   canonical_key TEXT NOT NULL,
   display_name TEXT NOT NULL,
@@ -66,13 +106,14 @@ CREATE TABLE IF NOT EXISTS module4.nodes (
   first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (tenant_id, node_type, canonical_key)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS module4.edges (
   edge_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id TEXT NOT NULL DEFAULT 'default',
+  graph_file_id UUID REFERENCES module4.graph_files(graph_file_id) ON DELETE CASCADE,
+  graph_version_id UUID REFERENCES module4.graph_versions(graph_version_id) ON DELETE SET NULL,
   source_node_id UUID NOT NULL REFERENCES module4.nodes(node_id) ON DELETE CASCADE,
   target_node_id UUID NOT NULL REFERENCES module4.nodes(node_id) ON DELETE CASCADE,
   relation_type TEXT NOT NULL,
@@ -83,8 +124,7 @@ CREATE TABLE IF NOT EXISTS module4.edges (
   first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (tenant_id, source_node_id, target_node_id, relation_type)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS module4.edge_evidence (
@@ -97,7 +137,7 @@ CREATE TABLE IF NOT EXISTS module4.rules (
   rule_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   severity TEXT NOT NULL CHECK (severity IN ('yellow','orange','red')),
-  rule_kind TEXT NOT NULL CHECK (rule_kind IN ('deterministic','semantic','anomaly')),
+  rule_kind TEXT NOT NULL CHECK (rule_kind IN ('deterministic')),
   expr JSONB NOT NULL,
   enabled BOOLEAN NOT NULL DEFAULT true,
   version INT NOT NULL DEFAULT 1,
@@ -145,11 +185,36 @@ CREATE TABLE IF NOT EXISTS module4.feedback_labels (
 
 ALTER TABLE module4.evidence ADD COLUMN IF NOT EXISTS evidence_key TEXT;
 ALTER TABLE module4.alerts ADD COLUMN IF NOT EXISTS alert_key TEXT;
+ALTER TABLE module4.nodes ADD COLUMN IF NOT EXISTS graph_file_id UUID;
+ALTER TABLE module4.nodes ADD COLUMN IF NOT EXISTS graph_version_id UUID;
+ALTER TABLE module4.edges ADD COLUMN IF NOT EXISTS graph_file_id UUID;
+ALTER TABLE module4.edges ADD COLUMN IF NOT EXISTS graph_version_id UUID;
+ALTER TABLE module4.nodes DROP CONSTRAINT IF EXISTS nodes_tenant_id_node_type_canonical_key_key;
+ALTER TABLE module4.edges DROP CONSTRAINT IF EXISTS edges_tenant_id_source_node_id_target_node_id_relation_type_key;
 
 CREATE INDEX IF NOT EXISTS idx_m4_jobs_tenant_status ON module4.jobs (tenant_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_m4_graph_files_tenant_status ON module4.graph_files (tenant_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_m4_graph_files_workspace ON module4.graph_files (tenant_id, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_m4_graph_versions_file ON module4.graph_versions (graph_file_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_m4_nodes_graph_file ON module4.nodes (tenant_id, graph_file_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_m4_nodes_graph_version ON module4.nodes (tenant_id, graph_version_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_m4_nodes_tenant_type ON module4.nodes (tenant_id, node_type);
+CREATE INDEX IF NOT EXISTS idx_m4_edges_graph_file ON module4.edges (tenant_id, graph_file_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_m4_edges_graph_version ON module4.edges (tenant_id, graph_version_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_m4_edges_tenant_rel ON module4.edges (tenant_id, relation_type);
 CREATE INDEX IF NOT EXISTS idx_m4_alerts_tenant_status ON module4.alerts (tenant_id, status, severity, detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_m4_evidence_doc_page ON module4.evidence (doc_id, page_no);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_alerts_tenant_key ON module4.alerts (tenant_id, alert_key) WHERE alert_key IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_evidence_tenant_key ON module4.evidence (tenant_id, evidence_key) WHERE evidence_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_nodes_legacy_scope
+  ON module4.nodes (tenant_id, node_type, canonical_key)
+  WHERE graph_file_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_nodes_graph_file_scope
+  ON module4.nodes (tenant_id, graph_file_id, node_type, canonical_key)
+  WHERE graph_file_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_edges_legacy_scope
+  ON module4.edges (tenant_id, source_node_id, target_node_id, relation_type)
+  WHERE graph_file_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_edges_graph_file_scope
+  ON module4.edges (tenant_id, graph_file_id, source_node_id, target_node_id, relation_type)
+  WHERE graph_file_id IS NOT NULL;

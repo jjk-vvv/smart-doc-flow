@@ -38,6 +38,44 @@ def test_indexer_probe_reports_missing_python_binary(monkeypatch, tmp_path: Path
     assert probe.prompt_assets_ok is True
 
 
+def test_indexer_prefers_local_module4_venv_for_generic_python(monkeypatch, tmp_path: Path) -> None:
+    local_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    local_python.parent.mkdir(parents=True)
+    local_python.write_text("", encoding="utf-8")
+    monkeypatch.setenv("MODULE4_GRAPHRAG_PYTHON_BIN", "python")
+    monkeypatch.setattr("app.services.graphrag_indexer._local_venv_python", lambda: local_python)
+
+    indexer = GraphRAGIndexer()
+
+    assert Path(indexer.python_bin) == local_python
+
+
+def test_indexer_probe_marks_runtime_unready_when_tiktoken_encoding_check_fails(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MODULE4_GRAPHRAG_API_BASE", "http://oneapi.example/v1")
+    monkeypatch.setenv("MODULE4_GRAPHRAG_CHAT_API_KEY", "chat-secret")
+    monkeypatch.setenv("MODULE4_GRAPHRAG_CHAT_MODEL", "qwen-turbo")
+    monkeypatch.setenv("MODULE4_GRAPHRAG_EMBEDDING_API_KEY", "embed-secret")
+    monkeypatch.setenv("MODULE4_GRAPHRAG_EMBEDDING_MODEL", "text-embedding-v1")
+    monkeypatch.setenv("MODULE4_GRAPHRAG_PROMPTS_ROOT", str((MODULE4_DIR / "assets" / "prompts").resolve()))
+    monkeypatch.setattr("app.services.graphrag_indexer._python_supports_module", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(
+        "app.services.graphrag_indexer._python_runtime_details",
+        lambda *_args, **_kwargs: ({"python": "3.11.0"}, False, "MemoryError: cl100k_base"),
+    )
+
+    runtime = GraphRAGRuntimeSettings.from_env(module4_root=tmp_path)
+    indexer = GraphRAGIndexer()
+    probe = indexer.probe(
+        runtime=runtime,
+        neo4j=Neo4jSettings(uri="", username="", password="", database="neo4j"),
+        check_remote=False,
+    )
+
+    assert probe.ready is False
+    assert probe.tiktoken_encoding_ready is False
+    assert "MemoryError" in (probe.tiktoken_encoding_error_message or "")
+
+
 def test_indexer_run_accepts_root_level_artifacts_layout(monkeypatch, tmp_path: Path) -> None:
     workspace_dir = tmp_path / "workspace"
     output_dir = workspace_dir / "output"

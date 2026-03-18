@@ -8,8 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 class ExtractionRequest(BaseModel):
     """API-level request model (binary payload mode)."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     files: List[bytes] = Field(..., min_length=1, max_length=5)
-    schema: Dict[str, Any] = Field(default_factory=dict)
+    schema_payload: Dict[str, Any] = Field(default_factory=dict, alias="schema")
 
 
 class ExtractedEntity(BaseModel):
@@ -117,9 +119,11 @@ class BridgeFilePayload(BaseModel):
 
 
 class BridgeJobCreateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     request_id: Optional[str] = None
     tenant_id: Optional[str] = None
-    schema: Dict[str, Any] = Field(default_factory=dict)
+    schema_payload: Dict[str, Any] = Field(default_factory=dict, alias="schema")
     files: List[BridgeFilePayload] = Field(..., min_length=1, max_length=5)
     max_retries: int = Field(default=2, ge=0, le=6)
 
@@ -175,6 +179,7 @@ class AssistantQueryResponse(BaseModel):
 
 class AssistantObjectLock(BaseModel):
     lock_type: str = ""
+    lock_quality: str = ""
     object_id: str = ""
     label: str = ""
     page: Optional[int] = None

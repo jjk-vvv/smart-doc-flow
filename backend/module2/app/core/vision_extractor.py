@@ -20,27 +20,34 @@ class GeminiVisionExtractor:
         self,
         *,
         api_key: str,
+        native_api_key: str = "",
         model: str = "gemini-2.5-flash",
         timeout_sec: float = 25.0,
         max_output_tokens: int = 4096,
         retry_count: int = 1,
         cache_dir: str | None = None,
         enable_cache: bool = True,
+        reasoning_effort: str = "minimal",
+        native_fallback_enabled: bool = False,
     ) -> None:
         self.api_key = (api_key or "").strip()
+        self.native_api_key = (native_api_key or "").strip()
         self.model = (model or "gemini-2.5-flash").strip() or "gemini-2.5-flash"
         self.timeout_sec = max(5.0, float(timeout_sec))
         self.max_output_tokens = max(512, int(max_output_tokens))
         self.retry_count = max(0, int(retry_count))
         self.enable_cache = bool(enable_cache)
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
-        self.prompt_version = "v3_visual_first_multimodal_structured"
+        effort = str(reasoning_effort or "minimal").strip().lower()
+        self.reasoning_effort = effort if effort in {"minimal", "low", "medium", "high"} else "minimal"
+        self.native_fallback_enabled = bool(native_fallback_enabled)
+        self.prompt_version = "v5_visual_full_chart_json_hiapi"
         self._last_debug: Dict[str, Any] = {}
         self.reset_stats()
 
     @property
     def ready(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key or self.native_api_key)
 
     def reset_stats(self) -> None:
         self._stats = {
@@ -86,18 +93,8 @@ class GeminiVisionExtractor:
             return None
         context_json = self._compact_json(context, max_chars=2200)
         prompt = (
-            "You are a high-precision table extraction engine for technical PDFs.\n"
-            "Task: extract one table from this cropped ROI image.\n"
-            "Internal layered workflow:\n"
-            "1) Structural pass: identify header rows, merged headers, and data grid.\n"
-            "2) Context pass: use provided context (caption/nearby text/domain hints) to disambiguate units and labels.\n"
-            "3) Domain pass: preserve chemistry symbols, formulas, superscripts/subscripts, and Chinese statistical units.\n"
-            "4) Validation pass: keep row/column order, do not invent values, keep blanks as empty strings.\n"
-            "Rules:\n"
-            "- Return strict JSON only, no markdown.\n"
-            "- If confidence is low, still output best-effort structure with low confidence.\n"
-            "- If unreadable, output empty arrays and confidence 0.0.\n"
-            "Output schema:\n"
+            "Extract one visible table from this cropped PDF ROI image.\n"
+            "Return strict JSON only. No markdown. Use this exact schema:\n"
             "{"
             "\"table\":{"
             "\"title\":\"\","
@@ -110,6 +107,8 @@ class GeminiVisionExtractor:
             "\"confidence\":0.0"
             "}"
             "}\n"
+            "Use only visible content. Preserve row and column order. Keep blanks as empty strings. "
+            "If the table is unreadable, keep arrays empty and confidence 0.0.\n"
             f"Context:\n{context_json}"
         )
         payload = self._generate_json(
@@ -140,17 +139,8 @@ class GeminiVisionExtractor:
             return None
         context_json = self._compact_json(context, max_chars=2000)
         prompt = (
-            "You are a high-precision figure understanding engine for technical PDFs.\n"
-            "Task: analyze one cropped figure/chart ROI image and output structured JSON.\n"
-            "Internal layered workflow:\n"
-            "1) Visual pass: identify figure type, title/caption, axes, legend, key entities.\n"
-            "2) Modality pass: classify evidence channels from [dataframe, topology, text, visual].\n"
-            "2) Context pass: inject nearby text and domain hints to resolve abbreviations.\n"
-            "3) Consistency pass: keep only visible claims; no hallucination.\n"
-            "Rules:\n"
-            "- Return strict JSON only, no markdown.\n"
-            "- Keep text concise and factual.\n"
-            "Output schema:\n"
+            "Analyze one cropped figure or chart ROI from a PDF.\n"
+            "Return strict JSON only. No markdown. Use this exact schema:\n"
             "{"
             "\"figure\":{"
             "\"title\":\"\","
@@ -167,6 +157,9 @@ class GeminiVisionExtractor:
             "\"confidence\":0.0"
             "}"
             "}\n"
+            "Use only visible evidence. Keep text concise, but if this ROI is a chart or data graphic, recover the fullest visible dataframe you can.\n"
+            "Preserve visible series order, legend labels, axis labels, and row order. Do not collapse readable numeric points into prose.\n"
+            "Do not arbitrarily drop later rows or headers if they are visible.\n"
             f"Context:\n{context_json}"
         )
         payload = self._generate_json(
@@ -211,14 +204,11 @@ class GeminiVisionExtractor:
         }
         context_json = self._compact_json(refine_context, max_chars=2200)
         prompt = (
-            "You are a chart digitization engine for a single chart ROI image.\n"
-            "Task: recover the best-effort dataframe from axes, legend, labels, bars, lines, slices, or annotated values.\n"
-            "Rules:\n"
-            "- Return strict JSON only, no markdown.\n"
-            "- Prefer partial but grounded dataframe rows over prose.\n"
-            "- Use only values visible in the image; do not invent hidden numbers.\n"
-            "- If exact values are unreadable, keep dataframe empty but still return key_values and concise text_blocks.\n"
-            "Output schema:\n"
+            "Recover a best-effort dataframe from this single chart ROI image.\n"
+            "Return strict JSON only. No markdown. Use only visible values. "
+            "Prefer grounded dataframe rows over prose. Recover as many visible rows, headers, series labels, and units as possible. "
+            "If exact values are unreadable, keep the dataframe empty.\n"
+            "Use this exact schema:\n"
             "{"
             "\"figure\":{"
             "\"title\":\"\","
@@ -290,20 +280,30 @@ class GeminiVisionExtractor:
             )
             if provider.configured:
                 data_url = f"data:{mime_type or 'image/png'};base64,{base64.b64encode(image_bytes).decode('ascii')}"
-                try:
-                    result = provider.complete(
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {"type": "image_url", "image_url": {"url": data_url}},
-                                ],
-                            }
-                        ],
-                        temperature=0.0,
-                        max_tokens=self.max_output_tokens,
-                    )
+                last_exc_text = ""
+                result = None
+                for _ in range(max(0, self.retry_count) + 1):
+                    try:
+                        result = provider.complete(
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": prompt},
+                                        {"type": "image_url", "image_url": {"url": data_url}},
+                                    ],
+                                }
+                            ],
+                            temperature=0.0,
+                            max_tokens=self.max_output_tokens,
+                            response_format={"type": "json_object"},
+                            reasoning_effort=self.reasoning_effort,
+                        )
+                        break
+                    except Exception as exc:
+                        last_exc_text = f"{type(exc).__name__}: {exc}"
+                        result = None
+                if result is not None:
                     self._bump_stat("provider_success")
                     finish_reason = str(result.finish_reason or "").strip()
                     if finish_reason.lower() == "length":
@@ -336,27 +336,41 @@ class GeminiVisionExtractor:
                         raw_excerpt=raw_content[:1200],
                         error="vision_response_unrecognized",
                     )
-                except Exception as exc:
-                    exc_text = f"{type(exc).__name__}: {exc}"
+                    if not self._allow_google_native_fallback():
+                        return None
+                else:
                     self._bump_stat("provider_failures")
                     if (
-                        "http error" in exc_text.lower()
-                        or "401" in exc_text
-                        or "403" in exc_text
-                        or "429" in exc_text
+                        "http error" in last_exc_text.lower()
+                        or "401" in last_exc_text
+                        or "403" in last_exc_text
+                        or "429" in last_exc_text
                     ):
                         self._bump_stat("http_errors")
                     self._set_debug(
                         mode=mode,
                         status="request_failed",
                         request_source="openai_compatible",
-                        error=exc_text[:1200],
+                        error=last_exc_text[:1200],
                     )
+                    if not self._allow_google_native_fallback():
+                        return None
 
+        if not self._allow_google_native_fallback():
+            if not self._last_debug:
+                self._set_debug(
+                    mode=mode,
+                    status="request_failed",
+                    request_source="vision_unavailable",
+                    error="no_usable_vision_provider",
+                )
+            return None
+
+        native_key = self.native_api_key.strip()
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{urllib.parse.quote(self.model, safe='')}:generateContent"
-            f"?key={urllib.parse.quote(self.api_key, safe='')}"
+            f"?key={urllib.parse.quote(native_key, safe='')}"
         )
         payload = {
             "contents": [
@@ -449,6 +463,9 @@ class GeminiVisionExtractor:
             return None
         return self._extract_json_object("\n".join(texts))
 
+    def _allow_google_native_fallback(self) -> bool:
+        return bool(self.native_fallback_enabled and self.native_api_key.startswith("AIza"))
+
     @staticmethod
     def _unique_texts(values: Any, *, limit: int, max_len: int = 180) -> list[str]:
         if not isinstance(values, list):
@@ -474,10 +491,69 @@ class GeminiVisionExtractor:
     def _has_nonempty_dataframe(payload: Dict[str, Any]) -> bool:
         dataframe = payload.get("dataframe") if isinstance(payload.get("dataframe"), dict) else {}
         rows = dataframe.get("rows") if isinstance(dataframe.get("rows"), list) else []
-        for row in rows[:8]:
+        for row in rows:
             if isinstance(row, list) and any(str(cell or "").strip() for cell in row):
                 return True
         return False
+
+    @staticmethod
+    def _dataframe_row_count(payload: Dict[str, Any]) -> int:
+        dataframe = payload.get("dataframe") if isinstance(payload.get("dataframe"), dict) else {}
+        rows = dataframe.get("rows") if isinstance(dataframe.get("rows"), list) else []
+        count = 0
+        for row in rows:
+            if isinstance(row, list) and any(str(cell or "").strip() for cell in row):
+                count += 1
+        return count
+
+    @staticmethod
+    def _dataframe_cell_count(payload: Dict[str, Any]) -> int:
+        dataframe = payload.get("dataframe") if isinstance(payload.get("dataframe"), dict) else {}
+        rows = dataframe.get("rows") if isinstance(dataframe.get("rows"), list) else []
+        count = 0
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            count += sum(1 for cell in row if str(cell or "").strip())
+        return count
+
+    @classmethod
+    def _is_chart_like(cls, figure_obj: Dict[str, Any], context: Dict[str, Any]) -> bool:
+        probe = " ".join(
+            [
+                str((context or {}).get("caption_hint", "") or ""),
+                str((context or {}).get("nearby_text", "") or ""),
+                str(figure_obj.get("title", "") or ""),
+                str(figure_obj.get("caption", "") or ""),
+                str(figure_obj.get("type", "") or ""),
+            ]
+        ).lower()
+        if "photo" in probe and "chart" not in probe and "diagram" not in probe:
+            return False
+        chart_keywords = [
+            "chart",
+            "graph",
+            "plot",
+            "curve",
+            "trend",
+            "bar",
+            "line",
+            "pie",
+            "histogram",
+            "scatter",
+            "distribution",
+            "ratio",
+            "rate",
+            "year",
+            "%",
+            "\u56fe",
+            "\u8d8b\u52bf",
+            "\u589e\u957f",
+            "\u5360\u6bd4",
+            "\u6bd4\u4f8b",
+            "\u5206\u5e03",
+        ]
+        return any(keyword in probe for keyword in chart_keywords)
 
     @classmethod
     def _merge_figure_payload(cls, primary: Dict[str, Any], refined: Dict[str, Any]) -> Dict[str, Any]:
@@ -495,7 +571,7 @@ class GeminiVisionExtractor:
         refined_modes = cls._unique_texts(refined.get("content_modes"), limit=4, max_len=40)
         merged["content_modes"] = (primary_modes + [x for x in refined_modes if x not in primary_modes])[:4]
 
-        if cls._has_nonempty_dataframe(refined) and not cls._has_nonempty_dataframe(primary):
+        if cls._dataframe_cell_count(refined) > cls._dataframe_cell_count(primary):
             merged["dataframe"] = refined.get("dataframe")
 
         primary_key_values = primary.get("key_values") if isinstance(primary.get("key_values"), list) else []
@@ -526,6 +602,12 @@ class GeminiVisionExtractor:
 
     @classmethod
     def _should_refine_chart_extraction(cls, figure_obj: Dict[str, Any], context: Dict[str, Any]) -> bool:
+        if not cls._is_chart_like(figure_obj, context):
+            return False
+        row_count = cls._dataframe_row_count(figure_obj)
+        cell_count = cls._dataframe_cell_count(figure_obj)
+        key_values = figure_obj.get("key_values") if isinstance(figure_obj.get("key_values"), list) else []
+        return row_count < 2 or cell_count < 6 or len(key_values) < 2
         if cls._has_nonempty_dataframe(figure_obj):
             return False
         probe = " ".join(

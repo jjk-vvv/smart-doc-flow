@@ -51,6 +51,7 @@ export type PersistedExtractionJob = {
 export type WorkbenchSessionSnapshot = {
   version: 1;
   activeDocIndex: number;
+  activeDocFileHash?: string;
   selectedFiles: PersistedWorkbenchFile[];
   officePreviewMap: Record<string, PersistedOfficePreviewState>;
   extractionJob: PersistedExtractionJob | null;
@@ -71,6 +72,7 @@ export const readWorkbenchSession = (): WorkbenchSessionSnapshot | null => {
     return {
       version: 1,
       activeDocIndex: Math.max(0, Number(parsed.activeDocIndex || 0)),
+      activeDocFileHash: String(parsed.activeDocFileHash || '').trim(),
       selectedFiles: Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : [],
       officePreviewMap: isObjectRecord(parsed.officePreviewMap) ? (parsed.officePreviewMap as Record<string, PersistedOfficePreviewState>) : {},
       extractionJob: parsed.extractionJob && isObjectRecord(parsed.extractionJob)

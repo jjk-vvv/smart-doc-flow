@@ -222,7 +222,6 @@ def _resolve_pdf_path() -> Path:
 
 
 EXCEL_PATH = _resolve_excel_path()
-PDF_PATH = _resolve_pdf_path()
 
 EXCEL_QUESTIONS = [
     {
@@ -435,15 +434,15 @@ async def _ask(
 
 
 async def main(kind: str = "all") -> int:
-    storage = ExtractionStorage("postgresql://postgres:postgres@localhost:5433/Data_Extraction")
+    storage = ExtractionStorage("postgresql://postgres@127.0.0.1:5433/Data_Extraction")
     await storage.connect()
     _ensure_storage_compat(storage)
     service = AssistantService(storage)
+    pdf_path: Optional[Path] = None
 
     report: Dict[str, Any] = {
-        "prompt_version_expected": "document-intelligence-assistant-v1.6",
+        "prompt_version_expected": "document-intelligence-assistant-v1.7",
         "excel_path": str(EXCEL_PATH),
-        "pdf_path": str(PDF_PATH),
         "results": [],
     }
 
@@ -472,12 +471,15 @@ async def main(kind: str = "all") -> int:
                         "prompt_version": meta.get("prompt_version"),
                         "tools_used": meta.get("tools_used"),
                         "session_id": meta.get("session_id"),
+                        "provider_diagnostics": meta.get("provider_diagnostics"),
                     },
                 }
             )
 
     if kind in {"all", "pdf"}:
-        pdf_doc, pdf_payload, pdf_parse = _build_document_and_payload(PDF_PATH, track="VisualTrack")
+        pdf_path = pdf_path or _resolve_pdf_path()
+        report["pdf_path"] = str(pdf_path)
+        pdf_doc, pdf_payload, pdf_parse = _build_document_and_payload(pdf_path, track="VisualTrack")
         storage._compat_extraction_payloads[pdf_doc.file_hash] = dict(pdf_payload)
         report["pdf_parse"] = pdf_parse
         pdf_answer, pdf_meta = await _ask(
@@ -497,12 +499,15 @@ async def main(kind: str = "all") -> int:
                     "prompt_version": pdf_meta.get("prompt_version"),
                     "tools_used": pdf_meta.get("tools_used"),
                     "session_id": pdf_meta.get("session_id"),
+                    "provider_diagnostics": pdf_meta.get("provider_diagnostics"),
                 },
             }
         )
 
     if kind in {"all", "image"}:
-        image_path = _render_pdf_page_image(PDF_PATH, page_no=4, dpi=180)
+        pdf_path = pdf_path or _resolve_pdf_path()
+        report["pdf_path"] = str(pdf_path)
+        image_path = _render_pdf_page_image(pdf_path, page_no=4, dpi=180)
         image_doc, image_payload, image_parse = _build_document_and_payload(image_path, track="FastTrack")
         storage._compat_extraction_payloads[image_doc.file_hash] = dict(image_payload)
         report["image_path"] = str(image_path)
@@ -524,6 +529,7 @@ async def main(kind: str = "all") -> int:
                     "prompt_version": image_meta.get("prompt_version"),
                     "tools_used": image_meta.get("tools_used"),
                     "session_id": image_meta.get("session_id"),
+                    "provider_diagnostics": image_meta.get("provider_diagnostics"),
                 },
             }
         )

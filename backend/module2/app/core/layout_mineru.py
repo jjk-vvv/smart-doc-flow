@@ -4,7 +4,9 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -39,13 +41,140 @@ class MineruLayoutExtractor:
         raw_fallbacks = str(method_fallbacks or "auto,ocr,txt").strip()
         self.method_fallbacks = [x.strip() for x in raw_fallbacks.split(",") if x.strip()]
         self.cache_version = (
-            str(cache_version or os.getenv("MODULE2_MINERU_CACHE_VERSION", "20260309-pdf-chain-v1")).strip()
-            or "20260309-pdf-chain-v1"
+            str(cache_version or os.getenv("MODULE2_MINERU_CACHE_VERSION", "20260317-mineru-local-no-table-v1")).strip()
+            or "20260317-mineru-local-no-table-v1"
         )
+        self.force_local_models = (
+            os.getenv("MODULE2_MINERU_FORCE_LOCAL_MODELS", "true").lower() in {"1", "true", "yes"}
+        )
+        self.local_pipeline_root_override = str(os.getenv("MODULE2_MINERU_LOCAL_PIPELINE_ROOT", "") or "").strip()
+        default_runtime_models_dir = (
+            (self.cache_dir.parent / "mineru_runtime_models").resolve()
+            if self.cache_dir is not None
+            else Path("backend/module2/.cache/mineru_runtime_models").resolve()
+        )
+        raw_runtime_models_dir = str(os.getenv("MODULE2_MINERU_RUNTIME_MODELS_DIR", "") or "").strip()
+        self.runtime_models_dir = (
+            Path(self._resolve_configured_directory(raw_runtime_models_dir)).resolve()
+            if raw_runtime_models_dir
+            else default_runtime_models_dir
+        )
+        self.runtime_probe_enable = (
+            os.getenv("MODULE2_MINERU_RUNTIME_PROBE_ENABLE", "true").lower() in {"1", "true", "yes"}
+        )
+        self.runtime_probe_timeout_sec = max(
+            10,
+            int(os.getenv("MODULE2_MINERU_RUNTIME_PROBE_TIMEOUT_SEC", "35")),
+        )
+        self.runtime_probe_ttl_sec = max(
+            60,
+            int(os.getenv("MODULE2_MINERU_RUNTIME_PROBE_TTL_SEC", "900")),
+        )
+        self.command_override = str(os.getenv("MODULE2_MINERU_COMMAND", "") or "").strip()
+        self.python_override = str(os.getenv("MODULE2_MINERU_PYTHON", "") or "").strip()
         self._last_run_meta: Dict[str, Any] = {}
+        self._runtime_probe_meta: Dict[str, Any] = {}
+        self._runtime_model_meta: Dict[str, Any] = {}
+        self._resolved_command: str = ""
+        self._resolved_probe_python: str = ""
 
     def get_last_run_meta(self) -> Dict[str, Any]:
         return copy.deepcopy(self._last_run_meta)
+
+    def _repo_root(self) -> Path:
+        return Path(__file__).resolve().parents[4]
+
+    def _module2_root(self) -> Path:
+        return Path(__file__).resolve().parents[2]
+
+    def _resolve_configured_executable(self, raw_value: str) -> str:
+        raw = str(raw_value or "").strip()
+        if not raw:
+            return ""
+        path = Path(raw)
+        if path.is_absolute():
+            return str(path.resolve()) if path.exists() else raw
+        candidates = [
+            (self._repo_root() / path).resolve(),
+            (self._module2_root() / path).resolve(),
+            path.resolve(),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return raw
+
+    def _resolve_configured_directory(self, raw_value: str) -> str:
+        raw = str(raw_value or "").strip()
+        if not raw:
+            return ""
+        path = Path(raw)
+        if path.is_absolute():
+            return str(path.resolve())
+        candidates = [
+            (self._repo_root() / path).resolve(),
+            (self._module2_root() / path).resolve(),
+            path.resolve(),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return str(candidates[0])
+
+    def _resolve_mineru_command(self) -> str:
+        if self._resolved_command:
+            return self._resolved_command
+
+        configured = self._resolve_configured_executable(self.command_override)
+        if configured:
+            self._resolved_command = configured
+            return self._resolved_command
+
+        candidates = [
+            self._repo_root() / ".venv-module2-py311" / "Scripts" / "mineru.exe",
+            self._repo_root() / ".venv" / "Scripts" / "mineru.exe",
+            self._module2_root() / ".venv" / "Scripts" / "mineru.exe",
+            Path(sys.executable).resolve().with_name("mineru.exe"),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                self._resolved_command = str(candidate.resolve())
+                return self._resolved_command
+
+        which_cmd = shutil.which("mineru")
+        self._resolved_command = which_cmd or "mineru"
+        return self._resolved_command
+
+    def _resolve_probe_python(self) -> str:
+        if self._resolved_probe_python:
+            return self._resolved_probe_python
+
+        configured = self._resolve_configured_executable(self.python_override)
+        if configured:
+            self._resolved_probe_python = configured
+            return self._resolved_probe_python
+
+        command = self._resolve_mineru_command()
+        command_path = Path(command)
+        if command_path.exists():
+            sibling_python = command_path.with_name("python.exe")
+            if sibling_python.exists():
+                self._resolved_probe_python = str(sibling_python.resolve())
+                return self._resolved_probe_python
+
+        candidates = [
+            self._repo_root() / ".venv-module2-py311" / "Scripts" / "python.exe",
+            self._repo_root() / ".venv" / "Scripts" / "python.exe",
+            self._module2_root() / ".venv" / "Scripts" / "python.exe",
+            Path(sys.executable).resolve(),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                self._resolved_probe_python = str(candidate.resolve())
+                return self._resolved_probe_python
+
+        self._resolved_probe_python = sys.executable
+        return self._resolved_probe_python
 
     def extract_layout(
         self,
@@ -55,6 +184,7 @@ class MineruLayoutExtractor:
         start_page: int = 1,
         end_page: int | None = None,
         method: str | None = None,
+        source_cache_identity: str | None = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[int, List[str]]]:
         self._last_run_meta = {}
         if not pdf_bytes:
@@ -79,12 +209,15 @@ class MineruLayoutExtractor:
             enable_formula=self.enable_formula,
             enable_table=self.enable_table,
             cache_version=self.cache_version,
+            source_cache_identity=source_cache_identity,
         )
         run_meta: Dict[str, Any] = {
             "status": "init",
             "run_key": run_key,
             "file_name": str(file_name or ""),
             "backend": self.backend,
+            "command": self._resolve_mineru_command(),
+            "probe_python": self._resolve_probe_python(),
             "method_requested": run_method,
             "start_page": start_page,
             "end_page": end_page,
@@ -95,7 +228,10 @@ class MineruLayoutExtractor:
             "device": self.device,
             "cache_version": self.cache_version,
             "method_candidates": list(methods_to_try),
+            "source_cache_identity_applied": bool(str(source_cache_identity or "").strip()),
         }
+        if str(source_cache_identity or "").strip():
+            run_meta["source_cache_identity_prefix"] = str(source_cache_identity).strip()[:16]
         temp_ctx: tempfile.TemporaryDirectory[str] | None = None
         if self.enable_cache and self.cache_dir is not None:
             run_dir = self.cache_dir / run_key
@@ -111,6 +247,9 @@ class MineruLayoutExtractor:
                 input_pdf.write_bytes(pdf_bytes)
             run_meta["input_pdf"] = str(input_pdf.resolve())
             run_meta["input_pdf_size"] = int(input_pdf.stat().st_size)
+            runtime_model_meta = self._ensure_local_model_runtime()
+            if runtime_model_meta:
+                run_meta["model_runtime"] = runtime_model_meta
 
             output_root = run_dir / "mineru_out"
             run_meta["output_root"] = str(output_root.resolve())
@@ -142,6 +281,18 @@ class MineruLayoutExtractor:
                 run_meta["cached_content_reused"] = False
 
             if parsed_content is None or not parsed_content.get("objects"):
+                runtime_probe = self._probe_runtime()
+                run_meta["runtime_probe"] = runtime_probe
+                if not runtime_probe.get("ok", False):
+                    run_meta["status"] = str(runtime_probe.get("status") or "runtime_unavailable")
+                    run_meta["runtime_error"] = str(runtime_probe.get("error") or "")
+                    run_meta["attempts"] = attempts
+                    run_meta["markdown_path"] = str(markdown_file.resolve()) if markdown_file else ""
+                    self._finalize_run_meta(run_meta, run_dir=run_dir)
+                    return [], {}
+
+                fatal_runtime_error = ""
+                fatal_runtime_method = ""
                 for method_try in methods_to_try:
                     if method_try == cached_method and parsed_content is not None:
                         if best_candidate is None:
@@ -169,7 +320,12 @@ class MineruLayoutExtractor:
                         attempt["ok"] = False
                         attempt["error"] = f"{type(exc).__name__}: {exc}"
                         attempt["duration_sec"] = round(time.perf_counter() - started_at, 3)
+                        attempt["fatal_runtime_error"] = self._text_indicates_fatal_runtime_issue(attempt["error"])
                         attempts.append(attempt)
+                        if attempt["fatal_runtime_error"]:
+                            fatal_runtime_error = str(attempt["error"] or "")
+                            fatal_runtime_method = method_try
+                            break
                         continue
 
                     content_json_try = self._find_content_list_json(output_root, method=method_try)
@@ -230,8 +386,13 @@ class MineruLayoutExtractor:
                     markdown_file = best_markdown_file
 
             if content_json is None or not content_json.exists():
-                run_meta["status"] = "no_content_list"
                 run_meta["attempts"] = attempts
+                if fatal_runtime_error:
+                    run_meta["status"] = "fatal_runtime_error"
+                    run_meta["fatal_runtime_method"] = fatal_runtime_method
+                    run_meta["fatal_runtime_error"] = fatal_runtime_error[:1200]
+                else:
+                    run_meta["status"] = "no_content_list"
                 run_meta["markdown_path"] = str(markdown_file.resolve()) if markdown_file else ""
                 self._finalize_run_meta(run_meta, run_dir=run_dir)
                 return [], {}
@@ -286,8 +447,9 @@ class MineruLayoutExtractor:
         method: str,
     ) -> Dict[str, Any]:
         output_root.mkdir(parents=True, exist_ok=True)
+        mineru_cmd = self._resolve_mineru_command()
         cmd = [
-            "mineru",
+            mineru_cmd,
             "-p",
             str(input_pdf),
             "-o",
@@ -307,11 +469,7 @@ class MineruLayoutExtractor:
         ]
         if self.backend in {"pipeline", "hybrid-http-client", "hybrid-auto-engine"}:
             cmd.extend(["-d", self.device])
-        env = os.environ.copy()
-        # Torch>=2.6 defaults to weights_only=True, which breaks doclayout_yolo checkpoints.
-        env.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
-        # Avoid update-check noise from albumentations during MinerU subprocess runs.
-        env.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+        env = self._build_runtime_env()
         started = time.perf_counter()
         proc = subprocess.run(
             cmd,
@@ -336,6 +494,226 @@ class MineruLayoutExtractor:
             raise RuntimeError(f"MinerU command failed: {msg[:800]}")
         return exec_meta
 
+    def _build_runtime_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        # Torch>=2.6 defaults to weights_only=True, which breaks doclayout_yolo checkpoints.
+        env.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+        # Avoid update-check noise from albumentations during MinerU subprocess runs.
+        env.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+        runtime_meta = self._ensure_local_model_runtime()
+        if runtime_meta.get("ok"):
+            env["MINERU_MODEL_SOURCE"] = "local"
+            env["MINERU_TOOLS_CONFIG_JSON"] = str(runtime_meta.get("config_path") or "")
+        return env
+
+    def _ensure_local_model_runtime(self) -> Dict[str, Any]:
+        cached = dict(self._runtime_model_meta)
+        if cached.get("ok") or str(cached.get("status") or "") == "disabled":
+            return copy.deepcopy(cached)
+
+        if not self.force_local_models:
+            meta = {
+                "status": "disabled",
+                "ok": False,
+            }
+            self._runtime_model_meta = meta
+            return copy.deepcopy(meta)
+
+        source_root = self._discover_pipeline_source_root()
+        required_files = self._required_pipeline_relative_paths()
+        if source_root is None:
+            meta = {
+                "status": "source_not_found",
+                "ok": False,
+                "required_files": list(required_files),
+            }
+            self._runtime_model_meta = meta
+            return copy.deepcopy(meta)
+
+        pipeline_root = (self.runtime_models_dir / "pipeline").resolve()
+        pipeline_root.mkdir(parents=True, exist_ok=True)
+        copied_files = 0
+        for rel_path in required_files:
+            src = source_root / Path(rel_path)
+            if not src.exists() or src.stat().st_size <= 0:
+                meta = {
+                    "status": "source_incomplete",
+                    "ok": False,
+                    "source_root": str(source_root),
+                    "missing_file": rel_path,
+                    "required_files": list(required_files),
+                }
+                self._runtime_model_meta = meta
+                return copy.deepcopy(meta)
+            dst = pipeline_root / Path(rel_path)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+                shutil.copy2(src, dst)
+                copied_files += 1
+
+        config_path = (self.runtime_models_dir / "mineru_runtime.json").resolve()
+        config_payload = {
+            "models-dir": {
+                "pipeline": str(pipeline_root),
+            }
+        }
+        config_path.write_text(
+            json.dumps(config_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        meta = {
+            "status": "ok",
+            "ok": True,
+            "source_root": str(source_root),
+            "pipeline_root": str(pipeline_root),
+            "config_path": str(config_path),
+            "copied_files": copied_files,
+            "required_files": list(required_files),
+        }
+        self._runtime_model_meta = meta
+        return copy.deepcopy(meta)
+
+    def _discover_pipeline_source_root(self) -> Path | None:
+        required_files = self._required_pipeline_relative_paths()
+        if self.local_pipeline_root_override:
+            override_root = Path(self.local_pipeline_root_override).resolve()
+            if self._root_has_required_models(override_root, required_files):
+                return override_root
+
+        hf_home = Path(
+            str(os.getenv("HF_HOME", "") or "").strip() or (Path.home() / ".cache" / "huggingface")
+        ).resolve()
+        snapshots_root = hf_home / "hub" / "models--opendatalab--PDF-Extract-Kit-1.0" / "snapshots"
+        if not snapshots_root.exists() or not snapshots_root.is_dir():
+            return None
+
+        candidates: List[tuple[float, Path]] = []
+        for child in snapshots_root.iterdir():
+            if not child.is_dir():
+                continue
+            if not self._root_has_required_models(child, required_files):
+                continue
+            newest_required_mtime = max(
+                (child / Path(rel_path)).stat().st_mtime for rel_path in required_files
+            )
+            candidates.append((float(newest_required_mtime), child.resolve()))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _required_pipeline_relative_paths(self) -> List[str]:
+        required = [
+            "models/Layout/YOLO/doclayout_yolo_docstructbench_imgsz1280_2501.pt",
+            "models/OCR/paddleocr_torch/ch_PP-OCRv5_det_infer.pth",
+            "models/OCR/paddleocr_torch/ch_PP-OCRv5_rec_infer.pth",
+        ]
+        if self.enable_table:
+            required.extend(
+                [
+                    "models/TabRec/SlanetPlus/slanet-plus.onnx",
+                    "models/TabRec/UnetStructure/unet.onnx",
+                    "models/TabCls/paddle_table_cls/PP-LCNet_x1_0_table_cls.onnx",
+                    "models/OriCls/paddle_orientation_classification/PP-LCNet_x1_0_doc_ori.onnx",
+                ]
+            )
+        if self.enable_formula:
+            required.extend(
+                [
+                    "models/MFD/YOLO/yolo_v8_ft.pt",
+                    "models/MFR/unimernet_hf_small_2503/config.json",
+                    "models/MFR/unimernet_hf_small_2503/generation_config.json",
+                    "models/MFR/unimernet_hf_small_2503/model.safetensors",
+                    "models/MFR/unimernet_hf_small_2503/special_tokens_map.json",
+                    "models/MFR/unimernet_hf_small_2503/tokenizer.json",
+                    "models/MFR/unimernet_hf_small_2503/tokenizer_config.json",
+                ]
+            )
+        return required
+
+    @staticmethod
+    def _root_has_required_models(root: Path, required_files: List[str]) -> bool:
+        try:
+            for rel_path in required_files:
+                file_path = root / Path(rel_path)
+                if not file_path.exists() or file_path.stat().st_size <= 0:
+                    return False
+        except Exception:
+            return False
+        return True
+
+    def _probe_runtime(self) -> Dict[str, Any]:
+        now = time.time()
+        cached = dict(self._runtime_probe_meta)
+        if cached:
+            checked_at = float(cached.get("checked_at", 0.0) or 0.0)
+            if checked_at > 0 and now - checked_at <= self.runtime_probe_ttl_sec:
+                return copy.deepcopy(cached)
+
+        if not self.runtime_probe_enable:
+            meta = {
+                "status": "disabled",
+                "ok": True,
+                "fatal": False,
+                "checked_at": now,
+            }
+            self._runtime_probe_meta = meta
+            return copy.deepcopy(meta)
+
+        probe_python = self._resolve_probe_python()
+        cmd = [probe_python, "-c", "import torch; print('torch_runtime_probe_ok')"]
+        started = time.perf_counter()
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.runtime_probe_timeout_sec,
+                check=False,
+                env=self._build_runtime_env(),
+            )
+            duration_sec = round(time.perf_counter() - started, 3)
+            stderr = (proc.stderr or "").strip()
+            stdout = (proc.stdout or "").strip()
+            combined = "\n".join(x for x in [stderr, stdout] if x).strip()
+            fatal = proc.returncode != 0 or self._stderr_indicates_failure(stderr)
+            if not fatal and self._text_indicates_fatal_runtime_issue(combined):
+                fatal = True
+            meta = {
+                "status": "ok" if not fatal else "runtime_probe_failed",
+                "ok": not fatal,
+                "fatal": fatal,
+                "checked_at": now,
+                "duration_sec": duration_sec,
+                "returncode": int(proc.returncode),
+                "stdout_tail": stdout[-400:],
+                "stderr_tail": stderr[-400:],
+                "cmd": " ".join(cmd),
+            }
+            if fatal:
+                error_message = combined or f"exit_code={proc.returncode}"
+                meta["error"] = error_message[:800]
+        except subprocess.TimeoutExpired as exc:
+            duration_sec = round(time.perf_counter() - started, 3)
+            stdout = str(getattr(exc, "stdout", "") or "")
+            stderr = str(getattr(exc, "stderr", "") or "")
+            combined = "\n".join(x for x in [stderr.strip(), stdout.strip()] if x).strip()
+            meta = {
+                "status": "runtime_probe_timeout",
+                "ok": False,
+                "fatal": True,
+                "checked_at": now,
+                "duration_sec": duration_sec,
+                "timeout_sec": self.runtime_probe_timeout_sec,
+                "stdout_tail": stdout[-400:],
+                "stderr_tail": stderr[-400:],
+                "cmd": " ".join(cmd),
+                "error": (combined or f"torch import timed out after {self.runtime_probe_timeout_sec}s")[:800],
+            }
+
+        self._runtime_probe_meta = meta
+        return copy.deepcopy(meta)
+
     @staticmethod
     def _build_run_key(
         *,
@@ -348,10 +726,16 @@ class MineruLayoutExtractor:
         enable_formula: bool,
         enable_table: bool,
         cache_version: str,
+        source_cache_identity: str | None = None,
     ) -> str:
         digest = hashlib.sha256()
-        digest.update(pdf_bytes)
-        digest.update(str(file_name or "").encode("utf-8", errors="ignore"))
+        normalized_source_identity = str(source_cache_identity or "").strip().lower()
+        if normalized_source_identity:
+            digest.update(b"source_cache_identity:")
+            digest.update(normalized_source_identity.encode("utf-8", errors="ignore"))
+        else:
+            digest.update(pdf_bytes)
+            digest.update(str(file_name or "").encode("utf-8", errors="ignore"))
         digest.update(f":{start_idx}:{end_idx}".encode("ascii"))
         digest.update(str(backend or "").encode("utf-8"))
         digest.update(str(method or "").encode("utf-8"))
@@ -603,6 +987,21 @@ class MineruLayoutExtractor:
         if "traceback (most recent call last)" in probe:
             return True
         if "modulenotfounderror:" in probe or "importerror:" in probe:
+            return True
+        return False
+
+    @staticmethod
+    def _text_indicates_fatal_runtime_issue(text: str) -> bool:
+        probe = str(text or "").strip().lower()
+        if not probe:
+            return False
+        if "winerror 1455" in probe:
+            return True
+        if "_load_dll_libraries" in probe and "torch" in probe:
+            return True
+        if ("error loading" in probe or "dll load failed" in probe) and "torch" in probe:
+            return True
+        if ("page file" in probe or "paging file" in probe or "页面文件太小" in probe) and "torch" in probe:
             return True
         return False
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import uuid
 from pathlib import Path
@@ -13,7 +12,6 @@ import pyarrow.parquet as pq
 MODULE4_DIR = Path(__file__).resolve().parents[1]
 if str(MODULE4_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE4_DIR))
-os.environ["MODULE4_FORCE_MEMORY_MODE"] = "1"
 
 from app.db.storage import Module4Storage  # noqa: E402
 from app.services.graphrag_artifact_importer import GraphRAGArtifactImporter  # noqa: E402
@@ -76,7 +74,6 @@ def test_partial_artifacts_are_imported_as_base_graph(tmp_path: Path) -> None:
     async def scenario() -> None:
         tenant_id = f"test-{uuid.uuid4().hex[:8]}"
         storage = Module4Storage("postgresql://invalid")
-        await storage.connect()
 
         importer = GraphRAGArtifactImporter()
         summary = await importer.import_into_storage(
@@ -101,6 +98,8 @@ def test_partial_artifacts_are_imported_as_base_graph(tmp_path: Path) -> None:
         assert summary.entities == 2
         assert summary.nodes >= 4
         assert summary.edges >= 4
+        assert summary.evidence >= 4
+        assert summary.edge_evidence_links >= 4
 
         nodes, edges = await storage.list_graph(
             tenant_id=tenant_id,
@@ -113,6 +112,28 @@ def test_partial_artifacts_are_imported_as_base_graph(tmp_path: Path) -> None:
         relation_types = {str(item.get("relation_type")) for item in edges}
         assert {"Document", "Chunk", "Entity"}.issubset(node_types)
         assert {"PART_OF", "HAS_ENTITY", "RELATED"}.issubset(relation_types)
+
+        evidence_total, evidence_rows = await storage.list_evidence(
+            tenant_id=tenant_id,
+            doc_id=None,
+            object_type="chunk",
+            object_id="chunk-1",
+            page=1,
+            page_size=20,
+        )
+        assert evidence_total >= 1
+        assert evidence_rows
+
+        related_edge = next((edge for edge in edges if str(edge.get("relation_type")) == "RELATED"), None)
+        assert related_edge is not None
+        edge_evidence_total, edge_evidence_rows = await storage.list_edge_evidence(
+            tenant_id=tenant_id,
+            edge_id=str(related_edge["edge_id"]),
+            page=1,
+            page_size=20,
+        )
+        assert edge_evidence_total >= 1
+        assert edge_evidence_rows
 
         await storage.close()
 

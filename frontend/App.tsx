@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
-import { AuthModal } from '@/components/AuthModal';
-import { AIAssistant } from '@/components/AIAssistant';
+import { AuthModal } from './components/AuthModal';
+import { AIAssistant } from './components/AIAssistant';
 import { BrainCircuit } from 'lucide-react';
 
 type AuthUser = { name: string; email: string } | null;
@@ -64,6 +64,8 @@ const App: React.FC = () => {
   const [showLoginModal, setShowLoginModal] = useState(false);
 
   const isFullPage = activeTab === 'guide';
+  const isEdgeToEdgeWorkbench =
+    activeTab === 'deepread' || activeTab === 'deepread_extraction' || activeTab === 'nexus';
 
   const handleLoginSuccess = (loggedInUser: { name: string; email: string }) => {
     setUser(loggedInUser);
@@ -145,10 +147,14 @@ const App: React.FC = () => {
           />
         )}
 
-        <main className={`flex-1 transition-all duration-300 relative z-10 ${
-          isFullPage 
-            ? 'w-full p-0' 
-            : `p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`
+        <main
+          data-active-tab={activeTab}
+          className={`flex-1 transition-all duration-300 relative z-10 ${
+          isFullPage
+            ? 'w-full p-0'
+            : isEdgeToEdgeWorkbench
+              ? `${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'} p-0 overflow-hidden`
+              : `p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`
         }`}>
           <Suspense fallback={loadingFallback}>{renderContent()}</Suspense>
         </main>

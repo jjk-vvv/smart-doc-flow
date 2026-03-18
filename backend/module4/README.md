@@ -23,9 +23,17 @@ Module 4 GraphRAG execution is aligned to the project `ragtest` baseline and now
 Copy-Item .env.example .env
 ```
 
-If PostgreSQL is temporarily unavailable, `MODULE4_DB_CONNECT_TIMEOUT_SEC` controls how fast the service falls back to memory mode.
-Use `MODULE4_FORCE_MEMORY_MODE=1` when you want deterministic local testing without a database.
+Module 4 now starts in strict database mode. If PostgreSQL is unavailable, startup fails instead of silently falling back.
+`MODULE4_DB_CONNECT_TIMEOUT_SEC` controls how quickly startup reports the connection failure.
 `MODULE4_ALERT_LOW_CONF_THRESHOLD` controls the built-in low-confidence rule threshold when default rules are seeded.
+Leave `MODULE4_GRAPHRAG_PYTHON_BIN=python` unless you deliberately need a custom runtime.
+When the value is generic, Module 4 now auto-prefers `backend/module4/.venv` so the GraphRAG runtime stays local to this repo instead of silently borrowing `D:\ragtest`.
+
+Module 4 no longer accepts direct file uploads. The only supported ingest path is:
+
+- Module 2 upload and parse
+- Module 2 auto-sync parsed `documents`
+- Module 4 ingest `documents` and build file-scoped graph state
 
 3. Run API:
 
@@ -52,13 +60,25 @@ Invoke-WebRequest http://127.0.0.1:8100/module4/healthz?probe=deep
 
 - python executable available
 - `graphrag` importable in that python runtime
+- `tiktoken.get_encoding("cl100k_base")` available in that runtime
 - prompt assets present
 - GraphRAG runtime configuration populated
+
+The health payload now also includes runtime version details for the active GraphRAG python environment.
 
 `probe=deep` additionally attempts to reach:
 
 - OneAPI status endpoint derived from `MODULE4_GRAPHRAG_API_BASE`
 - Neo4j using the configured credentials
+
+## Neo4j Projection
+
+When a file-scoped graph reaches `ready`, Module 4 now attempts a downstream Neo4j projection for the active graph version.
+
+- Projection is best-effort and does not fail the document ingest job when Neo4j is unavailable.
+- The projector refreshes its credentials from the active workspace runtime before each write.
+- `MODULE4_NEO4J_PROJECT_TIMEOUT_SEC` controls how long Module 4 waits before recording projection failure and preserving the main ingest success path.
+- `MODULE4_NEO4J_PROJECT_MAX_NODES` and `MODULE4_NEO4J_PROJECT_MAX_EDGES` cap the graph size that will be pushed downstream in one projection attempt.
 
 ## Main APIs
 
@@ -97,6 +117,5 @@ Rules are stored in `module4.rules` and are applied during `ingest`.
 - Re-ingesting the same payload reuses existing alerts and evidence instead of inflating counts.
 - `POST /module4/rebuild` clears tenant graph data and replays saved ingest batches for that tenant.
 - In-flight ingest / rebuild jobs are re-queued on graceful shutdown so they can be recovered on the next startup when PostgreSQL is available.
-- `GET /module4/healthz` returns `status=degraded` when the service is running in memory fallback mode.
 - `GET /module4/healthz` also reports GraphRAG runtime readiness. Use `probe=deep` when you want live OneAPI and Neo4j reachability checks.
 - Tenant-scoped APIs can resolve tenant from request body/query or the `X-Tenant-Id` header.

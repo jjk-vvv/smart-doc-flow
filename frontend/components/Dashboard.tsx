@@ -36,7 +36,7 @@ const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, trend, is
       <Icon className="w-12 h-12 text-primary" />
     </div>
     <div className="flex justify-between items-start z-10">
-      <div className="text-[10px] font-bold font-['Microsoft_YaHei'] text-muted-foreground dark:text-white tracking-widest uppercase">{title}</div>
+      <div className="text-[10px] font-bold font-sans text-muted-foreground dark:text-white tracking-widest uppercase">{title}</div>
       <Icon className={cn("w-4 h-4", isDanger ? "text-destructive" : "text-primary")} />
     </div>
     <div className="flex items-end justify-between mt-4 z-10">
@@ -179,7 +179,7 @@ export const Dashboard: React.FC = () => {
           <div className="absolute inset-0 bg-gradient-to-r from-primary/5 via-transparent to-primary/5 opacity-50" />
           <div className="relative z-10 h-full flex flex-col">
             <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xs font-bold font-['Microsoft_YaHei'] tracking-[0.2em] uppercase flex items-center gap-2 text-muted-foreground">
+              <h3 className="text-xs font-bold font-sans tracking-[0.2em] uppercase flex items-center gap-2 text-muted-foreground">
                 <BrainCircuit size={16} className="text-primary" />
                 运行时流水线
               </h3>
@@ -192,7 +192,7 @@ export const Dashboard: React.FC = () => {
                     {documents.length}
                   </div>
                 </div>
-                <span className="text-[10px] font-bold font-['Microsoft_YaHei'] text-muted-foreground tracking-widest absolute -bottom-8 whitespace-nowrap">数据摄入</span>
+                <span className="text-[10px] font-bold font-sans text-muted-foreground tracking-widest absolute -bottom-8 whitespace-nowrap">数据摄入</span>
               </div>
               <div className="flex-1 max-w-[120px] relative mx-2 h-20 flex flex-col justify-center gap-4 px-1">
                 <div className="h-[1px] bg-primary/10 relative overflow-hidden w-full">
@@ -210,7 +210,7 @@ export const Dashboard: React.FC = () => {
                   <BrainCircuit className="w-10 h-10 text-primary drop-shadow-[0_0_10px_rgba(56,189,248,0.5)]" />
                   <div className="absolute inset-0 border border-primary rounded-full animate-ping opacity-20" />
                 </div>
-                <span className="text-sm font-bold font-['Microsoft_YaHei'] text-primary tracking-widest absolute -bottom-10 whitespace-nowrap">认知分析引擎</span>
+                <span className="text-sm font-bold font-sans text-primary tracking-widest absolute -bottom-10 whitespace-nowrap">认知分析引擎</span>
               </div>
               <div className="flex-1 max-w-[120px] relative mx-2 h-20 flex flex-col justify-center gap-4 px-1">
                 <div className="h-[1px] bg-primary/10 relative overflow-hidden w-full">
@@ -227,7 +227,7 @@ export const Dashboard: React.FC = () => {
                 <div className="w-16 h-16 rounded-2xl bg-white/50 dark:bg-slate-900/50 backdrop-blur border border-border flex items-center justify-center group-hover/step:-translate-y-2 transition-transform duration-500 delay-100 shadow-lg">
                   <Activity className="text-emerald-500" />
                 </div>
-                <span className="text-[10px] font-bold font-['Microsoft_YaHei'] text-muted-foreground tracking-widest absolute -bottom-8 whitespace-nowrap">智能洞察</span>
+                <span className="text-[10px] font-bold font-sans text-muted-foreground tracking-widest absolute -bottom-8 whitespace-nowrap">智能洞察</span>
               </div>
             </div>
           </div>
@@ -241,14 +241,14 @@ export const Dashboard: React.FC = () => {
         >
           <div className="absolute top-0 right-0 w-32 h-32 bg-destructive/5 rounded-full blur-3xl -z-10 pointer-events-none" />
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-xs font-bold font-['Microsoft_YaHei'] text-muted-foreground uppercase tracking-[0.2em]">质量雷达</h3>
+            <h3 className="text-xs font-bold font-sans text-muted-foreground uppercase tracking-[0.2em]">质量雷达</h3>
             <Activity size={14} className="text-destructive/50" />
           </div>
           <div className="flex-1 min-h-0 -ml-4 relative">
             <ResponsiveContainer width="100%" height="100%">
               <RadarChart cx="50%" cy="50%" outerRadius="70%" data={radarData}>
                 <PolarGrid stroke="var(--border)" />
-                <PolarAngleAxis dataKey="subject" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600, fontFamily: "Microsoft YaHei" }} />
+                <PolarAngleAxis dataKey="subject" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600, fontFamily: "Noto Sans SC" }} />
                 <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
                 <Radar name="质量指数" dataKey="A" stroke="hsl(var(--destructive))" strokeWidth={2} fill="hsl(var(--destructive))" fillOpacity={0.3} />
                 <Tooltip
@@ -276,7 +276,7 @@ export const Dashboard: React.FC = () => {
           <div className="h-10 border-b border-border bg-white/80 dark:bg-slate-900/50 flex items-center px-4 justify-between backdrop-blur-md">
             <div className="flex items-center gap-2">
               <Terminal className="w-3.5 h-3.5 text-primary animate-pulse" />
-              <span className="text-[10px] font-bold font-['Microsoft_YaHei'] text-muted-foreground tracking-widest">系统日志</span>
+              <span className="text-[10px] font-bold font-sans text-muted-foreground tracking-widest">系统日志</span>
             </div>
           </div>
           <div className="flex-1 p-4 overflow-hidden bg-slate-50 dark:bg-black/40 relative">
@@ -299,8 +299,8 @@ export const Dashboard: React.FC = () => {
             <div className="p-4 bg-primary/10 rounded-full mb-4 shadow-sm group-hover:shadow-[0_0_20px_rgba(56,189,248,0.2)] group-hover:scale-110 transition-all duration-300 border border-primary/20">
               <UploadCloud className="w-8 h-8 text-primary/70 group-hover:text-primary transition-colors animate-bounce" />
             </div>
-            <h3 className="text-sm font-bold font-['Microsoft_YaHei'] text-foreground tracking-wider uppercase">快速上传</h3>
-            <p className="text-[10px] text-muted-foreground mt-1 font-bold font-['Microsoft_YaHei']">使用深度解析以刷新指标</p>
+            <h3 className="text-sm font-bold font-sans text-foreground tracking-wider uppercase">快速上传</h3>
+            <p className="text-[10px] text-muted-foreground mt-1 font-bold font-sans">使用深度解析以刷新指标</p>
           </div>
         </motion.div>
       </div>

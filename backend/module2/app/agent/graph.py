@@ -6,9 +6,8 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple, TypedDict
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
@@ -19,6 +18,9 @@ from app.assistant.provider import (
     resolve_llm_base_url,
     resolve_llm_model,
 )
+
+if TYPE_CHECKING:
+    from langchain_google_genai import ChatGoogleGenerativeAI
 
 
 SYSTEM_PROMPT = """You are an expert document data extraction agent.
@@ -44,7 +46,8 @@ Core rules:
 2. Prefer values directly supported by the same row/column context rather than guessing from distant content.
 3. When a value spans multiple cells or lines but clearly belongs together, combine it faithfully.
 4. Normalize only trivial formatting differences when the source is explicit, but do not invent missing parts.
-5. If a field cannot be reliably grounded to one of the allowed ref_id candidates, return null for that field.
+5. In repetitive tables without an explicit row filter, if the first visible cell under a matched column is a placeholder such as "-", "—", blank, "N/A", or "null", continue scanning downward and prefer the earliest explicit grounded value in that same matched column.
+6. If a field cannot be reliably grounded to one of the allowed ref_id candidates, return null for that field.
 Return JSON only.
 """
 
@@ -78,9 +81,9 @@ class AgentState(TypedDict):
 
 
 class ExtractionGraph:
-    def __init__(self, llm: Optional[ChatGoogleGenerativeAI] = None) -> None:
+    def __init__(self, llm: Optional["ChatGoogleGenerativeAI"] = None) -> None:
         temperature = float(os.getenv("MODULE2_LLM_TEMPERATURE", "0"))
-        primary_model = resolve_llm_model(default="gemini-3-pro")
+        primary_model = resolve_llm_model(default="gemini-3.1-pro")
         fallback_models = [
             m.strip()
             for m in os.getenv(
@@ -96,6 +99,8 @@ class ExtractionGraph:
         self._max_tokens = max(512, int(os.getenv("MODULE2_ASSISTANT_MAX_TOKENS", "1600")))
         self._json_retry_count = max(1, int(os.getenv("MODULE2_ASSISTANT_JSON_RETRY_COUNT", "3")))
         self._json_max_tokens = max(self._max_tokens, int(os.getenv("MODULE2_ASSISTANT_JSON_MAX_TOKENS", "4096")))
+        raw_reasoning_effort = str(os.getenv("MODULE2_LLM_REASONING_EFFORT", "minimal") or "minimal").strip().lower()
+        self._reasoning_effort = raw_reasoning_effort if raw_reasoning_effort in {"minimal", "low", "medium", "high"} else "minimal"
         self._timeout_sec = max(
             10.0,
             float(
@@ -126,6 +131,8 @@ class ExtractionGraph:
                     timeout_sec=self._timeout_sec,
                 )
             elif has_key:
+                from langchain_google_genai import ChatGoogleGenerativeAI
+
                 self.llm = ChatGoogleGenerativeAI(
                     model=primary_model,
                     temperature=temperature,
@@ -273,11 +280,7 @@ class ExtractionGraph:
         if not focus_fields:
             return state
 
-        max_table_refs = max(300, int(os.getenv("MODULE2_TABLE_ALLOWED_REFS_MAX", "1200")))
-        allowed_table_refs = self._collect_table_ref_ids(tables, max_refs=max_table_refs)
-        if not allowed_table_refs:
-            return state
-
+        max_table_refs = max(120, int(os.getenv("MODULE2_TABLE_ALLOWED_REFS_MAX", "360")))
         correction_context = "\n".join(state["errors"][-5:]) if state["errors"] else "None"
         table_timeout_sec = max(5.0, float(os.getenv("MODULE2_TABLE_EXTRACT_TIMEOUT_SEC", "60")))
         max_field_chars = max(80, int(os.getenv("MODULE2_MAX_FIELD_CHARS", "300")))
@@ -291,6 +294,11 @@ class ExtractionGraph:
         for batch_fields in field_batches:
             table_context = self._build_table_context(tables, state.get("field_hints", {}), batch_fields)
             if not table_context:
+                continue
+            allowed_table_refs = self._extract_ref_ids_from_text(table_context, max_refs=max_table_refs)
+            if not allowed_table_refs:
+                allowed_table_refs = self._collect_table_ref_ids(tables, max_refs=max_table_refs)
+            if not allowed_table_refs:
                 continue
             correction_fields = [name for name in sorted(error_fields) if name in batch_fields]
             user_prompt = (
@@ -309,6 +317,7 @@ class ExtractionGraph:
                 "Extraction rules:\n"
                 "- Match field aliases, synonymous headers, abbreviations, and unit-bearing labels.\n"
                 "- Use row labels, column labels, merged headers, same-row context, and nearby cells together.\n"
+                "- For repetitive tables without a user-specified row filter, do not stop at placeholder cells like —, -, blank, or N/A; continue downward and prefer the earliest explicit grounded value in the matched column.\n"
                 "- Prefer the most explicit grounded value and correct previous validation errors first.\n"
                 "- If evidence is insufficient, return null instead of guessing.\n\n"
                 "Return strictly as JSON using: {\"fields\": {field_name: {\"value\": ..., \"ref_id\": ...}}}."
@@ -377,6 +386,12 @@ class ExtractionGraph:
                     "bbox": bbox,
                 }
 
+        extracted = self._backfill_missing_table_fields(
+            table_blocks=tables,
+            target_fields=focus_fields,
+            extracted=extracted,
+            bbox_map=state["bbox_map"],
+        )
         state["results"] = extracted
         return state
 
@@ -398,8 +413,7 @@ class ExtractionGraph:
             return state
 
         correction_context = "\n".join(state["errors"][-5:]) if state["errors"] else "None"
-        max_allowed_refs = max(260, int(os.getenv("MODULE2_ALLOWED_REFS_MAX", "1200")))
-        allowed_refs = list(state["bbox_map"].keys())[:max_allowed_refs]
+        max_allowed_refs = max(120, int(os.getenv("MODULE2_ALLOWED_REFS_MAX", "320")))
         prev_summary = self._results_summary(existing)
 
         field_timeout_sec = max(8.0, float(os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "90")))
@@ -412,6 +426,15 @@ class ExtractionGraph:
 
         for batch_fields in field_batches:
             compact_markdown = self._build_context(state["markdown"], batch_fields)
+            allowed_refs = self._extract_ref_ids_from_text(compact_markdown, max_refs=max_allowed_refs)
+            if len(allowed_refs) < max(12, min(48, max_allowed_refs // 4)):
+                for ref_id in self._selected_result_refs(existing, max_refs=max_allowed_refs):
+                    if ref_id not in allowed_refs:
+                        allowed_refs.append(ref_id)
+                    if len(allowed_refs) >= max_allowed_refs:
+                        break
+            if not allowed_refs:
+                allowed_refs = list(state["bbox_map"].keys())[:max_allowed_refs]
             correction_fields = [name for name in sorted(error_fields) if name in batch_fields]
             user_prompt = (
                 "Document Markdown:\n"
@@ -706,7 +729,9 @@ class ExtractionGraph:
 
     @staticmethod
     def _build_context(markdown: str, target_fields: Dict[str, Any]) -> str:
-        max_chars = max(2000, int(os.getenv("MODULE2_PROMPT_MAX_CHARS", "32000")))
+        max_chars = max(1600, int(os.getenv("MODULE2_PROMPT_MAX_CHARS", "12000")))
+        max_refs = max(40, int(os.getenv("MODULE2_PROMPT_MAX_REFS", "220")))
+        fallback_ref_limit = max(8, int(os.getenv("MODULE2_PROMPT_FALLBACK_REF_LIMIT", "24")))
         if len(markdown) <= max_chars:
             return markdown
 
@@ -725,29 +750,50 @@ class ExtractionGraph:
 
         picked: List[str] = []
         size = 0
+        picked_ref_count = 0
         for score, _, ref_id, text in sorted(ranked, key=lambda x: (-x[0], x[1])):
             if score <= 0:
                 continue
             segment = f'<ref id="{ref_id}">{text}</ref>'
             add_len = len(segment) + 1
-            if size + add_len > max_chars:
+            if size + add_len > max_chars or picked_ref_count >= max_refs:
                 continue
             picked.append(segment)
             size += add_len
+            picked_ref_count += 1
 
         chosen = {re.search(r'<ref id="([^"]+)">', row).group(1) for row in picked} if picked else set()
-        if size < max_chars:
+        if size < max_chars and picked:
+            fallback_added = 0
             for _, _, ref_id, text in ranked:
                 if ref_id in chosen:
                     continue
+                if fallback_added >= fallback_ref_limit or picked_ref_count >= max_refs:
+                    break
                 segment = f'<ref id="{ref_id}">{text}</ref>'
                 add_len = len(segment) + 1
                 if size + add_len > max_chars:
                     break
                 picked.append(segment)
                 size += add_len
+                picked_ref_count += 1
+                fallback_added += 1
+        elif not picked:
+            for _, _, ref_id, text in ranked:
+                if picked_ref_count >= max_refs:
+                    break
+                segment = f'<ref id="{ref_id}">{text}</ref>'
+                add_len = len(segment) + 1
+                if size + add_len > max_chars:
+                    break
+                picked.append(segment)
+                size += add_len
+                picked_ref_count += 1
 
-        return "\n".join(picked) if picked else markdown[:max_chars]
+        compact = "\n".join(picked) if picked else markdown[:max_chars]
+        if len(compact) <= max_chars:
+            return compact
+        return compact[:max_chars]
 
     def _build_table_context(
         self,
@@ -759,108 +805,40 @@ class ExtractionGraph:
         max_rows = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_ROWS", "24")))
         max_cols = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_COLS", "12")))
         max_header_meta = max(1, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_HEADER_META", "12")))
+        max_chars = max(1800, int(os.getenv("MODULE2_TABLE_CONTEXT_MAX_CHARS", "12000")))
 
-        preferred_ids: List[str] = []
-        for field_name in target_fields.keys():
-            for table_id in field_hints.get(field_name, []):
-                if table_id not in preferred_ids:
-                    preferred_ids.append(table_id)
+        selected = self._select_tables_for_fields(table_blocks, field_hints, target_fields, max_tables=max_tables)
+        if not selected:
+            return "[]"
 
-        selected: List[Dict[str, Any]] = []
-        for table_id in preferred_ids:
-            table = next((t for t in table_blocks if str(t.get("table_id")) == table_id), None)
-            if table:
-                selected.append(table)
-            if len(selected) >= max_tables:
-                break
-
-        if len(selected) < max_tables:
-            for table in table_blocks:
-                if table in selected:
-                    continue
-                selected.append(table)
-                if len(selected) >= max_tables:
-                    break
-
-        compact: List[Dict[str, Any]] = []
-        for table in selected:
-            rows = []
-            all_rows = table.get("rows", [])
-            ranked_rows = sorted(all_rows, key=self._row_context_score, reverse=True)
-            head_keep = min(max_rows, max(2, min(4, max_rows)))
-            row_candidates = list(all_rows[:head_keep]) + ranked_rows
-            seen_rows: Set[str] = set()
-            for row in row_candidates:
-                if len(rows) >= max_rows:
-                    break
-                row_idx = int(row.get("row_index", 0) or 0)
-                row_key = str(row_idx) if row_idx > 0 else json.dumps(row, ensure_ascii=False, sort_keys=True)[:200]
-                if row_key in seen_rows:
-                    continue
-                seen_rows.add(row_key)
-                cells = []
-                for cell in row.get("cells", [])[:max_cols]:
-                    cell_text = str(cell.get("text", "")).strip()
-                    if not cell_text:
-                        continue
-                    payload: Dict[str, Any] = {
-                        "col_index": cell.get("col_index"),
-                        "text": cell_text,
-                        "ref_id": cell.get("ref_id"),
-                    }
-                    header = str(cell.get("header", "")).strip()
-                    if header:
-                        payload["header"] = header
-                    header_unit_raw = cell.get("header_unit")
-                    header_unit = header_unit_raw.strip() if isinstance(header_unit_raw, str) else ""
-                    if header_unit and header_unit.lower() not in {"none", "null"}:
-                        payload["header_unit"] = header_unit
-                    value_type = str(cell.get("value_type", "")).strip()
-                    if value_type:
-                        payload["value_type"] = value_type
-                    normalized_raw = cell.get("normalized_text")
-                    normalized_text = normalized_raw.strip() if isinstance(normalized_raw, str) else ""
-                    if normalized_text and normalized_text.lower() not in {"none", "null"} and normalized_text != cell_text:
-                        payload["normalized_text"] = normalized_text
-                    numeric_value = cell.get("numeric_value")
-                    if numeric_value is not None:
-                        payload["numeric_value"] = numeric_value
-                    ratio_value = cell.get("ratio_value")
-                    if ratio_value is not None:
-                        payload["ratio_value"] = ratio_value
-                    detected_raw = cell.get("detected_unit")
-                    detected_unit = detected_raw.strip() if isinstance(detected_raw, str) else ""
-                    if detected_unit and detected_unit.lower() not in {"none", "null"}:
-                        payload["detected_unit"] = detected_unit
-                    cells.append(payload)
-                if cells:
-                    rows.append({"row_index": row.get("row_index"), "cells": cells})
-
-            if not rows:
-                continue
-            header_meta: List[Dict[str, Any]] = []
-            for item in table.get("header_meta", [])[:max_header_meta]:
-                header_meta.append(
-                    {
-                        "col_index": item.get("col_index"),
-                        "name": item.get("name"),
-                        "unit": item.get("unit"),
-                    }
-                )
-            compact.append(
-                {
-                    "table_id": table.get("table_id"),
-                    "source": table.get("source"),
-                    "page": table.get("page"),
-                    "quality": table.get("quality"),
-                    "headers": table.get("headers", [])[:max_cols],
-                    "header_meta": header_meta,
-                    "row_count": table.get("row_count"),
-                    "col_count": table.get("col_count"),
-                    "rows": rows,
-                }
+        table_limit = len(selected)
+        row_limit = max_rows
+        col_limit = max_cols
+        header_limit = max_header_meta
+        while True:
+            compact = self._serialize_table_context(
+                selected[:table_limit],
+                target_fields=target_fields,
+                max_rows=row_limit,
+                max_cols=col_limit,
+                max_header_meta=header_limit,
             )
-        return json.dumps(compact, ensure_ascii=False)
+            serialized = json.dumps(compact, ensure_ascii=False)
+            if len(serialized) <= max_chars:
+                return serialized
+            if row_limit > 8:
+                row_limit = max(8, int(round(row_limit * 0.7)))
+                continue
+            if col_limit > 8:
+                col_limit = max(8, int(round(col_limit * 0.7)))
+                continue
+            if table_limit > 2:
+                table_limit -= 1
+                continue
+            if header_limit > 6:
+                header_limit = max(6, int(round(header_limit * 0.7)))
+                continue
+            return serialized
 
     @staticmethod
     def _row_context_score(row: Dict[str, Any]) -> float:
@@ -897,6 +875,222 @@ class ExtractionGraph:
         return refs
 
     @staticmethod
+    def _extract_ref_ids_from_text(text: str, *, max_refs: int) -> List[str]:
+        if not text:
+            return []
+        refs: List[str] = []
+        seen: Set[str] = set()
+        candidates = list(re.findall(r'<ref id="([^"]+)">', text))
+        candidates.extend(re.findall(r'\b[A-Za-z0-9_.-]+_r\d+_c\d+\b', text))
+        for ref_id in candidates:
+            token = str(ref_id or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            refs.append(token)
+            if len(refs) >= max_refs:
+                break
+        return refs
+
+    @staticmethod
+    def _selected_result_refs(results: Dict[str, Dict[str, Any]], *, max_refs: int) -> List[str]:
+        refs: List[str] = []
+        seen: Set[str] = set()
+        for _, payload in results.items():
+            if not isinstance(payload, dict):
+                continue
+            ref_id = str(payload.get("source_ref_id") or "").strip()
+            if not ref_id or ref_id in seen:
+                continue
+            seen.add(ref_id)
+            refs.append(ref_id)
+            if len(refs) >= max_refs:
+                break
+        return refs
+
+    def _select_tables_for_fields(
+        self,
+        table_blocks: List[Dict[str, Any]],
+        field_hints: Dict[str, List[str]],
+        target_fields: Dict[str, Any],
+        *,
+        max_tables: int,
+    ) -> List[Dict[str, Any]]:
+        preferred_ids: List[str] = []
+        for field_name in target_fields.keys():
+            for table_id in field_hints.get(field_name, []):
+                if table_id not in preferred_ids:
+                    preferred_ids.append(table_id)
+
+        selected: List[Dict[str, Any]] = []
+        for table_id in preferred_ids:
+            table = next((t for t in table_blocks if str(t.get("table_id")) == table_id), None)
+            if table and table not in selected:
+                selected.append(table)
+            if len(selected) >= max_tables:
+                break
+
+        if len(selected) < max_tables:
+            ranked_tables = sorted(table_blocks, key=lambda item: float(item.get("quality", 0.0) or 0.0), reverse=True)
+            for table in ranked_tables:
+                if table in selected:
+                    continue
+                selected.append(table)
+                if len(selected) >= max_tables:
+                    break
+        return selected
+
+    def _serialize_table_context(
+        self,
+        tables: List[Dict[str, Any]],
+        *,
+        target_fields: Dict[str, Any],
+        max_rows: int,
+        max_cols: int,
+        max_header_meta: int,
+    ) -> List[Dict[str, Any]]:
+        compact: List[Dict[str, Any]] = []
+        for table in tables:
+            selected_columns = self._select_table_column_indices(table, target_fields=target_fields, max_cols=max_cols)
+            rows = []
+            all_rows = table.get("rows", [])
+            ranked_rows = sorted(all_rows, key=self._row_context_score, reverse=True)
+            head_keep = min(max_rows, max(2, min(4, max_rows)))
+            row_candidates = list(all_rows[:head_keep]) + ranked_rows
+            seen_rows: Set[str] = set()
+            for row in row_candidates:
+                if len(rows) >= max_rows:
+                    break
+                row_idx = int(row.get("row_index", 0) or 0)
+                row_key = str(row_idx) if row_idx > 0 else json.dumps(row, ensure_ascii=False, sort_keys=True)[:200]
+                if row_key in seen_rows:
+                    continue
+                seen_rows.add(row_key)
+                cells = []
+                for cell in row.get("cells", []):
+                    col_index = cell.get("col_index")
+                    if selected_columns and col_index not in selected_columns:
+                        continue
+                    cell_text = str(cell.get("text", "")).strip()
+                    if not cell_text:
+                        continue
+                    payload: Dict[str, Any] = {
+                        "col_index": col_index,
+                        "text": cell_text,
+                        "ref_id": cell.get("ref_id"),
+                    }
+                    header = str(cell.get("header", "")).strip()
+                    if header:
+                        payload["header"] = header
+                    header_unit_raw = cell.get("header_unit")
+                    header_unit = header_unit_raw.strip() if isinstance(header_unit_raw, str) else ""
+                    if header_unit and header_unit.lower() not in {"none", "null"}:
+                        payload["header_unit"] = header_unit
+                    value_type = str(cell.get("value_type", "")).strip()
+                    if value_type:
+                        payload["value_type"] = value_type
+                    numeric_value = cell.get("numeric_value")
+                    if numeric_value is not None:
+                        payload["numeric_value"] = numeric_value
+                    cells.append(payload)
+                if cells:
+                    rows.append({"row_index": row.get("row_index"), "cells": cells})
+
+            if not rows:
+                continue
+            header_meta: List[Dict[str, Any]] = []
+            for item in table.get("header_meta", [])[:max_header_meta]:
+                header_meta.append(
+                    {
+                        "col_index": item.get("col_index"),
+                        "name": item.get("name"),
+                        "unit": item.get("unit"),
+                    }
+                )
+            compact.append(
+                {
+                    "table_id": table.get("table_id"),
+                    "source": table.get("source"),
+                    "page": table.get("page"),
+                    "quality": table.get("quality"),
+                    "headers": [
+                        header
+                        for idx, header in enumerate(table.get("headers", []), start=1)
+                        if not selected_columns or idx in selected_columns
+                    ][:max_cols],
+                    "header_meta": header_meta,
+                    "row_count": table.get("row_count"),
+                    "col_count": table.get("col_count"),
+                    "rows": rows,
+                }
+            )
+        return compact
+
+    def _select_table_column_indices(
+        self,
+        table: Dict[str, Any],
+        *,
+        target_fields: Dict[str, Any],
+        max_cols: int,
+    ) -> Set[int]:
+        if max_cols <= 0:
+            return set()
+
+        selected: List[int] = []
+        all_candidates: List[Tuple[int, int]] = []
+        headers = table.get("headers", []) if isinstance(table.get("headers"), list) else []
+        header_meta = table.get("header_meta", []) if isinstance(table.get("header_meta"), list) else []
+
+        # Always preserve the leading identifier columns so row anchors remain interpretable.
+        for idx in range(1, min(len(headers), max_cols) + 1):
+            if idx <= min(4, max_cols) and idx not in selected:
+                selected.append(idx)
+
+        for idx, header in enumerate(headers, start=1):
+            header_text = str(header or "").strip()
+            if not header_text:
+                continue
+            score = 0
+            for field_name in target_fields.keys():
+                score += self._keyword_overlap_score(str(field_name), header_text.lower())
+            if score > 0:
+                all_candidates.append((score, idx))
+
+        for item in header_meta:
+            if not isinstance(item, dict):
+                continue
+            try:
+                col_index = int(item.get("col_index") or 0)
+            except (TypeError, ValueError):
+                continue
+            if col_index <= 0:
+                continue
+            header_text = f"{str(item.get('name') or '').strip()} {str(item.get('unit') or '').strip()}".strip().lower()
+            if not header_text:
+                continue
+            score = 0
+            for field_name in target_fields.keys():
+                score += self._keyword_overlap_score(str(field_name), header_text)
+            if score > 0:
+                all_candidates.append((score + 1, col_index))
+
+        for _, col_index in sorted(all_candidates, key=lambda item: (-item[0], item[1])):
+            if col_index not in selected:
+                selected.append(col_index)
+            if len(selected) >= max_cols:
+                break
+
+        # If target-related columns are sparse, backfill from the far-right value region as well.
+        if len(selected) < max_cols and headers:
+            for idx in range(len(headers), 0, -1):
+                if idx not in selected:
+                    selected.append(idx)
+                if len(selected) >= max_cols:
+                    break
+
+        return set(sorted(selected[:max_cols]))
+
+    @staticmethod
     def _table_ref_lookup(table_blocks: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         lookup: Dict[str, Dict[str, Any]] = {}
         for table in table_blocks:
@@ -907,6 +1101,226 @@ class ExtractionGraph:
                         continue
                     lookup[ref_id] = cell
         return lookup
+
+    def _backfill_missing_table_fields(
+        self,
+        *,
+        table_blocks: List[Dict[str, Any]],
+        target_fields: Dict[str, Any],
+        extracted: Dict[str, Dict[str, Any]],
+        bbox_map: Dict[str, List[float]],
+    ) -> Dict[str, Dict[str, Any]]:
+        if not table_blocks or not target_fields:
+            return extracted
+
+        normalized_results = dict(extracted or {})
+        for field_name, expected_type in target_fields.items():
+            existing = normalized_results.get(field_name, {})
+            if self._has_meaningful_result_value(existing):
+                continue
+
+            candidate = self._find_table_column_backfill_candidate(
+                table_blocks=table_blocks,
+                field_name=str(field_name),
+                expected_type=expected_type,
+            )
+            if candidate is None:
+                continue
+
+            ref_id = str(candidate.get("ref_id") or "").strip()
+            if not ref_id or ref_id not in bbox_map:
+                continue
+            value = candidate.get("value")
+            if value is None or self._is_placeholder_like_value(value):
+                continue
+
+            normalized_results[str(field_name)] = {
+                "value": value,
+                "confidence": candidate.get("confidence", 0.84),
+                "source_ref_id": ref_id,
+                "bbox": bbox_map.get(ref_id, [0.0, 0.0, 0.0, 0.0, 0.0]),
+            }
+        return normalized_results
+
+    def _find_table_column_backfill_candidate(
+        self,
+        *,
+        table_blocks: List[Dict[str, Any]],
+        field_name: str,
+        expected_type: Any,
+    ) -> Optional[Dict[str, Any]]:
+        wants_number = str(expected_type).lower() in {"number", "float", "double", "integer", "int"}
+        best_score = 0
+        best_candidate: Optional[Dict[str, Any]] = None
+
+        for table_idx, table in enumerate(table_blocks[:12]):
+            candidate_columns = self._rank_table_columns_for_field(table, field_name)
+            if not candidate_columns:
+                continue
+            for score, col_index in candidate_columns:
+                if score < best_score:
+                    break
+                for row in table.get("rows", [])[:160]:
+                    if not isinstance(row, dict):
+                        continue
+                    cell = next(
+                        (
+                            item
+                            for item in row.get("cells", [])
+                            if int(item.get("col_index") or 0) == col_index
+                        ),
+                        None,
+                    )
+                    if not isinstance(cell, dict):
+                        continue
+                    cell_text = str(cell.get("text") or "").strip()
+                    if self._is_placeholder_like_value(cell_text):
+                        continue
+
+                    coerced_value: Any = None
+                    if wants_number:
+                        numeric_value = cell.get("numeric_value")
+                        if isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
+                            if str(expected_type).lower() in {"integer", "int"}:
+                                coerced_value = int(round(float(numeric_value)))
+                            else:
+                                coerced_value = float(numeric_value)
+                        else:
+                            parsed_value, _ = self._coerce_value(cell_text, expected_type)
+                            if isinstance(parsed_value, (int, float)) and not isinstance(parsed_value, bool):
+                                coerced_value = parsed_value
+                    else:
+                        parsed_value, _ = self._coerce_value(cell_text, expected_type)
+                        if parsed_value is not None and not self._is_placeholder_like_value(parsed_value):
+                            coerced_value = parsed_value
+
+                    if coerced_value is None or self._is_placeholder_like_value(coerced_value):
+                        continue
+
+                    confidence = min(0.94, 0.74 + 0.03 * float(score))
+                    row_index = int(row.get("row_index", 0) or 0)
+                    candidate = {
+                        "value": coerced_value,
+                        "ref_id": str(cell.get("ref_id") or "").strip(),
+                        "confidence": confidence,
+                        "score": score,
+                        "table_order": table_idx,
+                        "row_index": row_index,
+                    }
+                    if best_candidate is None:
+                        best_candidate = candidate
+                        best_score = score
+                        continue
+                    if score > int(best_candidate.get("score", 0) or 0):
+                        best_candidate = candidate
+                        best_score = score
+                        continue
+                    if score == int(best_candidate.get("score", 0) or 0):
+                        prev_row_raw = best_candidate.get("row_index", 10**9)
+                        prev_table_raw = best_candidate.get("table_order", 10**9)
+                        prev_row = int(10**9 if prev_row_raw is None else prev_row_raw)
+                        prev_table = int(10**9 if prev_table_raw is None else prev_table_raw)
+                        if table_idx < prev_table or (table_idx == prev_table and row_index < prev_row):
+                            best_candidate = candidate
+                            best_score = score
+                if best_candidate is not None and best_score >= score:
+                    break
+        return best_candidate
+
+    def _rank_table_columns_for_field(self, table: Dict[str, Any], field_name: str) -> List[Tuple[int, int]]:
+        ranked: List[Tuple[int, int]] = []
+        headers = table.get("headers", []) if isinstance(table.get("headers"), list) else []
+        header_meta = table.get("header_meta", []) if isinstance(table.get("header_meta"), list) else []
+        seen: Set[int] = set()
+
+        for idx, header in enumerate(headers, start=1):
+            score = self._table_field_header_score(field_name, str(header or ""))
+            if score <= 0 or idx in seen:
+                continue
+            ranked.append((score, idx))
+            seen.add(idx)
+
+        for item in header_meta:
+            if not isinstance(item, dict):
+                continue
+            try:
+                col_index = int(item.get("col_index") or 0)
+            except (TypeError, ValueError):
+                continue
+            if col_index <= 0:
+                continue
+            header_text = f"{str(item.get('name') or '').strip()} {str(item.get('unit') or '').strip()}".strip()
+            score = self._table_field_header_score(field_name, header_text)
+            if score <= 0:
+                continue
+            ranked.append((score + 1, col_index))
+
+        return sorted(ranked, key=lambda item: (-item[0], item[1]))
+
+    def _table_field_header_score(self, field_name: str, header_text: str) -> int:
+        lowered_header = str(header_text or "").strip().lower()
+        if not lowered_header:
+            return 0
+
+        score = self._keyword_overlap_score(field_name, lowered_header)
+        normalized_header = re.sub(r"[\s_\-/:,().]+", "", lowered_header)
+        for alias in self._field_aliases(str(field_name)):
+            alias_text = str(alias or "").strip().lower()
+            if not alias_text:
+                continue
+            normalized_alias = re.sub(r"[\s_\-/:,().]+", "", alias_text)
+            if normalized_alias and normalized_alias == normalized_header:
+                score += 6
+            elif alias_text in lowered_header:
+                score += 3
+        return score
+
+    @staticmethod
+    def _has_meaningful_result_value(entity: Any) -> bool:
+        if not isinstance(entity, dict):
+            return False
+        value = entity.get("value")
+        if value is None:
+            return False
+        return not ExtractionGraph._is_placeholder_like_value(value)
+
+    @staticmethod
+    def _is_placeholder_like_value(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return False
+
+        text = str(value).strip()
+        if not text:
+            return True
+        normalized = re.sub(r"\s+", "", text).strip().lower()
+        if not normalized:
+            return True
+        if normalized in {
+            "-",
+            "--",
+            "---",
+            "—",
+            "——",
+            "/",
+            "\\",
+            "null",
+            "none",
+            "nan",
+            "n/a",
+            "na",
+            "nil",
+            "unknown",
+            "未提供",
+            "暂无",
+            "无",
+            "空",
+        }:
+            return True
+        if all(ch in "-—_/.\\" for ch in normalized):
+            return True
+        return False
 
     @staticmethod
     def _chunk_target_fields(
@@ -1074,6 +1488,7 @@ class ExtractionGraph:
                     token_budget=token_budget,
                     result=result,
                     note="finish_reason=length",
+                    messages=messages,
                 )
                 continue
 
@@ -1092,6 +1507,7 @@ class ExtractionGraph:
                 token_budget=token_budget,
                 result=result,
                 note="non_json_content",
+                messages=messages,
             )
 
         if isinstance(best_partial_payload, dict) and best_partial_score > 0:
@@ -1116,6 +1532,7 @@ class ExtractionGraph:
                 temperature=self._temperature,
                 max_tokens=max_tokens,
                 response_format={"type": "json_object"},
+                reasoning_effort=self._reasoning_effort,
             )
         except Exception as exc:
             if not self._is_response_format_unsupported_error(exc):
@@ -1125,6 +1542,7 @@ class ExtractionGraph:
             messages=messages,
             temperature=self._temperature,
             max_tokens=max_tokens,
+            reasoning_effort=self._reasoning_effort,
         )
 
     async def _repair_provider_json_output(
@@ -1173,6 +1591,7 @@ class ExtractionGraph:
             token_budget=repair_budget,
             result=repair_result,
             note="repair_non_json",
+            messages=repair_messages,
         )
         return None
 
@@ -1397,6 +1816,7 @@ class ExtractionGraph:
         token_budget: int,
         result: Any,
         note: str,
+        messages: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         if self._debug_dir is None:
             return
@@ -1407,6 +1827,19 @@ class ExtractionGraph:
             safe_model = re.sub(r"[^a-z0-9_.-]+", "_", str(provider.model or "model").lower()).strip("_") or "model"
             stamp = datetime.now().strftime("%H%M%S_%f")
             target = day_dir / f"{stamp}_{safe_purpose}_{safe_model}.json"
+            message_summary = []
+            if messages:
+                for item in messages:
+                    if not isinstance(item, dict):
+                        continue
+                    content = str(item.get("content") or "")
+                    message_summary.append(
+                        {
+                            "role": str(item.get("role") or ""),
+                            "content_chars": len(content),
+                            "content_preview": content[:320],
+                        }
+                    )
             target.write_text(
                 json.dumps(
                     {
@@ -1414,8 +1847,12 @@ class ExtractionGraph:
                         "note": note,
                         "model": provider.model,
                         "token_budget": token_budget,
+                        "reasoning_effort": self._reasoning_effort,
                         "finish_reason": getattr(result, "finish_reason", ""),
                         "content": getattr(result, "content", ""),
+                        "message_count": len(messages or []),
+                        "prompt_chars": sum(len(str(item.get("content") or "")) for item in (messages or []) if isinstance(item, dict)),
+                        "messages": message_summary,
                         "raw": getattr(result, "raw", {}),
                     },
                     ensure_ascii=False,
@@ -1611,15 +2048,20 @@ class ExtractionGraph:
 
     @staticmethod
     def _results_summary(results: Dict[str, Dict[str, Any]]) -> str:
+        max_items = max(6, int(os.getenv("MODULE2_RESULTS_SUMMARY_MAX_ITEMS", "12")))
+        max_chars = max(400, int(os.getenv("MODULE2_RESULTS_SUMMARY_MAX_CHARS", "2400")))
         chunks: List[str] = []
         for idx, (field_name, value) in enumerate(results.items()):
-            if idx >= 30:
+            if idx >= max_items:
                 break
             chunks.append(
                 f"{field_name}: value={value.get('value')}, ref_id={value.get('source_ref_id')}, "
                 f"confidence={value.get('confidence')}"
             )
-        return "\n".join(chunks) if chunks else "None"
+        joined = "\n".join(chunks) if chunks else "None"
+        if len(joined) <= max_chars:
+            return joined
+        return joined[:max_chars]
 
     @staticmethod
     def _validate_type(value: Any, expected: Any) -> bool:

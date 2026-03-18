@@ -1,19 +1,44 @@
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-
-import asyncpg
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 logger = logging.getLogger(__name__)
+_LOCAL_DB_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _json_object(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            loaded = json.loads(text)
+        except Exception:
+            return {}
+        return dict(loaded) if isinstance(loaded, dict) else {}
+    return {}
 
 
 class ExtractionStorage:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: Optional[Any] = None
+        self._asyncpg_module: Optional[Any] = None
         self._memory_cache: Dict[str, Dict[str, Any]] = {}
         self._assistant_memory_history: List[Dict[str, Any]] = []
         self._assistant_sessions: Dict[str, Dict[str, Any]] = {}
@@ -21,26 +46,78 @@ class ExtractionStorage:
         self._assistant_tool_calls: List[Dict[str, Any]] = []
         self._assistant_actions: Dict[str, Dict[str, Any]] = {}
         self._assistant_action_executions: List[Dict[str, Any]] = []
+        self._graph_sync_outbox: Dict[str, Dict[str, Any]] = {}
+        self._graph_sync_outbox_by_key: Dict[Tuple[str, str, str, str], str] = {}
         self._degraded_memory_mode = False
         self._last_connect_error = ""
         self._sync_commit_off = os.getenv("MODULE2_SYNC_COMMIT_OFF", "false").lower() in {"1", "true", "yes"}
         self._cache_unlogged = os.getenv("MODULE2_CACHE_UNLOGGED", "false").lower() in {"1", "true", "yes"}
         self._staging_unlogged = os.getenv("MODULE2_STAGING_UNLOGGED", "true").lower() in {"1", "true", "yes"}
 
-    async def connect(self) -> None:
-        min_pool = max(1, int(os.getenv("MODULE2_DB_POOL_MIN", "2")))
-        max_pool = max(min_pool, int(os.getenv("MODULE2_DB_POOL_MAX", "20")))
+    async def _load_asyncpg(self) -> Optional[Any]:
+        if self._asyncpg_module is not None:
+            return self._asyncpg_module
+
+        import_timeout = max(1.0, float(os.getenv("MODULE2_DB_IMPORT_TIMEOUT_SEC", "8")))
         try:
-            self._pool = await asyncpg.create_pool(self._dsn, min_size=min_pool, max_size=max_pool)
-            await self._init_schema()
-            self._degraded_memory_mode = False
-            self._last_connect_error = ""
+            probe = subprocess.run(
+                [sys.executable, "-c", "import asyncpg; print('asyncpg_import_probe_ok')"],
+                capture_output=True,
+                text=True,
+                timeout=import_timeout,
+                check=False,
+            )
+            if probe.returncode != 0:
+                stderr = str(probe.stderr or "").strip()
+                raise RuntimeError(stderr or f"probe_exit_{probe.returncode}")
+            self._asyncpg_module = importlib.import_module("asyncpg")
         except Exception as exc:
-            # Fallback for local/dev environments without PostgreSQL.
+            self._last_connect_error = f"asyncpg_import_failed:{type(exc).__name__}: {exc}"
+            logger.warning("module2 storage cannot import asyncpg within %.1fs: %s", import_timeout, exc)
+            self._asyncpg_module = None
+        return self._asyncpg_module
+
+    async def connect(self) -> None:
+        asyncpg_module = await self._load_asyncpg()
+        if asyncpg_module is None:
             self._pool = None
             self._degraded_memory_mode = True
-            self._last_connect_error = f"{type(exc).__name__}: {exc}"
+            if not self._last_connect_error:
+                self._last_connect_error = "asyncpg_import_failed"
             logger.warning("module2 storage downgraded to memory mode: %s", self._last_connect_error)
+            return
+
+        configured_min_pool = max(1, int(os.getenv("MODULE2_DB_POOL_MIN", "1")))
+        max_pool = max(configured_min_pool, int(os.getenv("MODULE2_DB_POOL_MAX", "20")))
+        min_pool = 1 if self._dsn_targets_localhost() else configured_min_pool
+        connect_timeout = max(2.0, float(os.getenv("MODULE2_DB_CONNECT_TIMEOUT_SEC", "5")))
+        errors: List[str] = []
+
+        for label, pool_kwargs in self._build_pool_attempts():
+            try:
+                self._pool = await asyncpg_module.create_pool(
+                    min_size=min_pool,
+                    max_size=max_pool,
+                    timeout=connect_timeout,
+                    command_timeout=connect_timeout,
+                    **pool_kwargs,
+                )
+                await self._init_schema()
+                self._degraded_memory_mode = False
+                self._last_connect_error = ""
+                logger.info("module2 storage connected with strategy=%s", label)
+                return
+            except Exception as exc:
+                errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                if self._pool:
+                    await self._pool.close()
+                    self._pool = None
+
+        # Fallback for local/dev environments without PostgreSQL.
+        self._pool = None
+        self._degraded_memory_mode = True
+        self._last_connect_error = " | ".join(errors[:4])
+        logger.warning("module2 storage downgraded to memory mode: %s", self._last_connect_error)
 
     async def close(self) -> None:
         if self._pool:
@@ -201,8 +278,8 @@ class ExtractionStorage:
             "file_hash": str(row["file_hash"] or ""),
             "file_name": str(row["file_name"] or ""),
             "summary_text": str(row["summary_text"] or ""),
-            "current_object_lock_json": row["current_object_lock_json"] if isinstance(row["current_object_lock_json"], dict) else {},
-            "metadata_json": row["metadata_json"] if isinstance(row["metadata_json"], dict) else {},
+            "current_object_lock_json": _json_object(row["current_object_lock_json"]),
+            "metadata_json": _json_object(row["metadata_json"]),
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
         }
@@ -281,7 +358,7 @@ class ExtractionStorage:
             rows = await conn.fetch(sql, key, size)
         out: List[Dict[str, Any]] = []
         for row in rows:
-            payload_json = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
+            payload_json = _json_object(row["payload_json"])
             out.append(
                 {
                     "message_id": str(row["message_id"] or ""),
@@ -383,6 +460,415 @@ class ExtractionStorage:
                 record["latency_ms"],
             )
 
+    async def upsert_graph_sync_outbox(
+        self,
+        *,
+        tenant_id: str,
+        source: str,
+        source_batch_key: str,
+        endpoint: str,
+        payload: Dict[str, Any],
+        sync_kind: str,
+        file_hash: Optional[str] = None,
+        max_attempts: int = 3,
+    ) -> Dict[str, Any]:
+        tenant_value = str(tenant_id or "").strip()
+        source_value = str(source or "").strip()
+        batch_key_value = str(source_batch_key or "").strip()
+        endpoint_value = str(endpoint or "").strip()
+        sync_kind_value = str(sync_kind or "upload_file").strip() or "upload_file"
+        file_hash_value = str(file_hash or "").strip() or None
+        payload_value = dict(payload or {})
+        capped_attempts = max(1, min(int(max_attempts or 3), 8))
+
+        if not tenant_value or not source_value or not batch_key_value or not endpoint_value:
+            raise ValueError("tenant_id, source, source_batch_key and endpoint are required")
+
+        if not self._pool:
+            key = (tenant_value, source_value, batch_key_value, endpoint_value)
+            existing_id = self._graph_sync_outbox_by_key.get(key)
+            now = _utcnow()
+            if existing_id and existing_id in self._graph_sync_outbox:
+                row = self._graph_sync_outbox[existing_id]
+                if str(row.get("status") or "") != "delivered":
+                    row.update(
+                        {
+                            "sync_kind": sync_kind_value,
+                            "file_hash": file_hash_value,
+                            "payload_json": payload_value,
+                            "max_attempts": capped_attempts,
+                            "status": "queued",
+                            "last_error": None,
+                            "next_attempt_at": now,
+                            "updated_at": now,
+                        }
+                    )
+                return dict(row)
+
+            outbox_id = f"graphsync_{uuid.uuid4().hex[:24]}"
+            row = {
+                "outbox_id": outbox_id,
+                "tenant_id": tenant_value,
+                "source": source_value,
+                "source_batch_key": batch_key_value,
+                "endpoint": endpoint_value,
+                "sync_kind": sync_kind_value,
+                "file_hash": file_hash_value,
+                "payload_json": payload_value,
+                "status": "queued",
+                "attempt_count": 0,
+                "max_attempts": capped_attempts,
+                "last_error": None,
+                "last_response_json": {},
+                "next_attempt_at": now,
+                "last_attempt_at": None,
+                "delivered_at": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+            self._graph_sync_outbox[outbox_id] = row
+            self._graph_sync_outbox_by_key[key] = outbox_id
+            return dict(row)
+
+        outbox_id = f"graphsync_{uuid.uuid4().hex[:24]}"
+        sql = """
+            INSERT INTO graph_sync_outbox (
+                outbox_id,
+                tenant_id,
+                source,
+                source_batch_key,
+                endpoint,
+                sync_kind,
+                file_hash,
+                payload_json,
+                status,
+                attempt_count,
+                max_attempts,
+                next_attempt_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'queued', 0, $9, NOW())
+            ON CONFLICT (tenant_id, source, source_batch_key, endpoint)
+            DO UPDATE SET
+                sync_kind = EXCLUDED.sync_kind,
+                file_hash = COALESCE(EXCLUDED.file_hash, graph_sync_outbox.file_hash),
+                payload_json = EXCLUDED.payload_json,
+                max_attempts = EXCLUDED.max_attempts,
+                status = CASE
+                    WHEN graph_sync_outbox.status = 'delivered' THEN graph_sync_outbox.status
+                    ELSE 'queued'
+                END,
+                last_error = NULL,
+                next_attempt_at = CASE
+                    WHEN graph_sync_outbox.status = 'delivered' THEN graph_sync_outbox.next_attempt_at
+                    ELSE NOW()
+                END,
+                updated_at = NOW()
+            RETURNING *
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                sql,
+                outbox_id,
+                tenant_value,
+                source_value,
+                batch_key_value,
+                endpoint_value,
+                sync_kind_value,
+                file_hash_value,
+                json.dumps(payload_value, ensure_ascii=False),
+                capped_attempts,
+            )
+        return dict(row) if row else {}
+
+    async def get_graph_sync_outbox(self, outbox_id: str) -> Optional[Dict[str, Any]]:
+        key = str(outbox_id or "").strip()
+        if not key:
+            return None
+
+        if not self._pool:
+            row = self._graph_sync_outbox.get(key)
+            return dict(row) if row else None
+
+        sql = "SELECT * FROM graph_sync_outbox WHERE outbox_id = $1"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, key)
+        return dict(row) if row else None
+
+    async def list_graph_sync_outbox(
+        self,
+        *,
+        tenant_id: Optional[str] = None,
+        source: Optional[str] = None,
+        source_batch_key: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        statuses: Optional[List[str]] = None,
+        limit: int = 100,
+        due_before: Optional[datetime] = None,
+        include_future: bool = False,
+    ) -> List[Dict[str, Any]]:
+        tenant_value = str(tenant_id or "").strip()
+        source_value = str(source or "").strip()
+        batch_key_value = str(source_batch_key or "").strip()
+        endpoint_value = str(endpoint or "").strip()
+        status_values = [str(item).strip() for item in (statuses or []) if str(item).strip()]
+        capped_limit = max(1, min(int(limit or 100), 500))
+        due_at = due_before or _utcnow()
+
+        if not self._pool:
+            rows = [dict(item) for item in self._graph_sync_outbox.values()]
+            if tenant_value:
+                rows = [item for item in rows if str(item.get("tenant_id") or "").strip() == tenant_value]
+            if source_value:
+                rows = [item for item in rows if str(item.get("source") or "").strip() == source_value]
+            if batch_key_value:
+                rows = [item for item in rows if str(item.get("source_batch_key") or "").strip() == batch_key_value]
+            if endpoint_value:
+                rows = [item for item in rows if str(item.get("endpoint") or "").strip() == endpoint_value]
+            if status_values:
+                allowed = set(status_values)
+                rows = [item for item in rows if str(item.get("status") or "") in allowed]
+            if not include_future:
+                rows = [
+                    item for item in rows
+                    if not item.get("next_attempt_at") or item.get("next_attempt_at") <= due_at
+                ]
+            rows.sort(
+                key=lambda item: (
+                    item.get("next_attempt_at") or due_at,
+                    item.get("created_at") or due_at,
+                )
+            )
+            return rows[:capped_limit]
+
+        where_parts: List[str] = []
+        params: List[Any] = []
+        next_idx = 1
+        if tenant_value:
+            where_parts.append(f"tenant_id = ${next_idx}")
+            params.append(tenant_value)
+            next_idx += 1
+        if source_value:
+            where_parts.append(f"source = ${next_idx}")
+            params.append(source_value)
+            next_idx += 1
+        if batch_key_value:
+            where_parts.append(f"source_batch_key = ${next_idx}")
+            params.append(batch_key_value)
+            next_idx += 1
+        if endpoint_value:
+            where_parts.append(f"endpoint = ${next_idx}")
+            params.append(endpoint_value)
+            next_idx += 1
+        if status_values:
+            where_parts.append(f"status = ANY(${next_idx}::text[])")
+            params.append(status_values)
+            next_idx += 1
+        if not include_future:
+            where_parts.append(f"(next_attempt_at IS NULL OR next_attempt_at <= ${next_idx})")
+            params.append(due_at)
+            next_idx += 1
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        sql = f"""
+            SELECT *
+            FROM graph_sync_outbox
+            {where_sql}
+            ORDER BY COALESCE(next_attempt_at, created_at) ASC, created_at ASC
+            LIMIT ${next_idx}
+        """
+        params.append(capped_limit)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [dict(row) for row in rows]
+
+    async def claim_graph_sync_outbox(self, outbox_id: str) -> Optional[Dict[str, Any]]:
+        key = str(outbox_id or "").strip()
+        if not key:
+            return None
+
+        if not self._pool:
+            row = self._graph_sync_outbox.get(key)
+            if not row or str(row.get("status") or "") == "delivered":
+                return dict(row) if row else None
+            now = _utcnow()
+            row["status"] = "delivering"
+            row["attempt_count"] = int(row.get("attempt_count") or 0) + 1
+            row["last_attempt_at"] = now
+            row["updated_at"] = now
+            return dict(row)
+
+        sql = """
+            UPDATE graph_sync_outbox
+            SET
+                status = 'delivering',
+                attempt_count = attempt_count + 1,
+                last_attempt_at = NOW(),
+                updated_at = NOW()
+            WHERE outbox_id = $1
+              AND status <> 'delivered'
+            RETURNING *
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, key)
+        return dict(row) if row else None
+
+    async def mark_graph_sync_outbox_delivered(
+        self,
+        *,
+        outbox_id: str,
+        response_payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        key = str(outbox_id or "").strip()
+        payload_value = dict(response_payload or {})
+        if not key:
+            return None
+
+        if not self._pool:
+            row = self._graph_sync_outbox.get(key)
+            if not row:
+                return None
+            now = _utcnow()
+            row.update(
+                {
+                    "status": "delivered",
+                    "last_error": None,
+                    "last_response_json": payload_value,
+                    "delivered_at": now,
+                    "updated_at": now,
+                }
+            )
+            return dict(row)
+
+        sql = """
+            UPDATE graph_sync_outbox
+            SET
+                status = 'delivered',
+                last_error = NULL,
+                last_response_json = $2::jsonb,
+                delivered_at = NOW(),
+                updated_at = NOW()
+            WHERE outbox_id = $1
+            RETURNING *
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, key, json.dumps(payload_value, ensure_ascii=False))
+        return dict(row) if row else None
+
+    async def requeue_graph_sync_outbox(
+        self,
+        *,
+        outbox_id: str,
+        error_message: str,
+        next_attempt_at: datetime,
+    ) -> Optional[Dict[str, Any]]:
+        key = str(outbox_id or "").strip()
+        message = str(error_message or "").strip()[:1000]
+        if not key:
+            return None
+
+        if not self._pool:
+            row = self._graph_sync_outbox.get(key)
+            if not row:
+                return None
+            row.update(
+                {
+                    "status": "queued",
+                    "last_error": message,
+                    "next_attempt_at": next_attempt_at,
+                    "updated_at": _utcnow(),
+                }
+            )
+            return dict(row)
+
+        sql = """
+            UPDATE graph_sync_outbox
+            SET
+                status = 'queued',
+                last_error = $2,
+                next_attempt_at = $3,
+                updated_at = NOW()
+            WHERE outbox_id = $1
+            RETURNING *
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, key, message, next_attempt_at)
+        return dict(row) if row else None
+
+    async def mark_graph_sync_outbox_failed(
+        self,
+        *,
+        outbox_id: str,
+        error_message: str,
+    ) -> Optional[Dict[str, Any]]:
+        key = str(outbox_id or "").strip()
+        message = str(error_message or "").strip()[:1000]
+        if not key:
+            return None
+
+        if not self._pool:
+            row = self._graph_sync_outbox.get(key)
+            if not row:
+                return None
+            row.update(
+                {
+                    "status": "failed",
+                    "last_error": message,
+                    "updated_at": _utcnow(),
+                }
+            )
+            return dict(row)
+
+        sql = """
+            UPDATE graph_sync_outbox
+            SET
+                status = 'failed',
+                last_error = $2,
+                updated_at = NOW()
+            WHERE outbox_id = $1
+            RETURNING *
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, key, message)
+        return dict(row) if row else None
+
+    async def recover_pending_graph_sync_outbox(self, limit: int = 200) -> List[Dict[str, Any]]:
+        capped_limit = max(1, min(int(limit or 200), 500))
+        if not self._pool:
+            recovered: List[Dict[str, Any]] = []
+            for row in self._graph_sync_outbox.values():
+                if str(row.get("status") or "") == "delivering":
+                    row["status"] = "queued"
+                    row["updated_at"] = _utcnow()
+                if str(row.get("status") or "") == "queued":
+                    recovered.append(dict(row))
+            recovered.sort(
+                key=lambda item: (
+                    item.get("next_attempt_at") or _utcnow(),
+                    item.get("created_at") or _utcnow(),
+                )
+            )
+            return recovered[:capped_limit]
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE graph_sync_outbox
+                    SET status = 'queued', updated_at = NOW()
+                    WHERE status = 'delivering'
+                    """
+                )
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM graph_sync_outbox
+                    WHERE status = 'queued'
+                    ORDER BY COALESCE(next_attempt_at, created_at) ASC, created_at ASC
+                    LIMIT $1
+                    """,
+                    capped_limit,
+                )
+        return [dict(row) for row in rows]
+
     @staticmethod
     def _parse_command_rows(command_tag: str) -> int:
         text = str(command_tag or "").strip()
@@ -409,6 +895,9 @@ class ExtractionStorage:
         self._assistant_tool_calls.clear()
         self._assistant_actions.clear()
         self._assistant_action_executions.clear()
+        graph_sync_outbox_count = len(self._graph_sync_outbox)
+        self._graph_sync_outbox.clear()
+        self._graph_sync_outbox_by_key.clear()
 
         out: Dict[str, int] = {
             "memory_cache": memory_cache_count,
@@ -416,6 +905,7 @@ class ExtractionStorage:
             "assist_session_memory": assistant_session_count,
             "assist_message_memory": assistant_message_count,
             "assist_tool_call_memory": assistant_tool_call_count,
+            "graph_sync_outbox_memory": graph_sync_outbox_count,
             "document_extractions": 0,
             "field_staging": 0,
             "table_staging": 0,
@@ -423,6 +913,7 @@ class ExtractionStorage:
             "assist_session": 0,
             "assist_message": 0,
             "assist_tool_call": 0,
+            "graph_sync_outbox": 0,
         }
         if not self._pool:
             return out
@@ -450,6 +941,9 @@ class ExtractionStorage:
                 out["assist_session"] = self._parse_command_rows(
                     await conn.execute("DELETE FROM assist_session")
                 )
+                out["graph_sync_outbox"] = self._parse_command_rows(
+                    await conn.execute("DELETE FROM graph_sync_outbox")
+                )
         return out
 
     def diagnostics(self) -> Dict[str, Any]:
@@ -462,7 +956,70 @@ class ExtractionStorage:
             "assist_session_memory_size": len(self._assistant_sessions),
             "assist_message_memory_size": len(self._assistant_messages),
             "assist_tool_call_memory_size": len(self._assistant_tool_calls),
+            "graph_sync_outbox_memory_size": len(self._graph_sync_outbox),
         }
+
+    def _dsn_targets_localhost(self) -> bool:
+        parsed = urlsplit(self._dsn)
+        return str(parsed.hostname or "").strip().lower() in _LOCAL_DB_HOSTS
+
+    def _build_pool_attempts(self) -> List[Tuple[str, Dict[str, Any]]]:
+        parsed = urlsplit(self._dsn)
+        scheme = str(parsed.scheme or "").lower()
+        if scheme not in {"postgres", "postgresql"}:
+            return [("dsn", {"dsn": self._dsn})]
+
+        base: Dict[str, Any] = {}
+        if parsed.username is not None:
+            base["user"] = unquote(parsed.username)
+        if parsed.password is not None:
+            base["password"] = unquote(parsed.password)
+        if parsed.hostname:
+            base["host"] = parsed.hostname
+        if parsed.port is not None:
+            base["port"] = parsed.port
+        database = str(parsed.path or "").lstrip("/")
+        if database:
+            base["database"] = unquote(database)
+
+        query = {key.lower(): value for key, value in parse_qsl(parsed.query, keep_blank_values=True)}
+        sslmode = str(query.get("sslmode", "") or "").strip().lower()
+        if sslmode == "disable":
+            base["ssl"] = "disable"
+
+        host = str(base.get("host") or "").strip().lower()
+        is_local = host in _LOCAL_DB_HOSTS
+        attempts: List[Tuple[str, Dict[str, Any]]] = []
+
+        def _push_attempt(label: str, payload: Dict[str, Any]) -> None:
+            clean = {key: value for key, value in payload.items() if value is not None}
+            if is_local and not clean.get("ssl"):
+                clean["ssl"] = "disable"
+            fingerprint = json.dumps(clean, ensure_ascii=False, sort_keys=True, default=str)
+            if any(existing[0] == fingerprint for existing in _seen):
+                return
+            _seen.append((fingerprint, label))
+            attempts.append((label, clean))
+
+        _seen: List[Tuple[str, str]] = []
+
+        if is_local:
+            local_base = dict(base)
+            local_base["host"] = "127.0.0.1"
+
+            no_password = dict(local_base)
+            no_password.pop("password", None)
+            _push_attempt("local_ipv4_no_password", no_password)
+
+            empty_password = dict(local_base)
+            empty_password["password"] = ""
+            _push_attempt("local_ipv4_empty_password", empty_password)
+
+            _push_attempt("local_ipv4_original_password", local_base)
+
+        _push_attempt("parsed_dsn", dict(base))
+        _push_attempt("raw_dsn", {"dsn": self._dsn})
+        return attempts
 
     @staticmethod
     def _to_field_staging_records(cache_key: str, payload: Dict[str, Any]) -> List[Tuple[Any, ...]]:
@@ -539,7 +1096,7 @@ class ExtractionStorage:
 
     @staticmethod
     async def _copy_with_fallback(
-        conn: asyncpg.Connection,
+        conn: Any,
         table_name: str,
         records: List[Tuple[Any, ...]],
         columns: List[str],
@@ -683,6 +1240,34 @@ class ExtractionStorage:
 
             CREATE INDEX IF NOT EXISTS idx_assist_tool_call_session_id
                 ON assist_tool_call (session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS graph_sync_outbox (
+                outbox_id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                source_batch_key TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                sync_kind TEXT NOT NULL,
+                file_hash TEXT,
+                payload_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'queued',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                last_error TEXT,
+                last_response_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_attempt_at TIMESTAMPTZ,
+                delivered_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_graph_sync_outbox_scope UNIQUE (tenant_id, source, source_batch_key, endpoint)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_graph_sync_outbox_status_due
+                ON graph_sync_outbox (status, next_attempt_at, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_graph_sync_outbox_file_hash
+                ON graph_sync_outbox (file_hash, created_at DESC);
         """
 
         async with self._pool.acquire() as conn:

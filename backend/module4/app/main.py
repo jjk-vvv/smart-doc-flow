@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 from collections import Counter
@@ -28,7 +29,11 @@ from app.schemas import (
     ExplainRequest,
     ExplainResponse,
     GraphEdge,
+    GraphFileDetailResponse,
+    GraphFileItem,
+    GraphFileListResponse,
     GraphNode,
+    GraphNodeDetailResponse,
     GraphResponse,
     GraphStats,
     HealthzResponse,
@@ -43,9 +48,13 @@ from app.schemas import (
     RuleUpsertResponse,
     SimulateRequest,
     SimulateResponse,
-    UploadSyncFile,
 )
-from app.services import GraphRAGArtifactImporter, GraphRAGIndexer, GraphRAGWorkspaceBuilder, UploadInputNormalizer, WorkspaceSourceFile
+from app.services import (
+    GraphRAGIndexError,
+    GraphRAGIndexer,
+    GraphRAGWorkspaceBuilder,
+    Neo4jGraphProjector,
+)
 
 MODULE4_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=MODULE4_ROOT / ".env", override=False, interpolate=False)
@@ -69,7 +78,8 @@ SUPPORTED_RULE_OPS = {
 ALERT_SEVERITY = {"yellow", "orange", "red"}
 ALERT_STATUS = {"open", "ack", "resolved", "false_positive"}
 EDGE_DIRECTION = {"out", "bi"}
-RULE_KIND = {"deterministic", "semantic", "anomaly"}
+RULE_KIND = {"deterministic"}
+logger = logging.getLogger("uvicorn.error")
 
 
 def _cors_origins() -> tuple[list[str], bool]:
@@ -296,21 +306,8 @@ def _derived_ingest_batch_key(payload: IngestRequest, tenant_id: Optional[str] =
         "tenant_id": tenant_id or payload.tenant_id or _default_tenant(),
         "source": payload.source,
         "graph_mode": payload.graph_mode,
+        "documents": normalized_payload.get("documents", []),
     }
-    uploads = normalized_payload.get("uploads") if isinstance(normalized_payload.get("uploads"), list) else []
-    if uploads:
-        normalized["uploads"] = [
-            {
-                "file_name": item.get("file_name"),
-                "file_hash": item.get("file_hash"),
-                "artifact_path": item.get("artifact_path"),
-                "storage_path": item.get("storage_path"),
-            }
-            for item in uploads
-            if isinstance(item, dict)
-        ]
-    else:
-        normalized["documents"] = normalized_payload.get("documents", [])
     return _risk_key(_stable_json_dumps(normalized))
 
 
@@ -410,6 +407,67 @@ def _normalize_graph_edge_row(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalize_projection_payload(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    labels_raw = value.get("labels")
+    labels = [str(item) for item in labels_raw if str(item).strip()] if isinstance(labels_raw, list) else []
+    return {
+        "status": str(value.get("status") or "").strip(),
+        "projected_nodes": _to_int(value.get("projected_nodes"), 0),
+        "projected_edges": _to_int(value.get("projected_edges"), 0),
+        "source_node_count": _to_int(value.get("source_node_count"), 0),
+        "source_edge_count": _to_int(value.get("source_edge_count"), 0),
+        "skipped_reason": str(value.get("skipped_reason") or "").strip() or None,
+        "error_message": str(value.get("error_message") or "").strip() or None,
+        "labels": labels,
+        "relationship_type": str(value.get("relationship_type") or "MODULE4_EDGE"),
+    }
+
+
+def _projection_runtime_status() -> Dict[str, Any]:
+    neo4j_graph_projector.refresh_settings(getattr(workspace_builder, "neo4j", None))
+    settings = neo4j_graph_projector.settings
+    configured = settings.is_configured()
+    return {
+        "enabled": bool(neo4j_graph_projector.enabled),
+        "configured": configured,
+        "can_project": bool(neo4j_graph_projector.enabled and configured),
+        "database": str(settings.database or "neo4j"),
+        "max_nodes": int(neo4j_graph_projector.max_nodes),
+        "max_edges": int(neo4j_graph_projector.max_edges),
+        "timeout_sec": float(getattr(neo4j_graph_projector, "timeout_sec", 0.0) or 0.0),
+        "missing_fields": settings.missing_fields(),
+        "labels": ["Module4Node"],
+        "relationship_type": "MODULE4_EDGE",
+    }
+
+
+def _normalize_graph_file_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = _as_dict(row.get("metadata"))
+    projection = _normalize_projection_payload(metadata.get("projection"))
+    return {
+        "graph_file_id": str(row.get("graph_file_id") or ""),
+        "tenant_id": str(row.get("tenant_id") or _default_tenant()),
+        "file_hash": str(row.get("file_hash") or ""),
+        "file_name": str(row.get("file_name") or "unknown"),
+        "workspace_id": str(row.get("workspace_id") or "") or None,
+        "graph_mode": str(row.get("graph_mode") or "hybrid"),
+        "source": str(row.get("source") or "module2"),
+        "status": str(row.get("status") or "queued"),
+        "current_job_id": str(row.get("current_job_id") or "") or None,
+        "active_version_id": str(row.get("active_version_id") or "") or None,
+        "last_error": str(row.get("last_error") or "") or None,
+        "node_count": _to_int(row.get("node_count"), 0),
+        "edge_count": _to_int(row.get("edge_count"), 0),
+        "metadata": metadata,
+        "projection": projection,
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "last_indexed_at": row.get("last_indexed_at"),
+    }
+
+
 def _normalize_alert_row(row: Dict[str, Any]) -> Dict[str, Any]:
     severity = str(row.get("severity") or "yellow").lower()
     if severity not in ALERT_SEVERITY:
@@ -472,12 +530,215 @@ def _normalize_evidence_row(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _append_evidence_candidate(
+    candidates: List[tuple[str, str]],
+    seen: set[tuple[str, str]],
+    object_type: str,
+    object_id: Any,
+) -> None:
+    object_type_value = str(object_type or "").strip().lower()
+    object_id_value = str(object_id or "").strip()
+    if not object_type_value or not object_id_value:
+        return
+    key = (object_type_value, object_id_value)
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(key)
+
+
+def _node_evidence_candidates(node_row: Dict[str, Any]) -> List[tuple[str, str]]:
+    attrs = _as_dict(node_row.get("attrs"))
+    node_type = str(node_row.get("node_type") or "").strip().lower()
+    display_name = str(node_row.get("display_name") or "").strip()
+    graphrag_id = str(attrs.get("graphrag_id") or "").strip()
+    report_id = str(attrs.get("report_id") or "").strip()
+    file_hash = str(attrs.get("file_hash") or "").strip()
+    field_name = str(attrs.get("field_name") or "").strip()
+    candidates: List[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    if node_type == "document":
+        _append_evidence_candidate(candidates, seen, "document", graphrag_id or file_hash or display_name)
+    elif node_type == "chunk":
+        _append_evidence_candidate(candidates, seen, "chunk", graphrag_id or display_name)
+    elif node_type == "entity":
+        _append_evidence_candidate(candidates, seen, "entity", graphrag_id or display_name)
+    elif node_type == "community":
+        _append_evidence_candidate(candidates, seen, "community", graphrag_id or report_id or display_name)
+    elif node_type == "covariate":
+        _append_evidence_candidate(candidates, seen, "covariate", graphrag_id or display_name)
+    elif node_type == "field":
+        _append_evidence_candidate(candidates, seen, "field", field_name or display_name)
+    elif node_type in {"table", "figure"}:
+        _append_evidence_candidate(candidates, seen, node_type, display_name)
+
+    for chunk_id in _as_list(attrs.get("text_unit_ids")):
+        _append_evidence_candidate(candidates, seen, "chunk", chunk_id)
+    for chunk_id in _as_list(attrs.get("source_chunk_ids")):
+        _append_evidence_candidate(candidates, seen, "chunk", chunk_id)
+    for document_id in _as_list(attrs.get("document_ids")):
+        _append_evidence_candidate(candidates, seen, "document", document_id)
+
+    return candidates
+
+
+async def _load_evidence_for_node(tenant_id: str, node_row: Dict[str, Any], *, limit: int = 10) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for object_type, object_id in _node_evidence_candidates(node_row):
+        _, rows = await storage.list_evidence(
+            tenant_id=tenant_id,
+            doc_id=None,
+            object_type=object_type,
+            object_id=object_id,
+            page=1,
+            page_size=max(limit, 10),
+        )
+        for row in rows:
+            normalized = _normalize_evidence_row(row)
+            evidence_id = str(normalized.get("evidence_id") or "")
+            if not evidence_id or evidence_id in seen:
+                continue
+            seen.add(evidence_id)
+            items.append(normalized)
+            if len(items) >= limit:
+                return items
+    return items
+
+
+async def _load_edge_evidence_for_edges(
+    tenant_id: str,
+    edge_rows: List[Dict[str, Any]],
+    *,
+    limit_per_edge: int = 4,
+    edge_cap: int = 8,
+) -> Dict[str, List[Dict[str, Any]]]:
+    items: Dict[str, List[Dict[str, Any]]] = {}
+    for edge_row in edge_rows[: max(1, edge_cap)]:
+        edge_id = str(edge_row.get("edge_id") or "").strip()
+        if not edge_id:
+            continue
+        _, rows = await storage.list_edge_evidence(
+            tenant_id=tenant_id,
+            edge_id=edge_id,
+            page=1,
+            page_size=max(limit_per_edge, 4),
+        )
+        normalized = [_normalize_evidence_row(row) for row in rows]
+        if normalized:
+            items[edge_id] = normalized[:limit_per_edge]
+    return items
+
+
+def _scope_values(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, tuple):
+        values = list(raw)
+    elif raw is None:
+        values = []
+    else:
+        text = str(raw).strip()
+        if not text:
+            values = []
+        else:
+            values = [item.strip() for item in text.replace("|", ",").split(",") if item.strip()]
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _simulation_context_label(scope_name: str, context: Dict[str, Any], index: int) -> str:
+    if scope_name == "field":
+        field_name = str(context.get("field_name") or "").strip()
+        file_name = str(context.get("file_name") or "").strip()
+        if field_name and file_name:
+            return f"{file_name}:{field_name}"
+        if field_name:
+            return f"field:{field_name}"
+    if scope_name == "document":
+        file_name = str(context.get("file_name") or "").strip()
+        file_hash = str(context.get("file_hash") or "").strip()
+        if file_name:
+            return f"document:{file_name}"
+        if file_hash:
+            return f"document:{file_hash}"
+    return f"{scope_name}:{index}"
+
+
+def _inflate_simulation_context(raw_context: Dict[str, Any]) -> Dict[str, Any]:
+    context = dict(raw_context or {})
+    quality_status = str(context.get("quality_status") or "").strip()
+    diagnostics = context.get("diagnostics") if isinstance(context.get("diagnostics"), dict) else {}
+    if quality_status and "quality_status" not in diagnostics:
+        diagnostics = {**diagnostics, "quality_status": quality_status}
+        context["diagnostics"] = diagnostics
+
+    errors_count = _to_int(context.get("errors_count"), 0)
+    if errors_count > 0 and not isinstance(context.get("errors"), list):
+        context["errors"] = ["simulated_error"] * errors_count
+
+    soft_warning_count = _to_int(context.get("soft_warning_count"), 0)
+    if soft_warning_count > 0 and not isinstance(context.get("soft_warnings"), list):
+        context["soft_warnings"] = ["simulated_warning"] * soft_warning_count
+
+    return context
+
+
+async def _simulation_contexts_from_request(tenant_id: str, body: SimulateRequest) -> List[Dict[str, Any]]:
+    contexts: List[Dict[str, Any]] = []
+    params = body.params if isinstance(body.params, dict) else {}
+    scope = body.scope if isinstance(body.scope, dict) else {}
+    context_overrides = params.get("context_overrides") if isinstance(params.get("context_overrides"), dict) else {}
+
+    def _append_context(scope_name: str, raw_context: Dict[str, Any], index: int, *, source_alert_id: str | None = None) -> None:
+        context = _inflate_simulation_context(raw_context)
+        if context_overrides:
+            context.update(context_overrides)
+        context["__scope"] = scope_name
+        context["__label"] = str(context.get("__label") or _simulation_context_label(scope_name, context, index))
+        if source_alert_id:
+            context["__source_alert_id"] = source_alert_id
+        contexts.append(context)
+
+    if isinstance(params.get("document_context"), dict):
+        _append_context("document", params["document_context"], len(contexts) + 1)
+    if isinstance(params.get("field_context"), dict):
+        _append_context("field", params["field_context"], len(contexts) + 1)
+
+    for item in _as_list(params.get("document_contexts")):
+        if isinstance(item, dict):
+            _append_context("document", item, len(contexts) + 1)
+    for item in _as_list(params.get("field_contexts")):
+        if isinstance(item, dict):
+            _append_context("field", item, len(contexts) + 1)
+
+    alert_ids = _scope_values(scope.get("alert_ids"))
+    single_alert_id = str(scope.get("alert_id") or "").strip()
+    if single_alert_id:
+        alert_ids.append(single_alert_id)
+    seen_alert_ids: set[str] = set()
+    for alert_id in alert_ids:
+        if alert_id in seen_alert_ids:
+            continue
+        seen_alert_ids.add(alert_id)
+        alert = await storage.get_alert(alert_id, tenant_id=tenant_id)
+        if not alert:
+            continue
+        payload = alert.get("payload") if isinstance(alert.get("payload"), dict) else {}
+        context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+        rule_expr = payload.get("rule_expr") if isinstance(payload.get("rule_expr"), dict) else {}
+        scope_name = _rule_scope({"expr": rule_expr}) if rule_expr else "document"
+        if context:
+            _append_context(scope_name, context, len(contexts) + 1, source_alert_id=alert_id)
+
+    return contexts
+
+
 storage = Module4Storage(os.getenv("MODULE4_DATABASE_DSN", "postgresql://postgres:postgres@localhost:5432/a23"))
 job_tasks: Dict[str, asyncio.Task[Any]] = {}
-upload_input_normalizer = UploadInputNormalizer()
 workspace_builder = GraphRAGWorkspaceBuilder()
 graphrag_indexer = GraphRAGIndexer()
-graphrag_artifact_importer = GraphRAGArtifactImporter()
+neo4j_graph_projector = Neo4jGraphProjector(workspace_builder.neo4j)
 
 
 def _count_inputs_from_batches(batches: Sequence[Dict[str, Any]]) -> int:
@@ -485,8 +746,7 @@ def _count_inputs_from_batches(batches: Sequence[Dict[str, Any]]) -> int:
     for batch in batches:
         payload = batch.get("raw_payload") if isinstance(batch.get("raw_payload"), dict) else {}
         documents = payload.get("documents") if isinstance(payload.get("documents"), list) else []
-        uploads = payload.get("uploads") if isinstance(payload.get("uploads"), list) else []
-        total += len(uploads) if uploads else len(documents)
+        total += len(documents)
     return total
 
 
@@ -494,6 +754,52 @@ def _merge_result(base: Optional[Dict[str, Any]] = None, **updates: Any) -> Dict
     merged = dict(base or {})
     merged.update({key: value for key, value in updates.items() if value is not None})
     return merged
+
+
+def _trim_error_text(value: Any, limit: int = 600) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 3)].rstrip()}..."
+
+
+def _classify_graph_failure(exc: Exception, *, fallback_stage: str) -> Dict[str, str]:
+    failure_category = "unexpected_failure"
+    failure_stage = fallback_stage
+
+    if isinstance(exc, GraphRAGIndexError):
+        failure_category = str(exc.category or "index_failure").strip() or "index_failure"
+        if failure_category in {"index_timeout", "index_process_failed"}:
+            failure_stage = "indexing"
+        elif failure_category == "artifacts_missing":
+            failure_stage = "importing_graph"
+    else:
+        message = str(exc or "").lower()
+        if "normaliz" in message:
+            failure_category = "normalization_failed"
+            failure_stage = "normalizing"
+        elif "artifact quality gate failed" in message:
+            failure_category = "artifact_quality_failed"
+            failure_stage = "importing_graph"
+        elif "runtime not ready" in message:
+            failure_category = "runtime_not_ready"
+            failure_stage = "validating_runtime"
+        elif "artifact" in message and "not found" in message:
+            failure_category = "artifacts_missing"
+            failure_stage = "importing_graph"
+        elif "neo4j" in message and ("import" in message or "connect" in message):
+            failure_category = "graph_import_failed"
+            failure_stage = "importing_graph"
+        elif "graphrag index" in message:
+            failure_category = "index_process_failed"
+            failure_stage = "indexing"
+
+    message = _trim_error_text(f"{type(exc).__name__}: {exc}")
+    return {
+        "failure_category": failure_category,
+        "failure_stage": failure_stage,
+        "failure_message": message,
+    }
 
 
 async def _update_job_stage(
@@ -509,23 +815,6 @@ async def _update_job_stage(
         progress=progress,
         result=_merge_result(base_result, stage=stage, **updates),
     )
-
-
-def _update_workspace_manifest(manifest_path: Path, **updates: Any) -> Dict[str, Any]:
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    payload.update(updates)
-    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return payload
-
-
-def _append_workspace_failures(manifest_path: Path, failures: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    files = payload.get("files") if isinstance(payload.get("files"), list) else []
-    files.extend(list(failures))
-    payload["files"] = files
-    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return payload
-
 
 async def _recover_jobs() -> None:
     recoverable = await storage.list_recoverable_jobs()
@@ -575,11 +864,29 @@ async def _recover_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await storage.connect()
-    await _recover_jobs()
+    startup_timeout = max(5.0, _to_float(os.getenv("MODULE4_STARTUP_TIMEOUT_SEC"), 20.0))
+    recovery_timeout = max(3.0, _to_float(os.getenv("MODULE4_RECOVERY_TIMEOUT_SEC"), 8.0))
+    logger.info("module4 startup begin")
+    try:
+        await asyncio.wait_for(storage.connect(), timeout=startup_timeout)
+        logger.info("module4 storage connect completed: %s", storage.diagnostics())
+    except asyncio.TimeoutError as exc:
+        logger.error("module4 storage connect timed out after %.1fs", startup_timeout)
+        raise RuntimeError(f"module4 storage.connect exceeded {startup_timeout:.1f}s") from exc
+    except Exception as exc:
+        logger.exception("module4 storage connect failed during startup: %s", exc)
+        raise
+    try:
+        await asyncio.wait_for(_recover_jobs(), timeout=recovery_timeout)
+        logger.info("module4 job recovery completed")
+    except asyncio.TimeoutError:
+        logger.warning("module4 job recovery timed out after %.1fs; continuing startup", recovery_timeout)
+    except Exception as exc:
+        logger.exception("module4 job recovery failed during startup: %s", exc)
     try:
         yield
     finally:
+        logger.info("module4 shutdown begin")
         tasks = [task for task in job_tasks.values() if not task.done()]
         for task in tasks:
             task.cancel()
@@ -932,29 +1239,6 @@ def _schedule_rebuild_job(job_id: str, payload: RebuildRequest) -> None:
     task = asyncio.create_task(_run_rebuild_job(job_id, payload))
     job_tasks[job_id] = task
 
-
-def _failed_manifest_rows(items: Sequence[Any]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for item in items:
-        rows.append(
-            {
-                "file_name": getattr(item, "file_name", "unknown"),
-                "file_hash": getattr(item, "file_hash", ""),
-                "source_kind": getattr(item, "source_kind", "upload"),
-                "input_txt": None,
-                "original_path": getattr(item, "original_path", None),
-                "artifact_path": getattr(item, "artifact_path", None),
-                "artifact_url": getattr(item, "artifact_url", None),
-                "mime_type": getattr(item, "mime_type", None),
-                "text_length": 0,
-                "normalization_status": "failed",
-                "error": getattr(item, "error", "Unknown normalization failure"),
-                "metadata": dict(getattr(item, "metadata", {}) or {}),
-            }
-        )
-    return rows
-
-
 async def _run_document_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> Dict[str, Any]:
     tenant_id = payload.tenant_id or _default_tenant()
     documents = payload.documents
@@ -976,203 +1260,103 @@ async def _run_document_ingest_job(job_id: str, batch_id: str, payload: IngestRe
 
     await _update_job_stage(job_id, stage="processing_documents", progress=1.0, base_result=agg)
     for idx, doc in enumerate(documents, start=1):
-        counters = await _process_document(
+        file_name = str(doc.get("file_name") or "unknown")
+        file_hash = str(doc.get("file_hash") or "").strip() or _risk_key(file_name + json.dumps(doc, ensure_ascii=False))
+        track = str(doc.get("track") or "")
+        processing_metadata = {
+            "batch_id": batch_id,
+            "track": track,
+            "ingest_mode": "document",
+            "stage": "processing_documents",
+        }
+        await storage.upsert_graph_file(
             tenant_id=tenant_id,
-            batch_id=batch_id,
-            doc=doc,
-            field_rules=field_rules,
-            document_rules=document_rules,
+            file_hash=file_hash,
+            file_name=file_name,
+            workspace_id=None,
+            graph_mode=payload.graph_mode,
+            source=payload.source,
+            status="processing_documents",
+            current_job_id=job_id,
+            last_error=None,
+            node_count=0,
+            edge_count=0,
+            metadata=processing_metadata,
         )
+        try:
+            counters = await _process_document(
+                tenant_id=tenant_id,
+                batch_id=batch_id,
+                doc=doc,
+                field_rules=field_rules,
+                document_rules=document_rules,
+            )
+        except Exception as exc:
+            failure_message = _trim_error_text(f"{type(exc).__name__}: {exc}")
+            await storage.upsert_graph_file(
+                tenant_id=tenant_id,
+                file_hash=file_hash,
+                file_name=file_name,
+                workspace_id=None,
+                graph_mode=payload.graph_mode,
+                source=payload.source,
+                status="failed",
+                current_job_id=job_id,
+                last_error=failure_message,
+                node_count=0,
+                edge_count=0,
+                metadata={
+                    **processing_metadata,
+                    "stage": "failed",
+                    "failure_stage": "processing_documents",
+                    "failure_category": "document_ingest_failed",
+                    "failure_message": failure_message,
+                },
+            )
+            raise
         for key, value in counters.items():
             agg[key] += int(value)
+        graph_file = await storage.upsert_graph_file(
+            tenant_id=tenant_id,
+            file_hash=file_hash,
+            file_name=file_name,
+            workspace_id=None,
+            graph_mode=payload.graph_mode,
+            source=payload.source,
+            status="ready",
+            current_job_id=job_id,
+            last_error=None,
+            node_count=int(counters.get("nodes", 0) or 0),
+            edge_count=int(counters.get("edges", 0) or 0),
+            metadata={**processing_metadata, "stage": "ready"},
+            last_indexed_at=_now_utc(),
+        )
+        await storage.add_graph_version(
+            tenant_id=tenant_id,
+            file_hash=file_hash,
+            job_id=job_id,
+            workspace_id=None,
+            status=str(graph_file.get("status") or "ready"),
+            manifest_path=None,
+            output_dir=None,
+            artifacts_dir=None,
+            reports_dir=None,
+            import_summary={
+                "mode": "document",
+                "nodes": int(counters.get("nodes", 0) or 0),
+                "edges": int(counters.get("edges", 0) or 0),
+                "alerts": int(counters.get("alerts", 0) or 0),
+                "evidence": int(counters.get("evidence", 0) or 0),
+            },
+        )
         progress = round((idx / max(1, total)) * 100.0, 2)
         await _update_job_stage(job_id, stage="processing_documents", progress=progress, base_result=agg)
     return agg
 
-
-async def _run_upload_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> Dict[str, Any]:
-    tenant_id = payload.tenant_id or _default_tenant()
-    uploads: List[UploadSyncFile] = list(payload.uploads)
-    base_result: Dict[str, Any] = {
-        "uploads": len(uploads),
-        "documents": 0,
-        "graph_mode": payload.graph_mode,
-    }
-    manifest_path: Optional[Path] = None
-    try:
-        await _update_job_stage(
-            job_id,
-            stage="normalizing_inputs",
-            progress=5.0,
-            base_result=base_result,
-        )
-
-        normalization = await asyncio.to_thread(upload_input_normalizer.normalize_uploads, uploads)
-        failed_rows = _failed_manifest_rows(normalization.failed)
-        base_result = _merge_result(
-            base_result,
-            normalized_files=[item.file_name for item in normalization.normalized],
-            failed_files=failed_rows,
-            normalized_count=len(normalization.normalized),
-            failed_count=len(normalization.failed),
-            partial=normalization.partial,
-        )
-        if not normalization.normalized:
-            raise ValueError("No valid normalized text inputs were produced for this upload batch")
-
-        await _update_job_stage(
-            job_id,
-            stage="preparing_workspace",
-            progress=20.0,
-            base_result=base_result,
-        )
-
-        workspace_files = [
-            WorkspaceSourceFile(
-                file_name=item.file_name,
-                file_hash=item.file_hash,
-                text_content=item.text_content,
-                source_kind=item.source_kind,
-                original_path=item.original_path,
-                artifact_path=item.artifact_path,
-                artifact_url=item.artifact_url,
-                metadata={
-                    **dict(item.metadata or {}),
-                    "mime_type": item.mime_type,
-                },
-            )
-            for item in normalization.normalized
-        ]
-        build = await asyncio.to_thread(
-            workspace_builder.prepare_workspace,
-            tenant_id=tenant_id,
-            batch_id=batch_id,
-            source=payload.source,
-            source_batch_key=payload.source_batch_key or _derived_ingest_batch_key(payload, tenant_id=tenant_id),
-            files=workspace_files,
-            graph_mode=payload.graph_mode,
-        )
-        manifest_path = build.manifest_path
-        if failed_rows:
-            _append_workspace_failures(build.manifest_path, failed_rows)
-        _update_workspace_manifest(
-            build.manifest_path,
-            status="prepared",
-            last_error="",
-            last_index_status="pending",
-            latest_output_dir=None,
-        )
-        base_result = _merge_result(
-            base_result,
-            workspace_id=build.workspace_id,
-            workspace_dir=str(build.workspace_dir),
-            manifest_path=str(build.manifest_path),
-            settings_path=str(build.settings_path),
-            prompt_dir=str(build.prompt_dir),
-        )
-        await _update_job_stage(
-            job_id,
-            stage="validating_runtime",
-            progress=30.0,
-            base_result=base_result,
-        )
-        runtime_probe = await asyncio.to_thread(
-            graphrag_indexer.probe,
-            workspace_builder.runtime,
-            workspace_builder.neo4j,
-            check_remote=True,
-        )
-        _update_workspace_manifest(
-            build.manifest_path,
-            runtime_probe=runtime_probe.as_dict(),
-        )
-        base_result = _merge_result(
-            base_result,
-            runtime_probe=runtime_probe.as_dict(),
-        )
-        if not runtime_probe.ready:
-            raise RuntimeError(f"GraphRAG runtime not ready: {runtime_probe.summary()}")
-        await _update_job_stage(
-            job_id,
-            stage="indexing_graphrag",
-            progress=35.0,
-            base_result=base_result,
-        )
-
-        index_error: Optional[str] = None
-        index_status = "success"
-        try:
-            index_result = await asyncio.to_thread(graphrag_indexer.run, build.workspace_dir)
-        except Exception as exc:
-            recovered_result = await asyncio.to_thread(graphrag_indexer.inspect_output, build.workspace_dir)
-            if not recovered_result.artifacts_dir or not recovered_result.artifacts_dir.exists():
-                raise
-            index_result = recovered_result
-            index_error = f"{type(exc).__name__}: {exc}"
-            index_status = "partial"
-        _update_workspace_manifest(
-            build.manifest_path,
-            status="indexed",
-            last_error=index_error or "",
-            last_index_status=index_status,
-            latest_output_dir=str(index_result.output_dir) if index_result.output_dir else None,
-        )
-        base_result = _merge_result(
-            base_result,
-            command=index_result.command,
-            log_path=str(index_result.log_path),
-            output_dir=str(index_result.output_dir) if index_result.output_dir else None,
-            artifacts_dir=str(index_result.artifacts_dir) if index_result.artifacts_dir else None,
-            reports_dir=str(index_result.reports_dir) if index_result.reports_dir else None,
-            skipped_workflows=index_result.skipped_workflows or None,
-            index_status=index_status,
-            index_error=index_error,
-        )
-        await _update_job_stage(
-            job_id,
-            stage="importing_graph",
-            progress=75.0,
-            base_result=base_result,
-        )
-
-        import_summary = await graphrag_artifact_importer.import_into_storage(
-            storage=storage,
-            tenant_id=tenant_id,
-            batch_id=batch_id,
-            workspace_id=build.workspace_id,
-            artifacts_dir=index_result.artifacts_dir or build.workspace_dir / "output",
-            source_files=build.files,
-        )
-        _update_workspace_manifest(
-            build.manifest_path,
-            status="ready",
-            last_error=index_error or "",
-            last_index_status="partial" if import_summary.partial or index_status == "partial" else "success",
-            latest_output_dir=str(index_result.output_dir) if index_result.output_dir else None,
-        )
-        return _merge_result(
-            base_result,
-            stage="ready",
-            **import_summary.as_dict(),
-        )
-    except Exception as exc:
-        if manifest_path and manifest_path.exists():
-            _update_workspace_manifest(
-                manifest_path,
-                status="failed",
-                last_error=f"{type(exc).__name__}: {exc}",
-                last_index_status="failed",
-            )
-        raise
-
-
 async def _run_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> None:
     await storage.update_job(job_id, status="running", started_at=_now_utc(), progress=1.0)
     try:
-        if payload.uploads:
-            result = await _run_upload_ingest_job(job_id, batch_id, payload)
-        else:
-            result = await _run_document_ingest_job(job_id, batch_id, payload)
+        result = await _run_document_ingest_job(job_id, batch_id, payload)
 
         await storage.update_job(job_id, status="success", progress=100.0, result=result, finished_at=_now_utc())
     except asyncio.CancelledError:
@@ -1187,11 +1371,18 @@ async def _run_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) ->
     except Exception as exc:
         current_job = await storage.get_job(job_id)
         current_result = current_job.get("result") if current_job and isinstance(current_job.get("result"), dict) else {}
+        failure = _classify_graph_failure(exc, fallback_stage=str(current_result.get("stage") or "failed"))
         await storage.update_job(
             job_id,
             status="failed",
-            error_message=f"{type(exc).__name__}: {exc}",
-            result=_merge_result(current_result, stage="failed"),
+            error_message=failure["failure_message"],
+            result=_merge_result(
+                current_result,
+                stage="failed",
+                failure_stage=failure["failure_stage"],
+                failure_category=failure["failure_category"],
+                error=failure["failure_message"],
+            ),
             finished_at=_now_utc(),
         )
     finally:
@@ -1204,7 +1395,6 @@ async def _run_rebuild_job(job_id: str, payload: RebuildRequest) -> None:
     total_inputs = _count_inputs_from_batches(batches)
     agg = {
         "documents": total_inputs,
-        "uploads": 0,
         "batches": len(batches),
         "nodes": 0,
         "edges": 0,
@@ -1221,13 +1411,8 @@ async def _run_rebuild_job(job_id: str, payload: RebuildRequest) -> None:
             batch_id = str(batch.get("batch_id") or "").strip()
             raw_payload = batch.get("raw_payload") if isinstance(batch.get("raw_payload"), dict) else {}
             ingest_payload = IngestRequest.model_validate(raw_payload)
-            if ingest_payload.uploads:
-                result = await _run_upload_ingest_job(job_id, batch_id, ingest_payload)
-                agg["uploads"] += len(ingest_payload.uploads)
-                processed += len(ingest_payload.uploads)
-            else:
-                result = await _run_document_ingest_job(job_id, batch_id, ingest_payload)
-                processed += len(ingest_payload.documents)
+            result = await _run_document_ingest_job(job_id, batch_id, ingest_payload)
+            processed += len(ingest_payload.documents)
 
             for key in ("nodes", "edges", "alerts", "evidence"):
                 agg[key] += int(result.get(key, 0) or 0)
@@ -1268,6 +1453,10 @@ def _build_stats(nodes: Sequence[Dict[str, Any]], edges: Sequence[Dict[str, Any]
 
 
 async def _submit_ingest_job(payload: IngestRequest, request: Request) -> IngestResponse:
+    if payload.source != "module2":
+        raise HTTPException(status_code=400, detail="module4 only accepts document sync from module2")
+    if not payload.documents:
+        raise HTTPException(status_code=400, detail="documents payload is required")
     tenant_id = _tenant_from_request(request, payload.tenant_id)
     source_batch_key = _derived_ingest_batch_key(payload, tenant_id=tenant_id)
     existing_batch = await storage.get_ingest_batch(
@@ -1291,7 +1480,7 @@ async def _submit_ingest_job(payload: IngestRequest, request: Request) -> Ingest
     payload_data = payload.model_dump(mode="json")
     payload_data["tenant_id"] = tenant_id
     payload_data["source_batch_key"] = source_batch_key
-    input_count = len(payload.uploads) if payload.uploads else len(payload.documents)
+    input_count = len(payload.documents)
     job = await storage.create_job(
         tenant_id=tenant_id,
         job_type="ingest",
@@ -1301,7 +1490,6 @@ async def _submit_ingest_job(payload: IngestRequest, request: Request) -> Ingest
             "source_batch_key": source_batch_key,
             "graph_mode": payload.graph_mode,
             "documents": len(payload.documents),
-            "uploads": len(payload.uploads),
             "inputs": input_count,
         },
     )
@@ -1319,13 +1507,6 @@ async def _submit_ingest_job(payload: IngestRequest, request: Request) -> Ingest
 
 @app.post("/module4/ingest", response_model=IngestResponse)
 async def module4_ingest(payload: IngestRequest, request: Request) -> IngestResponse:
-    return await _submit_ingest_job(payload, request)
-
-
-@app.post("/module4/sync/uploads", response_model=IngestResponse)
-async def module4_sync_uploads(payload: IngestRequest, request: Request) -> IngestResponse:
-    if not payload.uploads:
-        raise HTTPException(status_code=400, detail="uploads payload is required")
     return await _submit_ingest_job(payload, request)
 
 
@@ -1361,6 +1542,157 @@ async def module4_rebuild(body: RebuildRequest, request: Request) -> RebuildResp
     )
 
 
+@app.get("/module4/graph/files", response_model=GraphFileListResponse)
+async def module4_graph_files(
+    request: Request,
+    tenant_id: str = Query(default=""),
+    status: str = Query(default=""),
+    limit: int = 200,
+) -> GraphFileListResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
+    rows = await storage.list_graph_files(
+        tenant_id=resolved_tenant,
+        status=str(status or "").strip() or None,
+        limit=limit,
+    )
+    return GraphFileListResponse(items=[GraphFileItem(**_normalize_graph_file_row(row)) for row in rows])
+
+
+@app.get("/module4/graph/files/{file_hash}", response_model=GraphFileDetailResponse)
+async def module4_graph_file_detail(file_hash: str, request: Request, tenant_id: str = Query(default="")) -> GraphFileDetailResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
+    row = await storage.get_graph_file(tenant_id=resolved_tenant, file_hash=file_hash)
+    if not row:
+        raise HTTPException(status_code=404, detail="Graph file not found")
+    return GraphFileDetailResponse(item=GraphFileItem(**_normalize_graph_file_row(row)))
+
+
+@app.get("/module4/graph/files/{file_hash}/view", response_model=GraphResponse)
+async def module4_graph_file_view(
+    file_hash: str,
+    request: Request,
+    tenant_id: str = Query(default=""),
+    node_types: str = "",
+    relation_types: str = "",
+    limit_nodes: int = 800,
+    limit_edges: int = 1500,
+) -> GraphResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
+    graph_file = await storage.get_graph_file(tenant_id=resolved_tenant, file_hash=file_hash)
+    if not graph_file:
+        raise HTTPException(status_code=404, detail="Graph file not found")
+    nodes_raw, edges_raw = await storage.list_graph_for_file(
+        tenant_id=resolved_tenant,
+        file_hash=file_hash,
+        node_types=_parse_csv_list(node_types),
+        relation_types=_parse_csv_list(relation_types),
+        limit_nodes=limit_nodes,
+        limit_edges=limit_edges,
+    )
+    node_rows = [_normalize_graph_node_row(row) for row in nodes_raw]
+    edge_rows = [_normalize_graph_edge_row(row) for row in edges_raw]
+    return GraphResponse(
+        nodes=[GraphNode(**row) for row in node_rows],
+        edges=[GraphEdge(**row) for row in edge_rows],
+        stats=_build_stats(node_rows, edge_rows),
+        source="storage:file",
+        workspace_id=str(graph_file.get("workspace_id") or "") or None,
+    )
+
+
+@app.get("/module4/graph/files/{file_hash}/neighborhood/{node_id}", response_model=GraphResponse)
+async def module4_graph_file_neighborhood(
+    file_hash: str,
+    node_id: str,
+    request: Request,
+    tenant_id: str = Query(default=""),
+    depth: int = 1,
+    relation_types: str = "",
+    limit: int = 1200,
+) -> GraphResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
+    graph_file = await storage.get_graph_file(tenant_id=resolved_tenant, file_hash=file_hash)
+    if not graph_file:
+        raise HTTPException(status_code=404, detail="Graph file not found")
+    nodes_raw, edges_raw = await storage.list_neighborhood_for_file(
+        tenant_id=resolved_tenant,
+        file_hash=file_hash,
+        node_id=node_id,
+        depth=depth,
+        relation_types=_parse_csv_list(relation_types),
+        limit=limit,
+    )
+    if not nodes_raw:
+        raise HTTPException(status_code=404, detail="Node not found in graph file")
+    node_rows = [_normalize_graph_node_row(row) for row in nodes_raw]
+    edge_rows = [_normalize_graph_edge_row(row) for row in edges_raw]
+    return GraphResponse(
+        nodes=[GraphNode(**row) for row in node_rows],
+        edges=[GraphEdge(**row) for row in edge_rows],
+        stats=_build_stats(node_rows, edge_rows),
+        source="storage:file",
+        workspace_id=str(graph_file.get("workspace_id") or "") or None,
+    )
+
+
+@app.get("/module4/graph/files/{file_hash}/node/{node_id}", response_model=GraphNodeDetailResponse)
+async def module4_graph_file_node_detail(
+    file_hash: str,
+    node_id: str,
+    request: Request,
+    tenant_id: str = Query(default=""),
+    depth: int = 1,
+    relation_types: str = "",
+    limit: int = 240,
+) -> GraphNodeDetailResponse:
+    resolved_tenant = _tenant_from_request(request, tenant_id)
+    graph_file = await storage.get_graph_file(tenant_id=resolved_tenant, file_hash=file_hash)
+    if not graph_file:
+        raise HTTPException(status_code=404, detail="Graph file not found")
+    nodes_raw, edges_raw = await storage.list_neighborhood_for_file(
+        tenant_id=resolved_tenant,
+        file_hash=file_hash,
+        node_id=node_id,
+        depth=depth,
+        relation_types=_parse_csv_list(relation_types),
+        limit=limit,
+    )
+    if not nodes_raw:
+        raise HTTPException(status_code=404, detail="Node not found in graph file")
+    node_rows = [_normalize_graph_node_row(row) for row in nodes_raw]
+    edge_rows = [_normalize_graph_edge_row(row) for row in edges_raw]
+    node_items = [GraphNode(**row) for row in node_rows]
+    target_node_row = next((row for row in nodes_raw if str(row.get("node_id") or "") == node_id), {})
+    subject_edge_rows = [
+        row
+        for row in edges_raw
+        if str(row.get("source_node_id") or "") == node_id or str(row.get("target_node_id") or "") == node_id
+    ]
+    evidence_rows = await _load_evidence_for_node(resolved_tenant, target_node_row, limit=12) if target_node_row else []
+    edge_evidence_rows = await _load_edge_evidence_for_edges(
+        resolved_tenant,
+        subject_edge_rows,
+        limit_per_edge=4,
+        edge_cap=10,
+    )
+    return GraphNodeDetailResponse(
+        node=next((item for item in node_items if item.node_id == node_id), None),
+        graph=GraphResponse(
+            nodes=node_items,
+            edges=[GraphEdge(**row) for row in edge_rows],
+            stats=_build_stats(node_rows, edge_rows),
+            source="storage:file",
+            workspace_id=str(graph_file.get("workspace_id") or "") or None,
+        ),
+        file=GraphFileItem(**_normalize_graph_file_row(graph_file)),
+        evidence=[EvidenceItem(**row) for row in evidence_rows],
+        edge_evidence={
+            edge_id: [EvidenceItem(**item) for item in items]
+            for edge_id, items in edge_evidence_rows.items()
+        },
+    )
+
+
 @app.get("/module4/graph", response_model=GraphResponse)
 async def module4_graph(
     request: Request,
@@ -1382,7 +1714,13 @@ async def module4_graph(
     edge_rows = [_normalize_graph_edge_row(row) for row in edges_raw]
     nodes = [GraphNode(**row) for row in node_rows]
     edges = [GraphEdge(**row) for row in edge_rows]
-    return GraphResponse(nodes=nodes, edges=edges, stats=_build_stats(node_rows, edge_rows))
+    return GraphResponse(
+        nodes=nodes,
+        edges=edges,
+        stats=_build_stats(node_rows, edge_rows),
+        source="storage:tenant",
+        workspace_id=None,
+    )
 
 
 @app.get("/module4/graph/neighborhood/{node_id}", response_model=GraphResponse)
@@ -1410,6 +1748,8 @@ async def module4_neighborhood(
         nodes=[GraphNode(**row) for row in selected_nodes],
         edges=[GraphEdge(**row) for row in selected_edges],
         stats=_build_stats(selected_nodes, selected_edges),
+        source="storage:tenant",
+        workspace_id=None,
     )
 
 
@@ -1539,44 +1879,127 @@ async def module4_explain(body: ExplainRequest, request: Request) -> ExplainResp
     if body.alert_id:
         alert = await storage.get_alert(body.alert_id, tenant_id=tenant_id)
         if not alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
+            raise HTTPException(status_code=404, detail="告警不存在")
         payload = alert.get("payload") if isinstance(alert.get("payload"), dict) else {}
+        evidence_rows: List[Dict[str, Any]] = []
         steps = [
-            f"Matched rule: {alert.get('rule_id')}",
-            f"Severity: {alert.get('severity')}",
-            f"Risk score: {_to_float(alert.get('risk_score')):.2f}",
+            f"命中规则：{alert.get('rule_id')}",
+            f"风险等级：{alert.get('severity')}",
+            f"风险分：{_to_float(alert.get('risk_score')):.2f}",
         ]
-        if payload:
-            steps.append("Use /module4/evidence to inspect source snippets and document anchors.")
+        subject_node_id = str(alert.get("subject_node_id") or "").strip()
+        if subject_node_id:
+            node_row = await storage.get_node(tenant_id=tenant_id, node_id=subject_node_id)
+            if node_row:
+                normalized_node = _normalize_graph_node_row(node_row)
+                evidence_rows = await _load_evidence_for_node(tenant_id, node_row, limit=8)
+                steps.append(f"关联节点：{normalized_node['display_name']}（{normalized_node['node_type']}）")
+                if evidence_rows:
+                    steps.append(f"已为该节点解析出 {len(evidence_rows)} 条直接证据。")
+        if payload and not evidence_rows:
+            steps.append("未解析到直接证据，当前返回告警载荷中的上下文信息供人工复核。")
         return ExplainResponse(
-            conclusion=str(alert.get("summary") or ""),
+            conclusion=str(alert.get("summary") or "该告警需要进一步核查。"),
             reasoning_steps=steps,
-            evidence=[payload] if payload else [],
+            evidence=evidence_rows or ([payload] if payload else []),
         )
 
     if body.node_id:
+        node_row = await storage.get_node(tenant_id=tenant_id, node_id=body.node_id)
+        if not node_row:
+            raise HTTPException(status_code=404, detail="节点不存在")
+        evidence_rows = await _load_evidence_for_node(tenant_id, node_row, limit=10)
+        nodes_raw, edges_raw = await storage.list_neighborhood(
+            tenant_id=tenant_id,
+            node_id=body.node_id,
+            depth=1,
+            relation_types=None,
+            limit=40,
+        )
+        normalized_node = _normalize_graph_node_row(node_row)
         return ExplainResponse(
-            conclusion="Node neighborhood is available via /module4/graph/neighborhood/{node_id}.",
+            conclusion=(
+                f"节点“{normalized_node['display_name']}”（{normalized_node['node_type']}）"
+                f"当前关联 {len(evidence_rows)} 条证据、{len(edges_raw)} 条邻接关系。"
+            ),
             reasoning_steps=[
-                "Load the node and adjacent edges",
-                "Group by relation_type and node_type",
-                "Trace evidence on high risk edges",
+                f"已加载节点“{normalized_node['display_name']}”（{normalized_node['node_type']}）。",
+                f"在 1 跳邻域内共检索到 {max(0, len(nodes_raw) - 1)} 个相邻节点、{len(edges_raw)} 条关系。",
+                f"基于节点类型与图谱血缘信息，共回溯到 {len(evidence_rows)} 条证据。",
             ],
-            evidence=[{"node_id": body.node_id, "target_node_id": body.target_node_id}],
+            evidence=evidence_rows or [normalized_node],
         )
 
-    raise HTTPException(status_code=400, detail="alert_id or node_id is required")
+    raise HTTPException(status_code=400, detail="必须提供 alert_id 或 node_id")
 
 
 @app.post("/module4/simulate", response_model=SimulateResponse)
 async def module4_simulate(body: SimulateRequest, request: Request) -> SimulateResponse:
     tenant_id = _tenant_from_request(request, body.tenant_id)
-    multiplier = _to_float(body.params.get("risk_multiplier", 1.0), 1.0)
+    params = body.params if isinstance(body.params, dict) else {}
+    scope = body.scope if isinstance(body.scope, dict) else {}
+    contexts = await _simulation_contexts_from_request(tenant_id, body)
+    rules = await storage.list_rules(enabled_only=True)
+    deterministic_rules = [rule for rule in rules if str(rule.get("rule_kind") or "").lower() in SUPPORTED_RULE_KINDS]
+
+    explicit_rule_ids = set(_scope_values(scope.get("rule_ids")))
+    single_rule_id = str(scope.get("rule_id") or "").strip()
+    if single_rule_id:
+        explicit_rule_ids.add(single_rule_id)
+    if explicit_rule_ids:
+        deterministic_rules = [rule for rule in deterministic_rules if str(rule.get("rule_id") or "") in explicit_rule_ids]
+
+    if contexts:
+        changed_alerts: List[Dict[str, Any]] = []
+        impacts: List[Dict[str, Any]] = []
+        hits_by_rule: Counter[str] = Counter()
+        hits_by_severity: Counter[str] = Counter()
+
+        for context in contexts:
+            scope_name = str(context.get("__scope") or "document")
+            applicable_rules = [rule for rule in deterministic_rules if _rule_scope(rule) == scope_name]
+            context_label = str(context.get("__label") or scope_name)
+            for rule in applicable_rules:
+                hit = _evaluate_rule_hit(rule, context)
+                if not hit:
+                    continue
+                hits_by_rule[str(hit["rule_id"])] += 1
+                hits_by_severity[str(hit["severity"])] += 1
+                changed_alerts.append(
+                    {
+                        "scenario_name": body.scenario_name,
+                        "context_label": context_label,
+                        "scope": scope_name,
+                        "rule_id": hit["rule_id"],
+                        "severity": hit["severity"],
+                        "title": hit["title"],
+                        "summary": hit["summary"],
+                        "simulated_risk_score": round(_to_float(hit["risk_score"]), 3),
+                        "source_alert_id": str(context.get("__source_alert_id") or "") or None,
+                    }
+                )
+
+        impacts.append({"metric": "simulated_contexts", "value": len(contexts)})
+        impacts.append({"metric": "evaluated_rules", "value": len(deterministic_rules)})
+        impacts.append({"metric": "simulated_hits", "value": len(changed_alerts)})
+        if hits_by_rule:
+            impacts.append({"metric": "hits_by_rule", "value": dict(hits_by_rule)})
+        if hits_by_severity:
+            impacts.append({"metric": "hits_by_severity", "value": dict(hits_by_severity)})
+
+        summary = (
+            f"场景“{body.scenario_name}”已完成模拟，共评估 {len(contexts)} 个上下文、"
+            f"{len(deterministic_rules)} 条确定性规则，命中 {len(changed_alerts)} 条结果。"
+        )
+        return SimulateResponse(impacts=impacts, changed_alerts=changed_alerts, summary=summary)
+
+    multiplier = _to_float(params.get("risk_multiplier", 1.0), 1.0)
+    rule_id_filter = next(iter(explicit_rule_ids), None) if explicit_rule_ids else None
     total, alerts = await storage.list_alerts(
         tenant_id=tenant_id,
         status="open",
         severity=None,
-        rule_id=None,
+        rule_id=rule_id_filter,
         page=1,
         page_size=100,
     )
@@ -1588,6 +2011,7 @@ async def module4_simulate(body: SimulateRequest, request: Request) -> SimulateR
         changed_alerts.append(
             {
                 "alert_id": alert.get("alert_id"),
+                "rule_id": alert.get("rule_id"),
                 "original_risk_score": round(original, 3),
                 "simulated_risk_score": round(simulated, 3),
                 "delta": round(simulated - original, 3),
@@ -1595,8 +2019,13 @@ async def module4_simulate(body: SimulateRequest, request: Request) -> SimulateR
         )
     if changed_alerts:
         avg_delta = sum(item["delta"] for item in changed_alerts) / len(changed_alerts)
-        impacts.append({"metric": "avg_risk_delta", "value": round(avg_delta, 3)})
-    summary = f"Scenario {body.scenario_name} evaluated. Open alerts involved: {min(total, len(changed_alerts))}."
+    impacts.append({"metric": "avg_risk_delta", "value": round(avg_delta, 3)})
+    impacts.append({"metric": "mode", "value": "legacy_multiplier"})
+    impacts.append({"metric": "supported_rule_kinds", "value": sorted(SUPPORTED_RULE_KINDS)})
+    summary = (
+        f"场景“{body.scenario_name}”已按旧版风险倍率模式完成模拟，"
+        f"涉及 {min(total, len(changed_alerts))} 条开放告警。"
+    )
     return SimulateResponse(impacts=impacts, changed_alerts=changed_alerts, summary=summary)
 
 
@@ -1611,17 +2040,12 @@ async def module4_healthz(probe: str = Query(default="basic")) -> HealthzRespons
         workspace_builder.neo4j,
         check_remote=check_remote,
     )
-    degraded = (
-        bool(diag.get("degraded_memory_mode"))
-        or not bool(diag.get("db_connected"))
-        or not runtime_probe.ready
-    )
     return HealthzResponse(
-        status="degraded" if degraded else "ok",
+        status="ok" if bool(diag.get("db_connected")) else "failed",
         db_connected=bool(diag.get("db_connected")),
-        degraded_memory_mode=bool(diag.get("degraded_memory_mode")),
         jobs_in_queue=queue_size,
         last_connect_error=str(diag.get("last_connect_error") or "") or None,
         graphrag=runtime_probe.as_dict(),
+        projection_runtime=_projection_runtime_status(),
         now=_now_utc(),
     )

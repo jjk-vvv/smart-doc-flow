@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.error
-import urllib.request
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
+
+import requests
+from requests.exceptions import HTTPError, RequestException
 
 
 @dataclass
@@ -22,6 +24,15 @@ class ChatCompletionResult:
     tool_calls: List[ChatToolCall] = field(default_factory=list)
     finish_reason: str = ""
     model: str = ""
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ChatStreamEvent:
+    event: str
+    text: str = ""
+    reasoning_text: str = ""
+    finish_reason: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -66,12 +77,54 @@ def resolve_llm_api_key(explicit: Optional[str] = None) -> str:
     )
 
 
-def resolve_llm_model(explicit: Optional[str] = None, *, default: str = "gemini-3-pro") -> str:
+def resolve_llm_model(explicit: Optional[str] = None, *, default: str = "gemini-3.1-pro") -> str:
     return _first_non_empty(
         explicit,
         os.getenv("MODULE2_LLM_MODEL", ""),
         os.getenv("MODULE2_GEMINI_MODEL", ""),
         os.getenv("MODULE2_ASSISTANT_MODEL", ""),
+        default,
+    )
+
+
+def resolve_tuning_model(explicit: Optional[str] = None, *, default: str = "gemini-2.5-flash") -> str:
+    return _first_non_empty(
+        explicit,
+        os.getenv("MODULE2_ASSISTANT_TUNING_MODEL", ""),
+        default,
+    )
+
+
+def resolve_assistant_base_url(explicit: Optional[str] = None) -> str:
+    return _normalize_base_url(
+        _first_non_empty(
+            explicit,
+            os.getenv("MODULE2_ASSISTANT_API_BASE", ""),
+            os.getenv("MODULE2_LLM_API_BASE", ""),
+            os.getenv("MODULE2_GEMINI_API_BASE", ""),
+            os.getenv("OPENAI_BASE_URL", ""),
+        )
+    )
+
+
+def resolve_assistant_api_key(explicit: Optional[str] = None) -> str:
+    return _first_non_empty(
+        explicit,
+        os.getenv("MODULE2_ASSISTANT_API_KEY", ""),
+        os.getenv("MODULE2_LLM_API_KEY", ""),
+        os.getenv("MODULE2_GEMINI_API_KEY", ""),
+        os.getenv("OPENAI_API_KEY", ""),
+        os.getenv("GEMINI_API_KEY", ""),
+        os.getenv("GOOGLE_API_KEY", ""),
+    )
+
+
+def resolve_assistant_model(explicit: Optional[str] = None, *, default: str = "gemini-2.5-flash") -> str:
+    return _first_non_empty(
+        explicit,
+        os.getenv("MODULE2_ASSISTANT_MODEL", ""),
+        os.getenv("MODULE2_LLM_MODEL", ""),
+        os.getenv("MODULE2_GEMINI_MODEL", ""),
         default,
     )
 
@@ -191,38 +244,21 @@ class OpenAICompatibleChatProvider:
         max_tokens: Optional[int] = None,
         timeout_sec: Optional[float] = None,
     ) -> None:
-        env_base = (
-            base_url
-            or os.getenv("MODULE2_ASSISTANT_API_BASE", "")
-            or os.getenv("MODULE2_LLM_API_BASE", "")
-            or os.getenv("MODULE2_GEMINI_API_BASE", "")
-            or os.getenv("OPENAI_BASE_URL", "")
-        )
-        env_key = (
-            api_key
-            or os.getenv("MODULE2_ASSISTANT_API_KEY", "")
-            or os.getenv("MODULE2_LLM_API_KEY", "")
-            or os.getenv("MODULE2_GEMINI_API_KEY", "")
-            or os.getenv("OPENAI_API_KEY", "")
-            or os.getenv("GEMINI_API_KEY", "")
-            or os.getenv("GOOGLE_API_KEY", "")
-        )
-        env_model = (
-            model
-            or os.getenv("MODULE2_ASSISTANT_MODEL", "")
-            or os.getenv("MODULE2_LLM_MODEL", "")
-            or os.getenv("MODULE2_GEMINI_MODEL", "gemini-3-pro")
-        )
+        env_base = resolve_assistant_base_url(base_url)
+        env_key = resolve_assistant_api_key(api_key)
+        env_model = resolve_assistant_model(model)
         env_temp = temperature if temperature is not None else float(os.getenv("MODULE2_ASSISTANT_TEMPERATURE", "0.2"))
         env_max_tokens = max_tokens if max_tokens is not None else int(os.getenv("MODULE2_ASSISTANT_MAX_TOKENS", "1600"))
         env_timeout = timeout_sec if timeout_sec is not None else float(os.getenv("MODULE2_ASSISTANT_TIMEOUT_SEC", "90"))
 
         self.base_url = _normalize_base_url(env_base)
         self.api_key = str(env_key or "").strip()
-        self.model = str(env_model or "gemini-3-pro").strip() or "gemini-3-pro"
+        self.model = str(env_model or "gemini-3.1-pro").strip() or "gemini-3.1-pro"
         self.temperature = max(0.0, min(1.0, float(env_temp)))
         self.max_tokens = max(256, int(env_max_tokens))
         self.timeout_sec = max(10.0, float(env_timeout))
+        self.retry_attempts = max(1, int(os.getenv("MODULE2_ASSISTANT_PROVIDER_RETRY_ATTEMPTS", "2")))
+        self.retry_backoff_sec = max(0.2, float(os.getenv("MODULE2_ASSISTANT_PROVIDER_RETRY_BACKOFF_SEC", "1.0")))
 
     @property
     def configured(self) -> bool:
@@ -237,6 +273,7 @@ class OpenAICompatibleChatProvider:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> ChatCompletionResult:
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -247,6 +284,9 @@ class OpenAICompatibleChatProvider:
         }
         if isinstance(response_format, dict) and response_format:
             payload["response_format"] = response_format
+        reasoning_value = str(reasoning_effort or "").strip().lower()
+        if reasoning_value in {"minimal", "low", "medium", "high"}:
+            payload["reasoning_effort"] = reasoning_value
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
@@ -286,7 +326,25 @@ class OpenAICompatibleChatProvider:
         messages: List[Dict[str, Any]],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Iterable[str]:
+        for event in self.stream_events(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+        ):
+            if event.event == "content_delta" and event.text:
+                yield event.text
+
+    def stream_events(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Iterable[ChatStreamEvent]:
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -294,55 +352,159 @@ class OpenAICompatibleChatProvider:
             "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
             "stream": True,
         }
-        req = self._build_request(payload)
-        with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
-            for raw_line in resp:
-                line = raw_line.decode("utf-8", errors="ignore").strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                data_str = line[5:].strip()
-                if not data_str:
-                    continue
-                if data_str == "[DONE]":
-                    break
-                try:
-                    data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                choices = data.get("choices") if isinstance(data.get("choices"), list) else []
-                for choice in choices:
-                    if not isinstance(choice, dict):
-                        continue
-                    delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
-                    text = _normalize_content(delta.get("content"))
-                    if text:
-                        yield text
+        reasoning_value = str(reasoning_effort or "").strip().lower()
+        if reasoning_value in {"minimal", "low", "medium", "high"}:
+            payload["reasoning_effort"] = reasoning_value
+        last_error: Optional[BaseException] = None
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                with requests.post(
+                    self._request_url(),
+                    json=payload,
+                    headers=self._build_headers(),
+                    timeout=self.timeout_sec,
+                    stream=True,
+                ) as resp:
+                    resp.raise_for_status()
+                    resp.encoding = "utf-8"
+                    yield ChatStreamEvent(event="stream_opened", raw={"status": resp.status_code, "attempt": attempt})
+                    for raw_line in resp.iter_lines(decode_unicode=False):
+                        if isinstance(raw_line, bytes):
+                            line = raw_line.decode("utf-8", errors="ignore").strip()
+                        else:
+                            line = str(raw_line or "").strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if not data_str:
+                            continue
+                        if data_str == "[DONE]":
+                            yield ChatStreamEvent(event="finish", finish_reason="done", raw={"done": True, "attempt": attempt})
+                            return
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(data.get("error"), dict):
+                            error_payload = data.get("error") or {}
+                            message = str(error_payload.get("message") or error_payload.get("type") or "unknown stream error").strip()
+                            raise RuntimeError(f"assistant provider stream error: {message}")
+                        choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+                        for choice in choices:
+                            if not isinstance(choice, dict):
+                                continue
+                            yield ChatStreamEvent(event="frame_received", raw=data)
+                            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+                            text = _normalize_content(delta.get("content"))
+                            reasoning_text = _normalize_content(delta.get("reasoning_content"))
+                            finish_reason = str(choice.get("finish_reason", "") or "").strip()
+                            if reasoning_text:
+                                yield ChatStreamEvent(
+                                    event="reasoning_delta",
+                                    reasoning_text=reasoning_text,
+                                    raw=data,
+                                )
+                            if text:
+                                yield ChatStreamEvent(
+                                    event="content_delta",
+                                    text=text,
+                                    raw=data,
+                                )
+                            if finish_reason:
+                                yield ChatStreamEvent(
+                                    event="finish",
+                                    finish_reason=finish_reason,
+                                    raw=data,
+                                )
+                    return
+            except HTTPError as exc:
+                last_error = exc
+                if not self._should_retry_http_error(exc) or attempt >= self.retry_attempts:
+                    response = exc.response
+                    status = response.status_code if response is not None else "unknown"
+                    detail = response.text if response is not None else str(exc)
+                    raise RuntimeError(f"assistant provider http error {status}: {detail}") from exc
+                time.sleep(self._retry_sleep_seconds(attempt))
+            except RequestException as exc:
+                last_error = exc
+                if not self._should_retry_request_exception(exc) or attempt >= self.retry_attempts:
+                    raise RuntimeError(f"assistant provider connection error: {exc}") from exc
+                time.sleep(self._retry_sleep_seconds(attempt))
+        if last_error is not None:
+            raise RuntimeError(f"assistant provider connection error: {last_error}")
 
     def _request_json(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        req = self._build_request(payload)
+        resp = None
+        last_error: Optional[BaseException] = None
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                resp = requests.post(
+                    self._request_url(),
+                    json=payload,
+                    headers=self._build_headers(),
+                    timeout=self.timeout_sec,
+                )
+                resp.raise_for_status()
+                break
+            except HTTPError as exc:
+                last_error = exc
+                if not self._should_retry_http_error(exc) or attempt >= self.retry_attempts:
+                    response = exc.response
+                    status = response.status_code if response is not None else "unknown"
+                    detail = response.text if response is not None else str(exc)
+                    raise RuntimeError(f"assistant provider http error {status}: {detail}") from exc
+                time.sleep(self._retry_sleep_seconds(attempt))
+            except RequestException as exc:
+                last_error = exc
+                if not self._should_retry_request_exception(exc) or attempt >= self.retry_attempts:
+                    raise RuntimeError(f"assistant provider connection error: {exc}") from exc
+                time.sleep(self._retry_sleep_seconds(attempt))
+        if resp is None:
+            raise RuntimeError(f"assistant provider connection error: {last_error or 'unknown error'}")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
-                raw = resp.read().decode("utf-8", errors="ignore")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"assistant provider http error {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"assistant provider connection error: {exc.reason}") from exc
-        data = json.loads(raw)
+            data = resp.json()
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("assistant provider returned invalid JSON") from exc
         if not isinstance(data, dict):
             raise RuntimeError("assistant provider returned invalid JSON")
         return data
 
-    def _build_request(self, payload: Dict[str, Any]) -> urllib.request.Request:
+    def _request_url(self) -> str:
         if not self.configured:
             raise RuntimeError("assistant provider is not configured")
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        return urllib.request.Request(
-            url=f"{self.base_url}/chat/completions",
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
+        return f"{self.base_url}/chat/completions"
+
+    def _build_headers(self) -> Dict[str, str]:
+        if not self.configured:
+            raise RuntimeError("assistant provider is not configured")
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": "smart-doc-flow-module2/1.0",
+        }
+
+    def _retry_sleep_seconds(self, attempt: int) -> float:
+        return self.retry_backoff_sec * max(1.0, float(attempt))
+
+    @staticmethod
+    def _should_retry_http_error(exc: HTTPError) -> bool:
+        response = exc.response
+        status = response.status_code if response is not None else None
+        return bool(status in {408, 409, 425, 429} or (status is not None and status >= 500))
+
+    @staticmethod
+    def _should_retry_request_exception(exc: RequestException) -> bool:
+        raw = str(exc or "").strip().lower()
+        retry_markers = (
+            "ssleoferror",
+            "unexpected eof",
+            "eof occurred in violation of protocol",
+            "connection aborted",
+            "connection reset",
+            "remote disconnected",
+            "temporarily unavailable",
+            "timed out",
+            "timeout",
         )
+        return any(marker in raw for marker in retry_markers) or not raw

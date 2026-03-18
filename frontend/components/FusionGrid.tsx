@@ -196,12 +196,12 @@ export const FusionGrid: React.FC = () => {
             <Table size={18} className="text-emerald-500 dark:text-emerald-400" />
           </div>
           <div className="min-w-0">
-            <h2 className="font-bold font-['Microsoft_YaHei'] text-sm tracking-wide text-foreground flex items-center gap-2 truncate">
+            <h2 className="font-bold font-sans text-sm tracking-wide text-foreground flex items-center gap-2 truncate">
               {latestDocName}
               <span className={cn("w-1.5 h-1.5 rounded-full", rows.length > 0 ? "bg-emerald-500" : "bg-slate-500")} />
             </h2>
             <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[10px] text-muted-foreground font-mono font-['Microsoft_YaHei'] font-bold">最近更新：{updatedAtText}</span>
+              <span className="text-[10px] text-muted-foreground font-mono font-bold">最近更新：{updatedAtText}</span>
             </div>
           </div>
         </div>
@@ -239,16 +239,16 @@ export const FusionGrid: React.FC = () => {
 
       <div className="h-11 border-b border-white/10 dark:border-white/10 px-4 flex items-center justify-between bg-white/20 dark:bg-white/5 relative z-10">
         <div className="flex items-center rounded-lg border border-white/20 dark:border-white/10 overflow-hidden">
-          <button className={cn("px-2 py-1.5 text-[10px] font-bold font-['Microsoft_YaHei']", filter === "ALL" ? "bg-primary/20 text-primary" : "text-muted-foreground")} onClick={() => setFilter("ALL")}>
+          <button className={cn("px-2 py-1.5 text-[10px] font-bold font-sans", filter === "ALL" ? "bg-primary/20 text-primary" : "text-muted-foreground")} onClick={() => setFilter("ALL")}>
             全部
           </button>
-          <button className={cn("px-2 py-1.5 text-[10px] font-bold font-['Microsoft_YaHei']", filter === "VERIFIED" ? "bg-emerald-500/20 text-emerald-500" : "text-muted-foreground")} onClick={() => setFilter("VERIFIED")}>
+          <button className={cn("px-2 py-1.5 text-[10px] font-bold font-sans", filter === "VERIFIED" ? "bg-emerald-500/20 text-emerald-500" : "text-muted-foreground")} onClick={() => setFilter("VERIFIED")}>
             已校验
           </button>
-          <button className={cn("px-2 py-1.5 text-[10px] font-bold font-['Microsoft_YaHei']", filter === "MISMATCH" ? "bg-red-500/20 text-red-500" : "text-muted-foreground")} onClick={() => setFilter("MISMATCH")}>
+          <button className={cn("px-2 py-1.5 text-[10px] font-bold font-sans", filter === "MISMATCH" ? "bg-red-500/20 text-red-500" : "text-muted-foreground")} onClick={() => setFilter("MISMATCH")}>
             待复核
           </button>
-          <button className={cn("px-2 py-1.5 text-[10px] font-bold font-['Microsoft_YaHei']", filter === "PENDING" ? "bg-slate-500/20 text-slate-300" : "text-muted-foreground")} onClick={() => setFilter("PENDING")}>
+          <button className={cn("px-2 py-1.5 text-[10px] font-bold font-sans", filter === "PENDING" ? "bg-slate-500/20 text-slate-300" : "text-muted-foreground")} onClick={() => setFilter("PENDING")}>
             待补全
           </button>
         </div>
@@ -266,7 +266,7 @@ export const FusionGrid: React.FC = () => {
 
       <div className="flex-1 overflow-auto bg-slate-50/50 dark:bg-slate-900/30 relative z-10 custom-scrollbar pb-24">
         <table className="w-full text-left border-collapse">
-          <thead className="sticky top-0 z-20 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl text-[10px] uppercase font-bold text-muted-foreground tracking-wider shadow-sm border-b border-border/10 dark:border-white/10 font-['Microsoft_YaHei']">
+          <thead className="sticky top-0 z-20 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl text-[10px] uppercase font-bold text-muted-foreground tracking-wider shadow-sm border-b border-border/10 dark:border-white/10 font-sans">
             <tr>
               <th className="p-4 w-16 text-center">
                 <button
@@ -312,13 +312,13 @@ export const FusionGrid: React.FC = () => {
                       {selectedRows.includes(row.id) && <CheckCircle2 size={10} />}
                     </div>
                   </td>
-                  <td className="p-4 font-medium font-['Microsoft_YaHei'] font-bold text-foreground group-hover:text-primary transition-colors">{row.item}</td>
-                  <td className="p-4 text-muted-foreground font-bold font-['Microsoft_YaHei'] max-w-[300px] truncate">
+                  <td className="p-4 font-medium font-sans font-bold text-foreground group-hover:text-primary transition-colors">{row.item}</td>
+                  <td className="p-4 text-muted-foreground font-bold font-sans max-w-[300px] truncate">
                     {row.numericValue == null ? row.valueText : row.numericValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   </td>
-                  <td className="p-4 text-muted-foreground/70 font-bold font-['Microsoft_YaHei']">{row.dateText}</td>
+                  <td className="p-4 text-muted-foreground/70 font-bold font-sans">{row.dateText}</td>
                   <td className="p-4">
-                    <span className="flex items-center gap-2 px-2 py-1 rounded-md bg-white/5 border border-white/10 text-[10px] font-bold font-['Microsoft_YaHei'] text-muted-foreground group-hover:border-primary/30 transition-colors w-fit max-w-[260px]">
+                    <span className="flex items-center gap-2 px-2 py-1 rounded-md bg-white/5 border border-white/10 text-[10px] font-bold font-sans text-muted-foreground group-hover:border-primary/30 transition-colors w-fit max-w-[260px]">
                       <span className="w-1 h-4 bg-indigo-500/50 rounded-full" />
                       <span className="truncate">{row.sourceDoc}</span>
                     </span>
@@ -333,22 +333,22 @@ export const FusionGrid: React.FC = () => {
                           className={cn("h-full rounded-full shadow-[0_0_10px_currentColor]", row.confidence > 0.9 ? "bg-emerald-500" : row.confidence > 0.8 ? "bg-amber-500" : "bg-red-500")}
                         />
                       </div>
-                      <span className={cn("text-xs font-bold font-['Microsoft_YaHei']", row.confidence > 0.9 ? "text-emerald-500" : row.confidence > 0.8 ? "text-amber-500" : "text-red-500")}>
+                      <span className={cn("text-xs font-bold font-sans", row.confidence > 0.9 ? "text-emerald-500" : row.confidence > 0.8 ? "text-amber-500" : "text-red-500")}>
                         {Math.floor(row.confidence * 100)}%
                       </span>
                     </div>
                   </td>
                   <td className="p-4">
                     {row.status === "VERIFIED" ? (
-                      <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-bold font-['Microsoft_YaHei'] text-emerald-500 w-fit">
+                      <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-bold font-sans text-emerald-500 w-fit">
                         <CheckCircle2 size={12} /> {statusLabel(row.status)}
                       </div>
                     ) : row.status === "MISMATCH" ? (
-                      <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-[10px] font-bold font-['Microsoft_YaHei'] text-red-500 w-fit">
+                      <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-[10px] font-bold font-sans text-red-500 w-fit">
                         <AlertCircle size={12} /> {statusLabel(row.status)}
                       </div>
                     ) : (
-                      <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-500/10 border border-slate-500/20 text-[10px] font-bold font-['Microsoft_YaHei'] text-slate-400 w-fit">
+                      <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-500/10 border border-slate-500/20 text-[10px] font-bold font-sans text-slate-400 w-fit">
                         {statusLabel(row.status)}
                       </div>
                     )}
@@ -376,10 +376,10 @@ export const FusionGrid: React.FC = () => {
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-2xl rounded-full px-6 py-2.5 flex items-center gap-6 z-20 hover:scale-105 transition-transform duration-300">
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-[10px] text-muted-foreground font-bold font-['Microsoft_YaHei']">融合引擎在线</span>
+          <span className="text-[10px] text-muted-foreground font-bold font-sans">融合引擎在线</span>
         </div>
         <div className="w-px h-4 bg-white/20 dark:bg-white/10" />
-        <div className="flex items-center gap-4 text-[10px] font-mono font-bold font-['Microsoft_YaHei'] text-muted-foreground">
+        <div className="flex items-center gap-4 text-[10px] font-mono font-bold font-sans text-muted-foreground">
           <span>
             已选：<span className="text-foreground">{selectedCount}</span>
           </span>
@@ -388,7 +388,7 @@ export const FusionGrid: React.FC = () => {
           </span>
         </div>
         <div className="w-px h-4 bg-white/20 dark:bg-white/10" />
-        <div className="flex gap-4 text-[10px] font-mono font-bold font-['Microsoft_YaHei']">
+        <div className="flex gap-4 text-[10px] font-mono font-bold font-sans">
           <span className="text-muted-foreground">
             合计：<span className="text-foreground">{totalAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
           </span>

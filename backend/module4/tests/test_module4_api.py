@@ -1,24 +1,21 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 import uuid
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
 MODULE4_DIR = Path(__file__).resolve().parents[1]
 if str(MODULE4_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE4_DIR))
-os.environ["MODULE4_FORCE_MEMORY_MODE"] = "1"
 
 import app.main as module4_main  # noqa: E402
 from app.main import app  # noqa: E402
+from app.db.storage import Module4Storage  # noqa: E402
 from app.schemas import IngestRequest  # noqa: E402
 from app.services import (  # noqa: E402
     GraphRAGDependencyProbe,
@@ -28,6 +25,22 @@ from app.services import (  # noqa: E402
     Neo4jSettings,
     PromptRegistry,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_strict_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = Module4Storage("postgresql://invalid")
+
+    async def _connect() -> None:
+        await storage.ensure_default_rules()
+
+    async def _close() -> None:
+        return None
+
+    monkeypatch.setattr(module4_main, "storage", storage)
+    monkeypatch.setattr(storage, "connect", _connect)
+    monkeypatch.setattr(storage, "close", _close)
+    module4_main.job_tasks.clear()
 
 
 def _wait_job_success(client: TestClient, job_id: str, tenant_id: str, timeout_s: float = 6.0) -> dict:
@@ -42,9 +55,19 @@ def _wait_job_success(client: TestClient, job_id: str, tenant_id: str, timeout_s
     raise AssertionError("job timeout")
 
 
-def _write_parquet(path: Path, rows: list[dict]) -> None:
-    table = pa.Table.from_pylist(rows)
-    pq.write_table(table, path)
+def test_storage_schema_uses_file_scoped_unique_indexes() -> None:
+    sql_text = (MODULE4_DIR / "sql" / "init.sql").read_text(encoding="utf-8")
+
+    assert "UNIQUE (tenant_id, node_type, canonical_key)" not in sql_text
+    assert "UNIQUE (tenant_id, source_node_id, target_node_id, relation_type)" not in sql_text
+    assert "DROP CONSTRAINT IF EXISTS nodes_tenant_id_node_type_canonical_key_key" in sql_text
+    assert "DROP CONSTRAINT IF EXISTS edges_tenant_id_source_node_id_target_node_id_relation_type_key" in sql_text
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_nodes_legacy_scope" in sql_text
+    assert "WHERE graph_file_id IS NULL" in sql_text
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_nodes_graph_file_scope" in sql_text
+    assert "WHERE graph_file_id IS NOT NULL" in sql_text
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_edges_legacy_scope" in sql_text
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_edges_graph_file_scope" in sql_text
 
 
 def test_ingest_graph_alert_and_evidence_flow() -> None:
@@ -162,179 +185,43 @@ def test_repeated_ingest_is_idempotent_for_same_payload() -> None:
         assert alerts_after["total"] == alerts_before["total"]
         assert evidence_after["total"] == evidence_before["total"]
 
-
-def test_upload_sync_endpoint_is_idempotent_for_same_uploads(monkeypatch: pytest.MonkeyPatch) -> None:
-    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+def test_legacy_upload_sync_endpoint_is_not_available() -> None:
     payload = {
-        "tenant_id": tenant_id,
+        "tenant_id": "default",
         "source": "module2",
-        "graph_mode": "hybrid",
         "uploads": [
             {
-                "file_name": "upload.txt",
-                "file_hash": f"hash-{uuid.uuid4().hex[:8]}",
-                "artifact_path": "D:/artifacts/upload.txt",
-                "artifact_url": "/artifacts/upload.txt",
-                "mime_type": "text/plain",
-            }
-        ],
-    }
-
-    async def fake_run_upload_ingest_job(job_id: str, batch_id: str, ingest_payload: IngestRequest) -> dict:
-        return {
-            "stage": "ready",
-            "workspace_id": f"ws-{batch_id[:8]}",
-            "workspace_dir": "D:/module4/workspaces/test",
-            "uploads": len(ingest_payload.uploads),
-            "documents": 0,
-            "nodes": 3,
-            "edges": 2,
-            "communities": 1,
-        }
-
-    monkeypatch.setattr(module4_main, "_run_upload_ingest_job", fake_run_upload_ingest_job)
-
-    with TestClient(app) as client:
-        first = client.post("/module4/sync/uploads", json=payload)
-        assert first.status_code == 200, first.text
-        first_job = _wait_job_success(client, first.json()["job_id"], tenant_id)
-        assert first_job["status"] == "success"
-        assert first_job["result"]["uploads"] == 1
-        assert first_job["result"]["workspace_id"].startswith("ws-")
-
-        second = client.post("/module4/sync/uploads", json=payload)
-        assert second.status_code == 200, second.text
-        second_payload = second.json()
-        assert second_payload["job_id"] == first.json()["job_id"]
-        assert second_payload["batch_id"] == first.json()["batch_id"]
-        assert second_payload["status"] == "success"
-
-
-def test_upload_sync_falls_back_to_partial_artifacts_when_indexing_fails(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
-
-    runtime = GraphRAGRuntimeSettings(
-        module4_root=MODULE4_DIR,
-        workspaces_root=tmp_path / "workspaces",
-        prompt_assets_root=(MODULE4_DIR / "assets" / "prompts").resolve(),
-        api_base="http://oneapi.example/v1",
-        chat_api_key="chat-secret",
-        chat_model="qwen-turbo",
-        embedding_api_key="embed-secret",
-        embedding_model="text-embedding-v1",
-    )
-    builder = GraphRAGWorkspaceBuilder(
-        runtime=runtime,
-        prompt_registry=PromptRegistry(
-            asset_root=runtime.prompt_assets_root,
-            overrides=runtime.prompt_overrides(),
-        ),
-        neo4j=Neo4jSettings(uri="neo4j://example", username="neo4j", password="secret", database="neo4j"),
-    )
-    monkeypatch.setattr(module4_main, "workspace_builder", builder)
-
-    monkeypatch.setattr(
-        module4_main.graphrag_indexer,
-        "probe",
-        lambda *_args, **_kwargs: GraphRAGRuntimeProbe(
-            ready=True,
-            check_mode="deep",
-            python_bin="python",
-            python_bin_exists=True,
-            graphrag_module_available=True,
-            module_error_message=None,
-            prompt_assets_root=str(runtime.prompt_assets_root),
-            prompt_assets_ok=True,
-            missing_prompt_assets=[],
-            config_missing_fields=[],
-            oneapi=GraphRAGDependencyProbe(configured=True, reachable=True),
-            neo4j=GraphRAGDependencyProbe(configured=True, reachable=True),
-        ),
-    )
-
-    def fake_run(workspace_dir: Path) -> object:
-        artifacts_dir = workspace_dir / "output" / "20260101-000000" / "artifacts"
-        reports_dir = workspace_dir / "output" / "20260101-000000" / "reports"
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-        reports_dir.mkdir(parents=True, exist_ok=True)
-
-        _write_parquet(
-            artifacts_dir / "create_base_text_units.parquet",
-            [
-                {
-                    "id": "chunk-1",
-                    "chunk": "Qingniu Town is located in Linhai New District.",
-                    "chunk_id": "chunk-1",
-                    "document_ids": ["doc-1"],
-                    "n_tokens": 16,
-                }
-            ],
-        )
-        graphml = """
-<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
-  <key id="d0" for="node" attr.name="type" attr.type="string" />
-  <key id="d1" for="node" attr.name="description" attr.type="string" />
-  <key id="d2" for="node" attr.name="source_id" attr.type="string" />
-  <key id="d3" for="edge" attr.name="description" attr.type="string" />
-  <key id="d4" for="edge" attr.name="weight" attr.type="double" />
-  <key id="d5" for="edge" attr.name="source_id" attr.type="string" />
-  <graph edgedefault="undirected">
-    <node id="QINGNIU TOWN">
-      <data key="d0">GEO</data>
-      <data key="d1">A town in Linhai New District</data>
-      <data key="d2">chunk-1</data>
-    </node>
-    <node id="LINHAI NEW DISTRICT">
-      <data key="d0">GEO</data>
-      <data key="d1">A district that contains Qingniu Town</data>
-      <data key="d2">chunk-1</data>
-    </node>
-    <edge source="QINGNIU TOWN" target="LINHAI NEW DISTRICT">
-      <data key="d3">Qingniu Town is located in Linhai New District</data>
-      <data key="d4">2</data>
-      <data key="d5">chunk-1</data>
-    </edge>
-  </graph>
-</graphml>
-""".strip()
-        _write_parquet(artifacts_dir / "create_summarized_entities.parquet", [{"entity_graph": graphml}])
-        raise RuntimeError(f"GraphRAG index failed with exit code 1. See {workspace_dir / 'graphrag-index.log'}")
-
-    monkeypatch.setattr(module4_main.graphrag_indexer, "run", fake_run)
-
-    payload = {
-        "tenant_id": tenant_id,
-        "source": "module2",
-        "graph_mode": "hybrid",
-        "uploads": [
-            {
-                "file_name": "sample.txt",
+                "file_name": "legacy.txt",
                 "file_hash": f"hash-{uuid.uuid4().hex[:8]}",
                 "mime_type": "text/plain",
-                "text_content": "Qingniu Town is located in Linhai New District.",
+                "text_content": "legacy upload path",
             }
         ],
     }
 
     with TestClient(app) as client:
-        ingest_resp = client.post("/module4/sync/uploads", json=payload)
-        assert ingest_resp.status_code == 200, ingest_resp.text
-        final_job = _wait_job_success(client, ingest_resp.json()["job_id"], tenant_id)
-        assert final_job["status"] == "success", final_job
-        assert final_job["result"]["partial"] is True
-        assert final_job["result"]["mode"] == "partial"
-        assert final_job["result"]["index_status"] == "partial"
+        resp = client.post("/module4/sync/uploads", json=payload)
+        assert resp.status_code == 404
 
-        graph_resp = client.get(f"/module4/graph?tenant_id={tenant_id}&limit_nodes=100&limit_edges=100")
-        assert graph_resp.status_code == 200
-        graph = graph_resp.json()
-        node_types = {node["node_type"] for node in graph["nodes"]}
-        relation_types = {edge["relation_type"] for edge in graph["edges"]}
-        assert {"Document", "Chunk", "Entity"}.issubset(node_types)
-        assert {"PART_OF", "HAS_ENTITY", "RELATED"}.issubset(relation_types)
+
+def test_ingest_api_rejects_uploads_only_payload() -> None:
+    payload = {
+        "tenant_id": "default",
+        "source": "module2",
+        "uploads": [
+            {
+                "file_name": "legacy.txt",
+                "file_hash": f"hash-{uuid.uuid4().hex[:8]}",
+                "mime_type": "text/plain",
+                "text_content": "legacy upload path",
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        resp = client.post("/module4/ingest", json=payload)
+        assert resp.status_code == 422, resp.text
+        assert "At least one document is required" in resp.text
 
 
 def test_neighborhood_returns_exact_node_context() -> None:
@@ -492,7 +379,7 @@ def test_job_and_alert_actions_are_tenant_scoped() -> None:
         assert correct_ack.json()["alert"]["status"] == "ack"
 
 
-def test_healthz_reports_degraded_in_memory_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_healthz_reports_failed_when_database_is_not_connected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         module4_main.graphrag_indexer,
         "probe",
@@ -515,12 +402,175 @@ def test_healthz_reports_degraded_in_memory_mode(monkeypatch: pytest.MonkeyPatch
         resp = client.get("/module4/healthz")
         assert resp.status_code == 200
         payload = resp.json()
-        assert payload["status"] == "degraded"
+        assert payload["status"] == "failed"
         assert payload["db_connected"] is False
-        assert payload["degraded_memory_mode"] is True
-        assert payload["last_connect_error"]
+        assert "degraded_memory_mode" not in payload
+        assert payload["jobs_in_queue"] >= 0
         assert payload["graphrag"]["ready"] is False
         assert payload["graphrag"]["graphrag_module_available"] is False
+        assert "projection_runtime" in payload
+        assert payload["projection_runtime"]["relationship_type"] == "MODULE4_EDGE"
+        assert payload["projection_runtime"]["max_nodes"] >= 1
+
+
+def test_healthz_exposes_projection_runtime_configuration(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    runtime = GraphRAGRuntimeSettings(
+        module4_root=MODULE4_DIR,
+        workspaces_root=tmp_path / "workspaces",
+        prompt_assets_root=(MODULE4_DIR / "assets" / "prompts").resolve(),
+        api_base="http://oneapi.example/v1",
+        chat_api_key="chat-secret",
+        chat_model="qwen-turbo",
+        embedding_api_key="embed-secret",
+        embedding_model="text-embedding-v1",
+    )
+    builder = GraphRAGWorkspaceBuilder(
+        runtime=runtime,
+        prompt_registry=PromptRegistry(
+            asset_root=runtime.prompt_assets_root,
+            overrides=runtime.prompt_overrides(),
+        ),
+        neo4j=Neo4jSettings(uri="neo4j+s://example.databases.neo4j.io:7687", username="neo4j", password="secret", database="neo4j"),
+    )
+    monkeypatch.setattr(module4_main, "workspace_builder", builder)
+    monkeypatch.setattr(module4_main.neo4j_graph_projector, "enabled", True)
+    monkeypatch.setattr(module4_main.neo4j_graph_projector, "max_nodes", 321)
+    monkeypatch.setattr(module4_main.neo4j_graph_projector, "max_edges", 654)
+    monkeypatch.setattr(module4_main.neo4j_graph_projector, "timeout_sec", 1.75)
+    monkeypatch.setattr(
+        module4_main.graphrag_indexer,
+        "probe",
+        lambda *_args, **_kwargs: GraphRAGRuntimeProbe(
+            ready=True,
+            check_mode="deep",
+            python_bin="python",
+            python_bin_exists=True,
+            graphrag_module_available=True,
+            module_error_message=None,
+            prompt_assets_root=str(runtime.prompt_assets_root),
+            prompt_assets_ok=True,
+            missing_prompt_assets=[],
+            config_missing_fields=[],
+            oneapi=GraphRAGDependencyProbe(configured=True, reachable=True),
+            neo4j=GraphRAGDependencyProbe(configured=True, reachable=True),
+        ),
+    )
+
+    with TestClient(app) as client:
+        resp = client.get("/module4/healthz?probe=deep")
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert payload["projection_runtime"]["enabled"] is True
+        assert payload["projection_runtime"]["configured"] is True
+        assert payload["projection_runtime"]["can_project"] is True
+        assert payload["projection_runtime"]["database"] == "neo4j"
+        assert payload["projection_runtime"]["max_nodes"] == 321
+        assert payload["projection_runtime"]["max_edges"] == 654
+        assert payload["projection_runtime"]["timeout_sec"] == 1.75
+        assert payload["projection_runtime"]["labels"] == ["Module4Node"]
+
+
+def test_rule_upsert_rejects_unsupported_rule_kind() -> None:
+    with TestClient(app) as client:
+        resp = client.put(
+            "/module4/rules/RULE_SEMANTIC_TRIAL",
+            json={
+                "name": "Semantic Trial",
+                "severity": "yellow",
+                "rule_kind": "semantic",
+                "expr": {"scope": "document", "path": "diagnostics.quality_status", "op": "eq", "value": "degraded"},
+                "enabled": True,
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "deterministic" in resp.text
+
+
+def test_simulate_evaluates_deterministic_rules_against_inline_contexts() -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+    payload = {
+        "tenant_id": tenant_id,
+        "scenario_name": "inline-deterministic",
+        "params": {
+            "document_context": {
+                "file_name": "contract.pdf",
+                "file_hash": "hash-inline",
+                "track": "gamma",
+                "errors": ["parse mismatch"],
+                "errors_count": 1,
+                "soft_warnings": [],
+                "soft_warning_count": 0,
+                "diagnostics": {"quality_status": "degraded"},
+                "field_count": 1,
+            },
+            "field_contexts": [
+                {
+                    "file_name": "contract.pdf",
+                    "file_hash": "hash-inline",
+                    "track": "gamma",
+                    "field_name": "amount",
+                    "value": "1000",
+                    "confidence": 0.31,
+                    "diagnostics": {"quality_status": "degraded"},
+                }
+            ],
+        },
+    }
+
+    with TestClient(app) as client:
+        resp = client.post("/module4/simulate", json=payload)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert str(body["summary"]).strip()
+        rule_ids = {item["rule_id"] for item in body["changed_alerts"]}
+        assert "RULE_LOW_CONFIDENCE" in rule_ids
+        assert "RULE_DOC_ERRORS" in rule_ids
+        assert "RULE_QUALITY_DEGRADED" in rule_ids
+        metrics = {item["metric"]: item["value"] for item in body["impacts"]}
+        assert metrics["simulated_contexts"] == 2
+        assert metrics["simulated_hits"] >= 3
+
+
+def test_simulate_can_reuse_alert_payload_context() -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+    ingest_payload = {
+        "tenant_id": tenant_id,
+        "source": "module2",
+        "documents": [
+            {
+                "file_name": "risk.pdf",
+                "file_hash": f"hash-{uuid.uuid4().hex[:8]}",
+                "track": "omega",
+                "result": {
+                    "amount": {"value": "5000", "confidence": 0.33, "source_ref_id": "r1"},
+                },
+                "errors": ["mismatch"],
+                "diagnostics": {"quality_status": "degraded"},
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        ingest_resp = client.post("/module4/ingest", json=ingest_payload)
+        assert ingest_resp.status_code == 200, ingest_resp.text
+        _wait_job_success(client, ingest_resp.json()["job_id"], tenant_id)
+
+        alerts_resp = client.get(f"/module4/alerts?tenant_id={tenant_id}&page=1&page_size=20")
+        assert alerts_resp.status_code == 200
+        alert_id = alerts_resp.json()["items"][0]["alert_id"]
+
+        simulate_resp = client.post(
+            "/module4/simulate",
+            json={
+                "tenant_id": tenant_id,
+                "scenario_name": "alert-context-reuse",
+                "scope": {"alert_id": alert_id},
+            },
+        )
+        assert simulate_resp.status_code == 200, simulate_resp.text
+        payload = simulate_resp.json()
+        assert payload["changed_alerts"]
+        assert any(item.get("source_alert_id") == alert_id for item in payload["changed_alerts"])
 
 
 def test_cancelled_ingest_job_is_requeued_for_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -573,3 +623,4 @@ def test_cancelled_ingest_job_is_requeued_for_recovery(monkeypatch: pytest.Monke
         assert "queued for recovery" in str(recovered.get("error_message") or "")
 
     asyncio.run(scenario())
+

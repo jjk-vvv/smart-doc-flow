@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, Send, Bot, Sparkles, RotateCcw } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { readExtractionDocuments, readExtractionUpdatedAt, type ExtractionDocument } from '@/lib/extractionStore';
+import { readExtractionDocuments, readExtractionUpdatedAt, type ExtractionDocument } from '../lib/extractionStore';
 import { createParser } from 'eventsource-parser';
 
 type ChatRole = 'user' | 'assistant';
@@ -40,6 +40,12 @@ const normalizeAssistantText = (text: string): string => (
     .replace(/\r/g, '')
     .replace(/\u200b/g, '')
     .replace(/\u0000/g, '')
+    .replace(/\ufeff/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .replace(/\uFFFD/g, '')
     .replace(/[*`#>]/g, '')
 );
@@ -208,7 +214,7 @@ export const AIAssistant: React.FC = () => {
           setMessages(prev => {
             const last = prev[prev.length - 1];
             if (last.id === aiMsgId) {
-              return [...prev.slice(0, -1), { ...last, content: offlineReply }];
+              return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText(offlineReply) }];
             }
             return prev;
           });
@@ -239,7 +245,7 @@ export const AIAssistant: React.FC = () => {
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last.id === aiMsgId) {
-            return [...prev.slice(0, -1), { ...last, content: offlineReply }];
+            return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText(offlineReply) }];
           }
           return prev;
         });
@@ -267,7 +273,7 @@ export const AIAssistant: React.FC = () => {
             setMessages(prev => {
               const last = prev[prev.length - 1];
               if (last.id === aiMsgId) {
-                return [...prev.slice(0, -1), { ...last, content: last.content + content }];
+                return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText(`${last.content}${content}`) }];
               }
               return prev;
             });
@@ -307,7 +313,7 @@ export const AIAssistant: React.FC = () => {
       setMessages(prev => {
         const last = prev[prev.length - 1];
         if (last.id === aiMsgId) {
-          return [...prev.slice(0, -1), { ...last, content: offlineReply }];
+          return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText(offlineReply) }];
         }
         return prev;
       });
@@ -322,7 +328,7 @@ export const AIAssistant: React.FC = () => {
       setMessages(prev => {
         const last = prev[prev.length - 1];
         if (last.id === aiMsgId) {
-          return [...prev.slice(0, -1), { ...last, content: offlineReply }];
+          return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText(offlineReply) }];
         }
         return prev;
       });
@@ -331,7 +337,7 @@ export const AIAssistant: React.FC = () => {
       setMessages(prev => {
         const last = prev[prev.length - 1];
         if (last.id === aiMsgId) {
-          return [...prev.slice(0, -1), { ...last, content: '请求失败，请稍后重试。' }];
+          return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText('请求失败，请稍后重试。') }];
         }
         return prev;
       });
@@ -462,7 +468,7 @@ export const AIAssistant: React.FC = () => {
   };
 
   return (
-    <div className="fixed bottom-48 left-0 z-[100] pointer-events-none font-['Microsoft_YaHei']">
+    <div className="fixed bottom-48 left-0 z-[100] pointer-events-none font-sans">
       <motion.button
         drag="y"
         dragConstraints={{ top: -500, bottom: 0 }}
@@ -585,7 +591,7 @@ export const AIAssistant: React.FC = () => {
                               : 'rounded-tl-sm border border-slate-200/60 bg-white/95 text-slate-700 shadow-sm dark:border-cyan-600/30 dark:bg-[#0e223f]/75 dark:text-slate-200'
                           }`}
                         >
-                          {msg.content}
+                          {normalizeAssistantText(msg.content)}
                         </div>
                       )}
                     </div>

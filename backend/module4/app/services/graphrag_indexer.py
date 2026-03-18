@@ -16,6 +16,32 @@ from .oneapi_runtime import GraphRAGRuntimeSettings
 from .prompt_registry import PromptRegistry
 
 
+def _module4_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _local_venv_python() -> Path:
+    root = _module4_root()
+    if os.name == "nt":
+        return root / ".venv" / "Scripts" / "python.exe"
+    return root / ".venv" / "bin" / "python"
+
+
+def _resolve_python_bin() -> str:
+    configured = str(os.getenv("MODULE4_GRAPHRAG_PYTHON_BIN", "") or "").strip()
+    generic_commands = {"python", "python3", "py"}
+    if configured and configured.lower() not in generic_commands:
+        return configured
+
+    local_venv = _local_venv_python()
+    if local_venv.exists():
+        return str(local_venv)
+
+    if configured:
+        return configured
+    return sys.executable
+
+
 def _workspace_env_file(path: Path) -> Dict[str, str]:
     if not path.exists():
         return {}
@@ -99,6 +125,17 @@ class GraphRAGIndexResult:
 
 
 @dataclass(frozen=True)
+class GraphRAGIndexError(RuntimeError):
+    category: str
+    message: str
+    log_path: Path
+    exit_code: int | None = None
+
+    def __str__(self) -> str:
+        return self.message
+
+
+@dataclass(frozen=True)
 class GraphRAGDependencyProbe:
     configured: bool
     reachable: Optional[bool] = None
@@ -126,6 +163,9 @@ class GraphRAGRuntimeProbe:
     prompt_assets_ok: bool
     missing_prompt_assets: List[str] = field(default_factory=list)
     config_missing_fields: List[str] = field(default_factory=list)
+    runtime_versions: Dict[str, str] = field(default_factory=dict)
+    tiktoken_encoding_ready: Optional[bool] = None
+    tiktoken_encoding_error_message: str | None = None
     oneapi: GraphRAGDependencyProbe = field(default_factory=lambda: GraphRAGDependencyProbe(configured=False))
     neo4j: GraphRAGDependencyProbe = field(default_factory=lambda: GraphRAGDependencyProbe(configured=False))
 
@@ -141,6 +181,9 @@ class GraphRAGRuntimeProbe:
             "prompt_assets_ok": self.prompt_assets_ok,
             "missing_prompt_assets": list(self.missing_prompt_assets),
             "config_missing_fields": list(self.config_missing_fields),
+            "runtime_versions": dict(self.runtime_versions),
+            "tiktoken_encoding_ready": self.tiktoken_encoding_ready,
+            "tiktoken_encoding_error_message": self.tiktoken_encoding_error_message,
             "oneapi": self.oneapi.as_dict(),
             "neo4j": self.neo4j.as_dict(),
         }
@@ -155,6 +198,8 @@ class GraphRAGRuntimeProbe:
             parts.append(self.module_error_message or "graphrag package is not available")
         if self.missing_prompt_assets:
             parts.append(f"missing prompt assets: {', '.join(self.missing_prompt_assets)}")
+        if self.tiktoken_encoding_ready is False:
+            parts.append(self.tiktoken_encoding_error_message or "tiktoken encoding is not available")
         if self.oneapi.configured and self.oneapi.reachable is False:
             parts.append(self.oneapi.error_message or "OneAPI endpoint is not reachable")
         if not parts:
@@ -202,6 +247,67 @@ def _python_supports_module(python_bin: str, module_name: str) -> tuple[bool, st
     if (completed.stdout or "").strip() == "1":
         return True, None
     return False, f"Python runtime does not have module installed: {module_name}"
+
+
+def _python_runtime_details(python_bin: str) -> tuple[Dict[str, str], Optional[bool], str | None]:
+    if not _python_bin_exists(python_bin):
+        return {}, None, f"Configured python executable not found: {python_bin}"
+
+    try:
+        completed = subprocess.run(
+            [
+                python_bin,
+                "-c",
+                (
+                    "import json, importlib.metadata as md\n"
+                    "payload = {'versions': {}, 'tiktoken_encoding_ready': None, 'tiktoken_encoding_error': None}\n"
+                    "for name in ('python', 'graphrag', 'tiktoken', 'pandas', 'datashaper'):\n"
+                    "    try:\n"
+                    "        if name == 'python':\n"
+                    "            import sys\n"
+                    "            payload['versions'][name] = sys.version.split()[0]\n"
+                    "        else:\n"
+                    "            payload['versions'][name] = md.version(name)\n"
+                    "    except Exception:\n"
+                    "        continue\n"
+                    "try:\n"
+                    "    import tiktoken\n"
+                    "    tiktoken.get_encoding('cl100k_base')\n"
+                    "    payload['tiktoken_encoding_ready'] = True\n"
+                    "except Exception as exc:\n"
+                    "    payload['tiktoken_encoding_ready'] = False\n"
+                    "    payload['tiktoken_encoding_error'] = f'{type(exc).__name__}: {exc}'\n"
+                    "print(json.dumps(payload, ensure_ascii=False))\n"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {}, None, "Timed out while inspecting python runtime details"
+    except FileNotFoundError:
+        return {}, None, f"Configured python executable not found: {python_bin}"
+    except Exception as exc:  # pragma: no cover - defensive
+        return {}, None, f"Unable to inspect python runtime details: {type(exc).__name__}: {exc}"
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        return {}, None, detail or "Python runtime detail inspection failed"
+
+    try:
+        payload = json.loads((completed.stdout or "").strip() or "{}")
+    except Exception as exc:
+        return {}, None, f"Unable to parse python runtime details: {type(exc).__name__}: {exc}"
+
+    raw_versions = payload.get("versions") if isinstance(payload.get("versions"), dict) else {}
+    versions = {str(key): str(value) for key, value in raw_versions.items() if str(value).strip()}
+    encoding_ready = payload.get("tiktoken_encoding_ready")
+    if encoding_ready is not None:
+        encoding_ready = bool(encoding_ready)
+    encoding_error = str(payload.get("tiktoken_encoding_error") or "").strip() or None
+    return versions, encoding_ready, encoding_error
 
 
 def _missing_prompt_assets(runtime: GraphRAGRuntimeSettings) -> List[str]:
@@ -302,7 +408,7 @@ def _probe_neo4j(neo4j: Neo4jSettings, *, check_remote: bool) -> GraphRAGDepende
 
 class GraphRAGIndexer:
     def __init__(self) -> None:
-        self.python_bin = str(os.getenv("MODULE4_GRAPHRAG_PYTHON_BIN", sys.executable) or sys.executable).strip()
+        self.python_bin = _resolve_python_bin()
         self.timeout_sec = max(60, int(os.getenv("MODULE4_GRAPHRAG_INDEX_TIMEOUT_SEC", "7200")))
 
     def probe(
@@ -318,6 +424,7 @@ class GraphRAGIndexer:
         missing_prompt_assets = _missing_prompt_assets(runtime)
         python_exists = _python_bin_exists(self.python_bin)
         module_available, module_error = _python_supports_module(self.python_bin, "graphrag")
+        runtime_versions, tiktoken_encoding_ready, tiktoken_encoding_error = _python_runtime_details(self.python_bin)
         oneapi_probe = _probe_oneapi(runtime, check_remote=check_remote)
         neo4j_probe = _probe_neo4j(neo4j, check_remote=check_remote)
 
@@ -330,6 +437,7 @@ class GraphRAGIndexer:
             and python_exists
             and module_available
             and not missing_prompt_assets
+            and tiktoken_encoding_ready is not False
             and oneapi_ok
         )
 
@@ -344,6 +452,9 @@ class GraphRAGIndexer:
             prompt_assets_ok=not missing_prompt_assets,
             missing_prompt_assets=missing_prompt_assets,
             config_missing_fields=config_missing_fields,
+            runtime_versions=runtime_versions,
+            tiktoken_encoding_ready=tiktoken_encoding_ready,
+            tiktoken_encoding_error_message=tiktoken_encoding_error,
             oneapi=oneapi_probe,
             neo4j=neo4j_probe,
         )
@@ -360,16 +471,23 @@ class GraphRAGIndexer:
             with log_path.open("a", encoding="utf-8") as log_file:
                 log_file.write(f"$ {' '.join(command)}\n")
                 log_file.flush()
-                return subprocess.run(
-                    command,
-                    cwd=str(workspace_dir),
-                    env=env,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    timeout=self.timeout_sec,
-                    check=False,
-                )
+                try:
+                    return subprocess.run(
+                        command,
+                        cwd=str(workspace_dir),
+                        env=env,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        timeout=self.timeout_sec,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise GraphRAGIndexError(
+                        category="index_timeout",
+                        message=f"GraphRAG index timed out after {self.timeout_sec}s. See {log_path}",
+                        log_path=log_path,
+                    ) from exc
 
         skipped_workflows: List[str] = []
         completed = _execute()
@@ -392,12 +510,21 @@ class GraphRAGIndexer:
                     )
                 completed = _execute()
             if completed.returncode != 0:
-                raise RuntimeError(f"GraphRAG index failed with exit code {completed.returncode}. See {log_path}")
+                raise GraphRAGIndexError(
+                    category="index_process_failed",
+                    message=f"GraphRAG index failed with exit code {completed.returncode}. See {log_path}",
+                    log_path=log_path,
+                    exit_code=completed.returncode,
+                )
 
         output_root = workspace_dir / "output"
         output_dir, artifacts_dir, reports_dir = _resolve_output_layout(output_root)
         if not output_dir or not artifacts_dir or not artifacts_dir.exists():
-            raise RuntimeError(f"GraphRAG index finished but no artifacts directory was produced under {output_root}")
+            raise GraphRAGIndexError(
+                category="artifacts_missing",
+                message=f"GraphRAG index finished but no artifacts directory was produced under {output_root}",
+                log_path=log_path,
+            )
 
         return GraphRAGIndexResult(
             command=command,

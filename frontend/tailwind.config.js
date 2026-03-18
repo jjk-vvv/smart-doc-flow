@@ -9,7 +9,8 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Microsoft YaHei", "Heiti SC", "ui-sans-serif", "system-ui", "-apple-system", "sans-serif"],
+        sans: ["Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Heiti SC", "ui-sans-serif", "system-ui", "-apple-system", "sans-serif"],
+        mono: ["Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Heiti SC", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       colors: {
         border: "hsl(var(--border))",

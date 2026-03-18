@@ -1,6 +1,24 @@
-﻿import path from 'path';
+import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+
+const normalizeModuleId = (id: string) => id.replace(/\\/g, '/');
+
+const GRAPH_RUNTIME_PACKAGES = [
+  '/node_modules/@neo4j-nvl/',
+  '/node_modules/d3-force/',
+  '/node_modules/d3-dispatch/',
+  '/node_modules/d3-quadtree/',
+  '/node_modules/d3-timer/',
+];
+
+const MOTION_RUNTIME_PACKAGES = [
+  '/node_modules/framer-motion/',
+  '/node_modules/motion-dom/',
+  '/node_modules/motion-utils/',
+];
+
+const KNOWLEDGE_NEXUS_SCREEN_MODULE = '/frontend/components/knowledge-nexus/KnowledgeNexusNeo4j.tsx';
 
 export default defineConfig(({ mode }) => {
   loadEnv(mode, '.', '');
@@ -38,6 +56,29 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+      },
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            const moduleId = normalizeModuleId(id);
+
+            if (moduleId.endsWith(KNOWLEDGE_NEXUS_SCREEN_MODULE)) {
+              return 'knowledge-nexus-screen';
+            }
+
+            if (GRAPH_RUNTIME_PACKAGES.some((fragment) => moduleId.includes(fragment))) {
+              return 'graph-runtime';
+            }
+
+            if (MOTION_RUNTIME_PACKAGES.some((fragment) => moduleId.includes(fragment))) {
+              return 'motion-runtime';
+            }
+
+            return undefined;
+          },
+        },
       },
     },
   };

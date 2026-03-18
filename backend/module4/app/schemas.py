@@ -6,23 +6,12 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
-SourceType = Literal["module2", "module3", "manual", "api"]
+SourceType = Literal["module2"]
 JobType = Literal["ingest", "rebuild_graph", "run_rules", "simulate"]
 JobStatus = Literal["queued", "running", "success", "failed", "cancelled"]
 AlertSeverity = Literal["yellow", "orange", "red"]
 AlertStatus = Literal["open", "ack", "resolved", "false_positive"]
-RuleKind = Literal["deterministic", "semantic", "anomaly"]
-
-
-class UploadSyncFile(BaseModel):
-    file_name: str
-    file_hash: str
-    artifact_path: Optional[str] = None
-    artifact_url: Optional[str] = None
-    storage_path: Optional[str] = None
-    mime_type: Optional[str] = None
-    text_content: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+RuleKind = Literal["deterministic"]
 
 
 class IngestRequest(BaseModel):
@@ -31,13 +20,12 @@ class IngestRequest(BaseModel):
     source_batch_key: Optional[str] = None
     graph_mode: str = "hybrid"
     documents: List[Dict[str, Any]] = Field(default_factory=list)
-    uploads: List[UploadSyncFile] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_has_input(self) -> "IngestRequest":
-        if self.documents or self.uploads:
+        if self.documents:
             return self
-        raise ValueError("At least one of documents or uploads is required")
+        raise ValueError("At least one document is required")
 
 
 class IngestResponse(BaseModel):
@@ -93,6 +81,70 @@ class GraphResponse(BaseModel):
     nodes: List[GraphNode] = Field(default_factory=list)
     edges: List[GraphEdge] = Field(default_factory=list)
     stats: GraphStats = Field(default_factory=GraphStats)
+    source: Optional[str] = None
+    workspace_id: Optional[str] = None
+
+
+class GraphProjectionStatus(BaseModel):
+    status: str = ""
+    projected_nodes: int = 0
+    projected_edges: int = 0
+    source_node_count: int = 0
+    source_edge_count: int = 0
+    skipped_reason: Optional[str] = None
+    error_message: Optional[str] = None
+    labels: List[str] = Field(default_factory=list)
+    relationship_type: str = "MODULE4_EDGE"
+
+
+class GraphProjectionRuntimeStatus(BaseModel):
+    enabled: bool = False
+    configured: bool = False
+    can_project: bool = False
+    database: str = "neo4j"
+    max_nodes: int = 0
+    max_edges: int = 0
+    timeout_sec: float = 0.0
+    missing_fields: List[str] = Field(default_factory=list)
+    labels: List[str] = Field(default_factory=list)
+    relationship_type: str = "MODULE4_EDGE"
+
+
+class GraphFileItem(BaseModel):
+    graph_file_id: str
+    tenant_id: str
+    file_hash: str
+    file_name: str
+    workspace_id: Optional[str] = None
+    graph_mode: str = "hybrid"
+    source: str = "module2"
+    status: str = "queued"
+    current_job_id: Optional[str] = None
+    active_version_id: Optional[str] = None
+    last_error: Optional[str] = None
+    node_count: int = 0
+    edge_count: int = 0
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    projection: Optional[GraphProjectionStatus] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    last_indexed_at: Optional[datetime] = None
+
+
+class GraphFileListResponse(BaseModel):
+    items: List[GraphFileItem] = Field(default_factory=list)
+
+
+class GraphFileDetailResponse(BaseModel):
+    item: GraphFileItem
+
+
+class GraphNodeDetailResponse(BaseModel):
+    node: Optional[GraphNode] = None
+    graph: GraphResponse = Field(default_factory=GraphResponse)
+    file: Optional[GraphFileItem] = None
+    evidence: List["EvidenceItem"] = Field(default_factory=list)
+    edge_evidence: Dict[str, List["EvidenceItem"]] = Field(default_factory=dict)
 
 
 class AlertItem(BaseModel):
@@ -234,6 +286,9 @@ class GraphRAGRuntimeStatus(BaseModel):
     prompt_assets_ok: bool = False
     missing_prompt_assets: List[str] = Field(default_factory=list)
     config_missing_fields: List[str] = Field(default_factory=list)
+    runtime_versions: Dict[str, str] = Field(default_factory=dict)
+    tiktoken_encoding_ready: Optional[bool] = None
+    tiktoken_encoding_error_message: Optional[str] = None
     oneapi: RuntimeDependencyStatus = Field(default_factory=RuntimeDependencyStatus)
     neo4j: RuntimeDependencyStatus = Field(default_factory=RuntimeDependencyStatus)
 
@@ -241,8 +296,8 @@ class GraphRAGRuntimeStatus(BaseModel):
 class HealthzResponse(BaseModel):
     status: str
     db_connected: bool
-    degraded_memory_mode: bool
     jobs_in_queue: int
     last_connect_error: Optional[str] = None
     graphrag: GraphRAGRuntimeStatus = Field(default_factory=GraphRAGRuntimeStatus)
+    projection_runtime: GraphProjectionRuntimeStatus = Field(default_factory=GraphProjectionRuntimeStatus)
     now: datetime

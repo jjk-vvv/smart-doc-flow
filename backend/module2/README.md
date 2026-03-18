@@ -88,8 +88,21 @@ Copy-Item backend/module2/.env.example backend/module2/.env
 - `MODULE2_ENABLE_MINERU_LAYOUT`
 - `MODULE2_DOC_TO_PDF_ENABLE`
 - `GEMINI_API_KEY`
+- `MODULE2_ASSISTANT_MODEL`
+- `MODULE2_ASSISTANT_TUNING_MODEL`
 
 配置样例见：`backend/module2/.env.example`
+
+### 运行时模型与微调目标模型
+
+模块二现在区分两类模型配置：
+
+- `MODULE2_ASSISTANT_MODEL`
+  运行时主模型，用于正式问答、流式回答、工具调用与验收链路。
+- `MODULE2_ASSISTANT_TUNING_MODEL`
+  微调目标模型，用于后续 SFT / preference tuning 数据集与训练流程配置。
+
+这两个配置建议分开维护。比如当前可以继续保留运行时正式验收模型为 `gemini-3-pro`，同时把微调目标模型单独设为 `gemini-2.5-flash`。
 
 ## 外部依赖要求
 
@@ -105,8 +118,10 @@ Copy-Item backend/module2/.env.example backend/module2/.env
 默认 DSN：
 
 ```text
-postgresql://postgres:postgres@localhost:5432/a23
+postgresql://postgres@127.0.0.1:5432/a23
 ```
+
+本机 Windows + PostgreSQL 场景建议优先使用 `127.0.0.1` 而不是 `localhost`，以避免 IPv6 `::1` 命中不同认证规则。
 
 如果数据库不可用，服务会自动降级为内存模式，但这只适合本地调试，不适合长期使用。
 
@@ -245,7 +260,39 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - 同步失败会按 `MODULE2_MODULE4_SYNC_RETRIES` 与 `MODULE2_MODULE4_SYNC_BACKOFF_SEC` 自动重试
 - 服务关闭时会在 `MODULE2_MODULE4_SHUTDOWN_DRAIN_SEC` 窗口内尽量等待模块四同步任务完成
 
-### 2. Office 预览转换任务
+### 2. 模块四同步出站观测
+
+用于确认模块二是否已经把解析产物真正投递到模块四，而不只是前端看起来成功。
+
+- `GET /module4-sync/outbox`
+- `GET /module4-sync/outbox/{outbox_id}`
+
+常用查询参数：
+
+- `tenant_id`
+- `source`
+- `source_batch_key`
+- `endpoint`
+- `status`
+- `limit`
+- `include_payload`
+- `include_future`
+
+返回重点包括：
+
+- `outbox_id`
+- `status`
+- `attempt_count`
+- `max_attempts`
+- `payload_summary`
+- `response_summary`
+- `next_attempt_at`
+- `delivered_at`
+- `last_error`
+
+其中 `payload_summary.documents[]` 会汇总每个文档的 `file_name`、`file_hash`、`track`、`field_count`、`trace_hit_count`、`error_count`、`soft_warning_count`、`quality_status` 与 `cached`，便于排查“模块二已产出，但模块四未落库”这类问题。
+
+### 3. Office 预览转换任务
 
 启动任务：
 
@@ -260,7 +307,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - `.doc`
 - `.docx`
 
-### 3. 智能摘要
+### 4. 智能摘要
 
 `POST /extract/summarize`
 
@@ -268,7 +315,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 
 - `summary`
 
-### 4. 溯源定位
+### 5. 溯源定位
 
 `POST /extract/trace/locate`
 
@@ -285,7 +332,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - `truncated`
 - `hits`
 
-### 5. 助手查询
+### 6. 助手查询
 
 `POST /extract/assistant/query`
 
@@ -306,7 +353,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - `persisted_rows`
 - `warnings`
 
-### 6. 缓存清理
+### 7. 缓存清理
 
 `POST /extract/cache/clear`
 
@@ -316,7 +363,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - artifact 缓存
 - Office 预览任务缓存
 
-### 7. Dify / 工作流桥接接口
+### 8. Dify / 工作流桥接接口
 
 创建任务：
 
@@ -337,7 +384,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 
 方式提交远端文件或内联文件。
 
-### 8. 健康检查
+### 9. 健康检查
 
 `GET /healthz`
 

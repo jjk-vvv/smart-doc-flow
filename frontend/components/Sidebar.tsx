@@ -16,7 +16,6 @@ import {
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { motion, AnimatePresence } from 'framer-motion'; // Import framer-motion
 import LogoImage from '../image.png';
 
 function cn(...inputs: ClassValue[]) {
@@ -82,6 +81,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  const selectSubItem = (subId: string) => {
+    setActiveTab(subId);
+  };
+
+  /*
   const menuItems = [
     { id: 'dashboard', label: '指挥控制台', sub: '指挥中心', icon: LayoutGrid },
     { 
@@ -92,6 +96,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
       subItems: [
         { id: 'deepread_interaction', label: '文档智能操作交互模块', icon: Bot },
         { id: 'deepread_extraction', label: '非结构化文档信息需求模块', icon: FileText }
+      ]
+    },
+    { id: 'fusion', label: '多源数据融合', sub: '数据融合', icon: Database },
+    { id: 'nexus', label: '全域知识图谱', sub: '知识图谱', icon: GitGraph },
+  ];
+
+  ];
+  */
+
+  const menuItems = [
+    { id: 'dashboard', label: '指挥控制台', sub: '指挥中心', icon: LayoutGrid },
+    {
+      id: 'deepread',
+      label: '智能文档解析',
+      sub: '深度解析',
+      icon: FileSearch,
+      subItems: [
+        { id: 'deepread_interaction', label: '文档智能操作交互模块', icon: Bot },
+        { id: 'deepread_extraction', label: '非结构化文档信息需求模块', icon: FileText },
       ]
     },
     { id: 'fusion', label: '多源数据融合', sub: '数据融合', icon: Database },
@@ -147,10 +170,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
             isCollapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
           )}>
             <div className="h-1.5 w-full" aria-hidden="true" />
-            <h1 className="font-['Microsoft_YaHei'] font-black text-[17px] tracking-wide text-black dark:text-white leading-none drop-shadow-[0_0_2px_rgba(255,255,255,0.5)] dark:drop-shadow-none truncate whitespace-nowrap">智能文档流转平台</h1>
+            <h1 className="font-sans font-black text-[17px] tracking-wide text-black dark:text-white leading-none drop-shadow-[0_0_2px_rgba(255,255,255,0.5)] dark:drop-shadow-none truncate whitespace-nowrap">智能文档流转平台</h1>
             <button
               onClick={() => setActiveTab('guide')}
-              className="text-[10px] px-2 py-0.5 rounded-full bg-transparent text-blue-600 dark:text-blue-400 hover:opacity-70 transition-all duration-300 flex items-center gap-1 group/btn cursor-pointer font-black whitespace-nowrap font-['Microsoft_YaHei']"
+              className="text-[10px] px-2 py-0.5 rounded-full bg-transparent text-blue-600 dark:text-blue-400 hover:opacity-70 transition-all duration-300 flex items-center gap-1 group/btn cursor-pointer font-black whitespace-nowrap font-sans"
             >
               <span>平台功能说明</span>
               <ArrowRight size={10} className="group-hover/btn:translate-x-0.5 transition-transform" />
@@ -191,6 +214,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }}
             >
               <button
+                type="button"
                 onClick={() => {
                   if (hasSubItems) {
                     // Click logic: 
@@ -256,7 +280,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   "text-left relative z-10 transition-all duration-300 flex items-center justify-between",
                   isCollapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100 flex-1"
                 )}>
-                  <div className={cn("text-sm tracking-tight transition-colors whitespace-nowrap font-['Microsoft_YaHei']", isParentActive ? "font-bold text-blue-900 dark:text-blue-100" : "font-medium text-slate-600 dark:text-slate-400 group-hover/nav:text-slate-900 dark:group-hover/nav:text-slate-200")}>
+                  <div className={cn("text-sm tracking-tight transition-colors whitespace-nowrap font-sans", isParentActive ? "font-bold text-blue-900 dark:text-blue-100" : "font-medium text-slate-600 dark:text-slate-400 group-hover/nav:text-slate-900 dark:group-hover/nav:text-slate-200")}>
                     {item.label}
                   </div>
                   {hasSubItems && (
@@ -273,56 +297,45 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
 
               {/* Accordion Sub-items (Inline) */}
-              <AnimatePresence>
-                {hasSubItems && isExpanded && !isCollapsed && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.3, ease: "easeInOut" }}
-                    className="overflow-hidden"
-                  >
-                    <div className="pt-1 pb-2 pl-4 pr-2 space-y-1">
-                      {item.subItems?.map((sub) => {
-                        const isSubActive = activeTab === sub.id;
-                        return (
-                          <button
-                            key={sub.id}
-                            onClick={(e) => {
-                              e.stopPropagation(); 
-                              setActiveTab(sub.id);
-                              // Auto-collapse sidebar when clicking these specific modules
-                              if (['deepread_interaction', 'deepread_extraction'].includes(sub.id)) {
-                                toggleCollapse();
-                              }
-                            }}
-                            className={cn(
-                              "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm transition-all font-['Microsoft_YaHei'] border relative overflow-hidden group/sub",
-                              isSubActive
-                                ? "bg-gradient-to-r from-blue-100/50 to-transparent dark:from-blue-500/20 dark:to-transparent text-blue-700 dark:text-blue-300 border-transparent font-bold"
-                                : "text-slate-500 dark:text-slate-400 border-transparent hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 font-medium"
-                            )}
-                          >
-                            {/* Sub-item indicator/icon if needed, or just text */}
-                             <div className={cn(
-                                "w-1.5 h-1.5 rounded-full transition-all duration-300",
-                                isSubActive ? "bg-blue-600 dark:bg-blue-400 shadow-[0_0_8px_rgba(37,99,235,0.4)] scale-125" : "bg-slate-300 dark:bg-slate-600 group-hover/sub:bg-blue-400/50"
-                             )} />
-                            <span className="truncate">{sub.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              {hasSubItems && isExpanded && !isCollapsed && (
+                <div className="relative z-10 overflow-hidden">
+                  <div className="pt-1 pb-2 pl-4 pr-2 space-y-1">
+                    {item.subItems?.map((sub) => {
+                      const isSubActive = activeTab === sub.id;
+                      return (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            selectSubItem(sub.id);
+                          }}
+                          className={cn(
+                            "relative z-10 w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm transition-all font-sans border overflow-hidden group/sub",
+                            isSubActive
+                              ? "bg-gradient-to-r from-blue-100/50 to-transparent dark:from-blue-500/20 dark:to-transparent text-blue-700 dark:text-blue-300 border-transparent font-bold"
+                              : "text-slate-500 dark:text-slate-400 border-transparent hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 font-medium"
+                          )}
+                        >
+                          <div className={cn(
+                            "w-1.5 h-1.5 rounded-full transition-all duration-300",
+                            isSubActive ? "bg-blue-600 dark:bg-blue-400 shadow-[0_0_8px_rgba(37,99,235,0.4)] scale-125" : "bg-slate-300 dark:bg-slate-600 group-hover/sub:bg-blue-400/50"
+                          )} />
+                          <span className="truncate">{sub.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Tooltip — only visible when collapsed */}
               {isCollapsed && (
                 <div className="
                   absolute left-full top-1/2 -translate-y-1/2 ml-3
                   px-3 py-2 rounded-lg
-                  bg-slate-800 dark:bg-slate-700 text-white text-xs font-black font-['Microsoft_YaHei']
+                  bg-slate-800 dark:bg-slate-700 text-white text-xs font-black font-sans
                   shadow-xl
                   opacity-0 invisible group-hover/nav:opacity-100 group-hover/nav:visible
                   transition-all duration-200
@@ -359,7 +372,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Moon size={18} className="text-slate-600 group-hover/theme:-rotate-12 transition-transform shrink-0" />
             }
             <span className={cn(
-              "text-sm font-black transition-all font-['Microsoft_YaHei'] whitespace-nowrap",
+              "text-sm font-black transition-all font-sans whitespace-nowrap",
               isDark ? "text-white" : "text-black",
               isCollapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
             )}>
@@ -380,7 +393,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   "rounded-full flex items-center justify-center transition-all duration-300",
                   "bg-indigo-50 text-indigo-600 border border-indigo-100",
                   "dark:bg-indigo-500/20 dark:text-indigo-300 dark:border-indigo-500/30",
-                  "shadow-sm dark:shadow-[0_0_15px_rgba(99,102,241,0.3)] shadow-indigo-200/50 font-bold font-['Microsoft_YaHei'] select-none",
+                  "shadow-sm dark:shadow-[0_0_15px_rgba(99,102,241,0.3)] shadow-indigo-200/50 font-bold font-sans select-none",
                   isCollapsed ? "w-8 h-8 text-xs" : "w-10 h-10 text-base"
                 )}
               >
@@ -392,8 +405,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               "min-w-0 transition-all duration-300 group cursor-pointer overflow-hidden",
               isCollapsed ? "opacity-0 w-0" : "flex-1 opacity-100"
             )}>
-              <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 mb-0.5 font-['Microsoft_YaHei'] tracking-wide whitespace-nowrap">欢迎回来</div>
-              <div className="text-sm font-bold truncate text-slate-700 dark:text-slate-200 font-['Microsoft_YaHei'] group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors" title={user.name}>{user.name}</div>
+              <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 mb-0.5 font-sans tracking-wide whitespace-nowrap">欢迎回来</div>
+              <div className="text-sm font-bold truncate text-slate-700 dark:text-slate-200 font-sans group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors" title={user.name}>{user.name}</div>
             </div>
             {!isCollapsed && (
               <button
@@ -416,7 +429,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <User size={16} className="group-hover:animate-bounce shrink-0" />
             <span className={cn(
-              "transition-all duration-300 whitespace-nowrap font-['Microsoft_YaHei'] font-black",
+              "transition-all duration-300 whitespace-nowrap font-sans font-black",
               isCollapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
             )}>登录账号</span>
           </button>

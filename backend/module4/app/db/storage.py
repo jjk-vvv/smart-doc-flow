@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 def _stable_dumps(value: Any) -> str:
@@ -111,6 +111,48 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _is_unique_violation_error(exc: Exception) -> bool:
+    return type(exc).__name__ == "UniqueViolationError"
+
+
+def _json_text(value: Any, key: str) -> str:
+    if not isinstance(value, dict):
+        return ""
+    raw = value.get(key)
+    return str(raw or "").strip()
+
+
+def _graph_scope_key(graph_file_id: Optional[str]) -> str:
+    return str(graph_file_id or "").strip() or "__legacy__"
+
+
+def _row_matches_graph_scope(
+    row: Dict[str, Any],
+    *,
+    file_hash: str,
+    workspace_id: Optional[str],
+    graph_file_id: Optional[str] = None,
+    graph_version_id: Optional[str] = None,
+) -> bool:
+    attrs = row.get("attrs") if isinstance(row.get("attrs"), dict) else {}
+    row_file_hash = _json_text(attrs, "file_hash")
+    row_workspace_id = _json_text(attrs, "workspace_id")
+    row_graph_file_id = str(row.get("graph_file_id") or "").strip()
+    row_graph_version_id = str(row.get("graph_version_id") or "").strip()
+    canonical_key = str(row.get("canonical_key") or "").strip()
+    if graph_version_id and row_graph_version_id == graph_version_id:
+        return True
+    if graph_file_id and row_graph_file_id == graph_file_id:
+        return True
+    if file_hash and row_file_hash == file_hash:
+        return True
+    if workspace_id and row_workspace_id == workspace_id:
+        return True
+    if file_hash and canonical_key == file_hash:
+        return True
+    return False
+
+
 def _rewrite_localhost_dsn(dsn: str, replacement_host: str = "127.0.0.1") -> str | None:
     raw = str(dsn or "").strip()
     if not raw:
@@ -145,8 +187,8 @@ def _dsn_connection_candidates(dsn: str) -> List[str]:
     raw = str(dsn or "").strip()
     if not raw:
         return []
-    candidates = [raw]
     fallback = _rewrite_localhost_dsn(raw)
+    candidates: List[str] = [raw]
     if fallback and fallback not in candidates:
         candidates.append(fallback)
     return candidates
@@ -173,7 +215,6 @@ class Module4Storage:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool: Optional[Any] = None
-        self._degraded_memory_mode = False
         self._last_connect_error = ""
         self._lock = asyncio.Lock()
 
@@ -181,9 +222,12 @@ class Module4Storage:
         self._batches: Dict[str, Dict[str, Any]] = {}
         self._batch_unique: Dict[Tuple[str, str, str], str] = {}
         self._documents: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        self._nodes: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        self._graph_files: Dict[str, Dict[str, Any]] = {}
+        self._graph_file_by_key: Dict[Tuple[str, str], str] = {}
+        self._graph_versions: Dict[str, Dict[str, Any]] = {}
+        self._nodes: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
         self._nodes_by_id: Dict[str, Dict[str, Any]] = {}
-        self._edges: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+        self._edges: Dict[Tuple[str, str, str, str, str], Dict[str, Any]] = {}
         self._edges_by_id: Dict[str, Dict[str, Any]] = {}
         self._evidence: Dict[str, Dict[str, Any]] = {}
         self._evidence_by_key: Dict[Tuple[str, str], str] = {}
@@ -195,39 +239,47 @@ class Module4Storage:
     async def connect(self) -> None:
         force_memory = str(os.getenv("MODULE4_FORCE_MEMORY_MODE", "0")).strip().lower() in {"1", "true", "yes"}
         if force_memory:
-            self._pool = None
-            self._degraded_memory_mode = True
-            self._last_connect_error = "forced memory mode"
-            await self.ensure_default_rules()
-            return
+            raise RuntimeError("MODULE4_FORCE_MEMORY_MODE is no longer supported")
         try:
             import asyncpg
 
             connect_timeout = _safe_float(os.getenv("MODULE4_DB_CONNECT_TIMEOUT_SEC", "3"), 3.0)
+            schema_timeout = max(connect_timeout, _safe_float(os.getenv("MODULE4_DB_SCHEMA_TIMEOUT_SEC", "8"), 8.0))
             connect_errors: List[str] = []
             for candidate_dsn in _dsn_connection_candidates(self._dsn):
+                logger.info("module4 storage trying database candidate: %s", candidate_dsn)
                 try:
-                    self._pool = await asyncpg.create_pool(
-                        candidate_dsn,
-                        min_size=1,
-                        max_size=10,
-                        timeout=connect_timeout,
-                        init=_configure_asyncpg_connection,
+                    self._pool = await asyncio.wait_for(
+                        asyncpg.create_pool(
+                            candidate_dsn,
+                            min_size=1,
+                            max_size=10,
+                            timeout=connect_timeout,
+                            init=_configure_asyncpg_connection,
+                        ),
+                        timeout=max(connect_timeout + 1.0, 5.0),
                     )
-                    await self._init_schema()
-                    self._degraded_memory_mode = False
+                    logger.info("module4 storage pool created for candidate: %s", candidate_dsn)
+                    await asyncio.wait_for(self._init_schema(), timeout=schema_timeout)
+                    logger.info("module4 storage schema init completed for candidate: %s", candidate_dsn)
                     self._last_connect_error = ""
                     break
                 except Exception as exc:
+                    if self._pool is not None:
+                        try:
+                            await self._pool.close()
+                        except Exception:
+                            pass
                     self._pool = None
+                    logger.warning("module4 storage candidate failed: %s: %s", candidate_dsn, exc)
                     connect_errors.append(f"{candidate_dsn} -> {type(exc).__name__}: {exc}")
             if self._pool is None:
                 raise RuntimeError(" | ".join(connect_errors) or "No valid database connection candidates")
         except Exception as exc:
             self._pool = None
-            self._degraded_memory_mode = True
             self._last_connect_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("module4 storage downgraded to memory mode: %s", self._last_connect_error)
+            logger.error("module4 storage connect failed: %s", self._last_connect_error)
+            raise
         await self.ensure_default_rules()
 
     async def close(self) -> None:
@@ -237,7 +289,6 @@ class Module4Storage:
     def diagnostics(self) -> Dict[str, Any]:
         return {
             "db_connected": bool(self._pool is not None),
-            "degraded_memory_mode": self._degraded_memory_mode,
             "last_connect_error": self._last_connect_error,
             "jobs_in_memory": len(self._jobs),
             "alerts_in_memory": len(self._alerts),
@@ -450,6 +501,529 @@ class Module4Storage:
             rows = await conn.fetch(sql, tenant_id)
         return [_to_plain(dict(row)) for row in rows]
 
+    async def upsert_graph_file(
+        self,
+        *,
+        tenant_id: str,
+        file_hash: str,
+        file_name: str,
+        workspace_id: Optional[str],
+        graph_mode: str,
+        source: str,
+        status: str,
+        current_job_id: Optional[str] = None,
+        active_version_id: Optional[str] = None,
+        last_error: Optional[str] = None,
+        node_count: Optional[int] = None,
+        edge_count: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        last_indexed_at: Optional[datetime] = None,
+        conn: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        file_hash = str(file_hash or "").strip()
+        file_name = str(file_name or "").strip() or file_hash or "unknown"
+        payload = _to_plain(metadata or {})
+        workspace_value = str(workspace_id or "").strip() or None
+        status_value = str(status or "queued").strip() or "queued"
+        graph_mode_value = str(graph_mode or "hybrid").strip() or "hybrid"
+        source_value = str(source or "module2").strip() or "module2"
+        current_job_value = str(current_job_id or "").strip() or None
+        active_version_value = str(active_version_id or "").strip() or None
+        last_error_value = str(last_error or "").strip() or None
+        node_total = max(0, int(node_count or 0))
+        edge_total = max(0, int(edge_count or 0))
+
+        if not self._pool:
+            async with self._lock:
+                now = _now()
+                key = (tenant_id, file_hash)
+                graph_file_id = self._graph_file_by_key.get(key)
+                row = self._graph_files.get(graph_file_id or "")
+                if row:
+                    row.update(
+                        {
+                            "file_name": file_name,
+                            "workspace_id": workspace_value,
+                            "graph_mode": graph_mode_value,
+                            "source": source_value,
+                            "status": status_value,
+                            "current_job_id": current_job_value,
+                            "active_version_id": active_version_value,
+                            "last_error": last_error_value,
+                            "node_count": node_total,
+                            "edge_count": edge_total,
+                            "metadata": payload,
+                            "updated_at": now,
+                            "last_indexed_at": last_indexed_at,
+                        }
+                    )
+                    return dict(row)
+                row = {
+                    "graph_file_id": str(uuid.uuid4()),
+                    "tenant_id": tenant_id,
+                    "file_hash": file_hash,
+                    "file_name": file_name,
+                    "workspace_id": workspace_value,
+                    "graph_mode": graph_mode_value,
+                    "source": source_value,
+                    "status": status_value,
+                    "current_job_id": current_job_value,
+                    "active_version_id": active_version_value,
+                    "last_error": last_error_value,
+                    "node_count": node_total,
+                    "edge_count": edge_total,
+                    "metadata": payload,
+                    "created_at": now,
+                    "updated_at": now,
+                    "last_indexed_at": last_indexed_at,
+                }
+                self._graph_files[row["graph_file_id"]] = row
+                self._graph_file_by_key[key] = row["graph_file_id"]
+                return dict(row)
+
+        sql = """
+            INSERT INTO module4.graph_files (
+                tenant_id,
+                file_hash,
+                file_name,
+                workspace_id,
+                graph_mode,
+                source,
+                status,
+                current_job_id,
+                active_version_id,
+                last_error,
+                node_count,
+                edge_count,
+                metadata,
+                last_indexed_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)
+            ON CONFLICT (tenant_id, file_hash)
+            DO UPDATE SET
+                file_name = EXCLUDED.file_name,
+                workspace_id = EXCLUDED.workspace_id,
+                graph_mode = EXCLUDED.graph_mode,
+                source = EXCLUDED.source,
+                status = EXCLUDED.status,
+                current_job_id = EXCLUDED.current_job_id,
+                active_version_id = COALESCE(EXCLUDED.active_version_id, module4.graph_files.active_version_id),
+                last_error = EXCLUDED.last_error,
+                node_count = EXCLUDED.node_count,
+                edge_count = EXCLUDED.edge_count,
+                metadata = EXCLUDED.metadata,
+                last_indexed_at = COALESCE(EXCLUDED.last_indexed_at, module4.graph_files.last_indexed_at),
+                updated_at = NOW()
+            RETURNING *
+        """
+        runner = conn if conn is not None else self._pool.acquire()
+        if conn is not None:
+            row = await conn.fetchrow(
+                sql,
+                tenant_id,
+                file_hash,
+                file_name,
+                workspace_value,
+                graph_mode_value,
+                source_value,
+                status_value,
+                current_job_value,
+                active_version_value,
+                last_error_value,
+                node_total,
+                edge_total,
+                payload,
+                last_indexed_at,
+            )
+        else:
+            async with runner as acquired:
+                row = await acquired.fetchrow(
+                    sql,
+                    tenant_id,
+                    file_hash,
+                    file_name,
+                    workspace_value,
+                    graph_mode_value,
+                    source_value,
+                    status_value,
+                    current_job_value,
+                    active_version_value,
+                    last_error_value,
+                    node_total,
+                    edge_total,
+                    payload,
+                    last_indexed_at,
+                )
+        return _to_plain(dict(row))
+
+    async def add_graph_version(
+        self,
+        *,
+        tenant_id: str,
+        file_hash: str,
+        job_id: Optional[str],
+        workspace_id: Optional[str],
+        status: str,
+        manifest_path: Optional[str],
+        output_dir: Optional[str],
+        artifacts_dir: Optional[str],
+        reports_dir: Optional[str],
+        import_summary: Optional[Dict[str, Any]] = None,
+        activate: bool = True,
+        conn: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        graph_file = await self.get_graph_file(tenant_id=tenant_id, file_hash=file_hash)
+        if not graph_file:
+            return None
+
+        payload = _to_plain(import_summary or {})
+        job_value = str(job_id or "").strip() or None
+        workspace_value = str(workspace_id or "").strip() or None
+        manifest_value = str(manifest_path or "").strip() or None
+        output_value = str(output_dir or "").strip() or None
+        artifacts_value = str(artifacts_dir or "").strip() or None
+        reports_value = str(reports_dir or "").strip() or None
+        status_value = str(status or "queued").strip() or "queued"
+
+        if not self._pool:
+            async with self._lock:
+                now = _now()
+                row = {
+                    "graph_version_id": str(uuid.uuid4()),
+                    "graph_file_id": str(graph_file.get("graph_file_id")),
+                    "tenant_id": tenant_id,
+                    "file_hash": file_hash,
+                    "job_id": job_value,
+                    "workspace_id": workspace_value,
+                    "status": status_value,
+                    "manifest_path": manifest_value,
+                    "output_dir": output_value,
+                    "artifacts_dir": artifacts_value,
+                    "reports_dir": reports_value,
+                    "import_summary": payload,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                self._graph_versions[row["graph_version_id"]] = row
+                graph_row = self._graph_files.get(str(graph_file.get("graph_file_id")))
+                if graph_row and activate:
+                    graph_row["active_version_id"] = row["graph_version_id"]
+                    graph_row["updated_at"] = now
+                return dict(row)
+
+        sql = """
+            INSERT INTO module4.graph_versions (
+                graph_file_id,
+                tenant_id,
+                file_hash,
+                job_id,
+                workspace_id,
+                status,
+                manifest_path,
+                output_dir,
+                artifacts_dir,
+                reports_dir,
+                import_summary
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            RETURNING *
+        """
+        if conn is not None:
+            row = await conn.fetchrow(
+                sql,
+                graph_file["graph_file_id"],
+                tenant_id,
+                file_hash,
+                job_value,
+                workspace_value,
+                status_value,
+                manifest_value,
+                output_value,
+                artifacts_value,
+                reports_value,
+                payload,
+            )
+            if activate:
+                await conn.execute(
+                    """
+                    UPDATE module4.graph_files
+                    SET active_version_id = $1, updated_at = NOW()
+                    WHERE graph_file_id = $2
+                    """,
+                    row["graph_version_id"],
+                    graph_file["graph_file_id"],
+                )
+        else:
+            async with self._pool.acquire() as acquired:
+                row = await acquired.fetchrow(
+                    sql,
+                    graph_file["graph_file_id"],
+                    tenant_id,
+                    file_hash,
+                    job_value,
+                    workspace_value,
+                    status_value,
+                    manifest_value,
+                    output_value,
+                    artifacts_value,
+                    reports_value,
+                    payload,
+                )
+                if activate:
+                    await acquired.execute(
+                        """
+                        UPDATE module4.graph_files
+                        SET active_version_id = $1, updated_at = NOW()
+                        WHERE graph_file_id = $2
+                        """,
+                        row["graph_version_id"],
+                        graph_file["graph_file_id"],
+                    )
+        return _to_plain(dict(row))
+
+    async def update_graph_version(
+        self,
+        *,
+        tenant_id: str,
+        graph_version_id: str,
+        status: Optional[str] = None,
+        job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        manifest_path: Optional[str] = None,
+        output_dir: Optional[str] = None,
+        artifacts_dir: Optional[str] = None,
+        reports_dir: Optional[str] = None,
+        import_summary: Optional[Dict[str, Any]] = None,
+        conn: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        graph_version_id = str(graph_version_id or "").strip()
+        if not graph_version_id:
+            return None
+
+        status_value = str(status or "").strip() or None
+        job_value = str(job_id or "").strip() or None
+        workspace_value = str(workspace_id or "").strip() or None
+        manifest_value = str(manifest_path or "").strip() or None
+        output_value = str(output_dir or "").strip() or None
+        artifacts_value = str(artifacts_dir or "").strip() or None
+        reports_value = str(reports_dir or "").strip() or None
+        summary_value = _to_plain(import_summary) if import_summary is not None else None
+
+        if not self._pool:
+            async with self._lock:
+                row = self._graph_versions.get(graph_version_id)
+                if not row or str(row.get("tenant_id") or "") != tenant_id:
+                    return None
+                row["updated_at"] = _now()
+                if status_value is not None:
+                    row["status"] = status_value
+                if job_id is not None:
+                    row["job_id"] = job_value
+                if workspace_id is not None:
+                    row["workspace_id"] = workspace_value
+                if manifest_path is not None:
+                    row["manifest_path"] = manifest_value
+                if output_dir is not None:
+                    row["output_dir"] = output_value
+                if artifacts_dir is not None:
+                    row["artifacts_dir"] = artifacts_value
+                if reports_dir is not None:
+                    row["reports_dir"] = reports_value
+                if import_summary is not None:
+                    row["import_summary"] = summary_value or {}
+                return dict(row)
+
+        assignments: List[str] = []
+        values: List[Any] = []
+        idx = 1
+
+        def _assign(column: str, value: Any, *, jsonb: bool = False) -> None:
+            nonlocal idx
+            assignments.append(f"{column} = ${idx}{'::jsonb' if jsonb else ''}")
+            values.append(value)
+            idx += 1
+
+        if status_value is not None:
+            _assign("status", status_value)
+        if job_id is not None:
+            _assign("job_id", job_value)
+        if workspace_id is not None:
+            _assign("workspace_id", workspace_value)
+        if manifest_path is not None:
+            _assign("manifest_path", manifest_value)
+        if output_dir is not None:
+            _assign("output_dir", output_value)
+        if artifacts_dir is not None:
+            _assign("artifacts_dir", artifacts_value)
+        if reports_dir is not None:
+            _assign("reports_dir", reports_value)
+        if import_summary is not None:
+            _assign("import_summary", summary_value or {}, jsonb=True)
+
+        if not assignments:
+            return None
+
+        assignments.append("updated_at = NOW()")
+        values.extend([tenant_id, graph_version_id])
+        sql = f"""
+            UPDATE module4.graph_versions
+            SET {', '.join(assignments)}
+            WHERE tenant_id = ${idx} AND graph_version_id = ${idx + 1}
+            RETURNING *
+        """
+
+        if conn is not None:
+            row = await conn.fetchrow(sql, *values)
+        else:
+            async with self._pool.acquire() as acquired:
+                row = await acquired.fetchrow(sql, *values)
+        return _to_plain(dict(row)) if row else None
+
+    async def get_graph_version(self, *, tenant_id: str, graph_version_id: str) -> Optional[Dict[str, Any]]:
+        graph_version_id = str(graph_version_id or "").strip()
+        if not graph_version_id:
+            return None
+
+        if not self._pool:
+            row = self._graph_versions.get(graph_version_id)
+            if not row or str(row.get("tenant_id") or "") != tenant_id:
+                return None
+            return dict(row)
+
+        sql = """
+            SELECT *
+            FROM module4.graph_versions
+            WHERE tenant_id = $1 AND graph_version_id = $2
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, tenant_id, graph_version_id)
+        return _to_plain(dict(row)) if row else None
+
+    async def assign_graph_version(
+        self,
+        *,
+        tenant_id: str,
+        graph_file_id: str,
+        graph_version_id: str,
+        workspace_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        graph_file_id = str(graph_file_id or "").strip()
+        graph_version_id = str(graph_version_id or "").strip()
+        workspace_value = str(workspace_id or "").strip() or None
+        if not graph_file_id or not graph_version_id:
+            return {"nodes": 0, "edges": 0}
+
+        if not self._pool:
+            async with self._lock:
+                node_count = 0
+                edge_count = 0
+                for row in self._nodes_by_id.values():
+                    if str(row.get("tenant_id") or "") != tenant_id:
+                        continue
+                    if str(row.get("graph_file_id") or "") != graph_file_id:
+                        continue
+                    attrs = row.get("attrs") if isinstance(row.get("attrs"), dict) else {}
+                    if workspace_value and _json_text(attrs, "workspace_id") != workspace_value:
+                        continue
+                    row["graph_version_id"] = graph_version_id
+                    row["updated_at"] = _now()
+                    node_count += 1
+                for row in self._edges_by_id.values():
+                    if str(row.get("tenant_id") or "") != tenant_id:
+                        continue
+                    if str(row.get("graph_file_id") or "") != graph_file_id:
+                        continue
+                    attrs = row.get("attrs") if isinstance(row.get("attrs"), dict) else {}
+                    if workspace_value and _json_text(attrs, "workspace_id") != workspace_value:
+                        continue
+                    row["graph_version_id"] = graph_version_id
+                    row["updated_at"] = _now()
+                    edge_count += 1
+                return {"nodes": node_count, "edges": edge_count}
+
+        node_sql = """
+            UPDATE module4.nodes
+            SET graph_version_id = $1, updated_at = NOW()
+            WHERE tenant_id = $2
+              AND graph_file_id = $3
+              AND ($4::text IS NULL OR (attrs->>'workspace_id') = $4)
+        """
+        edge_sql = """
+            UPDATE module4.edges
+            SET graph_version_id = $1, updated_at = NOW()
+            WHERE tenant_id = $2
+              AND graph_file_id = $3
+              AND ($4::text IS NULL OR (attrs->>'workspace_id') = $4)
+        """
+        async with self._pool.acquire() as conn:
+            node_status = await conn.execute(node_sql, graph_version_id, tenant_id, graph_file_id, workspace_value)
+            edge_status = await conn.execute(edge_sql, graph_version_id, tenant_id, graph_file_id, workspace_value)
+        try:
+            node_count = int(str(node_status).rsplit(" ", 1)[-1])
+        except Exception:
+            node_count = 0
+        try:
+            edge_count = int(str(edge_status).rsplit(" ", 1)[-1])
+        except Exception:
+            edge_count = 0
+        return {"nodes": node_count, "edges": edge_count}
+
+    async def get_graph_file(self, *, tenant_id: str, file_hash: str) -> Optional[Dict[str, Any]]:
+        file_hash = str(file_hash or "").strip()
+        if not file_hash:
+            return None
+
+        if not self._pool:
+            graph_file_id = self._graph_file_by_key.get((tenant_id, file_hash))
+            row = self._graph_files.get(graph_file_id or "")
+            return dict(row) if row else None
+
+        sql = """
+            SELECT *
+            FROM module4.graph_files
+            WHERE tenant_id = $1 AND file_hash = $2
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, tenant_id, file_hash)
+        return _to_plain(dict(row)) if row else None
+
+    async def list_graph_files(
+        self,
+        *,
+        tenant_id: str,
+        status: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        limit = max(1, min(500, int(limit)))
+        status_value = str(status or "").strip() or None
+
+        if not self._pool:
+            items = [dict(v) for v in self._graph_files.values() if v.get("tenant_id") == tenant_id]
+            if status_value:
+                items = [item for item in items if str(item.get("status") or "") == status_value]
+            items.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or _now(), reverse=True)
+            return items[:limit]
+
+        clauses = ["tenant_id = $1"]
+        params: List[Any] = [tenant_id]
+        if status_value:
+            clauses.append("status = $2")
+            params.append(status_value)
+            limit_idx = 3
+        else:
+            limit_idx = 2
+        sql = f"""
+            SELECT *
+            FROM module4.graph_files
+            WHERE {' AND '.join(clauses)}
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT ${limit_idx}
+        """
+        params.append(limit)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_to_plain(dict(row)) for row in rows]
+
     async def list_recoverable_jobs(self) -> List[Dict[str, Any]]:
         if not self._pool:
             items = [
@@ -546,6 +1120,8 @@ class Module4Storage:
         self,
         *,
         tenant_id: str,
+        graph_file_id: Optional[str] = None,
+        graph_version_id: Optional[str] = None,
         node_type: str,
         canonical_key: str,
         display_name: str,
@@ -555,17 +1131,21 @@ class Module4Storage:
     ) -> Dict[str, Any]:
         attrs = _to_plain(attrs)
         confidence = _safe_float(confidence, 0.0)
+        graph_file_value = str(graph_file_id or "").strip() or None
+        graph_version_value = str(graph_version_id or "").strip() or None
         canonical_key = (canonical_key or "").strip() or str(uuid.uuid4())
         display_name = (display_name or "").strip() or canonical_key
 
         if not self._pool:
             async with self._lock:
-                key = (tenant_id, node_type, canonical_key)
+                key = (tenant_id, _graph_scope_key(graph_file_value), node_type, canonical_key)
                 now = _now()
                 row = self._nodes.get(key)
                 if row:
                     row.update(
                         {
+                            "graph_file_id": graph_file_value,
+                            "graph_version_id": graph_version_value,
                             "display_name": display_name,
                             "attrs": attrs,
                             "confidence": confidence,
@@ -578,6 +1158,8 @@ class Module4Storage:
                 row = {
                     "node_id": str(uuid.uuid4()),
                     "tenant_id": tenant_id,
+                    "graph_file_id": graph_file_value,
+                    "graph_version_id": graph_version_value,
                     "node_type": node_type,
                     "canonical_key": canonical_key,
                     "display_name": display_name,
@@ -592,29 +1174,103 @@ class Module4Storage:
                 self._nodes_by_id[row["node_id"]] = row
                 return dict(row)
 
-        sql = """
-            INSERT INTO module4.nodes (tenant_id, node_type, canonical_key, display_name, attrs, confidence)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-            ON CONFLICT (tenant_id, node_type, canonical_key)
-            DO UPDATE SET
-                display_name = EXCLUDED.display_name,
-                attrs = EXCLUDED.attrs,
-                confidence = EXCLUDED.confidence,
-                last_seen_at = NOW(),
-                updated_at = NOW()
-            RETURNING *
-        """
-        if conn is not None:
-            row = await conn.fetchrow(sql, tenant_id, node_type, canonical_key, display_name, attrs, confidence)
+        if graph_file_value:
+            update_sql = """
+                WITH candidate AS (
+                    SELECT node_id
+                    FROM module4.nodes
+                    WHERE tenant_id = $1
+                      AND graph_file_id = $2::uuid
+                      AND node_type = $4
+                      AND canonical_key = $5
+                    ORDER BY updated_at DESC, created_at DESC, node_id DESC
+                    LIMIT 1
+                )
+                UPDATE module4.nodes AS node
+                SET graph_version_id = COALESCE($3::uuid, node.graph_version_id),
+                    display_name = $6,
+                    attrs = $7::jsonb,
+                    confidence = $8,
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                FROM candidate
+                WHERE node.node_id = candidate.node_id
+                RETURNING node.*
+            """
+            insert_sql = """
+                INSERT INTO module4.nodes (
+                    tenant_id, graph_file_id, graph_version_id, node_type, canonical_key, display_name, attrs, confidence
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+                RETURNING *
+            """
         else:
-            async with self._pool.acquire() as acquired:
-                row = await acquired.fetchrow(sql, tenant_id, node_type, canonical_key, display_name, attrs, confidence)
-        return _to_plain(dict(row))
+            update_sql = """
+                WITH candidate AS (
+                    SELECT node_id
+                    FROM module4.nodes
+                    WHERE tenant_id = $1
+                      AND graph_file_id IS NULL
+                      AND node_type = $4
+                      AND canonical_key = $5
+                    ORDER BY updated_at DESC, created_at DESC, node_id DESC
+                    LIMIT 1
+                )
+                UPDATE module4.nodes AS node
+                SET graph_version_id = COALESCE($3::uuid, node.graph_version_id),
+                    display_name = $6,
+                    attrs = $7::jsonb,
+                    confidence = $8,
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                FROM candidate
+                WHERE node.node_id = candidate.node_id
+                RETURNING node.*
+            """
+            insert_sql = """
+                INSERT INTO module4.nodes (
+                    tenant_id, graph_file_id, graph_version_id, node_type, canonical_key, display_name, attrs, confidence
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+                RETURNING *
+            """
+
+        async def _execute(conn_obj: Any) -> Dict[str, Any]:
+            params = (
+                tenant_id,
+                graph_file_value,
+                graph_version_value,
+                node_type,
+                canonical_key,
+                display_name,
+                attrs,
+                confidence,
+            )
+            row = await conn_obj.fetchrow(update_sql, *params)
+            if row:
+                return _to_plain(dict(row))
+            try:
+                row = await conn_obj.fetchrow(insert_sql, *params)
+            except Exception as exc:
+                if not _is_unique_violation_error(exc):
+                    raise
+                row = await conn_obj.fetchrow(update_sql, *params)
+                if row:
+                    return _to_plain(dict(row))
+                raise
+            return _to_plain(dict(row))
+
+        if conn is not None:
+            return await _execute(conn)
+        async with self._pool.acquire() as acquired:
+            return await _execute(acquired)
 
     async def upsert_edge(
         self,
         *,
         tenant_id: str,
+        graph_file_id: Optional[str] = None,
+        graph_version_id: Optional[str] = None,
         source_node_id: str,
         target_node_id: str,
         relation_type: str,
@@ -627,16 +1283,26 @@ class Module4Storage:
         attrs = _to_plain(attrs)
         confidence = _safe_float(confidence, 0.0)
         risk_score = _safe_float(risk_score, 0.0)
+        graph_file_value = str(graph_file_id or "").strip() or None
+        graph_version_value = str(graph_version_id or "").strip() or None
         direction = direction if direction in {"out", "bi"} else "out"
 
         if not self._pool:
             async with self._lock:
-                key = (tenant_id, str(source_node_id), str(target_node_id), relation_type)
+                key = (
+                    tenant_id,
+                    _graph_scope_key(graph_file_value),
+                    str(source_node_id),
+                    str(target_node_id),
+                    relation_type,
+                )
                 now = _now()
                 row = self._edges.get(key)
                 if row:
                     row.update(
                         {
+                            "graph_file_id": graph_file_value,
+                            "graph_version_id": graph_version_value,
                             "direction": direction,
                             "attrs": attrs,
                             "confidence": confidence,
@@ -650,6 +1316,8 @@ class Module4Storage:
                 row = {
                     "edge_id": str(uuid.uuid4()),
                     "tenant_id": tenant_id,
+                    "graph_file_id": graph_file_value,
+                    "graph_version_id": graph_version_value,
                     "source_node_id": str(source_node_id),
                     "target_node_id": str(target_node_id),
                     "relation_type": relation_type,
@@ -666,25 +1334,76 @@ class Module4Storage:
                 self._edges_by_id[row["edge_id"]] = row
                 return dict(row)
 
-        sql = """
-            INSERT INTO module4.edges (
-                tenant_id, source_node_id, target_node_id, relation_type, direction, attrs, confidence, risk_score
-            )
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
-            ON CONFLICT (tenant_id, source_node_id, target_node_id, relation_type)
-            DO UPDATE SET
-                direction = EXCLUDED.direction,
-                attrs = EXCLUDED.attrs,
-                confidence = EXCLUDED.confidence,
-                risk_score = EXCLUDED.risk_score,
-                last_seen_at = NOW(),
-                updated_at = NOW()
-            RETURNING *
-        """
-        if conn is not None:
-            row = await conn.fetchrow(
-                sql,
+        if graph_file_value:
+            update_sql = """
+                WITH candidate AS (
+                    SELECT edge_id
+                    FROM module4.edges
+                    WHERE tenant_id = $1
+                      AND graph_file_id = $2::uuid
+                      AND source_node_id = $4::uuid
+                      AND target_node_id = $5::uuid
+                      AND relation_type = $6
+                    ORDER BY updated_at DESC, created_at DESC, edge_id DESC
+                    LIMIT 1
+                )
+                UPDATE module4.edges AS edge
+                SET graph_version_id = COALESCE($3::uuid, edge.graph_version_id),
+                    direction = $7,
+                    attrs = $8::jsonb,
+                    confidence = $9,
+                    risk_score = $10,
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                FROM candidate
+                WHERE edge.edge_id = candidate.edge_id
+                RETURNING edge.*
+            """
+            insert_sql = """
+                INSERT INTO module4.edges (
+                    tenant_id, graph_file_id, graph_version_id, source_node_id, target_node_id, relation_type, direction, attrs, confidence, risk_score
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+                RETURNING *
+            """
+        else:
+            update_sql = """
+                WITH candidate AS (
+                    SELECT edge_id
+                    FROM module4.edges
+                    WHERE tenant_id = $1
+                      AND graph_file_id IS NULL
+                      AND source_node_id = $4::uuid
+                      AND target_node_id = $5::uuid
+                      AND relation_type = $6
+                    ORDER BY updated_at DESC, created_at DESC, edge_id DESC
+                    LIMIT 1
+                )
+                UPDATE module4.edges AS edge
+                SET graph_version_id = COALESCE($3::uuid, edge.graph_version_id),
+                    direction = $7,
+                    attrs = $8::jsonb,
+                    confidence = $9,
+                    risk_score = $10,
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                FROM candidate
+                WHERE edge.edge_id = candidate.edge_id
+                RETURNING edge.*
+            """
+            insert_sql = """
+                INSERT INTO module4.edges (
+                    tenant_id, graph_file_id, graph_version_id, source_node_id, target_node_id, relation_type, direction, attrs, confidence, risk_score
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+                RETURNING *
+            """
+
+        async def _execute(conn_obj: Any) -> Dict[str, Any]:
+            params = (
                 tenant_id,
+                graph_file_value,
+                graph_version_value,
                 source_node_id,
                 target_node_id,
                 relation_type,
@@ -693,20 +1412,24 @@ class Module4Storage:
                 confidence,
                 risk_score,
             )
-        else:
-            async with self._pool.acquire() as acquired:
-                row = await acquired.fetchrow(
-                    sql,
-                    tenant_id,
-                    source_node_id,
-                    target_node_id,
-                    relation_type,
-                    direction,
-                    attrs,
-                    confidence,
-                    risk_score,
-                )
-        return _to_plain(dict(row))
+            row = await conn_obj.fetchrow(update_sql, *params)
+            if row:
+                return _to_plain(dict(row))
+            try:
+                row = await conn_obj.fetchrow(insert_sql, *params)
+            except Exception as exc:
+                if not _is_unique_violation_error(exc):
+                    raise
+                row = await conn_obj.fetchrow(update_sql, *params)
+                if row:
+                    return _to_plain(dict(row))
+                raise
+            return _to_plain(dict(row))
+
+        if conn is not None:
+            return await _execute(conn)
+        async with self._pool.acquire() as acquired:
+            return await _execute(acquired)
 
     async def insert_evidence(
         self,
@@ -858,7 +1581,7 @@ class Module4Storage:
         version: int = 1,
     ) -> Dict[str, Any]:
         severity = severity if severity in {"yellow", "orange", "red"} else "yellow"
-        rule_kind = rule_kind if rule_kind in {"deterministic", "semantic", "anomaly"} else "deterministic"
+        rule_kind = "deterministic"
         expr = _to_plain(expr)
 
         if not self._pool:
@@ -915,6 +1638,12 @@ class Module4Storage:
             edge_ids = [edge_id for edge_id, row in self._edges_by_id.items() if row.get("tenant_id") == tenant_id]
             node_ids = [node_id for node_id, row in self._nodes_by_id.items() if row.get("tenant_id") == tenant_id]
             doc_keys = [key for key, row in self._documents.items() if row.get("tenant_id") == tenant_id]
+            graph_file_ids = [graph_file_id for graph_file_id, row in self._graph_files.items() if row.get("tenant_id") == tenant_id]
+            graph_version_ids = [
+                graph_version_id
+                for graph_version_id, row in self._graph_versions.items()
+                if row.get("tenant_id") == tenant_id
+            ]
 
             for alert_id in alert_ids:
                 row = self._alerts.pop(alert_id, None)
@@ -946,6 +1675,14 @@ class Module4Storage:
             for key in doc_keys:
                 self._documents.pop(key, None)
 
+            for graph_file_id in graph_file_ids:
+                row = self._graph_files.pop(graph_file_id, None)
+                if row:
+                    self._graph_file_by_key.pop((tenant_id, str(row.get("file_hash") or "")), None)
+
+            for graph_version_id in graph_version_ids:
+                self._graph_versions.pop(graph_version_id, None)
+
             self._edge_evidence = {
                 key: value
                 for key, value in self._edge_evidence.items()
@@ -958,6 +1695,8 @@ class Module4Storage:
                 "edges": len(edge_ids),
                 "nodes": len(node_ids),
                 "documents": len(doc_keys),
+                "graph_files": len(graph_file_ids),
+                "graph_versions": len(graph_version_ids),
             }
 
         statements = {
@@ -966,6 +1705,8 @@ class Module4Storage:
             "edges": "DELETE FROM module4.edges WHERE tenant_id = $1",
             "nodes": "DELETE FROM module4.nodes WHERE tenant_id = $1",
             "documents": "DELETE FROM module4.documents WHERE tenant_id = $1",
+            "graph_versions": "DELETE FROM module4.graph_versions WHERE tenant_id = $1",
+            "graph_files": "DELETE FROM module4.graph_files WHERE tenant_id = $1",
         }
         counts: Dict[str, int] = {}
         async with self.transaction() as conn:
@@ -1339,6 +2080,266 @@ class Module4Storage:
             total = int(await conn.fetchval(sql_count, edge_id, tenant_id) or 0)
             rows = await conn.fetch(sql_items, edge_id, tenant_id, page_size, offset)
         return total, [_to_plain(dict(r)) for r in rows]
+
+    async def count_graph_for_file(self, *, tenant_id: str, file_hash: str) -> Dict[str, int]:
+        nodes, edges = await self.list_graph_for_file(
+            tenant_id=tenant_id,
+            file_hash=file_hash,
+            node_types=None,
+            relation_types=None,
+            limit_nodes=5000,
+            limit_edges=10000,
+        )
+        return {"node_count": len(nodes), "edge_count": len(edges)}
+
+    async def list_graph_for_file(
+        self,
+        *,
+        tenant_id: str,
+        file_hash: str,
+        node_types: Optional[Iterable[str]],
+        relation_types: Optional[Iterable[str]],
+        limit_nodes: int,
+        limit_edges: int,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        graph_file = await self.get_graph_file(tenant_id=tenant_id, file_hash=file_hash)
+        if not graph_file:
+            return [], []
+
+        graph_file_id = str(graph_file.get("graph_file_id") or "").strip() or None
+        active_version_id = str(graph_file.get("active_version_id") or "").strip() or None
+        workspace_id = str(graph_file.get("workspace_id") or "").strip() or None
+        node_types_set = {str(x) for x in (node_types or []) if str(x).strip()}
+        relation_types_set = {str(x) for x in (relation_types or []) if str(x).strip()}
+        limit_nodes = max(20, min(5000, int(limit_nodes)))
+        limit_edges = max(20, min(10000, int(limit_edges)))
+
+        if not self._pool:
+            def _select_nodes(
+                *,
+                graph_version: Optional[str] = None,
+                graph_file: Optional[str] = None,
+                legacy: bool = False,
+            ) -> List[Dict[str, Any]]:
+                rows = []
+                for value in self._nodes_by_id.values():
+                    if value.get("tenant_id") != tenant_id:
+                        continue
+                    if graph_version:
+                        if str(value.get("graph_version_id") or "") != graph_version:
+                            continue
+                    elif graph_file:
+                        if str(value.get("graph_file_id") or "") != graph_file:
+                            continue
+                    elif legacy:
+                        if not _row_matches_graph_scope(
+                            value,
+                            file_hash=file_hash,
+                            workspace_id=workspace_id,
+                            graph_file_id=graph_file_id,
+                            graph_version_id=active_version_id,
+                        ):
+                            continue
+                    else:
+                        continue
+                    rows.append(dict(value))
+                if node_types_set:
+                    rows = [item for item in rows if str(item.get("node_type")) in node_types_set]
+                rows.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
+                return rows[:limit_nodes]
+
+            def _select_edges(
+                node_rows: List[Dict[str, Any]],
+                *,
+                graph_version: Optional[str] = None,
+                graph_file: Optional[str] = None,
+            ) -> List[Dict[str, Any]]:
+                node_ids = {str(item.get("node_id")) for item in node_rows}
+                rows = []
+                for value in self._edges_by_id.values():
+                    if value.get("tenant_id") != tenant_id:
+                        continue
+                    if str(value.get("source_node_id")) not in node_ids or str(value.get("target_node_id")) not in node_ids:
+                        continue
+                    if graph_version and str(value.get("graph_version_id") or "") != graph_version:
+                        continue
+                    if not graph_version and graph_file and str(value.get("graph_file_id") or "") != graph_file:
+                        continue
+                    rows.append(dict(value))
+                if relation_types_set:
+                    rows = [item for item in rows if str(item.get("relation_type")) in relation_types_set]
+                rows.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
+                return rows[:limit_edges]
+
+            for scope in (
+                {"graph_version": active_version_id, "graph_file": None, "legacy": False},
+                {"graph_version": None, "graph_file": graph_file_id, "legacy": False},
+                {"graph_version": None, "graph_file": None, "legacy": True},
+            ):
+                nodes = _select_nodes(**scope)
+                if not nodes:
+                    continue
+                edges = _select_edges(nodes, graph_version=scope["graph_version"], graph_file=scope["graph_file"])
+                return nodes, edges
+            return [], []
+
+        async def _query_nodes_strict(column_name: str, value: str) -> List[Dict[str, Any]]:
+            clauses = ["tenant_id = $1", f"{column_name} = $2"]
+            params: List[Any] = [tenant_id, value]
+            idx = 3
+            if node_types_set:
+                clauses.append(f"node_type = ANY(${idx}::text[])")
+                params.append(list(node_types_set))
+                idx += 1
+            sql = f"""
+                SELECT *
+                FROM module4.nodes
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at DESC
+                LIMIT ${idx}
+            """
+            params.append(limit_nodes)
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(sql, *params)
+            return [_to_plain(dict(row)) for row in rows]
+
+        async def _query_nodes_legacy() -> List[Dict[str, Any]]:
+            scope_clauses = ["tenant_id = $1"]
+            params: List[Any] = [tenant_id]
+            idx = 2
+            scope_parts: List[str] = []
+            if file_hash:
+                scope_parts.append(f"(attrs->>'file_hash') = ${idx}")
+                params.append(file_hash)
+                idx += 1
+                scope_parts.append(f"canonical_key = ${idx}")
+                params.append(file_hash)
+                idx += 1
+            if workspace_id:
+                scope_parts.append(f"(attrs->>'workspace_id') = ${idx}")
+                params.append(workspace_id)
+                idx += 1
+            if scope_parts:
+                scope_clauses.append(f"({' OR '.join(scope_parts)})")
+            if node_types_set:
+                scope_clauses.append(f"node_type = ANY(${idx}::text[])")
+                params.append(list(node_types_set))
+                idx += 1
+            sql = f"""
+                SELECT *
+                FROM module4.nodes
+                WHERE {' AND '.join(scope_clauses)}
+                ORDER BY updated_at DESC
+                LIMIT ${idx}
+            """
+            params.append(limit_nodes)
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(sql, *params)
+            return [_to_plain(dict(row)) for row in rows]
+
+        async def _query_edges(
+            node_rows: List[Dict[str, Any]],
+            *,
+            column_name: Optional[str] = None,
+            value: Optional[str] = None,
+        ) -> List[Dict[str, Any]]:
+            node_ids = [str(item.get("node_id")) for item in node_rows if str(item.get("node_id") or "").strip()]
+            if not node_ids:
+                return []
+            edge_params: List[Any] = [tenant_id, node_ids]
+            edge_idx = 3
+            edge_where = [
+                "tenant_id = $1",
+                "source_node_id::text = ANY($2::text[])",
+                "target_node_id::text = ANY($2::text[])",
+            ]
+            if column_name and value:
+                edge_where.append(f"{column_name} = ${edge_idx}")
+                edge_params.append(value)
+                edge_idx += 1
+            if relation_types_set:
+                edge_where.append(f"relation_type = ANY(${edge_idx}::text[])")
+                edge_params.append(list(relation_types_set))
+                edge_idx += 1
+            edge_sql = f"""
+                SELECT *
+                FROM module4.edges
+                WHERE {' AND '.join(edge_where)}
+                ORDER BY updated_at DESC
+                LIMIT ${edge_idx}
+            """
+            edge_params.append(limit_edges)
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(edge_sql, *edge_params)
+            return [_to_plain(dict(row)) for row in rows]
+
+        for column_name, value in (("graph_version_id", active_version_id), ("graph_file_id", graph_file_id)):
+            if not value:
+                continue
+            nodes = await _query_nodes_strict(column_name, value)
+            if not nodes:
+                continue
+            edges = await _query_edges(nodes, column_name=column_name, value=value)
+            return nodes, edges
+
+        nodes = await _query_nodes_legacy()
+        if not nodes:
+            return [], []
+        edges = await _query_edges(nodes)
+        return nodes, edges
+
+    async def list_neighborhood_for_file(
+        self,
+        *,
+        tenant_id: str,
+        file_hash: str,
+        node_id: str,
+        depth: int,
+        relation_types: Optional[Iterable[str]],
+        limit: int,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        limit = max(20, min(5000, int(limit)))
+        depth = max(1, min(4, int(depth)))
+        nodes, edges = await self.list_graph_for_file(
+            tenant_id=tenant_id,
+            file_hash=file_hash,
+            node_types=None,
+            relation_types=relation_types,
+            limit_nodes=max(limit * 4, 400),
+            limit_edges=max(limit * 8, 800),
+        )
+        if not nodes:
+            return [], []
+
+        node_map = {str(item.get("node_id")): item for item in nodes}
+        root = node_map.get(str(node_id))
+        if not root:
+            return [], []
+
+        visited = {str(node_id)}
+        frontier = {str(node_id)}
+        selected_edges: Dict[str, Dict[str, Any]] = {}
+        for _ in range(depth):
+            if not frontier or len(visited) >= limit:
+                break
+            next_frontier = set()
+            for edge in edges:
+                src = str(edge.get("source_node_id") or "")
+                tgt = str(edge.get("target_node_id") or "")
+                if src not in frontier and tgt not in frontier:
+                    continue
+                selected_edges[str(edge.get("edge_id"))] = edge
+                for candidate in (src, tgt):
+                    if candidate and candidate not in visited and len(visited) < limit:
+                        visited.add(candidate)
+                        next_frontier.add(candidate)
+            frontier = next_frontier
+
+        selected_nodes = [dict(node_map[item]) for item in visited if item in node_map]
+        selected_nodes.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
+        selected_edge_rows = list(selected_edges.values())
+        selected_edge_rows.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
+        return selected_nodes[:limit], selected_edge_rows[: limit * 2]
 
     async def get_node(self, *, tenant_id: str, node_id: str) -> Optional[Dict[str, Any]]:
         node_id = str(node_id).strip()
