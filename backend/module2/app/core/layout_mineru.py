@@ -861,25 +861,43 @@ class MineruLayoutExtractor:
         for raw in items:
             if not isinstance(raw, dict):
                 continue
-            obj_type = str(raw.get("type", "") or "").strip().lower()
+            raw_obj_type = str(raw.get("type", "") or "").strip().lower()
             page_idx = self._to_int(raw.get("page_idx"))
             page_no = max(1, page_idx + 1)
             bbox = self._safe_bbox(raw.get("bbox"))
 
-            if obj_type == "text":
+            if raw_obj_type == "text":
                 text = self._normalize_text(str(raw.get("text", "") or ""))
                 if text:
                     page_text_lines.setdefault(page_no, []).append(text)
                 continue
-            if obj_type not in {"table", "image"}:
+            object_subtype = raw_obj_type
+            if raw_obj_type in {"formula", "equation"}:
+                obj_type = "image"
+                object_subtype = "formula"
+            elif raw_obj_type in {"image", "figure", "picture", "photo"}:
+                obj_type = "image"
+                object_subtype = "image"
+            elif raw_obj_type == "table":
+                obj_type = "table"
+                object_subtype = "table"
+            else:
                 continue
 
             caption = self._safe_str_list(
-                raw.get("table_caption") if obj_type == "table" else raw.get("image_caption")
+                raw.get("table_caption")
+                if obj_type == "table"
+                else raw.get("image_caption") or raw.get("figure_caption") or raw.get("formula_caption")
             )
             footnote = self._safe_str_list(
-                raw.get("table_footnote") if obj_type == "table" else raw.get("image_footnote")
+                raw.get("table_footnote")
+                if obj_type == "table"
+                else raw.get("image_footnote") or raw.get("figure_footnote") or raw.get("formula_footnote")
             )
+            if object_subtype == "formula":
+                formula_text = self._normalize_text(str(raw.get("latex") or raw.get("text") or raw.get("content") or ""))
+                if formula_text:
+                    footnote = [formula_text, *footnote][:6]
             for cap in caption:
                 page_text_lines.setdefault(page_no, []).append(cap)
             for note in footnote:
@@ -894,6 +912,8 @@ class MineruLayoutExtractor:
             objects.append(
                 {
                     "object_type": obj_type,
+                    "object_subtype": object_subtype,
+                    "source_object_type": raw_obj_type,
                     "page": page_no,
                     "bbox": bbox,
                     "area": area,

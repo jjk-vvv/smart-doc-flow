@@ -1587,10 +1587,14 @@ def _build_visual_chain_contract(
     file_ext = Path(file_name or "").suffix.lower()
     parse_input_is_pdf = str(parse_input_name or "").lower().endswith(".pdf")
     requires_word_pdf = file_ext in {".doc", ".docx"} and bool(word_parse_via_pdf)
-    required = bool(parse_input_is_pdf and _visual_chain_required())
+    required = bool(_visual_chain_required() and (file_ext == ".pdf" or requires_word_pdf))
     parse_track_text = str(parse_track or "").strip()
     parse_track_lower = parse_track_text.lower()
     pipeline = str(parse_stats.get("pipeline", "") or "").strip().lower()
+    chain_status = str(parse_stats.get("chain_status", "") or "").strip().lower()
+    artifact_status = str(parse_stats.get("artifact_status", "") or "").strip().lower()
+    vision_status = str(parse_stats.get("vision_status", "") or "").strip().lower()
+    baseline_artifact_ready = bool(parse_stats.get("visual_baseline_artifact_ready", False))
     mineru_run = parse_stats.get("mineru_run") if isinstance(parse_stats.get("mineru_run"), dict) else {}
     mineru_status = str(mineru_run.get("status", "") or "").strip().lower()
     fallback_reason = str(parse_stats.get("visual_first_fallback_reason", "") or "").strip()
@@ -1614,14 +1618,12 @@ def _build_visual_chain_contract(
             reasons.append(f"pipeline_not_visual_first:{pipeline or 'missing'}")
         if mineru_status != "ok":
             reasons.append(f"mineru_status_not_ok:{mineru_status or 'missing'}")
+        if chain_status and chain_status != "success":
+            reasons.append(f"chain_status_not_success:{chain_status}")
+        if not baseline_artifact_ready:
+            reasons.append("baseline_artifact_missing")
         if fallback_reason:
             reasons.append(f"visual_first_fallback:{fallback_reason}")
-        if table_blocks and not _source_counts_have_gemini(table_sources):
-            reasons.append("table_gemini_enhancement_missing")
-        if figure_blocks and not _source_counts_have_gemini(figure_sources):
-            reasons.append("figure_gemini_enhancement_missing")
-        if figure_blocks and not _source_counts_all_gemini(figure_sources):
-            reasons.append("figure_gemini_enhancement_not_universal")
 
     return {
         "required": required,
@@ -1631,6 +1633,10 @@ def _build_visual_chain_contract(
         "parse_input_is_pdf": parse_input_is_pdf,
         "parse_track": parse_track_text,
         "pipeline": pipeline,
+        "chain_status": chain_status,
+        "artifact_status": artifact_status,
+        "vision_status": vision_status,
+        "baseline_artifact_ready": baseline_artifact_ready,
         "mineru_status": mineru_status,
         "visual_first_fallback_reason": fallback_reason,
         "table_source_counts": table_sources,
@@ -1916,6 +1922,14 @@ def _visual_strict_mode() -> bool:
 
 def _visual_chain_required() -> bool:
     return (os.getenv("MODULE2_REQUIRE_VISUAL_CHAIN", "true") or "true").lower() in {"1", "true", "yes"}
+
+
+def _docx_native_recovery_enabled() -> bool:
+    return (os.getenv("MODULE2_DOCX_NATIVE_RECOVERY_ENABLE", "false") or "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 def _office_preview_cleanup_jobs_locked() -> None:
@@ -4765,12 +4779,15 @@ async def _run_office_preview_job(job_id: str, file_name: str, file_bytes: bytes
             if not job:
                 return
             file_hash = str(job.file_hash or "").strip().lower()
-        frag, url = _write_office_preview_artifact(
-            file_name=file_name,
-            file_hash=file_hash,
-            pdf_bytes=pdf_bytes,
-            convert_meta=convert_meta,
-        )
+        frag = str(convert_meta.get("artifact_path") or "").strip()
+        url = str(convert_meta.get("artifact_url") or "").strip()
+        if not frag or not url:
+            frag, url = _write_office_preview_artifact(
+                file_name=file_name,
+                file_hash=file_hash,
+                pdf_bytes=pdf_bytes,
+                convert_meta=convert_meta,
+            )
         async with office_preview_lock:
             job = office_preview_jobs.get(job_id)
             if not job:
@@ -5070,7 +5087,7 @@ async def _process_single_doc_bytes(
             suffix = Path(file_name).suffix.lower()
             docx_native_recovery_requested = (
                 suffix == ".docx"
-                and (os.getenv("MODULE2_DOCX_NATIVE_RECOVERY_ENABLE", "true") or "true").lower() in {"1", "true", "yes"}
+                and _docx_native_recovery_enabled()
             )
             if docx_native_recovery_requested:
                 conversion_diag["docx_native_recovery_requested"] = True
@@ -5186,11 +5203,7 @@ async def _process_single_doc_bytes(
     ) -> Optional[tuple[str, Dict[str, List[float]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]]:
         if Path(file_name).suffix.lower() != ".docx":
             return None
-        if (os.getenv("MODULE2_DOCX_NATIVE_RECOVERY_ENABLE", "true") or "true").lower() not in {
-            "1",
-            "true",
-            "yes",
-        }:
+        if not _docx_native_recovery_enabled():
             return None
 
         recovery_timeout_sec = max(
@@ -5679,6 +5692,12 @@ async def _process_single_doc_bytes(
     )
     trace_stats = _trace_stats(trace_hits)
     polymorphic_links = _build_polymorphic_links(results=final_results, trace_hits=trace_hits)
+    if final_results:
+        business_extraction_status = "nonempty"
+    elif final_errors:
+        business_extraction_status = "failed"
+    else:
+        business_extraction_status = "empty_valid"
 
     diagnostics = {
         "parse_ms": parse_ms,
@@ -5718,12 +5737,15 @@ async def _process_single_doc_bytes(
         "quality_snapshot": quality_snapshot,
         "polymorphic_link_count": len(polymorphic_links),
         "polymorphic_links": polymorphic_links[:40],
+        "business_extraction_status": business_extraction_status,
         "chain_contract": chain_contract,
     }
     if conversion_diag:
         diagnostics.update(conversion_diag)
     diagnostics.update(trace_stats)
     if parse_stats:
+        parse_stats = dict(parse_stats)
+        parse_stats["business_extraction_status"] = business_extraction_status
         diagnostics["parse_stats"] = parse_stats
         for key in (
             "plain_ext",
@@ -6469,58 +6491,7 @@ async def extract_trace_locate(payload: TraceLocateRequest) -> TraceLocateRespon
 
 @app.post("/extract/assistant/query", response_model=AssistantQueryResponse)
 async def extract_assistant_query(payload: AssistantQueryRequest) -> AssistantQueryResponse:
-    doc = payload.document
-    instruction = str(payload.user_instruction or "").strip()
-    if not instruction:
-        raise HTTPException(status_code=400, detail="user_instruction is required")
-
-    summary_text = str(payload.summary or "").strip()
-    top_k = int(payload.top_k)
-    matched_fields = _assistant_match_fields(doc=doc, user_instruction=instruction, top_k=top_k)
-    matched_trace_hits = _assistant_collect_trace_hits(
-        doc=doc,
-        matched_fields=matched_fields,
-        user_instruction=instruction,
-        top_k=max(6, top_k),
-    )
-
-    persist = _assistant_should_persist(user_instruction=instruction, explicit=bool(payload.persist))
-    persisted_rows = 0
-    warnings: List[str] = []
-    if persist:
-        try:
-            persisted_rows = await storage.save_assistant_interaction(
-                {
-                    "file_hash": doc.file_hash,
-                    "file_name": doc.file_name,
-                    "user_instruction": instruction,
-                    "summary_text": summary_text,
-                    "matched": matched_fields,
-                }
-            )
-            if not matched_fields:
-                warnings.append("已写入交互记录，但当前未匹配到可入库字段。")
-        except Exception as exc:
-            warnings.append(f"入库失败：{type(exc).__name__}: {exc}")
-
-    answer = _assistant_build_answer(
-        summary_text=summary_text,
-        user_instruction=instruction,
-        matched_fields=matched_fields,
-        matched_trace_hits=matched_trace_hits,
-        persisted=bool(persisted_rows > 0),
-        persisted_rows=persisted_rows,
-    )
-    return AssistantQueryResponse(
-        ok=True,
-        answer=answer,
-        summary_used=summary_text,
-        matched_fields=matched_fields,
-        matched_trace_hits=matched_trace_hits,
-        persisted=bool(persisted_rows > 0),
-        persisted_rows=persisted_rows,
-        warnings=warnings,
-    )
+    return await assistant_service.query_once(payload)
 
 
 @app.post("/extract/assistant/session", response_model=AssistantSessionResponse)

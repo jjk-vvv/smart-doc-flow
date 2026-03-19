@@ -53,8 +53,8 @@ SUMMARY_HINTS = (
     "重点",
     "亮点",
 )
-TABLE_HINTS = ("表", "表格", "sheet", "xlsx", "行", "列", "站点", "监测值", "那一行", "该行", "这一行")
-ROW_FOLLOWUP_HINTS = ("那一行", "该行", "这一行", "同一行", "继续", "继续看", "继续说明", "那行")
+TABLE_HINTS = ("表", "表格", "sheet", "xlsx", "行", "列", "站点", "监测值", "那一行", "该行", "这一行", "记录", "这条记录")
+ROW_FOLLOWUP_HINTS = ("那一行", "该行", "这一行", "同一行", "继续", "继续看", "继续说明", "那行", "这条记录")
 EXPLANATORY_QUESTION_HINTS = (
     "为什么",
     "如何",
@@ -73,6 +73,8 @@ EXPLANATORY_QUESTION_HINTS = (
     "理解",
     "讲讲",
     "说明",
+    "靠不靠谱",
+    "跑偏",
 )
 EXPLICIT_DATABASE_ACTION_HINTS = (
     "执行",
@@ -90,6 +92,18 @@ EXPLICIT_DATABASE_ACTION_HINTS = (
     "生成 sql",
     "准备入库",
 )
+SCHEMA_DESIGN_HINTS = (
+    "表结构",
+    "建表",
+    "表设计",
+    "schema",
+    "ddl",
+    "字段设计",
+    "字段规划",
+    "字段方案",
+    "主表",
+    "子表",
+)
 
 LOCK_QUALITY_STABLE = "stable_lock"
 LOCK_QUALITY_WEAK = "weak_lock"
@@ -104,6 +118,17 @@ ROW_IDENTIFIER_HEADERS = (
     "编码",
     "编号",
     "序号",
+)
+
+TIME_IDENTIFIER_HEADERS = (
+    "监测时间",
+    "时间",
+    "日期",
+    "采样时间",
+    "时刻",
+    "时间点",
+    "统计时间",
+    "发布时间",
 )
 
 EXPLICIT_VALUE_FIELD_HINTS = (
@@ -255,6 +280,7 @@ def _extract_row_anchor_terms(query: str) -> List[str]:
         r"(?:城市|地区|区域|区县)\s*(?:为|是|叫|叫做|名为|等于|=|:|：)?\s*([^\n\r，。；、,.;!?？]{2,80})",
         r"(?:学校|企业|机构)\s*(?:为|是|叫|叫做|名为|等于|=|:|：)?\s*([^\n\r，。；、,.;!?？]{2,80})",
         r"(?:编号|编码|序号)\s*(?:为|是|等于|=|:|：)?\s*([^\n\r，。；、,.;!?？]{2,80})",
+        r"([^\n\r，。；、,.;!?？]{2,40})这条记录",
     )
     seen = set()
     terms: List[str] = []
@@ -354,6 +380,132 @@ def _extract_explicit_row_number(query: str) -> Optional[int]:
     return None
 
 
+def _find_time_cell(preview_cells: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    cell = _find_preview_cell(preview_cells, *TIME_IDENTIFIER_HEADERS)
+    if cell:
+        return cell
+    for item in preview_cells:
+        if not isinstance(item, dict):
+            continue
+        header = str(item.get("header") or "").strip()
+        if "时间" in header or "日期" in header:
+            return item
+    return None
+
+
+def _candidate_time_cell(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    row = candidate.get("row") if isinstance(candidate.get("row"), dict) else {}
+    row_cells = [cell for cell in row.get("cells", []) if isinstance(cell, dict)]
+    if row_cells:
+        return _find_time_cell(row_cells)
+    row_preview = candidate.get("row_preview") if isinstance(candidate.get("row_preview"), list) else []
+    return _find_time_cell([item for item in row_preview if isinstance(item, dict)])
+
+
+def _candidate_time_value(candidate: Dict[str, Any]) -> str:
+    cell = _candidate_time_cell(candidate)
+    return str((cell or {}).get("text") or "").strip()
+
+
+def _candidate_time_header(candidate: Dict[str, Any]) -> str:
+    cell = _candidate_time_cell(candidate)
+    return str((cell or {}).get("header") or "").strip()
+
+
+def _candidate_entity_signature(candidate: Dict[str, Any]) -> str:
+    if not isinstance(candidate, dict):
+        return ""
+    parts: List[str] = []
+
+    row_label = str(candidate.get("row_label") or "").strip()
+    if row_label and not re.fullmatch(r"\d{5,}", row_label):
+        row_label_norm = _normalize_text(row_label)
+        if row_label_norm:
+            parts.append(f"label={row_label_norm}")
+
+    for item in candidate.get("direct_identifier_hits") or []:
+        if not isinstance(item, dict):
+            continue
+        header = str(item.get("header") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if not header or not text or not _is_row_identifier_header(header):
+            continue
+        text_norm = _normalize_text(text)
+        if text_norm:
+            parts.append(f"{_normalize_text(header)}={text_norm}")
+
+    if not parts:
+        for term in candidate.get("exact_anchor_terms") or []:
+            term_norm = _normalize_text(term)
+            if term_norm:
+                parts.append(f"term={term_norm}")
+
+    return "|".join(sorted(set(parts)))
+
+
+def _query_mentions_candidate_time(query: str, candidates: List[Dict[str, Any]]) -> bool:
+    query_norm = _normalize_text(query)
+    if not query_norm:
+        return False
+    time_tokens = _query_time_tokens(query)
+    for candidate in candidates:
+        time_text = _candidate_time_value(candidate)
+        time_norm = _normalize_text(time_text)
+        if not time_norm:
+            continue
+        if time_norm in query_norm:
+            return True
+        for token in time_tokens:
+            if token and (token in time_norm or time_norm in token):
+                return True
+    return False
+
+
+def _query_time_tokens(query: str) -> List[str]:
+    return [
+        _normalize_text(item)
+        for item in re.findall(
+            r"(?:\d{4}[-/年\.]\d{1,2}[-/月\.]\d{1,2}(?:日)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?|\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)",
+            str(query or ""),
+        )
+        if _normalize_text(item)
+    ]
+
+
+def _query_time_match_score(query: str, candidate_text: str) -> int:
+    candidate_norm = _normalize_text(candidate_text)
+    if not candidate_norm:
+        return 0
+    best = 0
+    for token in _query_time_tokens(query):
+        if not token:
+            continue
+        if token in candidate_norm or candidate_norm in token:
+            best = max(best, 14)
+    return best
+
+
+def _same_entity_time_candidates(candidates: List[Dict[str, Any]], best: Dict[str, Any]) -> List[Dict[str, Any]]:
+    best_signature = _candidate_entity_signature(best)
+    if not best_signature:
+        return []
+    best_score = int(best.get("score", 0) or 0)
+    selected: List[Dict[str, Any]] = []
+    seen_times: set[str] = set()
+    for candidate in candidates:
+        if _candidate_entity_signature(candidate) != best_signature:
+            continue
+        time_text = _candidate_time_value(candidate)
+        time_norm = _normalize_text(time_text)
+        if not time_norm or time_norm in seen_times:
+            continue
+        if int(candidate.get("score", 0) or 0) < max(1, best_score - 12):
+            continue
+        seen_times.add(time_norm)
+        selected.append(candidate)
+    return selected
+
+
 def _looks_like_database_explanation_query(text: str) -> bool:
     query = str(text or "").strip().lower()
     if not query:
@@ -378,6 +530,9 @@ def _looks_like_database_explanation_query(text: str) -> bool:
         "不要泛泛而谈",
         "举例",
         "best practice",
+        "跑偏",
+        "第一步",
+        "先确认什么",
     )
     direct_action_markers = (
         "生成sql",
@@ -468,6 +623,7 @@ def classify_route(
     text = str(user_message or "").strip().lower()
     if not text:
         return "clarification_needed"
+    row_anchor_terms = _extract_row_anchor_terms(text)
     wants_summary = any(hint in text for hint in SUMMARY_HINTS)
     wants_table = any(hint in text for hint in TABLE_HINTS)
     wants_knowledge = any(hint in text for hint in KNOWLEDGE_HINTS)
@@ -475,10 +631,13 @@ def classify_route(
     wants_risk_review = _looks_like_risk_review_question(text)
     wants_scan_pipeline = _looks_like_scan_pipeline_question(text)
     wants_binding_recovery = _looks_like_binding_recovery_question(text)
+    wants_schema_design = any(hint in text for hint in SCHEMA_DESIGN_HINTS)
     explicit_database_action = any(hint in text for hint in SQL_HINTS) or any(hint in text for hint in EXPLICIT_DATABASE_ACTION_HINTS)
     mentions_database = explicit_database_action or any(hint in text for hint in PERSIST_HINTS)
     database_explanation = (wants_knowledge or wants_explanation) and mentions_database and _looks_like_database_explanation_query(text)
 
+    if wants_schema_design:
+        return "database_action"
     if database_explanation:
         return "knowledge_explain"
     if mentions_database and wants_knowledge and not explicit_database_action:
@@ -490,6 +649,8 @@ def classify_route(
 
     figures = payload.get("figures") if isinstance(payload.get("figures"), list) else []
     if any(hint in text for hint in FIGURE_HINTS) or (figures and "图" in text):
+        if wants_knowledge or wants_explanation:
+            return "knowledge_explain"
         if any(hint in text for hint in SUMMARY_HINTS) or "列出" in text or "有哪些" in text:
             return "figure_overview"
         return "figure_value_read"
@@ -497,7 +658,11 @@ def classify_route(
     if current_object_lock and str(current_object_lock.get("lock_type", "")).lower() == "table_row" and _followup_row_query(text):
         return "table_lookup"
 
-    if wants_risk_review and (wants_table or bool(current_object_lock) or bool(payload.get("tables"))):
+    if _query_requests_explicit_value_field(text) and (row_anchor_terms or "这条记录" in text or "该记录" in text):
+        return "table_lookup"
+    if wants_risk_review and (wants_table or bool(current_object_lock) or bool(payload.get("tables")) or _question_mentions_current_material(text)):
+        return "knowledge_explain"
+    if "靠不靠谱" in text or "先抽取还是先整理" in text or "先整理还是先抽取" in text or "跑偏" in text:
         return "knowledge_explain"
     if wants_scan_pipeline or wants_binding_recovery:
         return "knowledge_explain"
@@ -1019,10 +1184,13 @@ def _build_row_candidate(
         header = str(cell.get("header") or "").strip()
         text = str(cell.get("text") or "").strip()
         header_score = _header_score(header, query)
+        time_match_score = _query_time_match_score(query, text)
         if header_score > 0 and header not in seen_headers:
             matched_headers.append(header)
             seen_headers.add(header)
         score += min(8, header_score)
+        if time_match_score > 0:
+            score += time_match_score
         if len(text) >= 2 and _contains_text(query, text):
             score += min(18, len(_normalize_text(text)) + 4)
             text_norm = _normalize_text(text)
@@ -1039,6 +1207,8 @@ def _build_row_candidate(
         cell_score = header_score
         if preferred_header and header and _normalize_text(header) == _normalize_text(preferred_header):
             cell_score += 2
+        if time_match_score > 0:
+            cell_score += min(6, time_match_score)
         if _contains_text(query, text):
             cell_score += 2
         if cell_score > best_cell_score:
@@ -1090,6 +1260,8 @@ def _summarize_row_candidate(candidate: Dict[str, Any], rank: int) -> Dict[str, 
     table = candidate.get("table") if isinstance(candidate.get("table"), dict) else {}
     row = candidate.get("row") if isinstance(candidate.get("row"), dict) else {}
     best_cell = candidate.get("best_cell") if isinstance(candidate.get("best_cell"), dict) else {}
+    time_header = _candidate_time_header(candidate)
+    time_text = _candidate_time_value(candidate)
     return {
         "rank": rank,
         "table_id": str(table.get("table_id") or ""),
@@ -1107,6 +1279,8 @@ def _summarize_row_candidate(candidate: Dict[str, Any], rank: int) -> Dict[str, 
         "best_cell_header": str(best_cell.get("header") or "").strip() or None,
         "best_cell_value": str(best_cell.get("text") or "").strip() or None,
         "best_ref_id": str(best_cell.get("ref_id") or "").strip() or None,
+        "time_header": time_header or None,
+        "time_text": time_text or None,
         "row_preview": _row_preview(row, max_cells=8),
     }
 
@@ -1130,6 +1304,9 @@ def _candidate_to_table_lookup_result(
     value = str(best_cell.get("text") or "").strip()
     header = str(best_cell.get("header") or "").strip()
     row_label = str(candidate.get("row_label") or "").strip()
+    time_header = _candidate_time_header(candidate)
+    time_text = _candidate_time_value(candidate)
+    row_preview = _row_preview(row)
     citation = {
         "citation_type": "table",
         "title": row_label or f"表格 {table_id}",
@@ -1146,7 +1323,9 @@ def _candidate_to_table_lookup_result(
             "header": header,
             "value": value,
             "row_label": row_label,
-            "row_preview": _row_preview(row),
+            "row_preview": row_preview,
+            "time_header": time_header,
+            "time_text": time_text,
             "artifact_url": str((trace_hit or {}).get("artifact_url") or ""),
             "artifact_path": str((trace_hit or {}).get("artifact_path") or ""),
         },
@@ -1165,6 +1344,9 @@ def _candidate_to_table_lookup_result(
         "metadata": {
             "header": header,
             "row_label": row_label,
+            "time_header": time_header,
+            "time_text": time_text,
+            "row_preview": row_preview[:8],
         },
     }
     return {
@@ -1181,6 +1363,10 @@ def _candidate_to_table_lookup_result(
         "citation": citation,
         "current_object_lock": current_lock,
         "used_context_lock": used_context_lock,
+        "row_label": row_label,
+        "row_preview": row_preview,
+        "time_header": time_header,
+        "time_text": time_text,
     }
 
 
@@ -1285,12 +1471,27 @@ def assess_table_lookup(
     score_gap = int(best.get("score", 0) or 0) - int((second or {}).get("score", 0) or 0)
     ambiguous = bool(second) and score_gap < 6
     unique_direct_identifier_lock = best_identifier_hit_count > 0 and second_identifier_hit_count == 0
+    same_entity_time_candidates: List[Dict[str, Any]] = []
+    multi_time_ambiguous = False
+    if (
+        not used_context_lock
+        and not explicit_row_index
+        and not has_row_lock
+        and _query_requests_explicit_value_field(query)
+    ):
+        same_entity_time_candidates = _same_entity_time_candidates(candidates, best)
+        multi_time_ambiguous = (
+            len(same_entity_time_candidates) >= 2
+            and not _query_mentions_candidate_time(query, same_entity_time_candidates)
+        )
 
     lock_quality = LOCK_QUALITY_WEAK
     clarification_reason = "weak_row_grounding"
     if str(best.get("match_reason") or "") == "current_table_row_lock":
         lock_quality = LOCK_QUALITY_STABLE
         clarification_reason = ""
+    elif multi_time_ambiguous:
+        clarification_reason = "multi_row_same_entity_time_ambiguous"
     elif explicit_row_index and bool(best.get("explicit_row_hit")) and int(best.get("best_cell_score", 0) or 0) > 0:
         if not anchor_terms or all_anchor_matched:
             lock_quality = LOCK_QUALITY_STABLE
@@ -1307,16 +1508,28 @@ def assess_table_lookup(
         clarification_reason = "candidate_ambiguity"
 
     result = {
-        "resolved": lock_quality == LOCK_QUALITY_STABLE and isinstance(best.get("best_cell"), dict),
+        "resolved": (not multi_time_ambiguous) and lock_quality == LOCK_QUALITY_STABLE and isinstance(best.get("best_cell"), dict),
         "lock_quality": lock_quality,
         "clarification_reason": clarification_reason,
         "query": query,
         "anchor_terms": anchor_terms,
         "missing_anchor_terms": list(best.get("missing_anchor_terms") or anchor_terms),
-        "candidate_rows": [_summarize_row_candidate(item, rank + 1) for rank, item in enumerate(candidates[: max(1, max_candidates)])],
+        "candidate_rows": [
+            _summarize_row_candidate(item, rank + 1)
+            for rank, item in enumerate(
+                (same_entity_time_candidates if multi_time_ambiguous else candidates)[: max(1, max_candidates)]
+            )
+        ],
         "best_candidate": _summarize_row_candidate(best, 1),
         "used_context_lock": used_context_lock,
-        "ambiguous": ambiguous,
+        "ambiguous": ambiguous or multi_time_ambiguous,
+        "matched_entity": str(best.get("row_label") or "").strip(),
+        "time_options": [
+            _candidate_time_value(item)
+            for item in same_entity_time_candidates[: max(2, max_candidates + 2)]
+            if _candidate_time_value(item)
+        ],
+        "requested_metric": str(((best.get("best_cell") or {}) if isinstance(best.get("best_cell"), dict) else {}).get("header") or "").strip(),
     }
     if result["resolved"]:
         result.update(
@@ -2500,19 +2713,26 @@ def _natural_candidate_label(candidate: Dict[str, Any]) -> str:
     if not isinstance(candidate, dict):
         return "当前这个候选对象"
 
+    time_text = str(candidate.get("time_text") or "").strip() or _candidate_time_value(candidate)
+    time_header = str(candidate.get("time_header") or "").strip() or _candidate_time_header(candidate) or "时间"
+
     row_label = str(candidate.get("row_label") or "").strip()
     if row_label and not _looks_like_internal_locator(row_label) and not re.fullmatch(r"\d{5,}", row_label):
-        return f"“{row_label}”这条记录"
+        base = f"“{row_label}”这条记录"
+        return f"{base}（{time_header} {time_text}）" if time_text else base
 
     best_cell_value = str(candidate.get("best_cell_value") or "").strip()
     if best_cell_value and not _looks_like_internal_locator(best_cell_value):
-        return f"包含“{best_cell_value}”的那条记录"
+        base = f"包含“{best_cell_value}”的那条记录"
+        return f"{base}（{time_header} {time_text}）" if time_text else base
 
     matched_terms = [str(item).strip() for item in candidate.get("matched_anchor_terms") or [] if str(item).strip()]
     if matched_terms:
-        return f"与“{'、'.join(matched_terms[:2])}”最接近的那条记录"
+        base = f"与“{'、'.join(matched_terms[:2])}”最接近的那条记录"
+        return f"{base}（{time_header} {time_text}）" if time_text else base
 
-    return "当前这个候选记录"
+    base = "当前这个候选记录"
+    return f"{base}（{time_header} {time_text}）" if time_text else base
 
 
 def _overview_counts_text(overview: Dict[str, Any]) -> str:
@@ -2552,6 +2772,8 @@ def _looks_like_risk_review_question(question: str) -> bool:
     if not text:
         return False
     lowered = text.lower()
+    if "为什么" in text and not any(token in text for token in ("风险", "优先", "先盯", "先看", "判断点", "检查", "排查")):
+        return False
     risk_tokens = (
         "风险",
         "异常",
@@ -2565,6 +2787,11 @@ def _looks_like_risk_review_question(question: str) -> bool:
         "判断点",
         "检查",
         "坑",
+        "先盯",
+        "先看哪",
+        "最值得先盯",
+        "最该先看",
+        "优先看",
     )
     return "risk" in lowered or any(token in text for token in risk_tokens)
 
@@ -2618,6 +2845,224 @@ def _document_summary_priority_checks(overview: Dict[str, Any]) -> List[str]:
     return checks[:4]
 
 
+def build_support_outline(route: str, answer_context: Dict[str, Any]) -> Dict[str, Any]:
+    route_key = str(route or "").strip().lower()
+    if route_key == "knowledge_explain":
+        question = str(answer_context.get("user_question") or "").strip()
+        document_overview = answer_context.get("document_overview") if isinstance(answer_context.get("document_overview"), dict) else {}
+        current_focus = document_overview.get("current_focus") if isinstance(document_overview.get("current_focus"), dict) else {}
+        focus_subject = _focus_subject(current_focus)
+        priority_checks = _document_summary_priority_checks(document_overview)
+        mentions_current_material = _question_mentions_current_material(question)
+        question_lower = question.lower()
+
+        outline: Dict[str, Any] = {"style_target": "自然解释，不要套模板，不要把提示要点逐条硬抄出来。"}
+        if "ocr" in question_lower and any(token in question for token in ("版面", "布局", "版面分析", "布局分析", "区别")):
+            outline.update(
+                {
+                    "answer_focus": "先讲职责边界，再讲工程上真正会影响结果的误差来源。",
+                    "key_points": [
+                        "OCR 负责把局部区域里的文字识别出来。",
+                        "版面分析负责页面分区、阅读顺序和内容关系。",
+                        "表格和复杂版式里，真正决定结果能不能用的往往是结构归属，而不只是识字准确率。",
+                    ],
+                }
+            )
+        elif any(token in question for token in ("表格恢复", "表格抽取", "表格识别", "单元格", "跨行", "跨列")):
+            outline.update(
+                {
+                    "answer_focus": "别只讲 OCR，要把表格结构恢复链路讲出来。",
+                    "key_points": [
+                        "先定位表格区域，再恢复网格和表头层级。",
+                        "核心风险在表头归属、跨行跨列、合并单元格和列错位。",
+                        "值认对了但行列关系挂错，后面的问答和入库一样会错。",
+                    ],
+                }
+            )
+        elif (
+            any(token in question_lower for token in ("sql", "nl2sql"))
+            or any(token in question for token in ("数据库", "增删改查"))
+            or (
+                any(token in question for token in ("入库", "落库"))
+                and any(token in question for token in ("字段映射", "目标表", "审计", "权限", "回滚", "约束", "流程"))
+            )
+        ):
+            outline.update(
+                {
+                    "answer_focus": "直接讲落库链路、关键约束和高风险点。",
+                    "key_points": [
+                        "先抽取与标准化，再做动作预览，确认后再执行。",
+                        "UPDATE / DELETE 必须有明确筛选条件、影响范围预估和审计记录。",
+                        "模型给的是 SQL 草案或动作候选，不能裸奔直写数据库。",
+                    ],
+                }
+            )
+        elif "靠不靠谱" in question:
+            outline.update(
+                {
+                    "answer_focus": "像带人上手一样，先给第一眼判断，再补两三个最实用的检查点。",
+                    "key_points": [
+                        "先看来源、时间范围、单位这些基础信息是不是清楚。",
+                        "再看同一条记录里的对象、时间和指标能不能对得上。",
+                        "如果结合当前材料，优先检查当前对象有没有锁准、列有没有对齐。",
+                    ],
+                }
+            )
+        elif "先抽取还是先整理" in question or "先整理还是先抽取" in question:
+            outline.update(
+                {
+                    "answer_focus": "针对当前材料直接表态，优先先整理，再补两点原因。",
+                    "preferred_choice": "先整理，再做抽取",
+                    "key_points": [
+                        "当前已经能稳定看到一张表，但字段级映射还没完全收紧。",
+                        "对象、表头、行列关系和字段边界没理顺前，直接抽取容易先天带偏。",
+                        "先把结构和边界收紧，后面的抽取、复核和入库才会稳。",
+                    ],
+                }
+            )
+        elif "为什么" in question and any(token in question for token in ("复核", "再核", "核对")):
+            outline.update(
+                {
+                    "answer_focus": "先用人话解释为什么还要复核，再讲机器识别和业务判断的边界。",
+                    "key_points": [
+                        "机器能做第一层识别和筛查，但不等于能判断业务上是不是可靠。",
+                        "复核真正要兜的是对象、字段、时间和异常值这些容易看着没问题却会出错的地方。",
+                    ],
+                }
+            )
+        elif "一把梭" in question or ("只靠" in question and "ocr" in question_lower):
+            outline.update(
+                {
+                    "answer_focus": "先给核心判断，再讲 OCR 后面还缺的两层能力。",
+                    "key_points": [
+                        "OCR 只解决识字，不解决结构恢复。",
+                        "OCR 也不解决字段语义绑定、异常校验和安全入库。",
+                    ],
+                }
+            )
+        elif "截图" in question and "第一步" in question:
+            outline.update(
+                {
+                    "answer_focus": "只答第一步，先讲图像纠偏和结构预判，不要铺满整条链路。",
+                    "key_points": [
+                        "先做倾斜校正、去噪和对比增强，把图像扶正。",
+                        "紧接着判断表格边界和行列结构，避免字落错单元格。",
+                    ],
+                }
+            )
+        elif "跑偏" in question:
+            outline.update(
+                {
+                    "answer_focus": "先点出最容易先跑偏的那个环节，不要平均展开整条链路。",
+                    "key_points": [
+                        "最常见的起点问题不是入库，而是前面把值绑到错对象、错字段。",
+                        "结构恢复和字段绑定一旦歪了，后面只是把错误更整齐地存进去。",
+                    ],
+                }
+            )
+        elif _looks_like_risk_review_question(question):
+            outline.update(
+                {
+                    "answer_focus": "直接给具体核对点，不要泛泛谈方法论。",
+                    "key_points": priority_checks[:4]
+                    or [
+                        "先核对象锚点有没有锁在同一条记录上。",
+                        "再核指标列有没有错位，尤其是值列、时间列和对象列。",
+                        "最后核字段映射有没有收紧，避免把表头名直接当业务字段。",
+                    ],
+                }
+            )
+        elif _looks_like_scan_pipeline_question(question):
+            outline.update(
+                {
+                    "answer_focus": "按阶段展开，覆盖前处理、结构恢复、抽取校验和后续衔接。",
+                    "stages": [
+                        "质量门槛：分辨率、倾斜、阴影、遮挡、裁切、页序、表格线完整度。",
+                        "图像清洗：纠偏、去噪、增强对比、去阴影、裁边、尽量稳住表格边线。",
+                        "结构恢复：版面分区、阅读顺序、表格网格、多级表头、合并单元格、跨页衔接。",
+                        "抽取校验：字段标准化、单位归一、来源绑定、行列锚定、异常值和缺失值标记。",
+                        "问答与落库衔接：只回答已锁稳对象，入库前做表结构映射、SQL 预览、影响范围确认和审计。",
+                    ],
+                }
+            )
+        elif _looks_like_binding_recovery_question(question):
+            outline.update(
+                {
+                    "answer_focus": "强调麻烦点在关系恢复，不在单字识别。",
+                    "key_points": [
+                        "OCR 常是局部字符错误，绑定和结构恢复一旦歪会整行整列一起歪。",
+                        "难点在值属于哪一行、哪一列、哪个表头语义，以及是不是同一条记录。",
+                        "多级表头、合并单元格、跨页表格、脚注单位、同名对象和相似数值最容易让关系漂移。",
+                    ],
+                }
+            )
+        else:
+            outline.update(
+                {
+                    "answer_focus": "先给判断，再补链路和落地边界。",
+                    "key_points": [
+                        "先看懂文档，再把事实绑定起来，最后再让结果可问答、可检索、可入库。",
+                        "用户真正关心的是答案能不能锁稳、能不能继续追问、能不能安全执行后续动作。",
+                    ],
+                }
+            )
+        if focus_subject and mentions_current_material:
+            outline["current_material_bridge"] = f"如果需要结合当前材料，就沿着 {focus_subject} 这个对象继续解释。"
+        return outline
+
+    if route_key == "document_summary":
+        current_focus = answer_context.get("current_focus") if isinstance(answer_context.get("current_focus"), dict) else {}
+        row_preview = current_focus.get("row_preview") if isinstance(current_focus.get("row_preview"), list) else []
+        focus_subject = _focus_subject(current_focus)
+        stable_parts: List[str] = []
+        caution_parts = _document_summary_priority_checks(answer_context)
+        anchor_bits: List[str] = []
+        metric_bits: List[str] = []
+        for header_candidates in (("站点名称", "站点"), ("站点编码", "编码"), ("监测时间", "时间")):
+            cell = _find_preview_cell(row_preview, *header_candidates)
+            header = str((cell or {}).get("header") or "").strip()
+            text = str((cell or {}).get("text") or "").strip()
+            if header and text:
+                anchor_bits.append(f"{header}={text}")
+        for header_candidates in (("空气质量指数", "AQI"), ("PM10",), ("PM2.5", "PM25"), ("污染类型",)):
+            cell = _find_preview_cell(row_preview, *header_candidates)
+            header = str((cell or {}).get("header") or "").strip()
+            text = str((cell or {}).get("text") or "").strip()
+            if header and text:
+                metric_bits.append(f"{header}={text}")
+        if focus_subject:
+            stable_parts.append(focus_subject)
+        if anchor_bits:
+            stable_parts.append("对象锚点")
+        if metric_bits:
+            stable_parts.append("已对齐的指标值")
+        return {
+            "answer_focus": "优先按用户要求的顺序说，先当前对象，再整体，再区分较稳和待核。",
+            "current_focus_subject": focus_subject,
+            "current_focus_anchor_bits": anchor_bits[:3],
+            "current_focus_metric_bits": metric_bits[:3],
+            "stable_parts": stable_parts[:4],
+            "caution_parts": caution_parts[:3],
+        }
+
+    if route_key == "web_research":
+        summary_text = str(answer_context.get("summary_text") or "").strip()
+        outline = {
+            "answer_focus": "把文档内证据、通用经验和仍需联网核实的部分分开说。",
+            "live_web_result_available": bool(answer_context.get("live_web_result_available")),
+            "key_points": [
+                "没有实时外部结果时，不能把通用经验说成最新结论。",
+                "可以先交代当前材料里能确认到什么，再补充通用做法。",
+                "凡是涉及最新规范、发布日期或最新最佳实践，都要明确仍需联网核实。",
+            ],
+        }
+        if summary_text:
+            outline["document_hint"] = f"当前材料的主题线索：{summary_text}"
+        return outline
+
+    return {}
+
+
 def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
     route_key = str(route or "").strip().lower()
     if route_key == "table_lookup":
@@ -2634,12 +3079,9 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
             if used_lock
             else f"这次我就按{focus_subject or '这条记录'}来答，先给你稳定值。"
         )
-        next_step = (
-            "要继续看这条记录，直接点指标名就行。"
-            if value
-            else "要继续确认的话，我可以顺着这条记录把相关字段再往下捋一遍。"
-        )
-        return f"{value or '当前值为空'}。{context_line}{next_step}".strip()
+        if value:
+            return f"{value}。{context_line}".strip()
+        return f"当前值为空。{context_line}要继续确认的话，我可以顺着这条记录把相关字段再往下捋一遍。".strip()
 
     if route_key in {"figure_overview", "figure_value_read"}:
         figures = answer_context.get("figures") if isinstance(answer_context.get("figures"), list) else []
@@ -2673,7 +3115,7 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
                 lines.extend(
                     [
                         "",
-                        "换句话说，现在更适合把它当成字段事实继续追问，"
+                        "所以现在更适合把它当成字段事实继续追问，"
                         "还不适合直接把它说成稳定的整图结论。",
                     ]
                 )
@@ -2711,7 +3153,7 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
                 lines.extend(
                     [
                         "",
-                        "换句话说，这张内容现在更适合按表格里的字段和记录继续追问，"
+                        "所以这张内容现在更适合按表格里的字段和记录继续追问，"
                         "而不是直接按完整图表对象来追问。",
                     ]
                 )
@@ -2788,6 +3230,57 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
             ]
             if mentions_current_material:
                 doc_bridge = "放到你当前这份材料里，真正要盯的不是某个字认得像不像，而是每个值有没有回到对的行和列里。"
+        elif "靠不靠谱" in question:
+            lines = [
+                "如果是第一次看这种表，我不会先盯某个数字，我会先看这张表像不像一份站得住的数据记录。",
+                "",
+                "第一眼先抓两件事就够了：一是来源、时间范围、单位这些基础信息清不清楚；二是同一条记录里的对象、时间和指标能不能严丝合缝地对上。"
+                "这两件事只要有一件发虚，后面的数值再漂亮也先别急着信。",
+            ]
+            if mentions_current_material:
+                doc_bridge = "放到你当前这份材料里，最该先核的还是对象有没有锁准、列有没有对齐，而不是先盯某个单独数值。"
+        elif "先抽取还是先整理" in question or "先整理还是先抽取" in question:
+            lines = [
+                "这份材料更适合先整理，再做抽取。",
+                "",
+                "原因很直接：对象、表头、行列关系和字段边界还没理顺时，抽出来的值很容易先天带偏。"
+                "先把结构和边界收紧，后面的抽取、复核和入库才会稳。",
+            ]
+        elif "为什么" in question and any(token in question for token in ("复核", "再核", "核对")):
+            lines = [
+                "说白了，是因为这张表现在看着能用，不等于每个值都已经到了可以直接引用或入库的程度。",
+                "",
+                "前面先看到的是“像不像对的”，复核要确认的是“它到底是不是落在对的对象、对的字段、对的时间上”。"
+                "只要对象没锁稳、列没对齐、字段映射还没收紧，后面引用、分析和入库都可能把一个看起来没问题的值用错地方。",
+                "",
+                "所以复核不是重复劳动，而是把真正要承担后果的那一步提前兜住。"
+                "对非技术用户来说，你可以把它理解成正式采用前的最后一道确认。",
+            ]
+        elif "一把梭" in question or ("只靠" in question and "ocr" in question_lower):
+            lines = [
+                "不能只靠 OCR 一把梭，核心不是 OCR 没用，而是它只负责把字认出来。",
+                "",
+                "真实项目里最容易出问题的有两层：一层是结构没还原对，比如表头、行列、单元格归属错了；另一层是语义没绑对，比如这个值到底是哪一个字段、该落到哪张表。"
+                "字就算认对了，这两层一歪，后面的抽取、问答和入库照样会错。",
+                "",
+                "所以 OCR 更像起点，不是终点。后面还得接版面分析、结构恢复、字段绑定和校验，不然出来的只是文本，不是能直接用的数据。",
+            ]
+        elif "截图" in question and "第一步" in question:
+            lines = [
+                "第一步不是急着读字，而是先把这张表的形状扶正。",
+                "",
+                "也就是先做倾斜校正、去噪、增强对比，再判断表格边界和行列结构。因为这种图最容易错的，不是单个字，而是字落错单元格。",
+                "",
+                "只有先把表格框架定住，后面再跑 OCR，读出来的内容才更有机会正确回到对应的行和列里。",
+            ]
+        elif "跑偏" in question:
+            lines = [
+                "最容易先跑偏的，通常不是入库那一刻，而是前面把值绑到错对象、错字段的那一步。",
+                "",
+                "一旦表头归属、行列边界或字段映射没收紧，后面写库写得再规范，也只是把错误更整齐地存进去。",
+                "",
+                "所以我会先盯结构恢复和字段绑定这层。前面这层稳了，后面的校验和入库才有意义。",
+            ]
         elif any(token in question for token in ("表格恢复", "表格抽取", "表格识别", "单元格", "跨行", "跨列")):
             lines = [
                 "表格抽取得好不好，关键不只是把字认出来，更关键的是行列关系有没有还原对。",
@@ -3006,7 +3499,7 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
                 lines.append(f"- {item}")
             return "\n".join(lines).strip()
 
-        lines = ["先说我现在能比较稳地确认的部分。"]
+        lines = ["我先把目前能稳住的部分拎出来。"]
         if focus_line:
             lines.extend(["", focus_line])
         if summary_text and summary_text != "暂无摘要。":
@@ -3141,9 +3634,9 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
             "如果你问的是“最新规范”或“最新做法”，我先把边界说清楚：没有实时外部结果时，我不能把通用经验当成刚核实过的最新结论。",
         ]
         if overview_text:
-            lines.extend(["", "先看当前文档里已经能确认的部分。", overview_text])
+            lines.extend(["", "就现有这份材料，先能确定的是这些。", overview_text])
         else:
-            lines.extend(["", "先看当前文档里已经能确认的部分。", "基于当前这份文档，我可以先帮你做抽取、核对和解释，但这不等于已经拿到了外部最新规范。"])
+            lines.extend(["", "就现有这份材料，先能确定的是这些。", "基于当前这份文档，我可以先帮你做抽取、核对和解释，但这不等于已经拿到了外部最新规范。"])
         if summary_text:
             lines.extend(["", f"如果只看这份材料，它当前更像是在讲：{summary_text}"])
         lines.extend(
@@ -3176,6 +3669,31 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
 
     if route_key == "clarification_needed":
         clarification_reason = str(answer_context.get("clarification_reason") or "").strip()
+        if clarification_reason == "multi_row_same_entity_time_ambiguous":
+            candidate_rows = answer_context.get("candidate_rows") if isinstance(answer_context.get("candidate_rows"), list) else []
+            matched_entity = str(answer_context.get("matched_entity") or "").strip()
+            time_options = [str(item).strip() for item in answer_context.get("time_options") or [] if str(item).strip()]
+            requested_metric = str(answer_context.get("requested_metric") or "").strip()
+            metric_text = f"{requested_metric} " if requested_metric else ""
+            entity_text = f"“{matched_entity}”" if matched_entity else "这个对象"
+            lines = [
+                f"这份表里 {entity_text} 对应不止一条 {metric_text}记录，时间不一样，我现在不能直接替你挑一条来答。",
+            ]
+            if time_options:
+                lines.extend(["", "目前能看到的时间有：" + "；".join(time_options[:6]) + "。"])
+            if candidate_rows:
+                lines.extend(["", "如果你想直接选，我先把最接近的几条列给你："])
+                for item in candidate_rows[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    lines.append(f"- 候选 {item.get('rank') or '?'}：{_natural_candidate_label(item)}。")
+            lines.extend(
+                [
+                    "",
+                    "你可以直接告诉我要看哪个时间；如果你愿意，我也可以先把这个对象各时间点的相关值列出来。",
+                ]
+            )
+            return "\n".join(lines).strip()
         if clarification_reason in {"followup_without_locked_row", "no_matching_row", "anchor_terms_unresolved", "candidate_ambiguity", "weak_row_grounding"}:
             candidate_rows = answer_context.get("candidate_rows") if isinstance(answer_context.get("candidate_rows"), list) else []
             missing_anchor_terms = answer_context.get("missing_anchor_terms") if isinstance(answer_context.get("missing_anchor_terms"), list) else []
@@ -3309,3 +3827,9 @@ def dump_context_for_model(value: Dict[str, Any]) -> Dict[str, Any]:
         "context_preview": tighter_serialized[:max_chars],
         "context_chars": len(tighter_serialized),
     }
+
+
+def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
+    # Local route-specific fallback content is disabled.
+    # Runtime recovery now happens in service.py with minimal provider-error text only.
+    return ""

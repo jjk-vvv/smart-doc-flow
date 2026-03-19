@@ -134,18 +134,19 @@ class GeminiVisionExtractor:
         image_bytes: bytes,
         mime_type: str,
         context: Dict[str, Any],
+        allow_refine: bool = True,
     ) -> Optional[Dict[str, Any]]:
         if not self.ready or not image_bytes:
             return None
         context_json = self._compact_json(context, max_chars=2000)
         prompt = (
-            "Analyze one cropped figure or chart ROI from a PDF.\n"
+            "Analyze one cropped image-like ROI from a PDF. The ROI may be a chart, diagram, table-like image, formula/equation snapshot, photo, or generic figure.\n"
             "Return strict JSON only. No markdown. Use this exact schema:\n"
             "{"
             "\"figure\":{"
             "\"title\":\"\","
             "\"caption\":\"\","
-            "\"type\":\"chart|diagram|photo|other\","
+            "\"type\":\"chart|diagram|formula|photo|other\","
             "\"content_modes\":[\"dataframe|topology|text|visual\"],"
             "\"axes\":{\"x\":\"\",\"y\":\"\"},"
             "\"legend\":[\"...\"],"
@@ -158,6 +159,7 @@ class GeminiVisionExtractor:
             "}"
             "}\n"
             "Use only visible evidence. Keep text concise, but if this ROI is a chart or data graphic, recover the fullest visible dataframe you can.\n"
+            "If the ROI is mainly a formula or equation image, preserve the visible symbolic text exactly in text_blocks and insights.\n"
             "Preserve visible series order, legend labels, axis labels, and row order. Do not collapse readable numeric points into prose.\n"
             "Do not arbitrarily drop later rows or headers if they are visible.\n"
             f"Context:\n{context_json}"
@@ -173,7 +175,7 @@ class GeminiVisionExtractor:
             return None
         figure_obj = payload.get("figure")
         if isinstance(figure_obj, dict):
-            if self._should_refine_chart_extraction(figure_obj, context):
+            if self._should_refine_chart_extraction(figure_obj, context, allow_refine=allow_refine):
                 refined = self._refine_chart_figure(
                     image_bytes=image_bytes,
                     mime_type=mime_type,
@@ -601,13 +603,37 @@ class GeminiVisionExtractor:
         return merged
 
     @classmethod
-    def _should_refine_chart_extraction(cls, figure_obj: Dict[str, Any], context: Dict[str, Any]) -> bool:
+    def _should_refine_chart_extraction(
+        cls,
+        figure_obj: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        allow_refine: bool = True,
+    ) -> bool:
+        if not allow_refine:
+            return False
         if not cls._is_chart_like(figure_obj, context):
             return False
+        if cls._has_nonempty_dataframe(figure_obj):
+            row_count = cls._dataframe_row_count(figure_obj)
+            cell_count = cls._dataframe_cell_count(figure_obj)
+            key_values = figure_obj.get("key_values") if isinstance(figure_obj.get("key_values"), list) else []
+            if row_count >= 4 or cell_count >= 12:
+                return False
+            if row_count >= 2 and cell_count >= 8:
+                return False
+            if row_count >= 2 and len(key_values) >= 1:
+                return False
         row_count = cls._dataframe_row_count(figure_obj)
         cell_count = cls._dataframe_cell_count(figure_obj)
         key_values = figure_obj.get("key_values") if isinstance(figure_obj.get("key_values"), list) else []
-        return row_count < 2 or cell_count < 6 or len(key_values) < 2
+        if row_count <= 0 and cell_count <= 0 and len(key_values) <= 0:
+            return True
+        if row_count < 2 and cell_count < 6 and len(key_values) < 2:
+            return True
+        if row_count < 3 and cell_count < 8 and len(key_values) == 0:
+            return True
+        return False
         if cls._has_nonempty_dataframe(figure_obj):
             return False
         probe = " ".join(

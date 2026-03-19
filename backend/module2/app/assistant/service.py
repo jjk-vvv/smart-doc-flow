@@ -55,7 +55,12 @@ from app.schemas import (
     AssistantSessionRequest,
     AssistantSessionResponse,
     DocumentExtractionResponse,
+    ExtractionResult,
 )
+
+GENERIC_ASSISTANT_DOCUMENT_FILE_HASH = "__module2_no_file__"
+GENERIC_ASSISTANT_DOCUMENT_FILE_NAME = "未上传文件"
+GENERIC_ASSISTANT_DOCUMENT_TRACK = "generic"
 
 
 @dataclass
@@ -128,6 +133,29 @@ class AssistantService:
                 max_tokens=self._max_tokens,
                 timeout_sec=max(10.0, float(os.getenv("MODULE2_ASSISTANT_TIMEOUT_SEC", "120"))),
             )
+
+    @staticmethod
+    def _build_generic_document() -> DocumentExtractionResponse:
+        return DocumentExtractionResponse(
+            file_name=GENERIC_ASSISTANT_DOCUMENT_FILE_NAME,
+            file_hash=GENERIC_ASSISTANT_DOCUMENT_FILE_HASH,
+            track=GENERIC_ASSISTANT_DOCUMENT_TRACK,
+            cached=True,
+            result=ExtractionResult({}),
+            errors=[],
+            soft_warnings=[],
+            trace_hits=[],
+            trace_stats={},
+            diagnostics={"no_file_mode": True},
+        )
+
+    @classmethod
+    def _coerce_document(cls, document: Optional[DocumentExtractionResponse]) -> DocumentExtractionResponse:
+        return document if document is not None else cls._build_generic_document()
+
+    @staticmethod
+    def _is_generic_document(document: DocumentExtractionResponse) -> bool:
+        return str(getattr(document, "file_hash", "") or "").strip() == GENERIC_ASSISTANT_DOCUMENT_FILE_HASH
 
     @staticmethod
     def _artifact_root_dirs() -> List[Path]:
@@ -227,75 +255,21 @@ class AssistantService:
         return "provider_error" if stream_opened else "connect_failure"
 
     def _prefer_local_knowledge_answer(self, user_message: str) -> bool:
-        text = str(user_message or "").strip()
-        lowered = text.lower()
-        if "ocr" in lowered and any(token in text for token in ("版面", "布局", "版面分析", "布局分析", "区别")):
-            return True
-        if any(token in text for token in ("表格恢复", "表格抽取", "表格识别", "单元格", "跨行", "跨列")):
-            return True
-        if any(token in lowered for token in ("sql", "nl2sql")):
-            return True
-        if any(token in text for token in ("数据库", "增删改查", "入库", "落库", "审计", "回滚")) and any(
-            token in text for token in ("流程", "约束", "风险", "容易出错", "设计思路")
-        ):
-            return True
-        if any(
-            token in text
-            for token in (
-                "扫描文档",
-                "扫描件",
-                "版式不规整",
-                "版式也不规整",
-                "质量一般",
-                "分阶段处理",
-                "怎么分阶段处理",
-            )
-        ):
-            return True
-        if any(token in text for token in ("绑定", "结构恢复")) and any(token in text for token in ("为什么", "更难", "更麻烦", "麻烦")):
-            return True
-        if any(token in text for token in ("风险点", "优先核对", "复核", "判断点")) and any(
-            token in text for token in ("表格", "这份表", "当前这张表")
-        ):
-            return True
-
-        model_name = str(self._model or "").strip().lower()
-        if "gemini-3-pro" not in model_name:
-            return False
-        if any(token in text for token in ("数据库", "增删改查", "入库", "落库", "审计", "权限", "回滚")):
-            return True
-        if any(
-            token in text
-            for token in (
-                "扫描文档",
-                "扫描件",
-                "版式不规整",
-                "质量一般",
-                "分阶段处理",
-                "怎么分阶段处理",
-                "问答和落库都更稳",
-            )
-        ):
-            return True
+        # Broad knowledge-style answers should normally let the model do the final phrasing.
+        # Local fallback stays available as a safety net for timeout / empty completion / repair failure.
         return False
 
     @staticmethod
     def _prefer_local_document_summary_answer(user_message: str) -> bool:
-        text = str(user_message or "").strip()
-        if not text:
-            return False
-        wants_focus = any(token in text for token in ("当前锁定对象", "锁定对象", "当前对象", "刚才那条", "那一行", "这张表"))
-        wants_global = any(token in text for token in ("全局概览", "整体", "全局", "大致讲了什么", "主要讲了什么"))
-        wants_stable_split = any(token in text for token in ("比较稳定", "谨慎校对", "还需要校对", "还要再核", "稳定"))
-        wants_explicit_order = any(token in text for token in ("先", "再", "单独说明", "区分"))
-        return wants_focus and wants_global and wants_stable_split and wants_explicit_order
+        # Document summary should also default to model phrasing, while keeping fallback for recovery.
+        return False
 
     def _answer_max_tokens(self, route: str) -> int:
         route_key = str(route or "").strip().lower()
         preferred = {
             "field_lookup": 900,
             "table_lookup": 1000,
-            "clarification_needed": 1000,
+            "clarification_needed": 700,
             "figure_value_read": 1100,
             "document_summary": 1600,
             "figure_overview": 1500,
@@ -304,6 +278,13 @@ class AssistantService:
             "knowledge_explain": 2100,
         }.get(route_key, self._max_tokens)
         return max(600, min(self._max_tokens, int(preferred)))
+
+    def _effective_answer_max_tokens(self, route: str, answer_context: Optional[Dict[str, Any]] = None) -> int:
+        budget = self._answer_max_tokens(route)
+        context = answer_context if isinstance(answer_context, dict) else {}
+        if str(route or "").strip().lower() == "database_action" and context.get("database_mode") == "draft_only":
+            return min(budget, 1100)
+        return budget
 
     def _reasoning_effort(self, route: str) -> Optional[str]:
         route_key = str(route or "").strip().lower()
@@ -315,7 +296,7 @@ class AssistantService:
                 return None
             return "minimal"
         if route_key in {"figure_overview", "database_action"}:
-            return "low"
+            return "minimal"
         return None
 
     def _stream_recovery_max_tokens(self, route: str, base_budget: int) -> int:
@@ -484,10 +465,13 @@ class AssistantService:
     def _prepare_answer_context_for_prompt(self, route: str, answer_context: Dict[str, Any]) -> Dict[str, Any]:
         route_key = str(route or "").strip().lower()
         if route_key == "knowledge_explain":
-            prepared: Dict[str, Any] = {
-                "document_overview": self._compact_document_overview_for_prompt(answer_context.get("document_overview")),
-            }
-            return dump_context_for_model(prepared)
+            return dump_context_for_model(
+                {
+                    "document_overview": self._compact_document_overview_for_prompt(
+                        answer_context.get("document_overview")
+                    ),
+                }
+            )
         if route_key == "document_summary":
             return dump_context_for_model(self._compact_document_overview_for_prompt(answer_context))
         if route_key == "web_research":
@@ -548,6 +532,55 @@ class AssistantService:
             return False
         lowered = raw.lower()
         return any(keyword in raw or keyword.lower() in lowered for keyword in keywords)
+
+    @staticmethod
+    def _looks_like_smalltalk_or_greeting(text: str) -> bool:
+        question = str(text or "").strip().lower()
+        if not question:
+            return False
+        task_keywords = (
+            "\u6587\u6863",
+            "\u6587\u4ef6",
+            "\u56fe\u7247",
+            "\u8868\u683c",
+            "\u56fe\u8868",
+            "\u62bd\u53d6",
+            "\u5165\u5e93",
+            "\u843d\u5e93",
+            "\u5efa\u8868",
+            "\u8868\u7ed3\u6784",
+            "sql",
+            "ocr",
+            "schema",
+            "ddl",
+        )
+        if any(keyword in question for keyword in task_keywords):
+            return False
+        exact_hits = {
+            "\u4f60\u597d",
+            "\u60a8\u597d",
+            "\u55e8",
+            "\u5728\u5417",
+            "\u5728\u4e48",
+            "\u5728\u561b",
+            "hi",
+            "hello",
+            "hey",
+        }
+        if question in exact_hits:
+            return True
+        greeting_keywords = (
+            "\u4f60\u597d",
+            "\u60a8\u597d",
+            "\u65e9\u4e0a\u597d",
+            "\u4e0b\u5348\u597d",
+            "\u665a\u4e0a\u597d",
+            "\u55e8",
+            "hi",
+            "hello",
+            "hey",
+        )
+        return len(question) <= 24 and any(keyword in question for keyword in greeting_keywords)
 
     @staticmethod
     def _merge_short_bridge_paragraphs(text: str) -> str:
@@ -617,57 +650,61 @@ class AssistantService:
         return cleaned
 
     def _alignment_requirements(self, route: str, user_message: str) -> List[str]:
+        return []
         route_key = str(route or "").strip().lower()
         question = str(user_message or "").strip()
-        requirements: List[str] = []
+        requirements: List[str] = [
+            "先对准用户这一轮真正的问题，不要换题。",
+            "不要编造；证据不够就直接说明。",
+        ]
         if self._contains_any_keyword(question, ("先", "再", "分别", "分开", "单独说明", "依次", "然后")):
             requirements.append("如果用户点了回答顺序，就按那个顺序说。")
+        if route_key == "table_lookup":
+            requirements.append("如果同一对象命中到多条记录，而用户没有说清时间、行号或当前锁定记录，就先澄清，不要擅自挑一条。")
         if route_key == "document_summary" or self._contains_any_keyword(
             question,
             ("大致讲了什么", "主要讲了什么", "概览", "整体", "全局"),
         ):
-            requirements.append("如果用户要概览，就先给概览结论，不要改写成排查建议。")
+            requirements.append("如果用户要概览，就先给当前能确认的概览结论，不要改写成排查建议。")
         if self._contains_any_keyword(
             question,
             ("当前锁定对象", "锁定对象", "当前对象", "刚才那条", "那一行", "这张图", "这个表"),
         ):
             requirements.append("如果用户点了当前对象，就先把当前对象说清楚。")
-        if self._contains_any_keyword(question, ("稳定", "比较稳", "谨慎", "核对", "校对", "不确定")):
+        if self._contains_any_keyword(question, ("比较稳定", "较稳定", "比较稳", "较稳", "谨慎", "核对", "校对", "不确定", "还要再核")):
             requirements.append("如果用户要区分稳妥部分和待核对部分，就明确分开说。")
-        if self._contains_any_keyword(question, ("流程", "链路", "步骤", "怎么做", "怎么处理")):
-            requirements.append("如果用户问流程或做法，就把流程讲出来，不要只讲原则。")
+        if self._contains_any_keyword(question, ("流程", "链路", "步骤", "怎么做", "怎么处理", "分阶段")):
+            requirements.append("如果用户问流程或阶段，就把关键阶段讲出来，不要只讲原则。")
         if self._contains_any_keyword(question, ("分阶段", "分段处理", "阶段处理")):
             requirements.append("如果用户问分阶段处理，就按阶段展开，至少覆盖质量门槛、图像清洗、结构恢复、抽取校验和问答/入库衔接。")
-        if self._contains_any_keyword(question, ("为什么", "更难", "更麻烦", "难点")):
-            requirements.append("如果用户问原因或难点，就先回答原因，不要改写成泛泛的方法论介绍。")
-        if self._contains_any_keyword(question, ("约束", "限制", "边界", "确认", "审计")):
-            requirements.append("如果用户问约束、确认或审计边界，就把不能越过的条件说清楚。")
-        if self._contains_any_keyword(question, ("容易出错", "坑", "风险点", "误差", "翻车")):
-            requirements.append("如果用户问容易出错的地方，就给具体风险点。")
-        if self._contains_any_keyword(question, ("不要泛泛而谈", "具体判断点", "别太泛", "不要只给定义")):
-            requirements.append("不要只讲定义或架构口号，至少给出当前题目需要的具体判断点。")
-        if self._contains_any_keyword(question, ("自然一点", "口语一点", "别太书面", "像人话", "像聊天")):
-            requirements.append("表达再自然一点，不要写成讲稿。")
-        if route_key in {"knowledge_explain", "document_summary", "web_research"} or self._contains_any_keyword(
-            question,
-            ("区别", "怎么理解", "为什么", "思路", "概览", "整体", "全局"),
-        ):
-            requirements.append("默认用自然段，不要写成讲义或汇报稿。")
+        if route_key == "database_action" or self._contains_any_keyword(question, ("约束", "限制", "边界", "确认", "审计", "sql", "入库", "落库")):
+            requirements.append("数据库和执行类问题默认给草案、预览、影响范围和确认边界，不要写成已经执行成功。")
+        if self._contains_any_keyword(question, ("风险", "风险点", "复核", "判断点", "容易出错", "坑", "误差", "翻车", "别太泛", "不要泛泛而谈")):
+            requirements.append("如果用户要具体风险点，就给具体判断点，不要只讲抽象方法。")
+        if route_key == "web_research" or self._contains_any_keyword(question, ("最新", "最近", "今天", "联网", "查证", "核实", "实时")):
+            requirements.append("涉及最新、实时或联网结论时，要明确区分当前证据、通用知识和仍待联网核实的部分。")
         return requirements
 
-    def _answer_needs_alignment_repair(self, route: str, user_message: str, answer_text: str) -> bool:
+    def _alignment_repair_reasons(self, route: str, user_message: str, answer_text: str) -> List[str]:
         route_key = str(route or "").strip().lower()
         question = str(user_message or "").strip()
         normalized_answer = self._normalize_user_visible_spacing(answer_text)
         answer = normalized_answer.lower()
         if not question or not normalized_answer:
-            return False
+            return []
+        reasons: List[str] = []
         if re.search(r"\b(ref_id|figure_id|table_id|payload|tool_call|assistant_message_id)\b", answer):
-            return True
+            reasons.append("contains_internal_metadata")
+            return reasons
+        return []
 
         wants_summary = route_key == "document_summary" or self._contains_any_keyword(
             question,
             ("大致讲了什么", "主要讲了什么", "概览", "整体", "全局"),
+        )
+        is_risk_review_question = self._contains_any_keyword(question, ("风险点", "优先核对", "复核", "判断点")) and self._contains_any_keyword(
+            question,
+            ("表格", "这份表", "当前这张表", "这张表"),
         )
         wants_focus = self._contains_any_keyword(
             question,
@@ -675,115 +712,90 @@ class AssistantService:
         )
         wants_global = self._contains_any_keyword(question, ("整体", "全局", "概览", "大致讲了什么", "主要讲了什么"))
         wants_focus_then_global = wants_focus and wants_global
-        wants_stable_split = self._contains_any_keyword(
+        wants_stable_split = (not is_risk_review_question) and self._contains_any_keyword(
             question,
-            ("稳定", "比较稳", "谨慎", "核对", "校对", "不确定"),
+            ("比较稳定", "较稳定", "比较稳", "较稳", "谨慎校对", "还需要校对", "还要再核", "仍需核对", "不确定"),
         )
-        wants_flow = self._contains_any_keyword(question, ("流程", "链路", "步骤", "怎么做", "怎么处理"))
+        wants_flow = self._contains_any_keyword(question, ("流程", "链路", "步骤", "怎么做", "怎么处理", "分阶段"))
         wants_stagewise = self._contains_any_keyword(question, ("分阶段", "分段处理", "阶段处理"))
-        wants_causal_explain = self._contains_any_keyword(question, ("为什么", "更难", "更麻烦", "难点"))
-        wants_constraints = self._contains_any_keyword(question, ("约束", "限制", "边界", "确认", "审计"))
-        wants_risks = self._contains_any_keyword(question, ("容易出错", "坑", "风险点", "误差", "翻车"))
-        wants_stepwise = self._contains_any_keyword(question, ("步骤", "分步骤", "一步一步", "逐条", "按步骤", "列出来"))
+        wants_constraints = route_key == "database_action" or self._contains_any_keyword(question, ("约束", "限制", "边界", "确认", "审计", "sql", "入库", "落库"))
+        wants_risks = self._contains_any_keyword(question, ("风险", "风险点", "复核", "判断点", "容易出错", "坑", "误差", "翻车", "别太泛", "不要泛泛而谈"))
+        wants_latest_or_web = route_key == "web_research" or self._contains_any_keyword(question, ("最新", "最近", "今天", "联网", "查证", "核实", "实时"))
 
         if wants_summary:
             summary_hits = ("主要", "大致", "整体", "概览", "这份文档", "这份材料", "内容", "重点")
             drift_hits = ("优先核对", "准备入库", "风险点", "排查", "审计")
             if any(hit in normalized_answer for hit in drift_hits) and not any(hit in normalized_answer for hit in summary_hits):
-                return True
+                reasons.append("summary_drift_to_non_summary")
 
         if wants_focus_then_global:
             focus_hits = ("刚才那条", "当前这条", "这条记录", "当前对象", "这张表", "这张图")
             global_hits = ("整份文档", "整体", "全局", "概览", "这份文档", "这份材料")
             if not any(hit in normalized_answer for hit in focus_hits):
-                return True
+                reasons.append("missing_focus_anchor")
             if not any(hit in normalized_answer for hit in global_hits):
-                return True
+                reasons.append("missing_global_overview")
 
         if wants_stable_split:
             stable_hits = ("比较稳", "较稳", "能确认", "可以先确认", "目前能确定", "已经能确认")
             caution_hits = ("还要再核", "还要核对", "谨慎", "不确定", "仍需核对", "还不能完全确认")
             if not any(hit in normalized_answer for hit in stable_hits):
-                return True
+                reasons.append("missing_stable_split")
             if not any(hit in normalized_answer for hit in caution_hits):
-                return True
+                reasons.append("missing_caution_split")
 
         if wants_flow:
-            flow_hits = ("流程", "链路", "步骤", "先", "再", "最后")
+            flow_hits = ("流程", "链路", "步骤", "阶段", "第一步", "先", "再", "然后", "最后")
             if not any(hit in normalized_answer for hit in flow_hits):
-                return True
+                reasons.append("missing_flow_structure")
 
         if wants_stagewise:
-            stage_hits = ("门槛", "清洗", "纠偏", "去噪", "结构恢复", "表格", "抽取", "校验", "问答", "入库")
+            stage_hits = ("质量门槛", "门槛", "清洗", "纠偏", "去噪", "结构恢复", "表格", "抽取", "校验", "问答", "入库")
             if sum(1 for hit in stage_hits if hit in normalized_answer) < 4:
-                return True
-
-        if wants_causal_explain:
-            cause_hits = ("因为", "难在", "麻烦在", "绑定", "行列", "表头", "字段映射", "上下文", "错位", "挂错")
-            if sum(1 for hit in cause_hits if hit in normalized_answer) < 3:
-                return True
+                reasons.append("missing_stagewise_coverage")
 
         if wants_constraints:
-            constraint_hits = ("约束", "限制", "边界", "确认", "预览", "审计", "白名单", "where", "影响范围")
+            constraint_hits = ("草案", "预览", "确认", "审计", "影响范围", "白名单", "where", "回滚", "权限", "执行前")
             if not any(hit.lower() in answer for hit in constraint_hits):
-                return True
+                reasons.append("missing_execution_boundaries")
 
         if wants_risks:
-            risk_hits = ("容易出错", "风险", "坑", "翻车", "误差", "错绑", "错位", "越界", "误删")
-            if not any(hit in normalized_answer for hit in risk_hits):
-                return True
+            concrete_check_hits = ("核对", "复核", "检查", "对象", "时间", "字段", "行", "列", "映射", "锚点", "单位", "主键", "筛选条件", "where", "异常值")
+            if sum(1 for hit in concrete_check_hits if hit in normalized_answer) < 2:
+                reasons.append("missing_concrete_risk_checks")
 
-        if route_key == "web_research" and self._contains_any_keyword(
-            question,
-            ("文档内证据", "通用经验", "联网", "联网查证", "联网核实"),
-        ):
-            document_hits = ("文档", "材料", "当前这份", "单看")
-            general_hits = ("通用经验", "通用做法", "一般会")
-            web_hits = ("联网", "最新", "再核", "查证", "核实", "外部来源")
-            if not any(hit in normalized_answer for hit in document_hits):
-                return True
-            if not any(hit in normalized_answer for hit in general_hits):
-                return True
+        if wants_latest_or_web:
+            web_hits = ("联网", "查证", "核实", "外部来源", "实时", "最新", "不能当成最新", "还需要再核")
             if not any(hit in normalized_answer for hit in web_hits):
-                return True
+                reasons.append("missing_web_boundary_split")
 
-        if route_key in {"knowledge_explain", "document_summary", "web_research"}:
-            paragraph_count = len([part for part in re.split(r"\n\s*\n", normalized_answer) if part.strip()])
-            numbered_items = len(re.findall(r"(?m)^\d+\.\s+", normalized_answer))
-            heading_count = len(re.findall(r"(?m)^#{1,6}\s+", normalized_answer))
-            bookish_markers = (
-                "关于这个问题，我们先",
-                "从工程视角看",
-                "本质上",
-                "换句话说",
-                "可以参考以下思路",
-                "下面分几个方面说",
-                "这里最容易出错的主要有三个",
-                "可以，我先把边界拆开说",
-                "按你当前这份材料的上下文看",
-                "这几项先过了",
-                "别把这种扫描件直接往抽取链路里塞",
-            )
-            if paragraph_count >= 8 and not wants_stepwise:
-                return True
-            if numbered_items >= 4 and not wants_stepwise:
-                return True
-            if heading_count >= 3 and not wants_stepwise:
-                return True
-            if sum(1 for marker in bookish_markers if marker in normalized_answer) >= 2:
-                return True
+        if route_key == "clarification_needed":
+            if not self._looks_like_smalltalk_or_greeting(question):
+                clarification_hits = ("请", "告诉我", "补充", "确认", "说明", "哪一条", "哪个时间", "哪一个")
+                if not any(hit in normalized_answer for hit in clarification_hits):
+                    reasons.append("missing_clarification_request")
 
-        return False
+        if route_key == "database_action":
+            execution_claim_hits = ("已执行", "执行成功", "已写入", "已入库", "已更新", "已删除")
+            preview_hits = ("预览", "草案", "确认", "执行前", "拟执行")
+            if any(hit in normalized_answer for hit in execution_claim_hits) and not any(hit in normalized_answer for hit in preview_hits):
+                reasons.append("claims_execution_without_confirmation")
+
+        return reasons
+
+    def _answer_needs_alignment_repair(self, route: str, user_message: str, answer_text: str) -> bool:
+        return bool(self._alignment_repair_reasons(route, user_message, answer_text))
 
     def _alignment_repair_instruction(self, route: str, user_message: str) -> str:
+        return ""
         requirements = self._alignment_requirements(route, user_message)
         if not requirements:
             return ""
         bullet_text = "\n".join([f"- {item}" for item in requirements])
         return (
-            "上一版回答还没有完全对齐用户这一轮的问题。请在不改变已确认事实的前提下，补齐缺失点，并把表达收顺一些：\n"
+            "上一版回答还有关键信息没对齐。请在不改变已确认事实的前提下，只修正真正缺失或偏题的地方：\n"
             f"{bullet_text}\n"
-            "保留自然口吻，像真人当面解释，不要套固定开场和固定收尾，不要写成汇报稿，也不要暴露工具、route、payload 或原始定位串。"
+            "保持自然、直接，不要补无关铺垫，也不要暴露工具、route、payload 或原始定位串。"
         )
 
     def _polish_user_visible_answer(self, text: str, route: str) -> str:
@@ -853,21 +865,72 @@ class AssistantService:
         return threshold > 0 and len(normalized) < threshold
 
     @staticmethod
-    def _build_completion_repair_messages(route: str, prepared_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _is_expansion_only_alignment_drift(reasons: List[str]) -> bool:
+        style_only_reasons = {
+            "expanded_beyond_front_point",
+            "too_expanded_for_front_point",
+            "too_expanded_for_binary_choice",
+            "too_expanded_for_guided_judgment",
+            "too_list_like_for_causal_explain",
+            "too_many_paragraph_blocks",
+            "too_many_numbered_items",
+            "too_many_headings",
+            "too_many_bookish_markers",
+        }
+        normalized = [str(item or "").strip() for item in reasons if str(item or "").strip()]
+        return bool(normalized) and all(item in style_only_reasons for item in normalized)
+
+    @classmethod
+    def _build_completion_repair_messages(
+        cls,
+        route: str,
+        prepared_messages: List[Dict[str, Any]],
+        previous_answer: str,
+        repair_reasons: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        messages = list(prepared_messages)
+        previous = str(previous_answer or "").strip()
+        if previous:
+            messages.append({"role": "assistant", "content": previous})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "请只做最小修正：如果上一版回答被截断，就自然补全缺失部分；"
+                    "如果上一版已经完整，就只返回 <NO_CHANGES>。"
+                    "不要模板化，不要重复，也不要解释内部过程。"
+                ),
+            }
+        )
+        return messages
         route_key = str(route or "").strip().lower()
         route_hint = {
-            "knowledge_explain": "优先把概念讲成人话，再补流程、边界和常见坑。",
-            "document_summary": "优先说清当前对象或文档到底在讲什么，再区分已确认和仍需核对的部分。",
-            "web_research": "先把现在能确定的边界说清，再分开文档依据、通用知识和仍待联网核实的部分。",
-        }.get(route_key, "先补齐缺失点，再把表达收顺。")
-        repair_instruction = (
-            "请在保留已确认事实不变的前提下，把上一版中文回答补齐并润色成一条更自然的最终答复。"
-            "先补用户真正问到但还没答到的点，再把表达收顺。"
-            "不要提工具、route、payload、JSON、原始定位串，也不要重复问题。"
-            "尽量放在一个连续回答里，优先自然段；除非确有必要，不要写成 1. 2. 3. 的讲义。"
-            + route_hint
-        )
-        return list(prepared_messages) + [{"role": "user", "content": repair_instruction}]
+            "knowledge_explain": "直接解释用户真正想知道的判断和做法，不要绕成讲义。",
+            "document_summary": "先给当前能确认的核心结论，再补覆盖范围或未确认部分。",
+            "web_research": "明确哪些是当前证据，哪些仍待联网核实。",
+            "table_lookup": "如果对象不唯一或时间不明确，就先澄清。",
+            "database_action": "给预览、确认条件和影响范围，不要写成已执行。",
+        }.get(route_key, "只补真正缺失的点，不要把回答写成模板。")
+        previous = str(previous_answer or "").strip()
+        if cls._is_expansion_only_alignment_drift(repair_reasons or []):
+            repair_instruction = (
+                "请基于上一版中文回答做一次更直接的压缩改写，不要补新信息，也不要扩展新角度。"
+                "只保留用户这一轮真正关心的判断和必要补充。"
+                "不要提工具、route、payload、JSON、原始定位串，也不要重复问题。"
+                + route_hint
+            )
+        else:
+            repair_instruction = (
+                "请基于上一版中文回答做一次小幅修正：保留已确认事实，只补用户真正缺失的点。"
+                "不要新增无关铺垫，也不要重写成模板。"
+                "不要提工具、route、payload、JSON、原始定位串，也不要重复问题。"
+                + route_hint
+            )
+        messages = list(prepared_messages)
+        if previous:
+            messages.append({"role": "assistant", "content": previous})
+        messages.append({"role": "user", "content": repair_instruction})
+        return messages
 
     def _should_repair_streamed_answer(
         self,
@@ -881,7 +944,12 @@ class AssistantService:
             return True
         finish_reason = str(diagnostics.get("finish_reason") or "").strip().lower()
         if finish_reason in {"length", "max_tokens"}:
-            return True
+            if self._looks_like_incomplete_provider_answer(normalized):
+                return True
+            threshold = self._length_finish_repair_threshold(route)
+            if threshold > 0 and len(normalized) < threshold:
+                return True
+            return False
         if self._looks_like_incomplete_provider_answer(normalized):
             return True
         if re.search(r"\b(ref_id|figure_id|table_id|payload|tool_call|assistant_message_id)\b", normalized.lower()):
@@ -890,6 +958,17 @@ class AssistantService:
         if route_key in {"knowledge_explain", "document_summary", "web_research"} and len(normalized) < 120:
             return True
         return False
+
+    @staticmethod
+    def _length_finish_repair_threshold(route: str) -> int:
+        route_key = str(route or "").strip().lower()
+        return {
+            "knowledge_explain": 900,
+            "document_summary": 700,
+            "web_research": 900,
+            "database_action": 1200,
+            "figure_overview": 900,
+        }.get(route_key, 0)
 
     def _stream_timeout_profile(self, route: str) -> Dict[str, float]:
         route_key = str(route or "").strip().lower()
@@ -1044,6 +1123,9 @@ class AssistantService:
         if payload_has_structural_context(resolved):
             return resolved, None
 
+        if self._is_generic_document(document):
+            return resolved, None
+
         storage_payload = await self._storage.load_extraction_payload(document.file_hash) or {}
         resolved = merge_structural_payload(resolved, storage_payload)
         if payload_has_structural_context(resolved):
@@ -1082,20 +1164,25 @@ class AssistantService:
         return resolved, None
 
     async def ensure_session(self, payload: AssistantSessionRequest) -> AssistantSessionResponse:
+        document = self._coerce_document(payload.document)
         requested_id = str(payload.session_id or "").strip()
         summary_text = str(payload.summary or "").strip()
         existing = await self._storage.fetch_assistant_session(requested_id) if requested_id else None
-        if existing and str(existing.get("file_hash") or "").strip() == payload.document.file_hash:
+        session_metadata = {
+            "track": document.track,
+            "no_file_mode": self._is_generic_document(document),
+        }
+        if existing and str(existing.get("file_hash") or "").strip() == document.file_hash:
             session_id = str(existing.get("session_id") or requested_id)
             current_lock_raw = existing.get("current_object_lock_json") if isinstance(existing.get("current_object_lock_json"), dict) else {}
             messages = await self._storage.list_assistant_messages(session_id, limit=40)
             await self._storage.upsert_assistant_session(
                 session_id=session_id,
-                file_hash=payload.document.file_hash,
-                file_name=payload.document.file_name,
+                file_hash=document.file_hash,
+                file_name=document.file_name,
                 summary_text=summary_text or str(existing.get("summary_text") or ""),
                 current_object_lock=current_lock_raw,
-                metadata={"track": payload.document.track},
+                metadata=session_metadata,
             )
             return AssistantSessionResponse(
                 session_id=session_id,
@@ -1107,11 +1194,11 @@ class AssistantService:
         session_id = f"asst-{uuid.uuid4().hex}"
         await self._storage.upsert_assistant_session(
             session_id=session_id,
-            file_hash=payload.document.file_hash,
-            file_name=payload.document.file_name,
+            file_hash=document.file_hash,
+            file_name=document.file_name,
             summary_text=summary_text,
             current_object_lock={},
-            metadata={"track": payload.document.track},
+            metadata=session_metadata,
         )
         return AssistantSessionResponse(
             session_id=session_id,
@@ -1121,20 +1208,32 @@ class AssistantService:
         )
 
     async def query_once(self, payload: AssistantQueryRequest) -> AssistantQueryResponse:
+        document = self._coerce_document(payload.document)
         extraction_payload, _restore_event = await self._resolve_extraction_payload(
-            document=payload.document,
+            document=document,
             request_payload=None,
         )
         artifacts = await self._build_turn_artifacts_safe(
-            document=payload.document,
+            document=document,
             summary_text=str(payload.summary or "").strip(),
             user_message=str(payload.user_instruction or "").strip(),
             top_k=int(payload.top_k or 12),
             current_object_lock=None,
             extraction_payload=extraction_payload,
         )
+        artifacts.fallback_answer = ""
+        if self._is_generic_document(document):
+            artifacts.warnings = []
         if artifacts.prefer_fallback_only:
-            answer = artifacts.fallback_answer
+            answer = await self._complete_answer_text(
+                route=artifacts.route,
+                user_message=str(payload.user_instruction or "").strip(),
+                summary_text=str(payload.summary or "").strip(),
+                history=[],
+                answer_context=artifacts.answer_context,
+                fallback="",
+                max_tokens=self._effective_answer_max_tokens(artifacts.route, artifacts.answer_context),
+            )
         else:
             answer = await self._complete_answer_text(
                 route=artifacts.route,
@@ -1143,6 +1242,7 @@ class AssistantService:
                 history=[],
                 answer_context=artifacts.answer_context,
                 fallback=artifacts.fallback_answer,
+                max_tokens=self._effective_answer_max_tokens(artifacts.route, artifacts.answer_context),
             )
         answer = self._polish_user_visible_answer(answer, artifacts.route)
         return AssistantQueryResponse(
@@ -1157,8 +1257,9 @@ class AssistantService:
         )
 
     async def stream_chat(self, payload: AssistantChatStreamRequest) -> AsyncIterator[bytes]:
+        document = self._coerce_document(payload.document)
         session_req = AssistantSessionRequest(
-            document=payload.document,
+            document=document,
             summary=payload.summary,
             session_id=payload.session_id,
         )
@@ -1190,7 +1291,7 @@ class AssistantService:
         )
 
         extraction_payload, restore_event = await self._resolve_extraction_payload(
-            document=payload.document,
+            document=document,
             request_payload=dict(payload.extraction_payload or {}),
         )
         if restore_event:
@@ -1213,13 +1314,16 @@ class AssistantService:
                 },
             )
         artifacts = await self._build_turn_artifacts_safe(
-            document=payload.document,
+            document=document,
             summary_text=summary_text,
             user_message=user_message,
             top_k=int(payload.top_k or 12),
             current_object_lock=current_lock or None,
             extraction_payload=extraction_payload,
         )
+        artifacts.fallback_answer = ""
+        if self._is_generic_document(document):
+            artifacts.warnings = []
 
         for event in artifacts.tool_events:
             tool_name = str(event.get("tool_name") or "").strip()
@@ -1260,9 +1364,12 @@ class AssistantService:
         provider_diagnostics: Dict[str, Any] = {}
         messages: List[Dict[str, Any]] = []
         provider_model = str(getattr(self._provider, "model", "") or self._model)
-        route_max_tokens = self._answer_max_tokens(artifacts.route)
+        route_max_tokens = self._effective_answer_max_tokens(artifacts.route, artifacts.answer_context)
         if artifacts.prefer_fallback_only:
-            fallback_text = self._polish_user_visible_answer(artifacts.fallback_answer, artifacts.route)
+            fallback_text = self._polish_user_visible_answer(
+                self._provider_fallback_text("", partial_answer_exists=False),
+                artifacts.route,
+            )
             provider_diagnostics = {
                 "classification": "fallback_only_local",
                 "fallback_used": True,
@@ -1317,11 +1424,15 @@ class AssistantService:
                         yield sse_event("assistant_delta", {"text": chunk})
                     provider_diagnostics = stream_diagnostics
                     streamed_answer = "".join(answer_text_parts).strip()
-                    needs_alignment_repair = self._answer_needs_alignment_repair(
+                    provider_diagnostics["raw_streamed_answer_preview"] = self._truncate_prompt_text(streamed_answer, 1600)
+                    alignment_repair_reasons = self._alignment_repair_reasons(
                         artifacts.route,
                         user_message,
                         streamed_answer,
                     )
+                    if alignment_repair_reasons:
+                        provider_diagnostics["alignment_repair_reasons"] = alignment_repair_reasons
+                    needs_alignment_repair = bool(alignment_repair_reasons)
                     if self._should_repair_streamed_answer(
                         route=artifacts.route,
                         answer_text=streamed_answer,
@@ -1352,6 +1463,10 @@ class AssistantService:
                                 provider_diagnostics["visible_chars"] = len("".join(answer_text_parts).strip())
 
                         repaired_streamed_answer = "".join(answer_text_parts).strip()
+                        provider_diagnostics["post_repair_answer_preview"] = self._truncate_prompt_text(
+                            repaired_streamed_answer,
+                            1600,
+                        )
                         if repair_suffix:
                             still_needs_full_recovery = self._looks_like_incomplete_provider_answer(
                                 repaired_streamed_answer
@@ -1362,12 +1477,16 @@ class AssistantService:
                                 answer_text=repaired_streamed_answer,
                                 diagnostics=provider_diagnostics,
                             )
+                        post_repair_alignment_reasons: List[str] = []
                         if not still_needs_full_recovery:
-                            still_needs_full_recovery = self._answer_needs_alignment_repair(
+                            post_repair_alignment_reasons = self._alignment_repair_reasons(
                                 artifacts.route,
                                 user_message,
                                 repaired_streamed_answer,
                             )
+                            if post_repair_alignment_reasons:
+                                provider_diagnostics["post_repair_alignment_reasons"] = post_repair_alignment_reasons
+                            still_needs_full_recovery = bool(post_repair_alignment_reasons)
                         if still_needs_full_recovery:
                             recovered_answer = await self._complete_answer_text(
                                 route=artifacts.route,
@@ -1395,6 +1514,10 @@ class AssistantService:
                                     final_answer_override = self._polish_user_visible_answer(
                                         recovered_clean, artifacts.route
                                     )
+                                provider_diagnostics["recovered_answer_preview"] = self._truncate_prompt_text(
+                                    recovered_clean,
+                                    1600,
+                                )
                                 provider_diagnostics["fallback_used"] = True
                                 provider_diagnostics["fallback_mode"] = (
                                     "same_provider_non_stream_recovery"
@@ -1431,33 +1554,67 @@ class AssistantService:
                     },
                 )
                 recovered_answer = ""
+                recovery_diagnostics: Dict[str, Any] = {}
                 if not answer_text_parts:
-                    recovered_answer = await self._complete_answer_text(
-                        route=artifacts.route,
-                        user_message=user_message,
-                        summary_text=summary_text,
-                        history=history,
-                        answer_context=artifacts.answer_context,
-                        fallback=artifacts.fallback_answer,
-                        max_tokens=route_max_tokens,
+                    should_try_compact_recovery = (
+                        artifacts.route in {"knowledge_explain", "document_summary", "web_research"}
+                        and str(provider_diagnostics.get("classification") or "").strip().lower()
+                        in {"connect_failure", "first_frame_timeout", "first_visible_content_timeout"}
                     )
-                fallback_mode = "conservative_local_answer"
-                if recovered_answer.strip() and recovered_answer.strip() != artifacts.fallback_answer.strip():
-                    fallback_mode = "same_provider_non_stream_recovery"
-                fallback = self._polish_user_visible_answer(
+                    if should_try_compact_recovery:
+                        compact_messages = self._build_prompt_messages(
+                            route=artifacts.route,
+                            user_message=user_message,
+                            summary_text=summary_text,
+                            history=[],
+                            answer_context=artifacts.answer_context,
+                        )
+                        recovered_answer, recovery_diagnostics = await self._complete_answer_with_diagnostics(
+                            route=artifacts.route,
+                            user_message=user_message,
+                            summary_text=summary_text,
+                            history=[],
+                            answer_context=artifacts.answer_context,
+                            fallback=artifacts.fallback_answer,
+                            max_tokens=route_max_tokens,
+                            messages=compact_messages,
+                            delivery_mode="compact_complete_recovery",
+                        )
+                    if not recovered_answer.strip() or recovered_answer.strip() == artifacts.fallback_answer.strip():
+                        recovered_answer = await self._complete_answer_text(
+                            route=artifacts.route,
+                            user_message=user_message,
+                            summary_text=summary_text,
+                            history=history,
+                            answer_context=artifacts.answer_context,
+                            fallback=artifacts.fallback_answer,
+                            max_tokens=route_max_tokens,
+                        )
+                if recovery_diagnostics:
+                    provider_diagnostics["secondary_recovery"] = {
+                        "classification": str(recovery_diagnostics.get("classification") or ""),
+                        "delivery_mode": str(recovery_diagnostics.get("delivery_mode") or ""),
+                        "fallback_used": bool(recovery_diagnostics.get("fallback_used")),
+                        "fallback_mode": str(recovery_diagnostics.get("fallback_mode") or ""),
+                        "error": str(recovery_diagnostics.get("error") or ""),
+                        "raw_model_answer_preview": str(recovery_diagnostics.get("raw_model_answer_preview") or ""),
+                        "post_repair_answer_preview": str(recovery_diagnostics.get("post_repair_answer_preview") or ""),
+                        "alignment_repair_reasons": list(recovery_diagnostics.get("alignment_repair_reasons") or []),
+                        "post_repair_alignment_reasons": list(
+                            recovery_diagnostics.get("post_repair_alignment_reasons") or []
+                        ),
+                    }
+                visible_error_text = self._polish_user_visible_answer(
                     recovered_answer.strip()
-                    or self._provider_fallback_text(
-                        artifacts.fallback_answer,
-                        partial_answer_exists=bool(answer_text_parts),
-                    ),
+                    or self._provider_fallback_text("", partial_answer_exists=bool(answer_text_parts)),
                     artifacts.route,
                 )
-                provider_diagnostics["fallback_used"] = True
-                provider_diagnostics["fallback_mode"] = fallback_mode
-                provider_diagnostics["partial_visible_content_before_fallback"] = bool(answer_text_parts)
-                for chunk in chunk_text(fallback, chunk_size=72):
-                    answer_text_parts.append(chunk)
-                    yield sse_event("assistant_delta", {"text": chunk})
+                if visible_error_text:
+                    provider_diagnostics["error_answer_used"] = True
+                    provider_diagnostics["partial_visible_content_before_error"] = bool(answer_text_parts)
+                    for chunk in chunk_text(visible_error_text, chunk_size=72):
+                        answer_text_parts.append(chunk)
+                        yield sse_event("assistant_delta", {"text": chunk})
 
         provider_diagnostics.setdefault("prompt_version", self._prompt_version)
         provider_diagnostics.setdefault("max_tokens_budget", route_max_tokens)
@@ -1481,7 +1638,9 @@ class AssistantService:
         user_visible_warnings = self._filter_user_visible_warnings(artifacts.warnings)
 
         final_answer = self._polish_user_visible_answer(
-            final_answer_override or "".join(answer_text_parts).strip() or artifacts.fallback_answer,
+            final_answer_override
+            or "".join(answer_text_parts).strip()
+            or self._provider_fallback_text("", partial_answer_exists=False),
             artifacts.route,
         )
         await self._storage.save_assistant_message(
@@ -1503,11 +1662,15 @@ class AssistantService:
         )
         await self._storage.upsert_assistant_session(
             session_id=session_id,
-            file_hash=payload.document.file_hash,
-            file_name=payload.document.file_name,
+            file_hash=document.file_hash,
+            file_name=document.file_name,
             summary_text=summary_text,
             current_object_lock=artifacts.current_object_lock or current_lock or {},
-            metadata={"track": payload.document.track, "route": artifacts.route},
+            metadata={
+                "track": document.track,
+                "route": artifacts.route,
+                "no_file_mode": self._is_generic_document(document),
+            },
         )
         yield sse_event(
             "assistant_done",
@@ -1524,6 +1687,70 @@ class AssistantService:
                 "prompt_version": self._prompt_version,
             },
         )
+
+    def _should_skip_database_action_preview(
+        self,
+        *,
+        user_message: str,
+        document: DocumentExtractionResponse,
+        matched_fields: List[Dict[str, Any]],
+        current_object_lock: Optional[Dict[str, Any]],
+    ) -> bool:
+        if matched_fields:
+            return False
+        if isinstance(current_object_lock, dict) and current_object_lock:
+            return False
+        question = str(user_message or "").strip().lower()
+        if not question:
+            return self._is_generic_document(document)
+        explicit_execution_keywords = (
+            "\u6267\u884c",
+            "\u76f4\u63a5\u8dd1",
+            "\u73b0\u5728\u8dd1",
+            "\u771f\u6b63\u5199\u5165",
+            "\u771f\u6b63\u5165\u5e93",
+            "\u5b9e\u9645\u5165\u5e93",
+            "\u65b0\u589e",
+            "\u63d2\u5165",
+            "\u66f4\u65b0",
+            "\u4fee\u6539",
+            "\u5220\u9664",
+            "\u6e05\u7a7a",
+            "insert ",
+            "update ",
+            "delete ",
+            "truncate ",
+            "drop ",
+            "alter table",
+        )
+        if any(keyword in question for keyword in explicit_execution_keywords):
+            return False
+        design_or_draft_keywords = (
+            "\u8868\u7ed3\u6784",
+            "\u5efa\u8868",
+            "\u5b57\u6bb5\u8bbe\u8ba1",
+            "\u5b57\u6bb5\u89c4\u5212",
+            "\u4e3b\u8868",
+            "\u5b50\u8868",
+            "\u65b9\u6848",
+            "\u8349\u6848",
+            "\u8349\u7a3f",
+            "\u9884\u89c8",
+            "\u5982\u4f55\u5efa",
+            "\u600e\u4e48\u5efa",
+            "\u600e\u4e48\u8bbe\u8ba1",
+            "\u67e5\u8be2\u8bed\u53e5",
+            "schema",
+            "ddl",
+            "nl2sql",
+            "sql draft",
+            "sql plan",
+            "create table",
+            "draft",
+        )
+        if self._is_generic_document(document):
+            return True
+        return any(keyword in question for keyword in design_or_draft_keywords)
 
     async def _build_turn_artifacts_safe(
         self,
@@ -1595,6 +1822,12 @@ class AssistantService:
             f"{fallback}"
         )
 
+    @staticmethod
+    def _provider_fallback_text(base_fallback: str, *, partial_answer_exists: bool) -> str:
+        if partial_answer_exists:
+            return ""
+        return "模型暂时没有稳定返回结果，请稍后重试。"
+
     async def _build_turn_artifacts(
         self,
         *,
@@ -1625,6 +1858,15 @@ class AssistantService:
                 }
             )
 
+        if route == "clarification_needed" and self._looks_like_smalltalk_or_greeting(user_message):
+            artifacts.answer_context = {
+                "user_question": user_message,
+                "has_document": not self._is_generic_document(document),
+                "conversation_mode": "smalltalk",
+            }
+            artifacts.fallback_answer = fallback_answer(route, artifacts.answer_context)
+            return artifacts
+
         if route == "table_lookup":
             started = time.perf_counter()
             assessment = assess_table_lookup(
@@ -1653,9 +1895,6 @@ class AssistantService:
                 artifacts.citations = [result["citation"]]
                 artifacts.current_object_lock = result["current_object_lock"]
                 artifacts.answer_context = dict(result)
-                # Stable row-grounded answers are already complete and auditable from structured facts.
-                # Returning them immediately avoids letting model latency block a straightforward lookup.
-                artifacts.prefer_fallback_only = True
                 artifacts.fallback_answer = fallback_answer(route, artifacts.answer_context)
                 return artifacts
             artifacts.warnings.append("当前未稳定定位到目标表格行。")
@@ -1664,6 +1903,9 @@ class AssistantService:
                 "clarification_reason": str(assessment.get("clarification_reason") or "weak_row_grounding"),
                 "candidate_rows": list(assessment.get("candidate_rows") or [])[:3],
                 "missing_anchor_terms": list(assessment.get("missing_anchor_terms") or [])[:4],
+                "matched_entity": str(assessment.get("matched_entity") or ""),
+                "time_options": list(assessment.get("time_options") or [])[:6],
+                "requested_metric": str(assessment.get("requested_metric") or ""),
                 "lock_quality": str(assessment.get("lock_quality") or ""),
                 "document_overview": build_document_overview(
                     document=document,
@@ -1673,7 +1915,6 @@ class AssistantService:
                 ),
                 "query": user_message,
             }
-            artifacts.prefer_fallback_only = True
             artifacts.fallback_answer = fallback_answer(artifacts.route, artifacts.answer_context)
             return artifacts
 
@@ -1782,7 +2023,6 @@ class AssistantService:
                 and any(token in user_message_lower for token in ("字段级", "字段事实", "ref_id", "页码", "page", "写明", "列出"))
             ):
                 artifacts.answer_context["prefer_field_facts"] = True
-                artifacts.prefer_fallback_only = True
             artifacts.fallback_answer = fallback_answer(route, artifacts.answer_context)
             return artifacts
 
@@ -1845,9 +2085,9 @@ class AssistantService:
             artifacts.tool_events.append(
                 {
                     "tool_name": "prepare_web_research_context",
-                    "status": "fallback",
-                    "message": "当前会话没有实时联网结果，已切换为保守回答模式",
-                    "detail": "no_live_web_results",
+                    "status": "done",
+                    "message": "当前会话没有实时联网结果，将按文档证据和通用经验回答，并明确仍需后续联网核实的部分",
+                    "detail": "no_live_web_results_available",
                     "output": {
                         "live_web_result_available": False,
                     },
@@ -1860,7 +2100,7 @@ class AssistantService:
                 "live_web_result_available": False,
                 "web_results": [],
             }
-            artifacts.prefer_fallback_only = True
+            artifacts.prefer_fallback_only = False
             artifacts.fallback_answer = fallback_answer(route, artifacts.answer_context)
             return artifacts
 
@@ -1880,6 +2120,22 @@ class AssistantService:
         artifacts.matched_trace_hits = matched_trace_hits
         artifacts.citations = build_field_citations(matched_fields, matched_trace_hits)
         if route == "database_action":
+            if self._should_skip_database_action_preview(
+                user_message=user_message,
+                document=document,
+                matched_fields=matched_fields,
+                current_object_lock=current_object_lock,
+            ):
+                artifacts.answer_context = {
+                    "user_question": user_message,
+                    "summary_text": summary_text,
+                    "matched_fields": matched_fields[:4],
+                    "has_document": not self._is_generic_document(document),
+                    "database_mode": "draft_only",
+                    "response_preference": "先给最小可用草案，再补少量关键说明，不要一次铺满所有扩展项。",
+                }
+                artifacts.fallback_answer = fallback_answer(route, artifacts.answer_context)
+                return artifacts
             artifacts.action_preview = build_action_preview(
                 user_message,
                 document,
@@ -1921,8 +2177,6 @@ class AssistantService:
                 and isinstance(preview_payload.get("focus_lock"), dict)
             ):
                 artifacts.current_object_lock = dict(preview_payload.get("focus_lock") or {})
-            if preview_status == "blocked":
-                artifacts.prefer_fallback_only = True
             artifacts.citations = preview_citations or artifacts.citations
             artifacts.answer_context = {
                 "action_preview": artifacts.action_preview,
@@ -2030,9 +2284,10 @@ class AssistantService:
             return dict(diagnostics)
 
         if not self._provider or not self._provider.configured:
-            diagnostics["fallback_used"] = True
-            diagnostics["fallback_mode"] = "conservative_local_answer"
-            return fallback, _finalize("provider_not_configured")
+            diagnostics["error_answer_used"] = True
+            error_text = self._provider_fallback_text("", partial_answer_exists=False)
+            diagnostics["visible_chars"] = len(error_text)
+            return error_text, _finalize("provider_not_configured")
 
         try:
             result = await asyncio.to_thread(
@@ -2046,11 +2301,15 @@ class AssistantService:
             finish_reason = str(getattr(result, "finish_reason", "") or "").strip()
             diagnostics["finish_reason"] = finish_reason
             if not content:
-                diagnostics["fallback_used"] = True
-                diagnostics["fallback_mode"] = "conservative_local_answer"
-                diagnostics["visible_chars"] = len(fallback)
-                return fallback, _finalize("complete_empty_fallback")
-            needs_alignment_repair = self._answer_needs_alignment_repair(route, user_message, content)
+                diagnostics["error_answer_used"] = True
+                error_text = self._provider_fallback_text("", partial_answer_exists=False)
+                diagnostics["visible_chars"] = len(error_text)
+                return error_text, _finalize("complete_empty_error")
+            diagnostics["raw_model_answer_preview"] = self._truncate_prompt_text(content, 1600)
+            alignment_repair_reasons = self._alignment_repair_reasons(route, user_message, content)
+            if alignment_repair_reasons:
+                diagnostics["alignment_repair_reasons"] = alignment_repair_reasons
+            needs_alignment_repair = bool(alignment_repair_reasons)
             if self._should_retry_completed_answer(
                 route=route,
                 answer_text=content,
@@ -2060,7 +2319,12 @@ class AssistantService:
                 diagnostics["repair_trigger"] = (
                     "alignment_drift" if needs_alignment_repair else "length_capped_or_incomplete"
                 )
-                repair_messages = self._build_completion_repair_messages(route, prepared_messages)
+                repair_messages = self._build_completion_repair_messages(
+                    route,
+                    prepared_messages,
+                    content,
+                    alignment_repair_reasons,
+                )
                 alignment_instruction = self._alignment_repair_instruction(route, user_message)
                 if alignment_instruction:
                     repair_messages = list(repair_messages) + [{"role": "user", "content": alignment_instruction}]
@@ -2077,11 +2341,16 @@ class AssistantService:
                     repair_content = str(getattr(repair_result, "content", "") or "").strip()
                     repair_finish_reason = str(getattr(repair_result, "finish_reason", "") or "").strip()
                     diagnostics["repair_finish_reason"] = repair_finish_reason
+                    if repair_content:
+                        diagnostics["post_repair_answer_preview"] = self._truncate_prompt_text(repair_content, 1600)
+                    repair_alignment_reasons = self._alignment_repair_reasons(route, user_message, repair_content)
+                    if repair_alignment_reasons:
+                        diagnostics["post_repair_alignment_reasons"] = repair_alignment_reasons
                     if repair_content and not self._should_retry_completed_answer(
                         route=route,
                         answer_text=repair_content,
                         finish_reason=repair_finish_reason,
-                    ) and not self._answer_needs_alignment_repair(route, user_message, repair_content):
+                    ) and not repair_alignment_reasons:
                         diagnostics["finish_reason"] = repair_finish_reason or finish_reason
                         diagnostics["visible_chars"] = len(repair_content)
                         diagnostics["repair_used"] = True
@@ -2090,19 +2359,22 @@ class AssistantService:
                 except Exception as repair_exc:
                     diagnostics["repair_used"] = False
                     diagnostics["repair_error"] = f"{type(repair_exc).__name__}: {repair_exc}"
-                diagnostics["fallback_used"] = True
-                diagnostics["fallback_mode"] = "conservative_local_answer"
-                diagnostics["visible_chars"] = len(fallback)
-                return fallback, _finalize("complete_incomplete_fallback")
+                if content:
+                    diagnostics["visible_chars"] = len(content)
+                    return content, _finalize("success_with_partial_content")
+                diagnostics["error_answer_used"] = True
+                error_text = self._provider_fallback_text("", partial_answer_exists=False)
+                diagnostics["visible_chars"] = len(error_text)
+                return error_text, _finalize("complete_incomplete_error")
             final_answer = content or fallback
             diagnostics["visible_chars"] = len(final_answer)
             return final_answer, _finalize("success")
         except Exception as exc:
-            diagnostics["fallback_used"] = True
-            diagnostics["fallback_mode"] = "conservative_local_answer"
-            diagnostics["visible_chars"] = len(fallback)
+            diagnostics["error_answer_used"] = True
             error_text = f"{type(exc).__name__}: {exc}"
-            return fallback, _finalize("complete_error", error=error_text)
+            visible_text = self._provider_fallback_text("", partial_answer_exists=False)
+            diagnostics["visible_chars"] = len(visible_text)
+            return visible_text, _finalize("complete_error", error=error_text)
 
     async def _continue_streamed_answer_with_diagnostics(
         self,
@@ -2335,6 +2607,57 @@ class AssistantService:
         if diagnostics is not None:
             diagnostics.clear()
             diagnostics.update(diagnostics_payload)
+
+    def _alignment_requirements(self, route: str, user_message: str) -> List[str]:
+        return []
+
+    def _alignment_repair_reasons(self, route: str, user_message: str, answer_text: str) -> List[str]:
+        question = str(user_message or "").strip()
+        normalized_answer = self._normalize_user_visible_spacing(answer_text)
+        if not question or not normalized_answer:
+            return []
+        if re.search(
+            r"\b(ref_id|figure_id|table_id|payload|tool_call|assistant_message_id|message_id|locator)\b",
+            normalized_answer.lower(),
+        ):
+            return ["contains_internal_metadata"]
+        return []
+
+    def _alignment_repair_instruction(self, route: str, user_message: str) -> str:
+        return ""
+
+    @classmethod
+    def _build_completion_repair_messages(
+        cls,
+        route: str,
+        prepared_messages: List[Dict[str, Any]],
+        previous_answer: str,
+        repair_reasons: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        messages = list(prepared_messages)
+        previous = str(previous_answer or "").strip()
+        if previous:
+            messages.append({"role": "assistant", "content": previous})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Revise only if the previous answer was cut off or exposed internal metadata. "
+                    "Keep the same meaning, make the smallest necessary fix, and do not add a template opening or closing. "
+                    "If no fix is needed, reply with <NO_CHANGES>."
+                ),
+            }
+        )
+        return messages
+
+    @staticmethod
+    def _provider_fallback_text(base_fallback: str, *, partial_answer_exists: bool) -> str:
+        if partial_answer_exists:
+            return ""
+        fallback = str(base_fallback or "").strip()
+        if fallback:
+            return fallback
+        return "这次没有拿到稳定的模型结果，请稍后重试。"
 
     @staticmethod
     def _to_session_message(item: Dict[str, Any]) -> AssistantSessionMessage:

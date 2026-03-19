@@ -159,7 +159,7 @@ class SummarizeResponse(BaseModel):
 
 
 class AssistantQueryRequest(BaseModel):
-    document: DocumentExtractionResponse
+    document: Optional[DocumentExtractionResponse] = None
     summary: str = ""
     user_instruction: str = Field(..., min_length=1, max_length=2000)
     persist: bool = False
@@ -220,7 +220,7 @@ class AssistantSessionMessage(BaseModel):
 
 
 class AssistantSessionRequest(BaseModel):
-    document: DocumentExtractionResponse
+    document: Optional[DocumentExtractionResponse] = None
     summary: str = ""
     session_id: Optional[str] = None
 
@@ -233,7 +233,7 @@ class AssistantSessionResponse(BaseModel):
 
 
 class AssistantChatStreamRequest(BaseModel):
-    document: DocumentExtractionResponse
+    document: Optional[DocumentExtractionResponse] = None
     summary: str = ""
     user_message: str = Field(..., min_length=1, max_length=4000)
     session_id: Optional[str] = None

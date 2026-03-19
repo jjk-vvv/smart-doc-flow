@@ -894,6 +894,7 @@ const DEFAULT_SCHEMA = {
 };
 
 const ASSISTANT_SESSION_STORAGE_KEY = 'module2_assistant_session_map_v1';
+const GENERIC_ASSISTANT_SESSION_KEY = '__module2_no_file__';
 
 const readAssistantSessionMap = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
@@ -1667,6 +1668,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   }, [documents]);
 
   const activeDoc = documents[activeDocIndex] || null;
+  const activeAssistantSessionKey = String(activeDoc?.file_hash || '').trim() || GENERIC_ASSISTANT_SESSION_KEY;
   const activeSourceFile = useMemo(() => {
     // Priority 1: Match activeDoc if it exists
     if (activeDoc && selectedFiles.length > 0) {
@@ -2338,10 +2340,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setOfficePreviewMap({});
     setActiveTraceKey('');
     setExpandedTraceCardKey('');
-    const fileHash = String(activeDoc?.file_hash || '').trim();
-    if (!activeDoc || !fileHash) {
-      return;
-    }
+    const fileHash = activeAssistantSessionKey;
     const storedSessionId = String(readAssistantSessionMap()[fileHash] || '').trim();
     if (!storedSessionId) {
       return;
@@ -2356,7 +2355,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              document: activeDoc,
+              document: activeDoc || undefined,
               summary: activeSummaryText,
               session_id: storedSessionId,
             }),
@@ -2396,7 +2395,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     return () => {
       cancelled = true;
     };
-  }, [activeDoc?.file_hash]);
+  }, [activeAssistantSessionKey]);
 
   const fieldItems = useMemo<FieldItem[]>(() => {
     if (!activeDoc) return [];
@@ -4165,10 +4164,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       return;
     }
     const instruction = assistantInput.trim();
-    if (!activeDoc) {
-      setAssistantWarnings(["当前没有可用文档，请先完成抽取。"]);
-      return;
-    }
     if (!instruction) {
       setAssistantWarnings(["请输入具体提取需求后再发送。"]);
       return;
@@ -4201,7 +4196,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
     const controller = new AbortController();
     assistantAbortRef.current = controller;
-    const fileHash = String(activeDoc.file_hash || '').trim();
+    const fileHash = activeAssistantSessionKey;
     const restoredSessionId = fileHash ? String(readAssistantSessionMap()[fileHash] || '').trim() : '';
     let streamMessageId = pendingAssistantId;
 
@@ -4217,7 +4212,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           },
           signal: controller.signal,
           body: JSON.stringify({
-            document: activeDoc,
+            document: activeDoc || undefined,
             summary: activeSummaryText,
             user_message: instruction,
             session_id: assistantSessionId || restoredSessionId || undefined,
@@ -4767,22 +4762,22 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  if (!assistantQueryLoading && activeDoc) {
+                  if (!assistantQueryLoading) {
                     void runAssistantInstruction();
                   }
                 }
               }}
-              placeholder={activeDoc ? "输入需求，回车发送..." : "请先抽取文档..."}
+              placeholder={activeDoc ? "输入需求，回车发送..." : "可以先问文档处理、抽取方案、表结构设计或 NL2SQL..."}
               className="max-h-24 min-h-[38px] w-full resize-none rounded-[18px] border-none bg-slate-100/80 px-3.5 py-2 pr-10 text-xs leading-relaxed text-slate-700 shadow-inner outline-none transition-all focus:bg-white focus:ring-2 focus:ring-blue-500/20 dark:bg-slate-800/80 dark:text-slate-200 dark:focus:bg-slate-900"
             />
             <button
               type="button"
               data-testid="module2-assistant-send"
               onClick={() => void runAssistantInstruction()}
-              disabled={!activeDoc || (!assistantQueryLoading && !assistantInput.trim())}
+              disabled={!assistantQueryLoading && !assistantInput.trim()}
               className={cn(
                 'absolute bottom-1 right-1 inline-flex h-[26px] w-[26px] items-center justify-center rounded-full transition-all duration-200',
-                !activeDoc || (!assistantQueryLoading && !assistantInput.trim())
+                !assistantQueryLoading && !assistantInput.trim()
                   ? 'cursor-not-allowed bg-slate-200 text-slate-400 dark:bg-slate-700 dark:text-slate-500'
                   : assistantQueryLoading
                     ? 'bg-amber-500 text-white shadow-md shadow-amber-500/30 hover:bg-amber-600 hover:shadow-lg hover:scale-105 active:scale-95'
@@ -5181,22 +5176,22 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault();
-                          if (!assistantQueryLoading && activeDoc) {
+                          if (!assistantQueryLoading) {
                             void runAssistantInstruction();
                           }
                         }
                       }}
-                      placeholder={activeDoc ? "输入需求，回车发送..." : "请先抽取文档..."}
+                      placeholder={activeDoc ? "输入需求，回车发送..." : "可以先问文档处理、抽取方案、表结构设计或 NL2SQL..."}
                       className="max-h-24 min-h-[40px] w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 pr-9 text-xs leading-relaxed text-slate-700 outline-none transition-colors focus:border-blue-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:border-blue-600"
                     />
                     <button
                       type="button"
                       data-testid="module2-assistant-send"
                       onClick={() => void runAssistantInstruction()}
-                      disabled={!activeDoc || (!assistantQueryLoading && !assistantInput.trim())}
+                      disabled={!assistantQueryLoading && !assistantInput.trim()}
                       className={cn(
                         'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
-                        !activeDoc || (!assistantQueryLoading && !assistantInput.trim())
+                        !assistantQueryLoading && !assistantInput.trim()
                           ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600'
                           : assistantQueryLoading
                             ? 'bg-amber-500 text-white hover:bg-amber-600'
