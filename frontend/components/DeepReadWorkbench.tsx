@@ -514,6 +514,26 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
 
 type DocumentResult = ExtractionDocument;
 
+const isDocumentResultLike = (value: unknown): value is DocumentResult => {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.file_name === 'string'
+    && typeof obj.file_hash === 'string'
+    && typeof obj.track === 'string'
+    && typeof obj.cached === 'boolean'
+    && Array.isArray(obj.errors)
+    && !!obj.result
+    && typeof obj.result === 'object'
+  );
+};
+
+const getSessionPersistedDocuments = (session: WorkbenchSessionSnapshot | null): DocumentResult[] => {
+  const job = session?.extractionJob as (PersistedExtractionJob & { documents?: unknown }) | null | undefined;
+  if (!job || !Array.isArray(job.documents)) return [];
+  return job.documents.filter(isDocumentResultLike);
+};
+
 type ExtractResponse = {
   documents: DocumentResult[];
 };
@@ -1618,6 +1638,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const textPreviewRef = useRef<HTMLDivElement>(null);
   const assistantDialogRef = useRef<HTMLDivElement>(null);
   const workbenchViewportRef = useRef<HTMLDivElement>(null);
+  const documentsRef = useRef<DocumentResult[]>([]);
   const summaryRequestSeqRef = useRef(0);
   const traceRequestSeqRef = useRef(0);
   const officePreviewPollRef = useRef<Record<string, string>>({});
@@ -1640,6 +1661,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   useEffect(() => () => {
     clearSpreadsheetPreviewWarmupQueue();
   }, []);
+
+  useEffect(() => {
+    documentsRef.current = documents;
+  }, [documents]);
 
   const activeDoc = documents[activeDocIndex] || null;
   const activeSourceFile = useMemo(() => {
@@ -1923,9 +1948,16 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     let active = true;
     const cached = readExtractionDocuments();
     const session = readWorkbenchSession();
-    if (cached.length > 0) {
-      setDocuments(cached);
-      setInfoMessage(`已加载 ${cached.length} 条本地缓存抽取结果。`);
+    const sessionDocuments = cached.length === 0 ? getSessionPersistedDocuments(session) : [];
+    const restoredDocuments = cached.length > 0 ? cached : sessionDocuments;
+    if (restoredDocuments.length > 0) {
+      setDocuments(restoredDocuments);
+      if (cached.length > 0) {
+        setInfoMessage(`已加载 ${restoredDocuments.length} 条本地缓存抽取结果。`);
+      } else {
+        writeExtractionDocuments(restoredDocuments);
+        setInfoMessage(`已从工作台会话恢复 ${restoredDocuments.length} 条抽取结果。`);
+      }
     }
     if (!session) {
       persistedSelectedFilesRef.current = [];
@@ -2011,6 +2043,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     if (!sessionHydrated || sessionRestorePending) return;
     const hasSessionState =
       selectedFiles.length > 0
+      || documents.length > 0
       || Object.keys(officePreviewMap).length > 0
       || Boolean(extractionJob);
     if (!hasSessionState) {
@@ -2029,7 +2062,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     );
     persistedSelectedFilesRef.current = snapshot.selectedFiles;
     writeWorkbenchSession(snapshot);
-  }, [activeDoc?.file_hash, activeDocIndex, extractionJob, officePreviewMap, selectedFileArtifacts, selectedFiles, sessionHydrated, sessionRestorePending]);
+  }, [activeDoc?.file_hash, activeDocIndex, documents.length, extractionJob, officePreviewMap, selectedFileArtifacts, selectedFiles, sessionHydrated, sessionRestorePending]);
 
   useEffect(() => {
     setPdfViewportPage(1);
@@ -2956,8 +2989,13 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           setExtractionJob(null);
           setIsProcessing(false);
           setActiveSummaryLoading(false);
-          setErrorMessage(`${message}，当前任务状态已清理，请重新发起解析。`);
-          setInfoMessage('检测到历史抽取任务已失效，界面已恢复为可重新发起解析的状态。');
+          if (documentsRef.current.length > 0) {
+            setErrorMessage('');
+            setInfoMessage('历史抽取任务状态已从后端释放，当前页面已保留最近一次解析结果。');
+          } else {
+            setErrorMessage(`${message}，当前任务状态已清理，请重新发起解析。`);
+            setInfoMessage('检测到历史抽取任务已失效，界面已恢复为可重新发起解析的状态。');
+          }
           return;
         }
         setInfoMessage('正在同步最新解析进度...');
@@ -3114,6 +3152,18 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const removeFile = (index: number) => {
     const removed = selectedFiles[index];
     if (!removed) return;
+    const normalizedRemovedName = removed.name.trim().toLowerCase();
+    const removingParsedResult = documents.some(
+      (doc) => String(doc.file_name || '').trim().toLowerCase() === normalizedRemovedName,
+    );
+    const confirmMessage = selectedFiles.length <= 1
+      ? '移除最后一份文件会清空当前页面的解析结果，是否继续？'
+      : removingParsedResult
+        ? `移除 ${removed.name} 会同步移除它的解析结果，是否继续？`
+        : '';
+    if (confirmMessage && typeof window !== 'undefined' && !window.confirm(confirmMessage)) {
+      return;
+    }
 
     if (selectedFiles.length <= 1) {
       setSelectedFiles([]);
@@ -5042,11 +5092,14 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                       {file.name}
                                   </p>
                                   <button
+                                    type="button"
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       removeFile(index);
                                     }}
-                                    className="pointer-events-none rounded-xl p-1 text-slate-400 opacity-0 transition-all duration-200 group-hover:pointer-events-auto group-hover:opacity-100 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
+                                    title={`移除 ${file.name}`}
+                                    aria-label={`移除 ${file.name}`}
+                                    className="rounded-xl p-1 text-slate-400 opacity-70 transition-all duration-200 hover:bg-red-50 hover:text-red-500 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300 dark:hover:bg-red-900/20 dark:focus-visible:ring-red-800"
                                   >
                                     <Trash2 size={14} />
                                   </button>

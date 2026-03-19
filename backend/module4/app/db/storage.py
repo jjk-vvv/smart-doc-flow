@@ -122,6 +122,16 @@ def _json_text(value: Any, key: str) -> str:
     return str(raw or "").strip()
 
 
+def _payload_file_hash(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    context = value.get("context") if isinstance(value.get("context"), dict) else {}
+    raw = context.get("file_hash")
+    if raw is None:
+        raw = value.get("file_hash")
+    return str(raw or "").strip()
+
+
 def _graph_scope_key(graph_file_id: Optional[str]) -> str:
     return str(graph_file_id or "").strip() or "__legacy__"
 
@@ -1204,38 +1214,6 @@ class Module4Storage:
                 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
                 RETURNING *
             """
-        else:
-            update_sql = """
-                WITH candidate AS (
-                    SELECT node_id
-                    FROM module4.nodes
-                    WHERE tenant_id = $1
-                      AND graph_file_id IS NULL
-                      AND node_type = $4
-                      AND canonical_key = $5
-                    ORDER BY updated_at DESC, created_at DESC, node_id DESC
-                    LIMIT 1
-                )
-                UPDATE module4.nodes AS node
-                SET graph_version_id = COALESCE($3::uuid, node.graph_version_id),
-                    display_name = $6,
-                    attrs = $7::jsonb,
-                    confidence = $8,
-                    last_seen_at = NOW(),
-                    updated_at = NOW()
-                FROM candidate
-                WHERE node.node_id = candidate.node_id
-                RETURNING node.*
-            """
-            insert_sql = """
-                INSERT INTO module4.nodes (
-                    tenant_id, graph_file_id, graph_version_id, node_type, canonical_key, display_name, attrs, confidence
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
-                RETURNING *
-            """
-
-        async def _execute(conn_obj: Any) -> Dict[str, Any]:
             params = (
                 tenant_id,
                 graph_file_value,
@@ -1246,6 +1224,47 @@ class Module4Storage:
                 attrs,
                 confidence,
             )
+        else:
+            update_sql = """
+                WITH candidate AS (
+                    SELECT node_id
+                    FROM module4.nodes
+                    WHERE tenant_id = $1
+                      AND graph_file_id IS NULL
+                      AND node_type = $3
+                      AND canonical_key = $4
+                    ORDER BY updated_at DESC, created_at DESC, node_id DESC
+                    LIMIT 1
+                )
+                UPDATE module4.nodes AS node
+                SET graph_version_id = COALESCE($2::uuid, node.graph_version_id),
+                    display_name = $5,
+                    attrs = $6::jsonb,
+                    confidence = $7,
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                FROM candidate
+                WHERE node.node_id = candidate.node_id
+                RETURNING node.*
+            """
+            insert_sql = """
+                INSERT INTO module4.nodes (
+                    tenant_id, graph_file_id, graph_version_id, node_type, canonical_key, display_name, attrs, confidence
+                )
+                VALUES ($1, NULL, $2, $3, $4, $5, $6::jsonb, $7)
+                RETURNING *
+            """
+            params = (
+                tenant_id,
+                graph_version_value,
+                node_type,
+                canonical_key,
+                display_name,
+                attrs,
+                confidence,
+            )
+
+        async def _execute(conn_obj: Any) -> Dict[str, Any]:
             row = await conn_obj.fetchrow(update_sql, *params)
             if row:
                 return _to_plain(dict(row))
@@ -1366,40 +1385,6 @@ class Module4Storage:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
                 RETURNING *
             """
-        else:
-            update_sql = """
-                WITH candidate AS (
-                    SELECT edge_id
-                    FROM module4.edges
-                    WHERE tenant_id = $1
-                      AND graph_file_id IS NULL
-                      AND source_node_id = $4::uuid
-                      AND target_node_id = $5::uuid
-                      AND relation_type = $6
-                    ORDER BY updated_at DESC, created_at DESC, edge_id DESC
-                    LIMIT 1
-                )
-                UPDATE module4.edges AS edge
-                SET graph_version_id = COALESCE($3::uuid, edge.graph_version_id),
-                    direction = $7,
-                    attrs = $8::jsonb,
-                    confidence = $9,
-                    risk_score = $10,
-                    last_seen_at = NOW(),
-                    updated_at = NOW()
-                FROM candidate
-                WHERE edge.edge_id = candidate.edge_id
-                RETURNING edge.*
-            """
-            insert_sql = """
-                INSERT INTO module4.edges (
-                    tenant_id, graph_file_id, graph_version_id, source_node_id, target_node_id, relation_type, direction, attrs, confidence, risk_score
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
-                RETURNING *
-            """
-
-        async def _execute(conn_obj: Any) -> Dict[str, Any]:
             params = (
                 tenant_id,
                 graph_file_value,
@@ -1412,6 +1397,51 @@ class Module4Storage:
                 confidence,
                 risk_score,
             )
+        else:
+            update_sql = """
+                WITH candidate AS (
+                    SELECT edge_id
+                    FROM module4.edges
+                    WHERE tenant_id = $1
+                      AND graph_file_id IS NULL
+                      AND source_node_id = $3::uuid
+                      AND target_node_id = $4::uuid
+                      AND relation_type = $5
+                    ORDER BY updated_at DESC, created_at DESC, edge_id DESC
+                    LIMIT 1
+                )
+                UPDATE module4.edges AS edge
+                SET graph_version_id = COALESCE($2::uuid, edge.graph_version_id),
+                    direction = $6,
+                    attrs = $7::jsonb,
+                    confidence = $8,
+                    risk_score = $9,
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                FROM candidate
+                WHERE edge.edge_id = candidate.edge_id
+                RETURNING edge.*
+            """
+            insert_sql = """
+                INSERT INTO module4.edges (
+                    tenant_id, graph_file_id, graph_version_id, source_node_id, target_node_id, relation_type, direction, attrs, confidence, risk_score
+                )
+                VALUES ($1, NULL, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+                RETURNING *
+            """
+            params = (
+                tenant_id,
+                graph_version_value,
+                source_node_id,
+                target_node_id,
+                relation_type,
+                direction,
+                attrs,
+                confidence,
+                risk_score,
+            )
+
+        async def _execute(conn_obj: Any) -> Dict[str, Any]:
             row = await conn_obj.fetchrow(update_sql, *params)
             if row:
                 return _to_plain(dict(row))
@@ -1507,7 +1537,7 @@ class Module4Storage:
                 tenant_id, evidence_key, doc_id, object_type, object_id, ref_id, page_no, snippet, locator, bbox, artifact_url, confidence
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12)
-            ON CONFLICT (tenant_id, evidence_key)
+            ON CONFLICT (tenant_id, evidence_key) WHERE evidence_key IS NOT NULL
             DO UPDATE SET
                 ref_id = EXCLUDED.ref_id,
                 page_no = EXCLUDED.page_no,
@@ -1630,6 +1660,218 @@ class Module4Storage:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(f"SELECT * FROM module4.rules {where_sql} ORDER BY rule_id ASC")
         return [_to_plain(dict(r)) for r in rows]
+
+    async def reset_graph_file_scope(
+        self,
+        *,
+        tenant_id: str,
+        graph_file_id: str,
+        file_hash: Optional[str],
+        conn: Optional[Any] = None,
+    ) -> Dict[str, int]:
+        graph_file_value = str(graph_file_id or "").strip()
+        file_hash_value = str(file_hash or "").strip() or None
+        if not graph_file_value:
+            return {"alerts": 0, "evidence": 0, "edges": 0, "nodes": 0, "graph_versions": 0}
+
+        if not self._pool:
+            async with self._lock:
+                target_node_ids = {
+                    node_id
+                    for node_id, row in self._nodes_by_id.items()
+                    if str(row.get("tenant_id") or "") == tenant_id
+                    and str(row.get("graph_file_id") or "") == graph_file_value
+                }
+                target_doc_ids = {
+                    str(row.get("doc_id") or "")
+                    for row in self._documents.values()
+                    if str(row.get("tenant_id") or "") == tenant_id
+                    and (not file_hash_value or str(row.get("file_hash") or "") == file_hash_value)
+                }
+
+                removed_alert_ids: List[str] = []
+                for alert_id, row in list(self._alerts.items()):
+                    if str(row.get("tenant_id") or "") != tenant_id:
+                        continue
+                    subject_node_id = str(row.get("subject_node_id") or "").strip()
+                    payload_hash = _payload_file_hash(row.get("payload"))
+                    if subject_node_id in target_node_ids or (file_hash_value and payload_hash == file_hash_value):
+                        removed_alert_ids.append(alert_id)
+                        removed = self._alerts.pop(alert_id, None)
+                        if removed and removed.get("alert_key"):
+                            self._alerts_by_key.pop((tenant_id, str(removed.get("alert_key"))), None)
+
+                removed_evidence_ids: List[str] = []
+                for evidence_id, row in list(self._evidence.items()):
+                    if str(row.get("tenant_id") or "") != tenant_id:
+                        continue
+                    if str(row.get("doc_id") or "") not in target_doc_ids:
+                        continue
+                    removed_evidence_ids.append(evidence_id)
+                    removed = self._evidence.pop(evidence_id, None)
+                    if removed and removed.get("evidence_key"):
+                        self._evidence_by_key.pop((tenant_id, str(removed.get("evidence_key"))), None)
+
+                removed_edge_ids: List[str] = []
+                for edge_id, row in list(self._edges_by_id.items()):
+                    if str(row.get("tenant_id") or "") != tenant_id:
+                        continue
+                    if str(row.get("graph_file_id") or "") != graph_file_value:
+                        continue
+                    removed_edge_ids.append(edge_id)
+                    removed = self._edges_by_id.pop(edge_id, None)
+                    if removed:
+                        key = (
+                            tenant_id,
+                            _graph_scope_key(str(removed.get("graph_file_id") or "").strip() or None),
+                            str(removed.get("source_node_id") or ""),
+                            str(removed.get("target_node_id") or ""),
+                            str(removed.get("relation_type") or ""),
+                        )
+                        self._edges.pop(key, None)
+
+                removed_node_ids: List[str] = []
+                for node_id, row in list(self._nodes_by_id.items()):
+                    if str(row.get("tenant_id") or "") != tenant_id:
+                        continue
+                    if str(row.get("graph_file_id") or "") != graph_file_value:
+                        continue
+                    removed_node_ids.append(node_id)
+                    removed = self._nodes_by_id.pop(node_id, None)
+                    if removed:
+                        key = (
+                            tenant_id,
+                            _graph_scope_key(str(removed.get("graph_file_id") or "").strip() or None),
+                            str(removed.get("node_type") or ""),
+                            str(removed.get("canonical_key") or ""),
+                        )
+                        self._nodes.pop(key, None)
+
+                removed_graph_version_ids: List[str] = []
+                for graph_version_id, row in list(self._graph_versions.items()):
+                    if str(row.get("tenant_id") or "") != tenant_id:
+                        continue
+                    if str(row.get("graph_file_id") or "") != graph_file_value:
+                        continue
+                    removed_graph_version_ids.append(graph_version_id)
+                    self._graph_versions.pop(graph_version_id, None)
+
+                removed_edge_id_set = set(removed_edge_ids)
+                removed_evidence_id_set = set(removed_evidence_ids)
+                self._edge_evidence = {
+                    key: value
+                    for key, value in self._edge_evidence.items()
+                    if key[0] not in removed_edge_id_set and key[1] not in removed_evidence_id_set
+                }
+
+                graph_file_row = self._graph_files.get(graph_file_value)
+                if graph_file_row:
+                    graph_file_row["active_version_id"] = None
+                    graph_file_row["node_count"] = 0
+                    graph_file_row["edge_count"] = 0
+                    graph_file_row["updated_at"] = _now()
+
+                return {
+                    "alerts": len(removed_alert_ids),
+                    "evidence": len(removed_evidence_ids),
+                    "edges": len(removed_edge_ids),
+                    "nodes": len(removed_node_ids),
+                    "graph_versions": len(removed_graph_version_ids),
+                }
+
+        async def _execute(conn_obj: Any) -> Dict[str, int]:
+            alert_rows = await conn_obj.fetch(
+                """
+                DELETE FROM module4.alerts
+                WHERE tenant_id = $1
+                  AND (
+                    subject_node_id IN (
+                        SELECT node_id
+                        FROM module4.nodes
+                        WHERE tenant_id = $1
+                          AND graph_file_id = $2::uuid
+                    )
+                    OR (
+                        $3::text IS NOT NULL
+                        AND COALESCE(payload->'context'->>'file_hash', payload->>'file_hash') = $3
+                    )
+                  )
+                RETURNING alert_id
+                """,
+                tenant_id,
+                graph_file_value,
+                file_hash_value,
+            )
+            evidence_rows = await conn_obj.fetch(
+                """
+                DELETE FROM module4.evidence
+                WHERE tenant_id = $1
+                  AND doc_id IN (
+                    SELECT doc_id
+                    FROM module4.documents
+                    WHERE tenant_id = $1
+                      AND ($2::text IS NULL OR file_hash = $2)
+                  )
+                RETURNING evidence_id
+                """,
+                tenant_id,
+                file_hash_value,
+            )
+            edge_rows = await conn_obj.fetch(
+                """
+                DELETE FROM module4.edges
+                WHERE tenant_id = $1
+                  AND graph_file_id = $2::uuid
+                RETURNING edge_id
+                """,
+                tenant_id,
+                graph_file_value,
+            )
+            node_rows = await conn_obj.fetch(
+                """
+                DELETE FROM module4.nodes
+                WHERE tenant_id = $1
+                  AND graph_file_id = $2::uuid
+                RETURNING node_id
+                """,
+                tenant_id,
+                graph_file_value,
+            )
+            graph_version_rows = await conn_obj.fetch(
+                """
+                DELETE FROM module4.graph_versions
+                WHERE tenant_id = $1
+                  AND graph_file_id = $2::uuid
+                RETURNING graph_version_id
+                """,
+                tenant_id,
+                graph_file_value,
+            )
+            await conn_obj.execute(
+                """
+                UPDATE module4.graph_files
+                SET active_version_id = NULL,
+                    node_count = 0,
+                    edge_count = 0,
+                    updated_at = NOW()
+                WHERE tenant_id = $1
+                  AND graph_file_id = $2::uuid
+                """,
+                tenant_id,
+                graph_file_value,
+            )
+            return {
+                "alerts": len(alert_rows),
+                "evidence": len(evidence_rows),
+                "edges": len(edge_rows),
+                "nodes": len(node_rows),
+                "graph_versions": len(graph_version_rows),
+            }
+
+        if conn is not None:
+            return await _execute(conn)
+        async with self.transaction() as acquired:
+            return await _execute(acquired)
 
     async def delete_tenant_graph_data(self, *, tenant_id: str) -> Dict[str, int]:
         if not self._pool:
@@ -1785,7 +2027,7 @@ class Module4Storage:
                 tenant_id, alert_key, rule_id, severity, status, subject_node_id, title, summary, risk_score, payload
             )
             VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8, $9::jsonb)
-            ON CONFLICT (tenant_id, alert_key)
+            ON CONFLICT (tenant_id, alert_key) WHERE alert_key IS NOT NULL
             DO UPDATE SET
                 rule_id = EXCLUDED.rule_id,
                 severity = EXCLUDED.severity,

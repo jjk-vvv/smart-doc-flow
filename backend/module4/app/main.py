@@ -935,6 +935,7 @@ async def _process_document(
     *,
     tenant_id: str,
     batch_id: str,
+    graph_file_id: Optional[str],
     doc: Dict[str, Any],
     field_rules: Sequence[Dict[str, Any]],
     document_rules: Sequence[Dict[str, Any]],
@@ -949,6 +950,13 @@ async def _process_document(
     ]
 
     async with storage.transaction() as db_conn:
+        if graph_file_id:
+            await storage.reset_graph_file_scope(
+                tenant_id=tenant_id,
+                graph_file_id=graph_file_id,
+                file_hash=file_hash,
+                conn=db_conn,
+            )
         doc_row = await storage.upsert_document(
             tenant_id=tenant_id,
             batch_id=batch_id,
@@ -960,6 +968,7 @@ async def _process_document(
         )
         doc_node = await storage.upsert_node(
             tenant_id=tenant_id,
+            graph_file_id=graph_file_id,
             node_type="Document",
             canonical_key=file_hash,
             display_name=file_name,
@@ -987,6 +996,7 @@ async def _process_document(
 
             field_node = await storage.upsert_node(
                 tenant_id=tenant_id,
+                graph_file_id=graph_file_id,
                 node_type="Field",
                 canonical_key=f"{file_hash}:{field_name}",
                 display_name=str(field_name),
@@ -1006,6 +1016,7 @@ async def _process_document(
 
             await storage.upsert_edge(
                 tenant_id=tenant_id,
+                graph_file_id=graph_file_id,
                 source_node_id=str(doc_node["node_id"]),
                 target_node_id=str(field_node["node_id"]),
                 relation_type="extracts",
@@ -1051,6 +1062,7 @@ async def _process_document(
         if errors:
             risk_node = await storage.upsert_node(
                 tenant_id=tenant_id,
+                graph_file_id=graph_file_id,
                 node_type="Risk",
                 canonical_key=f"{file_hash}:errors:{_risk_key('|'.join(errors))}",
                 display_name=f"{file_name} parsing errors",
@@ -1061,6 +1073,7 @@ async def _process_document(
             counters["nodes"] += 1
             await storage.upsert_edge(
                 tenant_id=tenant_id,
+                graph_file_id=graph_file_id,
                 source_node_id=str(doc_node["node_id"]),
                 target_node_id=str(risk_node["node_id"]),
                 relation_type="has_risk",
@@ -1075,6 +1088,7 @@ async def _process_document(
         for warning in soft_warnings[:6]:
             risk_node = await storage.upsert_node(
                 tenant_id=tenant_id,
+                graph_file_id=graph_file_id,
                 node_type="Risk",
                 canonical_key=f"{file_hash}:warning:{_risk_key(warning)}",
                 display_name=f"{file_name} warning",
@@ -1085,6 +1099,7 @@ async def _process_document(
             counters["nodes"] += 1
             await storage.upsert_edge(
                 tenant_id=tenant_id,
+                graph_file_id=graph_file_id,
                 source_node_id=str(doc_node["node_id"]),
                 target_node_id=str(risk_node["node_id"]),
                 relation_type="has_warning",
@@ -1153,6 +1168,7 @@ async def _process_document(
             if object_type in {"table", "figure"} and object_id:
                 target_node = await storage.upsert_node(
                     tenant_id=tenant_id,
+                    graph_file_id=graph_file_id,
                     node_type=object_type.title(),
                     canonical_key=f"{file_hash}:{object_type}:{object_id}",
                     display_name=object_id,
@@ -1168,6 +1184,7 @@ async def _process_document(
                 counters["nodes"] += 1
                 edge = await storage.upsert_edge(
                     tenant_id=tenant_id,
+                    graph_file_id=graph_file_id,
                     source_node_id=str(doc_node["node_id"]),
                     target_node_id=str(target_node["node_id"]),
                     relation_type="contains",
@@ -1200,6 +1217,7 @@ async def _process_document(
                     continue
                 tgt_node = await storage.upsert_node(
                     tenant_id=tenant_id,
+                    graph_file_id=graph_file_id,
                     node_type=target_type.title(),
                     canonical_key=f"{file_hash}:{target_type}:{target_id}",
                     display_name=target_id,
@@ -1210,6 +1228,7 @@ async def _process_document(
                 counters["nodes"] += 1
                 await storage.upsert_edge(
                     tenant_id=tenant_id,
+                    graph_file_id=graph_file_id,
                     source_node_id=src_id,
                     target_node_id=str(tgt_node["node_id"]),
                     relation_type="links_to",
@@ -1269,7 +1288,7 @@ async def _run_document_ingest_job(job_id: str, batch_id: str, payload: IngestRe
             "ingest_mode": "document",
             "stage": "processing_documents",
         }
-        await storage.upsert_graph_file(
+        graph_file = await storage.upsert_graph_file(
             tenant_id=tenant_id,
             file_hash=file_hash,
             file_name=file_name,
@@ -1283,10 +1302,12 @@ async def _run_document_ingest_job(job_id: str, batch_id: str, payload: IngestRe
             edge_count=0,
             metadata=processing_metadata,
         )
+        graph_file_id = str(graph_file.get("graph_file_id") or "").strip() or None
         try:
             counters = await _process_document(
                 tenant_id=tenant_id,
                 batch_id=batch_id,
+                graph_file_id=graph_file_id,
                 doc=doc,
                 field_rules=field_rules,
                 document_rules=document_rules,
@@ -1331,7 +1352,7 @@ async def _run_document_ingest_job(job_id: str, batch_id: str, payload: IngestRe
             metadata={**processing_metadata, "stage": "ready"},
             last_indexed_at=_now_utc(),
         )
-        await storage.add_graph_version(
+        graph_version = await storage.add_graph_version(
             tenant_id=tenant_id,
             file_hash=file_hash,
             job_id=job_id,
@@ -1349,6 +1370,14 @@ async def _run_document_ingest_job(job_id: str, batch_id: str, payload: IngestRe
                 "evidence": int(counters.get("evidence", 0) or 0),
             },
         )
+        graph_version_id = str(graph_version.get("graph_version_id") or "").strip() or None
+        if graph_file_id and graph_version_id:
+            await storage.assign_graph_version(
+                tenant_id=tenant_id,
+                graph_file_id=graph_file_id,
+                graph_version_id=graph_version_id,
+                workspace_id=None,
+            )
         progress = round((idx / max(1, total)) * 100.0, 2)
         await _update_job_stage(job_id, stage="processing_documents", progress=progress, base_result=agg)
     return agg

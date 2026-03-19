@@ -70,6 +70,13 @@ def test_storage_schema_uses_file_scoped_unique_indexes() -> None:
     assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_edges_graph_file_scope" in sql_text
 
 
+def test_partial_unique_indexes_have_matching_conflict_predicates() -> None:
+    storage_text = (MODULE4_DIR / "app" / "db" / "storage.py").read_text(encoding="utf-8")
+
+    assert "ON CONFLICT (tenant_id, evidence_key) WHERE evidence_key IS NOT NULL" in storage_text
+    assert "ON CONFLICT (tenant_id, alert_key) WHERE alert_key IS NOT NULL" in storage_text
+
+
 def test_ingest_graph_alert_and_evidence_flow() -> None:
     tenant_id = f"test-{uuid.uuid4().hex[:10]}"
     payload = {
@@ -184,6 +191,124 @@ def test_repeated_ingest_is_idempotent_for_same_payload() -> None:
         evidence_after = client.get(f"/module4/evidence?tenant_id={tenant_id}&page=1&page_size=50").json()
         assert alerts_after["total"] == alerts_before["total"]
         assert evidence_after["total"] == evidence_before["total"]
+
+
+def test_reingest_replaces_file_scoped_graph_rows_instead_of_mixing_versions() -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+    file_hash = f"hash-{uuid.uuid4().hex[:8]}"
+    payload = IngestRequest(
+        tenant_id=tenant_id,
+        source="module2",
+        source_batch_key=f"batch-{uuid.uuid4().hex[:8]}",
+        documents=[
+            {
+                "file_name": "mixed_scope.pdf",
+                "file_hash": file_hash,
+                "track": "replace-a",
+                "result": {
+                    "amount": {"value": "12000", "confidence": 0.41, "source_ref_id": "r1"},
+                    "buyer": {"value": "Acme", "confidence": 0.92, "source_ref_id": "r2"},
+                },
+                "errors": ["parse mismatch"],
+                "trace_hits": [
+                    {
+                        "object_type": "table",
+                        "object_id": "table-1",
+                        "page": 2,
+                        "snippet": "first table",
+                        "confidence": 0.81,
+                    }
+                ],
+            }
+        ],
+    )
+
+    asyncio.run(module4_main._run_document_ingest_job("job-a", "batch-a", payload))
+    graph_file = asyncio.run(module4_main.storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash))
+    assert graph_file is not None
+    graph_file_id = str(graph_file["graph_file_id"])
+
+    polluted_node = asyncio.run(
+        module4_main.storage.upsert_node(
+            tenant_id=tenant_id,
+            graph_file_id=graph_file_id,
+            graph_version_id="stale-version",
+            node_type="Entity",
+            canonical_key=f"{file_hash}:entity:legacy",
+            display_name="legacy entity",
+            attrs={"file_hash": file_hash, "workspace_id": "legacy-workspace"},
+            confidence=0.93,
+        )
+    )
+    document_node = next(
+        row
+        for row in module4_main.storage._nodes_by_id.values()
+        if str(row.get("tenant_id") or "") == tenant_id
+        and str(row.get("graph_file_id") or "") == graph_file_id
+        and str(row.get("node_type") or "") == "Document"
+    )
+    asyncio.run(
+        module4_main.storage.upsert_edge(
+            tenant_id=tenant_id,
+            graph_file_id=graph_file_id,
+            graph_version_id="stale-version",
+            source_node_id=str(document_node["node_id"]),
+            target_node_id=str(polluted_node["node_id"]),
+            relation_type="mentions",
+            direction="out",
+            attrs={"file_hash": file_hash},
+            confidence=0.77,
+            risk_score=0.0,
+        )
+    )
+    asyncio.run(
+        module4_main.storage.insert_alert(
+            tenant_id=tenant_id,
+            rule_id="RULE_DOC_ERRORS",
+            severity="orange",
+            subject_node_id=str(polluted_node["node_id"]),
+            title="legacy polluted alert",
+            summary="legacy polluted alert",
+            risk_score=88.0,
+            payload={"context": {"file_hash": file_hash}},
+        )
+    )
+
+    rerun_payload = payload.model_copy(update={"source_batch_key": f"batch-{uuid.uuid4().hex[:8]}"})
+    asyncio.run(module4_main._run_document_ingest_job("job-b", "batch-b", rerun_payload))
+
+    file_nodes, file_edges = asyncio.run(
+        module4_main.storage.list_graph_for_file(
+            tenant_id=tenant_id,
+            file_hash=file_hash,
+            node_types=None,
+            relation_types=None,
+            limit_nodes=500,
+            limit_edges=500,
+        )
+    )
+    node_types = {str(row.get("node_type") or "") for row in file_nodes}
+    assert "Entity" not in node_types
+    assert {"Document", "Field"}.issubset(node_types)
+    assert all(str(row.get("relation_type") or "") != "mentions" for row in file_edges)
+
+    _total_alerts, alerts = asyncio.run(
+        module4_main.storage.list_alerts(
+            tenant_id=tenant_id,
+            status=None,
+            severity=None,
+            rule_id=None,
+            page=1,
+            page_size=50,
+        )
+    )
+    assert all(str(item.get("title") or "") != "legacy polluted alert" for item in alerts)
+
+    graph_file_after = asyncio.run(module4_main.storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash))
+    assert graph_file_after is not None
+    assert int(graph_file_after["node_count"]) == len(file_nodes)
+    assert int(graph_file_after["edge_count"]) == len(file_edges)
+    assert len(module4_main.storage._graph_versions) == 1
 
 def test_legacy_upload_sync_endpoint_is_not_available() -> None:
     payload = {

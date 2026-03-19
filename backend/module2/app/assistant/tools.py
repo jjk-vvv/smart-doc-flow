@@ -52,9 +52,6 @@ SUMMARY_HINTS = (
     "看点",
     "重点",
     "亮点",
-    "异常",
-    "风险",
-    "问题",
 )
 TABLE_HINTS = ("表", "表格", "sheet", "xlsx", "行", "列", "站点", "监测值", "那一行", "该行", "这一行")
 ROW_FOLLOWUP_HINTS = ("那一行", "该行", "这一行", "同一行", "继续", "继续看", "继续说明", "那行")
@@ -403,6 +400,65 @@ def _looks_like_database_explanation_query(text: str) -> bool:
     return not any(marker in query for marker in direct_action_markers)
 
 
+def _looks_like_scan_pipeline_question(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    stage_tokens = (
+        "分阶段",
+        "分段处理",
+        "阶段处理",
+        "一步一步",
+        "怎么处理才稳",
+        "后面的抽取",
+        "问答和落库",
+    )
+    scan_tokens = (
+        "扫描文档",
+        "扫描件",
+        "质量一般",
+        "版式不规整",
+        "版式也不规整",
+        "低质量",
+    )
+    return any(token in text for token in stage_tokens) and any(token in text for token in scan_tokens)
+
+
+def _looks_like_binding_recovery_question(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    why_tokens = ("为什么", "更难", "更麻烦", "难点", "麻烦")
+    binding_tokens = ("绑定", "结构恢复", "行列归属", "字段映射", "上下文收紧")
+    return any(token in text for token in why_tokens) and any(token in text for token in binding_tokens)
+
+
+def _question_mentions_current_material(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    direct_tokens = (
+        "当前这份",
+        "这份文档",
+        "这份材料",
+        "当前文档",
+        "这份表格",
+        "这张表",
+        "这个表",
+        "当前这张表",
+        "当前对象",
+        "锁定对象",
+        "当前锁定对象",
+        "刚才那条",
+        "刚才那一行",
+        "上一条记录",
+        "这张图",
+        "这个图片",
+        "沿着刚才",
+    )
+    return any(token in text for token in direct_tokens)
+
+
 def classify_route(
     *,
     user_message: str,
@@ -416,6 +472,9 @@ def classify_route(
     wants_table = any(hint in text for hint in TABLE_HINTS)
     wants_knowledge = any(hint in text for hint in KNOWLEDGE_HINTS)
     wants_explanation = any(hint in text for hint in EXPLANATORY_QUESTION_HINTS)
+    wants_risk_review = _looks_like_risk_review_question(text)
+    wants_scan_pipeline = _looks_like_scan_pipeline_question(text)
+    wants_binding_recovery = _looks_like_binding_recovery_question(text)
     explicit_database_action = any(hint in text for hint in SQL_HINTS) or any(hint in text for hint in EXPLICIT_DATABASE_ACTION_HINTS)
     mentions_database = explicit_database_action or any(hint in text for hint in PERSIST_HINTS)
     database_explanation = (wants_knowledge or wants_explanation) and mentions_database and _looks_like_database_explanation_query(text)
@@ -438,9 +497,15 @@ def classify_route(
     if current_object_lock and str(current_object_lock.get("lock_type", "")).lower() == "table_row" and _followup_row_query(text):
         return "table_lookup"
 
+    if wants_risk_review and (wants_table or bool(current_object_lock) or bool(payload.get("tables"))):
+        return "knowledge_explain"
+    if wants_scan_pipeline or wants_binding_recovery:
+        return "knowledge_explain"
+    if wants_explanation and wants_table and not _query_requests_explicit_value_field(text):
+        return "knowledge_explain"
     if wants_summary:
         return "document_summary"
-    if wants_knowledge:
+    if wants_knowledge or wants_explanation:
         return "knowledge_explain"
     if wants_table:
         return "table_lookup"
@@ -2348,15 +2413,16 @@ def _focus_label(current_focus: Dict[str, Any]) -> str:
     if not isinstance(current_focus, dict) or not current_focus:
         return ""
     quality_raw = str(current_focus.get("lock_quality") or "").strip().lower()
-    quality_map = {
-        LOCK_QUALITY_STABLE: "定位已经比较稳定",
-        LOCK_QUALITY_WEAK: "定位还有一点浮动",
-        LOCK_QUALITY_NONE: "还没有完全锁稳",
-    }
     subject = _focus_subject(current_focus)
     if not subject:
         return ""
-    return f"你现在追问的是{subject}，{quality_map.get(quality_raw, '当前定位状态还需要再确认')}。"
+    if quality_raw == LOCK_QUALITY_STABLE:
+        return f"现在先按{subject}往下看。"
+    if quality_raw == LOCK_QUALITY_WEAK:
+        return f"现在先按{subject}往下看，不过这条定位还有一点浮动。"
+    if quality_raw == LOCK_QUALITY_NONE:
+        return f"现在能对上的主要是{subject}，但还没完全锁稳。"
+    return f"现在先按{subject}往下看。"
 
 
 def _find_preview_cell(preview_cells: List[Dict[str, Any]], *header_candidates: str) -> Optional[Dict[str, Any]]:
@@ -2701,7 +2767,11 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
         question = str(answer_context.get("user_question") or "").strip()
         document_overview = answer_context.get("document_overview") if isinstance(answer_context.get("document_overview"), dict) else {}
         overview_text = _overview_counts_text(document_overview)
+        current_focus = document_overview.get("current_focus") if isinstance(document_overview.get("current_focus"), dict) else {}
+        focus_subject = _focus_subject(current_focus)
+        priority_checks = _document_summary_priority_checks(document_overview)
         question_lower = question.lower()
+        mentions_current_material = _question_mentions_current_material(question)
         doc_bridge = ""
         if "ocr" in question_lower and any(token in question for token in ("版面", "布局", "版面分析", "布局分析", "区别")):
             lines = [
@@ -2710,14 +2780,14 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
                 "OCR 主要看“这块区域里写了什么字”，重点是把扫描件、图片或截图里的文字认出来；"
                 "版面分析看的是“这些内容在页面上怎么组织”，比如标题、正文、表格、图片、页眉页脚、脚注之间是什么关系。",
                 "",
-                "之所以一定要把两者分开，是因为只做 OCR 往往只能拿到字面文本，"
-                "但阅读顺序、列关系、表头归属、跨行跨列这些真正影响语义的结构信息很容易丢。"
-                "更稳一点的做法是先把页面区域和阅读顺序理出来，再决定哪些区域走 OCR、哪些区域走表格恢复、哪些区域走图片理解。",
+                "只做 OCR，往往只能拿到字面文本。可真正影响语义的，通常是阅读顺序、列关系、表头归属、跨行跨列这些结构信息。"
+                "所以更稳一点的做法，是先把页面区域和阅读顺序理出来，再决定哪些区域走 OCR、哪些区域走表格恢复、哪些区域走图片理解。",
                 "",
                 "你可以先粗一点理解成：OCR 更像“认字”，版面分析更像“把页面关系理顺”。"
                 "真到实际处理里，很多错不在单个字，而在这个值到底还归不归原来那一行、那一列。",
             ]
-            doc_bridge = "拿你现在这份表来说，真正要盯的不是某个字认得像不像，而是每个值有没有回到对的行和列里。"
+            if mentions_current_material:
+                doc_bridge = "放到你当前这份材料里，真正要盯的不是某个字认得像不像，而是每个值有没有回到对的行和列里。"
         elif any(token in question for token in ("表格恢复", "表格抽取", "表格识别", "单元格", "跨行", "跨列")):
             lines = [
                 "表格抽取得好不好，关键不只是把字认出来，更关键的是行列关系有没有还原对。",
@@ -2725,14 +2795,15 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
                 "比较稳的做法是：先找出页面里哪里是表格，再恢复单元格网格，接着做单元格文本识别，"
                 "最后把多级表头、合并单元格、跨行跨列关系补回来，让每个值都能落到明确的行和列上。",
                 "",
-                "最容易翻车的一般不在 OCR 本身，而在结构恢复这一步："
+                "最容易翻车的一般不在 OCR 本身，而在结构恢复这一步。"
                 "比如表头换行、多层标题、单位写在表头而不是单元格、截图表格没有明显边线、表格被图片压得很糊。"
                 "这里只要歪一次，后面的字段绑定、入库和问答基本都会跟着漂。",
                 "",
                 "所以别只看“识别出多少字”，还要看“这个值到底属于哪一行、哪一列、哪一个表头语义”。"
                 "这也是为什么表格问答一定要强调上下文锁定，不能只凭一个相似数字就往下答。",
             ]
-            doc_bridge = "放到你当前这份文档里，这一步最值得盯的是表头归属、行列对齐，以及同一条记录能不能连续追问而不漂。"
+            if mentions_current_material:
+                doc_bridge = "放到你当前这份文档里，这一步最值得盯的是表头归属、行列对齐，以及同一条记录能不能连续追问而不漂。"
         elif (
             any(token in question_lower for token in ("sql", "nl2sql"))
             or any(token in question for token in ("数据库", "增删改查"))
@@ -2757,29 +2828,93 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
                 "",
                 "简单说，好的 NL2SQL 不是“让模型直接写库”，而是“让模型先给候选动作，再用规则、确认和审计把风险压下来”。",
             ]
-            doc_bridge = "拿你现在这份文档说，表格已经能继续追问，不代表字段映射和入库条件已经完全稳定，所以中间这层预览、确认和审计不能省。"
+            if mentions_current_material:
+                doc_bridge = "拿你现在这份文档说，表格已经能继续追问，不代表字段映射和入库条件已经完全稳定，所以中间这层预览、确认和审计不能省。"
+        elif _looks_like_risk_review_question(question):
+            lines = [
+                "这份表现在最值得先核的，不是某个数字本身，而是这一行记录有没有被稳稳锁在同一个对象上。",
+            ]
+            if focus_subject:
+                lines.extend(["", f"如果沿着{focus_subject}继续看，我会先盯这几件事："])
+            if priority_checks:
+                lines.append("")
+                for item in priority_checks:
+                    lines.append(f"- {item}")
+            else:
+                lines.extend(
+                    [
+                        "",
+                        "- 先核对对象锚点是不是同一条记录，比如名称、编码、时间这些标识有没有一起对上。",
+                        "- 再核对值列有没有列错位，尤其是指标值、污染类型、时间戳这类会一起被引用的列。",
+                        "- 最后核对字段映射有没有收紧，别把表里的列名直接当成最终业务字段去入库。",
+                    ]
+                )
+            if overview_text and mentions_current_material:
+                lines.extend(["", f"就这张表现在的识别状态看，{overview_text}"])
+            lines.extend(["", "前两项如果没锁稳，后面的继续追问、异常判断和入库都会跟着受影响。"])
+            return "\n".join(lines).strip()
+        elif _looks_like_scan_pipeline_question(question):
+            lines = [
+                "这种质量一般、版式也不规整的扫描件，别急着直接抽。稳一点通常分五段来做。",
+                "",
+                "第一段先过质量门槛。先看分辨率够不够、页面有没有明显倾斜、阴影、遮挡、裁切不完整、页序混乱、表格线断裂。"
+                "如果某几页已经糊到会系统性误识别，就别硬往下跑，直接打回重扫，或者先放进低置信人工复核。",
+                "",
+                "第二段再做图像清洗。这里通常要处理纠偏、去噪、增强对比、去阴影、裁边；有表格的话，还要尽量把边线和分隔关系稳住。"
+                "这一步不是为了图像好看，而是为了减少 OCR 和版面恢复的系统性偏差。",
+                "",
+                "第三段才是结构恢复。先把标题、正文、表格、图片拆开，再恢复阅读顺序和表格网格。"
+                "多级表头、合并单元格、跨页表格、脚注单位这些东西都要在这一层收回来，不然后面值就算认对了，也会挂错对象。",
+                "",
+                "第四段再做字段抽取和校验。这里要把字段标准化、单位归一、值和来源片段绑定、行列锚定、异常值和缺失值标记一起做。"
+                "低置信结果不要直接当真值，最好保留候选、置信度和待复核状态。",
+                "",
+                "第五段最后才接问答和落库。问答只回答已经锁稳的对象，入库前先做表结构映射、SQL 预览、影响范围确认和审计。"
+                "哪一层不稳，就在哪一层回退，不要让后面的问答和写库替前面的识别错误背锅。",
+            ]
+            return "\n".join(lines).strip()
+        elif _looks_like_binding_recovery_question(question):
+            lines = [
+                "很多时候字其实已经认出来了，真正麻烦的是认出来以后谁跟谁配对。",
+                "",
+                "OCR 出错常常还是局部错误，比如一个字母、一个数字识别偏了。绑定和结构恢复不是这样。"
+                "它一旦歪，往往是整行、整列、整块区域一起歪。表头挂错了、单位挂错了、跨行跨列没还原对，后面一串字段都会跟着偏。",
+                "",
+                "更麻烦的是，它处理的不是单个字符，而是关系。这个值到底属于哪一行，哪一列，挂在哪个表头下面，"
+                "是不是和同一条记录的时间、对象、指标一起出现，这些都要靠上下文来收紧。值本身可能没错，但对象一绑错，结果就已经不能用了。",
+                "",
+                "真实文档里最常见的坑就是这些：多级表头、合并单元格、跨页表格、脚注单位、同名对象、同页上的相似数值。"
+                "这些场景里，OCR 只负责把字认出来，真正决定结果能不能用的是结构恢复和对象绑定。",
+                "",
+                "所以工程上大家最后花时间最多的，往往不是继续抠 OCR 准确率，而是补证据链。"
+                "要把值、来源片段、表头、行列位置、当前对象锁定关系一起绑住，不然后面的问答、抽取复核和入库都会一起漂。",
+            ]
+            if focus_subject and mentions_current_material:
+                lines.extend(["", f"拿你当前这份材料来说，沿着{focus_subject}继续问之所以能不能答稳，核心就看这些绑定关系有没有收紧。"])
+            elif overview_text and mentions_current_material:
+                lines.extend(["", f"拿你当前这份材料来说，{overview_text}"])
+            return "\n".join(lines).strip()
         else:
             lines = [
-                "别把非结构化文档处理看成一个单点能力，它更像一条分层流水线。",
+                "别把非结构化文档处理看成一个单点能力。更实际一点，它就是先看懂文档，再把事实绑起来，最后再让结果安全可用。",
                 "",
-                "前半段处理“看懂文档”：包括文件解析、OCR、版面分析、表格恢复、图片和图表理解、阅读顺序恢复；"
-                "中间层处理“把事实组织起来”：例如字段抽取、值和来源片段绑定、行列锚定、图表对象建模、置信度评估；"
-                "后半段处理“让结果可用”：例如问答、检索、入库、SQL 操作预览、审计与回溯。",
+                "前半段是文件解析、OCR、版面分析、表格恢复、图片和图表理解。"
+                "中间段是字段抽取、值和来源片段绑定、行列锚定、图表对象建模和置信度评估。"
+                "最后一段才是问答、检索、入库、SQL 预览和审计回溯。",
                 "",
-                "真会影响体验的，不是某个模型单点有多强，而是证据链有没有闭合。"
-                "用户问一个值时，系统最好不仅能回答值，还能说清这个值是不是已经锁稳、能不能继续追问、后续能不能安全入库。",
+                "真正影响体验的，不是某个模型单点强不强，而是证据链有没有闭合。"
+                "用户问一个值时，系统最好不只是答出数字，还要知道这个值是不是已经锁稳、能不能继续追问、后面能不能安全入库。",
                 "",
-                "所以要是你希望助手既能回答文档内容，又能帮用户理解方法论，比较稳的做法是把“抽取事实”和“解释知识”分成两种回答模式，"
-                "但共用同一份文档上下文和证据能力。",
+                "所以这类助手通常会把“抽取事实”和“解释知识”分成两种回答方式，"
+                "但底层还是共用同一份文档上下文和证据能力。",
             ]
-            doc_bridge = "落到你当前这份文档上，最关键的还是先把可追问对象锁稳，再去谈问答、入库和后续操作。"
-        if overview_text and not doc_bridge:
+            if mentions_current_material:
+                doc_bridge = "落到你当前这份文档上，最关键的还是先把可追问对象锁稳，再去谈问答、入库和后续操作。"
+        if overview_text and not doc_bridge and mentions_current_material:
             doc_bridge = f"拿你当前这份文档说，{overview_text}"
         if doc_bridge:
             lines.append("")
             lines.append(doc_bridge)
-        lines.append("")
-        lines.append("真要把它做稳，先守住两条线：证据别漂，执行别越界。")
         return "\n".join(lines).strip()
 
     if route_key == "document_summary":
@@ -2790,8 +2925,23 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
         summary_text = str(answer_context.get("summary_text") or "").strip() or "暂无摘要。"
         evidence_scope = str(answer_context.get("evidence_scope") or "").strip().rstrip("。；; ")
         priority_checks = _document_summary_priority_checks(answer_context)
+        row_preview = current_focus.get("row_preview") if isinstance(current_focus.get("row_preview"), list) else []
+        anchor_bits: List[str] = []
+        metric_bits: List[str] = []
+        for header_candidates in (("站点名称", "站点"), ("站点编码", "编码"), ("监测时间", "时间")):
+            cell = _find_preview_cell(row_preview, *header_candidates)
+            header = str((cell or {}).get("header") or "").strip()
+            text = str((cell or {}).get("text") or "").strip()
+            if header and text:
+                anchor_bits.append(f"{header}={text}")
+        for header_candidates in (("空气质量指数", "AQI"), ("PM10",), ("PM2.5", "PM25"), ("污染类型",)):
+            cell = _find_preview_cell(row_preview, *header_candidates)
+            header = str((cell or {}).get("header") or "").strip()
+            text = str((cell or {}).get("text") or "").strip()
+            if header and text:
+                metric_bits.append(f"{header}={text}")
         if _looks_like_risk_review_question(question):
-            lines = ["这份表我会先盯这几件事。"]
+            lines = ["这份表现在最该先核的，主要是这几处。"]
             if focus_line:
                 lines.extend(["", focus_line])
             if priority_checks:
@@ -2800,7 +2950,60 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
                     lines.append(f"- {item}")
             elif overview_text:
                 lines.extend(["", overview_text])
-            lines.extend(["", "如果你接下来要做人工复核或准备入库，我建议先按“对象锁定、列对齐、字段映射”这个顺序过一遍。"])
+            return "\n".join(lines).strip()
+
+        wants_focus_then_global = all(token in question for token in ("先", "再")) and any(
+            token in question for token in ("当前锁定对象", "锁定对象", "当前对象", "刚才那条", "这张表")
+        ) and any(token in question for token in ("全局概览", "整体", "全局", "大致讲了什么", "主要讲了什么"))
+        wants_stable_split = any(token in question for token in ("比较稳定", "谨慎校对", "还需要校对", "还要再核"))
+        if wants_focus_then_global and wants_stable_split:
+            lines: List[str] = []
+            focus_subject = _focus_subject(current_focus)
+            if focus_subject:
+                focus_sentence = f"先说当前锁定对象：现在最稳的是{focus_subject}"
+                if anchor_bits:
+                    focus_sentence += "，已经能对上" + "、".join(anchor_bits[:3])
+                if metric_bits:
+                    focus_sentence += "，而且这条记录里还能直接看到" + "、".join(metric_bits[:3])
+                lines.append(focus_sentence + "。")
+            elif focus_line:
+                lines.append(focus_line)
+
+            global_sentence = "再看整体，这份材料当前更像是在呈现一张结构化监测数据表。"
+            if summary_text and summary_text != "暂无摘要。":
+                global_sentence = f"再看整体，它当前主要是在讲：{summary_text}"
+            elif overview_text:
+                global_sentence = f"再看整体，{overview_text}"
+            lines.extend(["", global_sentence])
+
+            stable_parts: List[str] = []
+            if focus_subject:
+                stable_parts.append(f"{focus_subject}本身")
+            if anchor_bits:
+                stable_parts.append("对象锚点")
+            if metric_bits:
+                stable_parts.append("已经对上的指标值")
+            stable_sentence = "比较稳的部分，主要是当前锁定记录和已经对齐的字段值。"
+            if stable_parts:
+                stable_sentence = "比较稳的部分，主要是" + "、".join(stable_parts[:4]) + "。"
+            lines.extend(["", stable_sentence])
+
+            caution_parts: List[str] = []
+            if priority_checks:
+                caution_parts.extend(priority_checks[:2])
+            if not caution_parts and evidence_scope:
+                caution_parts.append(f"当前概览的覆盖范围大致还停留在：{evidence_scope}。")
+            if not caution_parts:
+                caution_parts.extend(
+                    [
+                        "整张表的字段映射还要继续收紧，尤其是列名和业务字段之间的对应关系。",
+                        "局部记录已经能追问，不等于已经可以直接代表整份文档的全量结论。",
+                    ]
+                )
+            lines.append("")
+            lines.append("还要继续核的，主要在这几块：")
+            for item in caution_parts[:3]:
+                lines.append(f"- {item}")
             return "\n".join(lines).strip()
 
         lines = ["先说我现在能比较稳地确认的部分。"]
@@ -2814,10 +3017,6 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
             if overview_text:
                 lines.extend(["", overview_text])
             lines.extend(["", "现在还没有足够完整的整文摘要，所以这轮更适合作局部概览，不适合直接当成全量复盘。"])
-            if priority_checks:
-                lines.extend(["", "如果你接下来要继续深挖，我会先盯这几件事："])
-                for item in priority_checks[:3]:
-                    lines.append(f"- {item}")
         if evidence_scope:
             lines.extend(["", f"这轮判断主要还是基于当前已经抽出来的结果，范围大致在：{evidence_scope}。"])
         return "\n".join(lines).strip()
@@ -2939,30 +3138,25 @@ def fallback_answer(route: str, answer_context: Dict[str, Any]) -> str:
         summary_text = str(answer_context.get("summary_text") or "").strip()
         live_web_result_available = bool(answer_context.get("live_web_result_available"))
         lines = [
-            "可以，我先把边界拆开说。",
-            "",
-            "先说文档里现在能确认的部分。",
+            "如果你问的是“最新规范”或“最新做法”，我先把边界说清楚：没有实时外部结果时，我不能把通用经验当成刚核实过的最新结论。",
         ]
         if overview_text:
-            lines.append(overview_text)
+            lines.extend(["", "先看当前文档里已经能确认的部分。", overview_text])
         else:
-            lines.append("基于当前这份文档，我可以先帮你做抽取、核对和解释，但这不等于已经拿到了外部最新规范。")
+            lines.extend(["", "先看当前文档里已经能确认的部分。", "基于当前这份文档，我可以先帮你做抽取、核对和解释，但这不等于已经拿到了外部最新规范。"])
         if summary_text:
             lines.extend(["", f"如果只看这份材料，它当前更像是在讲：{summary_text}"])
         lines.extend(
             [
                 "",
-                "再说通用经验。对这类数据处理任务，通常会重点盯数据来源、时间粒度、字段单位、异常值处理和入库前复核这些环节。",
-                "",
-                "最后是必须联网再核的部分。凡是你问“最新规范”“最新政策”“最近最佳实践”这类问题，我都建议重新查外部来源，"
-                "而且最好把来源、发布时间和链接一起带上。",
+                "再放到通用做法上，这类数据处理任务通常要重点盯数据来源、时间粒度、字段单位、异常值处理和入库前复核这些环节。",
             ]
         )
         if not live_web_result_available:
             lines.extend(
                 [
                     "",
-                    "所以这轮我能负责的是先把文档内证据和通用做法讲清楚；凡是涉及“最新”的判断，我会明确告诉你还差联网核验。",
+                    "真正涉及“最新”的那部分，还是要补外部来源再核一次，最好连来源和发布时间一起带上。",
                 ]
             )
         return "\n".join(lines).strip()

@@ -328,6 +328,10 @@ class NativeDocumentParser:
             self.visual_first_max_pages,
             max(1, int(os.getenv("MODULE2_VISUAL_FIRST_MAX_PAGES_SCANNED", "72"))),
         )
+        self.visual_text_only_min_chars = max(
+            20,
+            int(os.getenv("MODULE2_VISUAL_TEXT_ONLY_MIN_CHARS", "80")),
+        )
         self.visual_max_objects = max(8, int(os.getenv("MODULE2_VISUAL_MAX_OBJECTS", "220")))
         self.visual_table_max_per_page = max(
             1,
@@ -1020,7 +1024,42 @@ class NativeDocumentParser:
         )
         layout_extract_ms = int((time.perf_counter() - layout_t0) * 1000)
         self._last_mineru_run_meta = layout.get_last_run_meta()
+        native_page_lines: Dict[int, List[str]] = {}
+        native_page_chunks: Dict[int, List[str]] = {}
+        native_context_t0 = time.perf_counter()
+        for page_idx in range(page_count):
+            page_no = page_idx + 1
+            try:
+                raw_text = reader.pages[page_idx].extract_text() or ""
+            except Exception:
+                raw_text = ""
+            text = self._normalize_text(raw_text)
+            chunks = self._split_page_text(text)
+            if chunks:
+                native_page_chunks[page_no] = list(chunks)
+
+            lines = [self._normalize_text(x) for x in raw_text.splitlines()]
+            lines = [x for x in lines if x]
+            if lines:
+                native_page_lines[page_no] = lines[:120]
+        native_context_ms = int((time.perf_counter() - native_context_t0) * 1000)
+        merge_context_t0 = time.perf_counter()
+        page_lines = self._merge_page_line_context(native_page_lines, mineru_page_lines)
+        merge_context_ms = int((time.perf_counter() - merge_context_t0) * 1000)
+
         if not objects:
+            text_only_result = self._build_visual_text_only_result(
+                page_lines=page_lines,
+                page_count=page_count,
+                visual_t0=visual_t0,
+                layout_extract_ms=layout_extract_ms,
+                native_context_ms=native_context_ms,
+                merge_context_ms=merge_context_ms,
+                failure_reason="no_layout_objects",
+                layout_object_count=0,
+            )
+            if text_only_result is not None:
+                return text_only_result
             self._last_parse_stats = {
                 "pipeline": "visual_first",
                 "visual_page_count": int(page_count),
@@ -1034,35 +1073,18 @@ class NativeDocumentParser:
 
         parts: List[str] = []
         bbox_map: Dict[str, List[float]] = {}
-        native_page_lines: Dict[int, List[str]] = {}
-        native_context_t0 = time.perf_counter()
-        for page_idx in range(page_count):
-            page_no = page_idx + 1
-            try:
-                raw_text = reader.pages[page_idx].extract_text() or ""
-            except Exception:
-                raw_text = ""
-            text = self._normalize_text(raw_text)
-            chunks = self._split_page_text(text)
+        page_dims = self._build_page_dimensions(reader=reader, page_count=page_count)
+        for page_no in range(1, page_count + 1):
+            chunks = native_page_chunks.get(page_no, [])
             if chunks:
                 for chunk_idx, chunk in enumerate(chunks, start=1):
                     ref_id = f"p{page_no}_c{chunk_idx}"
                     self._append_ref(parts, bbox_map, ref_id, chunk, [float(page_no), 0.0, 0.0, 1.0, 1.0])
-            else:
-                ref_id = f"p{page_no}_c1"
-                placeholder = f"[Page {page_no}] No extractable native text."
-                self._append_ref(parts, bbox_map, ref_id, placeholder, [float(page_no), 0.0, 0.0, 1.0, 1.0])
+                continue
+            ref_id = f"p{page_no}_c1"
+            placeholder = f"[Page {page_no}] No extractable native text."
+            self._append_ref(parts, bbox_map, ref_id, placeholder, [float(page_no), 0.0, 0.0, 1.0, 1.0])
 
-            lines = [self._normalize_text(x) for x in raw_text.splitlines()]
-            lines = [x for x in lines if x]
-            if lines:
-                native_page_lines[page_no] = lines[:120]
-        native_context_ms = int((time.perf_counter() - native_context_t0) * 1000)
-
-        merge_context_t0 = time.perf_counter()
-        page_lines = self._merge_page_line_context(native_page_lines, mineru_page_lines)
-        page_dims = self._build_page_dimensions(reader=reader, page_count=page_count)
-        merge_context_ms = int((time.perf_counter() - merge_context_t0) * 1000)
         select_t0 = time.perf_counter()
         selected_objects, object_selection_stats = self._prioritize_layout_objects(
             objects,
@@ -1072,6 +1094,20 @@ class NativeDocumentParser:
         )
         select_ms = int((time.perf_counter() - select_t0) * 1000)
         if not selected_objects:
+            text_only_result = self._build_visual_text_only_result(
+                page_lines=page_lines,
+                page_count=page_count,
+                visual_t0=visual_t0,
+                layout_extract_ms=layout_extract_ms,
+                native_context_ms=native_context_ms,
+                merge_context_ms=merge_context_ms,
+                select_ms=select_ms,
+                failure_reason="no_selected_objects",
+                layout_object_count=len(objects),
+                object_selection_stats=object_selection_stats,
+            )
+            if text_only_result is not None:
+                return text_only_result
             self._last_parse_stats = {
                 "pipeline": "visual_first",
                 "visual_page_count": int(page_count),
@@ -1282,6 +1318,69 @@ class NativeDocumentParser:
             self._last_parse_stats["mineru_run"] = dict(self._last_mineru_run_meta)
         self._last_figure_blocks = figure_blocks
         return "\n".join(parts), bbox_map, table_blocks
+
+    def _build_visual_text_only_result(
+        self,
+        *,
+        page_lines: Dict[int, List[str]],
+        page_count: int,
+        visual_t0: float,
+        layout_extract_ms: int,
+        native_context_ms: int,
+        merge_context_ms: int,
+        failure_reason: str,
+        layout_object_count: int,
+        select_ms: int = 0,
+        object_selection_stats: Dict[str, Any] | None = None,
+    ) -> Optional[Tuple[str, Dict[str, List[float]], TableBlocks]]:
+        parts: List[str] = []
+        bbox_map: Dict[str, List[float]] = {}
+        text_char_count = 0
+        for page_no in range(1, max(1, int(page_count)) + 1):
+            lines = [self._normalize_text(x) for x in page_lines.get(page_no, [])]
+            lines = [x for x in lines if x]
+            if not lines:
+                placeholder = f"[Page {page_no}] No extractable visual text."
+                self._append_ref(parts, bbox_map, f"p{page_no}_c1", placeholder, [float(page_no), 0.0, 0.0, 1.0, 1.0])
+                continue
+            merged_text = "\n".join(lines)
+            chunks = self._split_page_text(merged_text)
+            if not chunks:
+                chunks = [merged_text[:700]]
+            for chunk_idx, chunk in enumerate(chunks, start=1):
+                text_char_count += len(chunk)
+                ref_id = f"p{page_no}_c{chunk_idx}"
+                self._append_ref(parts, bbox_map, ref_id, chunk, [float(page_no), 0.0, 0.0, 1.0, 1.0])
+
+        if text_char_count < self.visual_text_only_min_chars:
+            return None
+
+        stats: Dict[str, Any] = {
+            "pipeline": "visual_first",
+            "visual_mode": "text_only",
+            "visual_text_only": True,
+            "visual_text_only_recovery": failure_reason,
+            "visual_page_count": int(page_count),
+            "visual_layout_object_count": int(layout_object_count),
+            "visual_ref_count": len(bbox_map),
+            "visual_text_char_count": int(text_char_count),
+            "visual_table_count": 0,
+            "visual_figure_count": 0,
+            "visual_phase_ms": {
+                "layout_extract_ms": layout_extract_ms,
+                "native_context_ms": native_context_ms,
+                "context_merge_ms": merge_context_ms,
+                "object_select_ms": select_ms,
+                "total_ms": int((time.perf_counter() - visual_t0) * 1000),
+            },
+        }
+        if object_selection_stats:
+            stats.update(object_selection_stats)
+        if self._last_mineru_run_meta:
+            stats["mineru_run"] = dict(self._last_mineru_run_meta)
+        self._last_parse_stats = stats
+        self._last_figure_blocks = []
+        return "\n".join(parts), bbox_map, []
 
     @staticmethod
     def _merge_page_line_context(

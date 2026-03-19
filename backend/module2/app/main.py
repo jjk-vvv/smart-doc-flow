@@ -490,9 +490,87 @@ _AUTO_SCHEMA_GENERIC_ZH_UNIT_TOKENS = {
     "\u9879",
 }
 
+_AUTO_SCHEMA_GENERIC_JA_EXACT = {
+    "施設名",
+    "設備名",
+    "装置名",
+    "抽出装置",
+    "工程名",
+    "指標名",
+    "評価対象",
+    "対象工程",
+    "対象核種",
+    "核種",
+    "製品種別",
+    "実績値",
+    "設計値",
+}
+
 
 def _field_name_word_tokens(text: Any) -> List[str]:
     return re.findall(r"[\u4e00-\u9fff]+|[A-Za-z]+|\d+", str(text or ""))
+
+
+def _schema_field_dedup_key(field_name: Any) -> str:
+    key = _sanitize_field_name(field_name)
+    if not key:
+        return ""
+    normalized = re.sub(r"_+", "_", key).strip(" _")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized.lower()
+
+
+def _schema_field_name_sort_key(field_name: Any) -> Tuple[int, int, int, str]:
+    key = _sanitize_field_name(field_name)
+    if not key:
+        return (9, 9, 999, "")
+    return (
+        1 if key.endswith("_") else 0,
+        key.count("_"),
+        len(key),
+        key.lower(),
+    )
+
+
+def _upsert_schema_field_candidate(
+    out: Dict[str, str],
+    raw_name: Any,
+    type_hint: Any,
+    *,
+    skip_low_value: bool,
+) -> None:
+    key = _sanitize_field_name(raw_name)
+    if not key:
+        return
+    if skip_low_value and _is_low_value_auto_schema_field_name(key):
+        return
+
+    dedup_key = _schema_field_dedup_key(key)
+    if not dedup_key:
+        return
+
+    normalized_type = _coerce_field_type(type_hint)
+    existing_name = ""
+    for current_name in list(out.keys()):
+        if _schema_field_dedup_key(current_name) == dedup_key:
+            existing_name = current_name
+            break
+
+    if not existing_name:
+        out[key] = normalized_type
+        return
+
+    chosen_name = existing_name
+    if _schema_field_name_sort_key(key) < _schema_field_name_sort_key(existing_name):
+        chosen_name = key
+
+    merged_type = out.get(existing_name, "string")
+    if _schema_field_type_priority(normalized_type) > _schema_field_type_priority(merged_type):
+        merged_type = normalized_type
+
+    if chosen_name != existing_name:
+        out.pop(existing_name, None)
+    out[chosen_name] = merged_type
 
 
 def _is_low_value_auto_schema_field_name(field_name: Any) -> bool:
@@ -502,6 +580,8 @@ def _is_low_value_auto_schema_field_name(field_name: Any) -> bool:
     if key in _AUTO_SCHEMA_GENERIC_ZH:
         return True
     if key in _AUTO_SCHEMA_GENERIC_ZH_EXACT:
+        return True
+    if key in _AUTO_SCHEMA_GENERIC_JA_EXACT:
         return True
 
     lower_key = key.lower().strip()
@@ -524,6 +604,7 @@ def _is_low_value_auto_schema_field_name(field_name: Any) -> bool:
     if cjk_tokens and all(
         tok in _AUTO_SCHEMA_GENERIC_ZH
         or tok in _AUTO_SCHEMA_GENERIC_ZH_EXACT
+        or tok in _AUTO_SCHEMA_GENERIC_JA_EXACT
         or tok in _AUTO_SCHEMA_GENERIC_ZH_UNIT_TOKENS
         for tok in cjk_tokens
     ):
@@ -557,10 +638,7 @@ def _is_low_value_auto_schema_field_name(field_name: Any) -> bool:
 def _filter_auto_schema_fields(fields: Dict[str, Any], max_fields: int) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for name, type_hint in fields.items():
-        key = _sanitize_field_name(name)
-        if not key or key in out or _is_low_value_auto_schema_field_name(key):
-            continue
-        out[key] = _coerce_field_type(type_hint)
+        _upsert_schema_field_candidate(out, name, type_hint, skip_low_value=True)
         if len(out) >= max_fields:
             break
     pruned, _ = _prune_shadowed_auto_schema_fields(out)
@@ -744,6 +822,27 @@ def _filter_low_value_auto_results(
     return pruned, removed
 
 
+def _effective_quality_schema_fields(
+    schema_fields: Dict[str, Any],
+    removed_auto_results: Dict[str, str],
+) -> Dict[str, Any]:
+    if not schema_fields:
+        return {}
+    if not removed_auto_results:
+        return dict(schema_fields)
+
+    adjusted: Dict[str, Any] = {}
+    for field_name, field_type in schema_fields.items():
+        sanitized_name = _sanitize_field_name(field_name)
+        removal_reason = removed_auto_results.get(sanitized_name) or removed_auto_results.get(str(field_name))
+        if removal_reason in {"empty_field_name", "low_value_field_name"}:
+            continue
+        if str(removal_reason or "").startswith("shadowed_by_more_specific_field:"):
+            continue
+        adjusted[str(field_name)] = field_type
+    return adjusted
+
+
 def _prune_shadowed_auto_results(
     results: Dict[str, Dict[str, Any]],
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
@@ -779,10 +878,7 @@ def _prune_shadowed_auto_results(
 def _normalize_schema_fields(fields: Dict[str, Any], max_fields: int) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for name, type_hint in fields.items():
-        key = _sanitize_field_name(name)
-        if not key or key in out:
-            continue
-        out[key] = _coerce_field_type(type_hint)
+        _upsert_schema_field_candidate(out, name, type_hint, skip_low_value=False)
         if len(out) >= max_fields:
             break
     return out
@@ -1184,10 +1280,12 @@ async def _infer_schema_fields_llm(
     for item in raw_fields:
         if not isinstance(item, dict):
             continue
-        field_name = _sanitize_field_name(item.get("field_name"))
-        if not field_name or field_name in parsed or _is_low_value_auto_schema_field_name(field_name):
-            continue
-        parsed[field_name] = _coerce_field_type(item.get("field_type"))
+        _upsert_schema_field_candidate(
+            parsed,
+            item.get("field_name"),
+            item.get("field_type"),
+            skip_low_value=True,
+        )
         if len(parsed) >= max_fields:
             break
     return _filter_auto_schema_fields(parsed, max_fields=max_fields)
@@ -1237,10 +1335,12 @@ async def _resolve_effective_schema(
     merged: Dict[str, str] = {}
     for source in (llm_fields, heuristic_fields):
         for name, type_hint in source.items():
-            key = _sanitize_field_name(name)
-            if not key or key in merged or _is_low_value_auto_schema_field_name(key):
-                continue
-            merged[key] = _coerce_field_type(type_hint)
+            _upsert_schema_field_candidate(
+                merged,
+                name,
+                type_hint,
+                skip_low_value=True,
+            )
             if len(merged) >= max_fields:
                 break
         if len(merged) >= max_fields:
@@ -5516,7 +5616,8 @@ async def _process_single_doc_bytes(
             removed_count = len(semantic_removed)
             soft_warnings.append(f"auto_result_filter_removed:{removed_count}")
 
-    quality_snapshot = _result_quality_snapshot(final_results, effective_schema_fields)
+    quality_schema_fields = _effective_quality_schema_fields(effective_schema_fields, semantic_removed)
+    quality_snapshot = _result_quality_snapshot(final_results, quality_schema_fields)
     coverage_ratio = float(quality_snapshot.get("coverage_ratio", 0.0) or 0.0)
     avg_conf = float(quality_snapshot.get("avg_confidence", 0.0) or 0.0)
     min_coverage = max(0.15, min(1.0, float(os.getenv("MODULE2_MIN_COVERAGE_RATIO", "0.35"))))
@@ -5608,6 +5709,8 @@ async def _process_single_doc_bytes(
         "schema_fields": list(schema_meta.get("fields", []))[:24],
         "schema_llm_planner_enabled": bool(allow_schema_llm),
         "quick_fallback_used": bool(used_quick_fallback),
+        "quality_target_field_count": len(quality_schema_fields),
+        "quality_target_fields": list(quality_schema_fields.keys())[:24],
         "auto_result_filter_removed_count": len(semantic_removed),
         "auto_result_filter_removed_fields": list(semantic_removed.keys())[:24],
         "quality_status": "degraded" if degraded_reasons else "ok",

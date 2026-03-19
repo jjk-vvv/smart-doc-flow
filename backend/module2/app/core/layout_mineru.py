@@ -44,6 +44,17 @@ class MineruLayoutExtractor:
             str(cache_version or os.getenv("MODULE2_MINERU_CACHE_VERSION", "20260317-mineru-local-no-table-v1")).strip()
             or "20260317-mineru-local-no-table-v1"
         )
+        raw_work_root_dir = str(os.getenv("MODULE2_MINERU_WORK_ROOT_DIR", "") or "").strip()
+        default_work_root_dir = (self._module2_root() / ".mcache" / "m").resolve()
+        self.work_root_dir = (
+            Path(self._resolve_configured_directory(raw_work_root_dir)).resolve()
+            if raw_work_root_dir
+            else default_work_root_dir
+        )
+        self.run_token_length = max(
+            8,
+            min(24, int(os.getenv("MODULE2_MINERU_RUN_TOKEN_LENGTH", "20"))),
+        )
         self.force_local_models = (
             os.getenv("MODULE2_MINERU_FORCE_LOCAL_MODELS", "true").lower() in {"1", "true", "yes"}
         )
@@ -86,6 +97,49 @@ class MineruLayoutExtractor:
 
     def _module2_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
+
+    def _resolve_cached_run_dirs(self, run_key: str) -> Tuple[Path, Path | None, str]:
+        if self.cache_dir is None:
+            raise RuntimeError("cache_dir is required to resolve cached run directories")
+
+        logical_run_dir = (self.cache_dir / run_key).resolve()
+        self.work_root_dir.mkdir(parents=True, exist_ok=True)
+        primary_token = str(run_key or "").strip()[: self.run_token_length]
+        fallback_token = hashlib.sha1(str(run_key or "").encode("utf-8")).hexdigest()[: self.run_token_length]
+        final_fallback = hashlib.sha256(str(run_key or "").encode("utf-8")).hexdigest()[:24]
+        for token in (primary_token, fallback_token, final_fallback):
+            candidate = (self.work_root_dir / token).resolve()
+            if self._run_dir_matches_key(candidate, run_key):
+                return candidate, logical_run_dir, token
+        raise RuntimeError("unable to resolve a stable short MinerU work directory")
+
+    @staticmethod
+    def _run_dir_matches_key(run_dir: Path, run_key: str) -> bool:
+        marker = run_dir / "run_key.txt"
+        if not marker.exists():
+            return True
+        try:
+            return marker.read_text(encoding="utf-8", errors="ignore").strip() == str(run_key or "").strip()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _write_run_key_marker(run_dir: Path, run_key: str) -> None:
+        marker = run_dir / "run_key.txt"
+        marker.write_text(str(run_key or "").strip(), encoding="utf-8")
+
+    @staticmethod
+    def _write_pointer_file(logical_run_dir: Path, *, actual_run_dir: Path, run_key: str, run_token: str) -> None:
+        pointer_path = logical_run_dir / "mineru_run_pointer.json"
+        payload = {
+            "run_key": str(run_key or "").strip(),
+            "run_token": str(run_token or "").strip(),
+            "actual_run_dir": str(actual_run_dir.resolve()),
+        }
+        pointer_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def _resolve_configured_executable(self, raw_value: str) -> str:
         raw = str(raw_value or "").strip()
@@ -233,16 +287,31 @@ class MineruLayoutExtractor:
         if str(source_cache_identity or "").strip():
             run_meta["source_cache_identity_prefix"] = str(source_cache_identity).strip()[:16]
         temp_ctx: tempfile.TemporaryDirectory[str] | None = None
+        logical_run_dir: Path | None = None
+        run_token = ""
         if self.enable_cache and self.cache_dir is not None:
-            run_dir = self.cache_dir / run_key
+            run_dir, logical_run_dir, run_token = self._resolve_cached_run_dirs(run_key)
             run_dir.mkdir(parents=True, exist_ok=True)
+            self._write_run_key_marker(run_dir, run_key)
+            if logical_run_dir is not None:
+                logical_run_dir.mkdir(parents=True, exist_ok=True)
+                self._write_pointer_file(
+                    logical_run_dir,
+                    actual_run_dir=run_dir,
+                    run_key=run_key,
+                    run_token=run_token,
+                )
         else:
             temp_ctx = tempfile.TemporaryDirectory(prefix="module2_mineru_")
             run_dir = Path(temp_ctx.name)
         run_meta["run_dir"] = str(run_dir.resolve())
+        if logical_run_dir is not None:
+            run_meta["logical_run_dir"] = str(logical_run_dir.resolve())
+        if run_token:
+            run_meta["run_token"] = run_token
 
         try:
-            input_pdf = run_dir / "input.pdf"
+            input_pdf = run_dir / "i.pdf"
             if not input_pdf.exists() or input_pdf.stat().st_size != len(pdf_bytes):
                 input_pdf.write_bytes(pdf_bytes)
             run_meta["input_pdf"] = str(input_pdf.resolve())
@@ -251,7 +320,7 @@ class MineruLayoutExtractor:
             if runtime_model_meta:
                 run_meta["model_runtime"] = runtime_model_meta
 
-            output_root = run_dir / "mineru_out"
+            output_root = run_dir / "o"
             run_meta["output_root"] = str(output_root.resolve())
             content_json = self._find_content_list_json(output_root, method=run_method)
             markdown_file = self._find_markdown_file(output_root, method=run_method)
@@ -288,7 +357,7 @@ class MineruLayoutExtractor:
                     run_meta["runtime_error"] = str(runtime_probe.get("error") or "")
                     run_meta["attempts"] = attempts
                     run_meta["markdown_path"] = str(markdown_file.resolve()) if markdown_file else ""
-                    self._finalize_run_meta(run_meta, run_dir=run_dir)
+                    self._finalize_run_meta(run_meta, run_dir=run_dir, logical_run_dir=logical_run_dir)
                     return [], {}
 
                 fatal_runtime_error = ""
@@ -394,7 +463,7 @@ class MineruLayoutExtractor:
                 else:
                     run_meta["status"] = "no_content_list"
                 run_meta["markdown_path"] = str(markdown_file.resolve()) if markdown_file else ""
-                self._finalize_run_meta(run_meta, run_dir=run_dir)
+                self._finalize_run_meta(run_meta, run_dir=run_dir, logical_run_dir=logical_run_dir)
                 return [], {}
 
             run_meta["attempts"] = attempts
@@ -405,7 +474,7 @@ class MineruLayoutExtractor:
                 run_meta["status"] = "content_list_empty"
                 run_meta["content_list_path"] = str(content_json.resolve())
                 run_meta["markdown_path"] = str(markdown_file.resolve()) if markdown_file else ""
-                self._finalize_run_meta(run_meta, run_dir=run_dir)
+                self._finalize_run_meta(run_meta, run_dir=run_dir, logical_run_dir=logical_run_dir)
                 return [], {}
 
             objects = parsed_content.get("objects", [])
@@ -426,12 +495,12 @@ class MineruLayoutExtractor:
             run_meta["image_count"] = sum(
                 1 for x in objects if str(x.get("object_type", "")).strip().lower() == "image"
             )
-            self._finalize_run_meta(run_meta, run_dir=run_dir)
+            self._finalize_run_meta(run_meta, run_dir=run_dir, logical_run_dir=logical_run_dir)
             return objects, page_text_lines
         except Exception as exc:
             run_meta["status"] = "error"
             run_meta["error"] = f"{type(exc).__name__}: {exc}"
-            self._finalize_run_meta(run_meta, run_dir=run_dir)
+            self._finalize_run_meta(run_meta, run_dir=run_dir, logical_run_dir=logical_run_dir)
             raise
         finally:
             if temp_ctx is not None:
@@ -480,12 +549,18 @@ class MineruLayoutExtractor:
             env=env,
         )
         duration_sec = round(time.perf_counter() - started, 3)
+        stdout_log = output_root.parent / f"mineru_{method}.stdout.log"
+        stderr_log = output_root.parent / f"mineru_{method}.stderr.log"
+        stdout_log.write_text(proc.stdout or "", encoding="utf-8", errors="ignore")
+        stderr_log.write_text(proc.stderr or "", encoding="utf-8", errors="ignore")
         exec_meta: Dict[str, Any] = {
             "cmd": " ".join(cmd),
             "returncode": int(proc.returncode),
             "stdout_tail": (proc.stdout or "").strip()[-600:],
             "stderr_tail": (proc.stderr or "").strip()[-600:],
             "duration_sec": duration_sec,
+            "stdout_log": str(stdout_log.resolve()),
+            "stderr_log": str(stderr_log.resolve()),
         }
         if proc.returncode != 0 or self._stderr_indicates_failure(proc.stderr):
             stderr = (proc.stderr or "").strip()
@@ -500,6 +575,10 @@ class MineruLayoutExtractor:
         env.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
         # Avoid update-check noise from albumentations during MinerU subprocess runs.
         env.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+        warning_filter = "ignore:Environment variable TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD detected:UserWarning"
+        existing_warnings = str(env.get("PYTHONWARNINGS", "") or "").strip()
+        if warning_filter not in existing_warnings:
+            env["PYTHONWARNINGS"] = ",".join(filter(None, [existing_warnings, warning_filter]))
         runtime_meta = self._ensure_local_model_runtime()
         if runtime_meta.get("ok"):
             env["MINERU_MODEL_SOURCE"] = "local"
@@ -607,6 +686,8 @@ class MineruLayoutExtractor:
             "models/Layout/YOLO/doclayout_yolo_docstructbench_imgsz1280_2501.pt",
             "models/OCR/paddleocr_torch/ch_PP-OCRv5_det_infer.pth",
             "models/OCR/paddleocr_torch/ch_PP-OCRv5_rec_infer.pth",
+            "models/ReadingOrder/layout_reader/config.json",
+            "models/ReadingOrder/layout_reader/model.safetensors",
         ]
         if self.enable_table:
             required.extend(
@@ -894,17 +975,28 @@ class MineruLayoutExtractor:
             out.append(method)
         return out or ["auto"]
 
-    def _finalize_run_meta(self, run_meta: Dict[str, Any], *, run_dir: Path) -> None:
+    def _finalize_run_meta(
+        self,
+        run_meta: Dict[str, Any],
+        *,
+        run_dir: Path,
+        logical_run_dir: Path | None = None,
+    ) -> None:
         run_meta["finished_at"] = time.time()
         self._last_run_meta = copy.deepcopy(run_meta)
-        try:
-            debug_path = run_dir / "mineru_run_meta.json"
-            debug_path.write_text(
-                json.dumps(run_meta, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            return
+        targets: List[Path] = [run_dir]
+        if logical_run_dir is not None:
+            logical_resolved = logical_run_dir.resolve()
+            if logical_resolved != run_dir.resolve():
+                targets.append(logical_resolved)
+        payload = json.dumps(run_meta, ensure_ascii=False, indent=2)
+        for target in targets:
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+                debug_path = target / "mineru_run_meta.json"
+                debug_path.write_text(payload, encoding="utf-8")
+            except Exception:
+                continue
 
     @staticmethod
     def _resolve_image_path(*, content_json_path: Path, raw_img_path: str) -> Path | None:

@@ -227,9 +227,6 @@ class AssistantService:
         return "provider_error" if stream_opened else "connect_failure"
 
     def _prefer_local_knowledge_answer(self, user_message: str) -> bool:
-        model_name = str(self._model or "").strip().lower()
-        if "gemini-3-pro" not in model_name:
-            return False
         text = str(user_message or "").strip()
         lowered = text.lower()
         if "ocr" in lowered and any(token in text for token in ("版面", "布局", "版面分析", "布局分析", "区别")):
@@ -238,6 +235,33 @@ class AssistantService:
             return True
         if any(token in lowered for token in ("sql", "nl2sql")):
             return True
+        if any(token in text for token in ("数据库", "增删改查", "入库", "落库", "审计", "回滚")) and any(
+            token in text for token in ("流程", "约束", "风险", "容易出错", "设计思路")
+        ):
+            return True
+        if any(
+            token in text
+            for token in (
+                "扫描文档",
+                "扫描件",
+                "版式不规整",
+                "版式也不规整",
+                "质量一般",
+                "分阶段处理",
+                "怎么分阶段处理",
+            )
+        ):
+            return True
+        if any(token in text for token in ("绑定", "结构恢复")) and any(token in text for token in ("为什么", "更难", "更麻烦", "麻烦")):
+            return True
+        if any(token in text for token in ("风险点", "优先核对", "复核", "判断点")) and any(
+            token in text for token in ("表格", "这份表", "当前这张表")
+        ):
+            return True
+
+        model_name = str(self._model or "").strip().lower()
+        if "gemini-3-pro" not in model_name:
+            return False
         if any(token in text for token in ("数据库", "增删改查", "入库", "落库", "审计", "权限", "回滚")):
             return True
         if any(
@@ -254,6 +278,17 @@ class AssistantService:
         ):
             return True
         return False
+
+    @staticmethod
+    def _prefer_local_document_summary_answer(user_message: str) -> bool:
+        text = str(user_message or "").strip()
+        if not text:
+            return False
+        wants_focus = any(token in text for token in ("当前锁定对象", "锁定对象", "当前对象", "刚才那条", "那一行", "这张表"))
+        wants_global = any(token in text for token in ("全局概览", "整体", "全局", "大致讲了什么", "主要讲了什么"))
+        wants_stable_split = any(token in text for token in ("比较稳定", "谨慎校对", "还需要校对", "还要再核", "稳定"))
+        wants_explicit_order = any(token in text for token in ("先", "再", "单独说明", "区分"))
+        return wants_focus and wants_global and wants_stable_split and wants_explicit_order
 
     def _answer_max_tokens(self, route: str) -> int:
         route_key = str(route or "").strip().lower()
@@ -519,22 +554,25 @@ class AssistantService:
         paragraphs = [part.strip() for part in re.split(r"\n\s*\n", str(text or "")) if part.strip()]
         if len(paragraphs) < 2:
             return "\n\n".join(paragraphs)
-
         bridge_patterns = (
-            r"^(?:先看|先说|先把|再看|再说|再把|最后|最后再|整体看|整体来说|单看|先看当前|再看整体|比较稳的|还要再核的|先看文档里能确认的部分|再看通用经验|最后说需要联网再核的部分)[^。！？!?]{0,20}[。！？!?]?$",
-            r"^(?:文档里能确认的部分|通用经验|需要联网再核的部分|当前这条记录|整份文档|当前聚焦对象能确认什么|整份文档大致讲了什么|哪些信息比较稳定，哪些还需要谨慎校对|关于文档内证据|关于通用经验|关于是否需要联网查证)[：。！？!?]?$",
+            r"^(?:先看|再看|最后再看|先说|再说|先把|再把|整体看|单看|换句话说|更具体一点)[：:，,]?$",
+            r"^(?:先看当前对象|再看整份文档|先看文档里能确认的部分|再看通用做法|最后说还需要联网核实的部分|比较稳的部分|还要再核的部分)[：:，,]?$",
         )
-
         merged: List[str] = []
         index = 0
         while index < len(paragraphs):
             current = paragraphs[index]
             if index + 1 < len(paragraphs):
                 normalized_current = re.sub(r"\s+", "", current)
-                if len(normalized_current) <= 26 and any(re.match(pattern, normalized_current) for pattern in bridge_patterns):
+                if len(normalized_current) <= 20 and any(re.match(pattern, normalized_current) for pattern in bridge_patterns):
                     current_prefix = current
-                    if current_prefix and current_prefix[-1] not in "。！？!?：:":
-                        current_prefix = f"{current_prefix}。"
+                    if current_prefix:
+                        if current_prefix[-1] in "：:":
+                            pass
+                        elif current_prefix[-1] in "。！？":
+                            current_prefix = f"{current_prefix[:-1]}，"
+                        elif current_prefix[-1] not in "，,":
+                            current_prefix = f"{current_prefix}，"
                     merged.append(f"{current_prefix}{paragraphs[index + 1]}")
                     index += 2
                     continue
@@ -542,38 +580,79 @@ class AssistantService:
             index += 1
         return "\n\n".join(merged)
 
+    @staticmethod
+    def _normalize_internal_status_terms(text: str) -> str:
+        normalized = str(text or "")
+        replacements = (
+            (r"\bblocked\b", "当前还不能安全执行"),
+            (r"\bweak_lock\b", "目标对象还没稳定锁定"),
+            (r"\bno_lock\b", "还没有锁定到明确对象"),
+            (r"\bfallback\b", "保守回答"),
+            (r"\btimeout\b", "响应超时"),
+        )
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+        return normalized
+
+    @staticmethod
+    def _strip_internal_metadata_lines(text: str) -> str:
+        patterns = (
+            r"(?i)^\s*[-*]?\s*(?:route|tool|function|payload|json|trace|citation|message_id|assistant_message_id|diagnostics?)\s*[:：=]",
+            r"(?i)^\s*[-*]?\s*(?:ref_id|source_ref_id|figure_id|table_id|object_id|row_id|row_index|page|line|column|bbox|locator)\s*[:：=]",
+            r"^\s*[-*]?\s*(?:原文定位|定位信息|内部定位|引用定位)\s*[:：=]",
+        )
+        kept_lines: List[str] = []
+        for line in str(text or "").split("\n"):
+            stripped = line.strip()
+            if stripped and any(re.search(pattern, stripped) for pattern in patterns):
+                continue
+            kept_lines.append(line)
+        cleaned = "\n".join(kept_lines)
+        cleaned = re.sub(r"(?i)\b(?:ref_id|source_ref_id|figure_id|table_id|object_id|locator)\s*[:=]\s*[\w./-]+", "", cleaned)
+        cleaned = re.sub(r"(?i)\b(?:route|payload|tool|function)\s*[:=]\s*[\w./-]+", "", cleaned)
+        cleaned = re.sub(r"(?:原文定位|定位信息|内部定位|引用定位)\s*[:：]\s*[^\n]+", "", cleaned)
+        cleaned = re.sub(r"\(\s*,\s*\)", "", cleaned)
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned
+
     def _alignment_requirements(self, route: str, user_message: str) -> List[str]:
         route_key = str(route or "").strip().lower()
         question = str(user_message or "").strip()
         requirements: List[str] = []
-
         if self._contains_any_keyword(question, ("先", "再", "分别", "分开", "单独说明", "依次", "然后")):
-            requirements.append("按用户点名的顺序回答，不要改写成你自己的结构。")
-        if route_key == "document_summary" or self._contains_any_keyword(question, ("大致讲了什么", "主要讲了什么", "概览", "整体", "全局")):
-            requirements.append("用户要的是文档概览时，要先给概览，不要改成风险清单或流程建议。")
-        if self._contains_any_keyword(question, ("当前锁定对象", "锁定对象", "当前对象", "刚才那条", "那一行", "这张图", "这个表")):
-            requirements.append("如果用户点了当前聚焦对象，要先单独说明这个对象，再决定要不要展开全局。")
-        if self._contains_any_keyword(question, ("稳定", "比较稳定", "谨慎", "校对", "核对", "不确定")):
-            requirements.append("把比较稳定的内容和仍需谨慎核对的内容分开说。")
-        if self._contains_any_keyword(question, ("不要泛泛而谈", "具体", "具体一点", "别太泛", "不要只给定义")):
-            requirements.append("回答要具体，不要泛泛讲方法论。")
-        if self._contains_any_keyword(question, ("流程", "链路", "步骤")):
-            requirements.append("用户问流程时，要把流程讲出来，不能只讲原则。")
-        if self._contains_any_keyword(question, ("约束", "限制", "边界")):
-            requirements.append("用户问关键约束时，要明确写出拦截条件、确认条件或执行边界。")
-        if self._contains_any_keyword(question, ("容易出错", "风险点", "坑", "误差来源", "容易错")):
-            requirements.append("用户问容易出错的地方时，要明确写出具体风险或误差来源，不要只讲好处。")
-        if self._contains_any_keyword(question, ("作用", "分别起什么作用", "分别做什么")):
-            requirements.append("用户问作用时，要把每一部分分别起什么作用讲出来。")
-        if self._contains_any_keyword(question, ("文档内证据", "通用经验", "联网", "联网查证", "联网核实")):
-            requirements.append("如果用户要求把文档内证据、通用经验和联网核实分开说，就必须在同一条回答里分开说。")
+            requirements.append("如果用户点了回答顺序，就按那个顺序说。")
+        if route_key == "document_summary" or self._contains_any_keyword(
+            question,
+            ("大致讲了什么", "主要讲了什么", "概览", "整体", "全局"),
+        ):
+            requirements.append("如果用户要概览，就先给概览结论，不要改写成排查建议。")
+        if self._contains_any_keyword(
+            question,
+            ("当前锁定对象", "锁定对象", "当前对象", "刚才那条", "那一行", "这张图", "这个表"),
+        ):
+            requirements.append("如果用户点了当前对象，就先把当前对象说清楚。")
+        if self._contains_any_keyword(question, ("稳定", "比较稳", "谨慎", "核对", "校对", "不确定")):
+            requirements.append("如果用户要区分稳妥部分和待核对部分，就明确分开说。")
+        if self._contains_any_keyword(question, ("流程", "链路", "步骤", "怎么做", "怎么处理")):
+            requirements.append("如果用户问流程或做法，就把流程讲出来，不要只讲原则。")
+        if self._contains_any_keyword(question, ("分阶段", "分段处理", "阶段处理")):
+            requirements.append("如果用户问分阶段处理，就按阶段展开，至少覆盖质量门槛、图像清洗、结构恢复、抽取校验和问答/入库衔接。")
+        if self._contains_any_keyword(question, ("为什么", "更难", "更麻烦", "难点")):
+            requirements.append("如果用户问原因或难点，就先回答原因，不要改写成泛泛的方法论介绍。")
+        if self._contains_any_keyword(question, ("约束", "限制", "边界", "确认", "审计")):
+            requirements.append("如果用户问约束、确认或审计边界，就把不能越过的条件说清楚。")
+        if self._contains_any_keyword(question, ("容易出错", "坑", "风险点", "误差", "翻车")):
+            requirements.append("如果用户问容易出错的地方，就给具体风险点。")
+        if self._contains_any_keyword(question, ("不要泛泛而谈", "具体判断点", "别太泛", "不要只给定义")):
+            requirements.append("不要只讲定义或架构口号，至少给出当前题目需要的具体判断点。")
+        if self._contains_any_keyword(question, ("自然一点", "口语一点", "别太书面", "像人话", "像聊天")):
+            requirements.append("表达再自然一点，不要写成讲稿。")
         if route_key in {"knowledge_explain", "document_summary", "web_research"} or self._contains_any_keyword(
             question,
             ("区别", "怎么理解", "为什么", "思路", "概览", "整体", "全局"),
         ):
-            requirements.append("默认控制在 4-6 个自然段，少用 1. 2. 3. 和小节标题，像真人顺着解释。")
-        if route_key == "knowledge_explain" and self._contains_any_keyword(question, ("区别", "怎么理解", "为什么")):
-            requirements.append("开头先用一句人话把差异或判断点明，再展开，不要先写教材式定义。")
+            requirements.append("默认用自然段，不要写成讲义或汇报稿。")
         return requirements
 
     def _answer_needs_alignment_repair(self, route: str, user_message: str, answer_text: str) -> bool:
@@ -583,97 +662,115 @@ class AssistantService:
         answer = normalized_answer.lower()
         if not question or not normalized_answer:
             return False
+        if re.search(r"\b(ref_id|figure_id|table_id|payload|tool_call|assistant_message_id)\b", answer):
+            return True
 
         wants_summary = route_key == "document_summary" or self._contains_any_keyword(
             question,
             ("大致讲了什么", "主要讲了什么", "概览", "整体", "全局"),
         )
-        wants_focus_then_global = self._contains_any_keyword(
+        wants_focus = self._contains_any_keyword(
             question,
-            ("当前锁定对象", "锁定对象", "当前对象", "全局概览", "整体概览"),
+            ("当前锁定对象", "锁定对象", "当前对象", "刚才那条", "那一行", "这张图", "这个表"),
         )
+        wants_global = self._contains_any_keyword(question, ("整体", "全局", "概览", "大致讲了什么", "主要讲了什么"))
+        wants_focus_then_global = wants_focus and wants_global
         wants_stable_split = self._contains_any_keyword(
             question,
-            ("稳定", "比较稳定", "谨慎", "校对", "核对", "不确定"),
+            ("稳定", "比较稳", "谨慎", "核对", "校对", "不确定"),
         )
-        wants_stepwise = self._contains_any_keyword(
-            question,
-            ("步骤", "分步骤", "一步一步", "逐条", "按步骤", "流程图", "列出来"),
-        )
+        wants_flow = self._contains_any_keyword(question, ("流程", "链路", "步骤", "怎么做", "怎么处理"))
+        wants_stagewise = self._contains_any_keyword(question, ("分阶段", "分段处理", "阶段处理"))
+        wants_causal_explain = self._contains_any_keyword(question, ("为什么", "更难", "更麻烦", "难点"))
+        wants_constraints = self._contains_any_keyword(question, ("约束", "限制", "边界", "确认", "审计"))
+        wants_risks = self._contains_any_keyword(question, ("容易出错", "坑", "风险点", "误差", "翻车"))
+        wants_stepwise = self._contains_any_keyword(question, ("步骤", "分步骤", "一步一步", "逐条", "按步骤", "列出来"))
 
         if wants_summary:
-            summary_hits = ("主要", "大致", "整体", "概览", "这份文档", "这份材料", "讲的是", "内容", "重点")
-            drift_hits = ("我会先盯", "先盯这几个点", "优先核对", "准备入库", "风险点", "排查")
-            if any(hit in answer for hit in drift_hits) and not any(hit in answer for hit in summary_hits):
+            summary_hits = ("主要", "大致", "整体", "概览", "这份文档", "这份材料", "内容", "重点")
+            drift_hits = ("优先核对", "准备入库", "风险点", "排查", "审计")
+            if any(hit in normalized_answer for hit in drift_hits) and not any(hit in normalized_answer for hit in summary_hits):
                 return True
 
         if wants_focus_then_global:
-            focus_hits = ("当前", "刚才那条", "这条记录", "这个对象", "这部分")
-            global_hits = ("整体", "全局", "概览", "大致", "总体", "这份文档")
-            if not any(hit in answer for hit in focus_hits):
+            focus_hits = ("刚才那条", "当前这条", "这条记录", "当前对象", "这张表", "这张图")
+            global_hits = ("整份文档", "整体", "全局", "概览", "这份文档", "这份材料")
+            if not any(hit in normalized_answer for hit in focus_hits):
                 return True
-            if not any(hit in answer for hit in global_hits):
+            if not any(hit in normalized_answer for hit in global_hits):
                 return True
 
         if wants_stable_split:
-            stable_hits = ("稳定", "比较稳", "能确定", "可以先确认", "已经能确认")
-            caution_hits = ("谨慎", "核对", "校对", "再确认", "还要确认", "不够稳")
-            if not any(hit in answer for hit in stable_hits):
+            stable_hits = ("比较稳", "较稳", "能确认", "可以先确认", "目前能确定", "已经能确认")
+            caution_hits = ("还要再核", "还要核对", "谨慎", "不确定", "仍需核对", "还不能完全确认")
+            if not any(hit in normalized_answer for hit in stable_hits):
                 return True
-            if not any(hit in answer for hit in caution_hits):
+            if not any(hit in normalized_answer for hit in caution_hits):
                 return True
 
-        if self._contains_any_keyword(question, ("流程", "链路", "步骤")):
+        if wants_flow:
             flow_hits = ("流程", "链路", "步骤", "先", "再", "最后")
-            if not any(hit in answer for hit in flow_hits):
+            if not any(hit in normalized_answer for hit in flow_hits):
                 return True
 
-        if self._contains_any_keyword(question, ("约束", "限制", "边界")):
-            constraint_hits = ("约束", "限制", "边界", "确认", "预览", "审计", "权限", "条件", "where")
-            if not any(hit in answer for hit in constraint_hits):
+        if wants_stagewise:
+            stage_hits = ("门槛", "清洗", "纠偏", "去噪", "结构恢复", "表格", "抽取", "校验", "问答", "入库")
+            if sum(1 for hit in stage_hits if hit in normalized_answer) < 4:
                 return True
 
-        if self._contains_any_keyword(question, ("容易出错", "风险点", "坑", "误差来源", "容易错")):
-            risk_hits = ("容易出错", "风险", "翻车", "误差", "错位", "误删", "越界", "漂", "混在一起")
-            if not any(hit in answer for hit in risk_hits):
+        if wants_causal_explain:
+            cause_hits = ("因为", "难在", "麻烦在", "绑定", "行列", "表头", "字段映射", "上下文", "错位", "挂错")
+            if sum(1 for hit in cause_hits if hit in normalized_answer) < 3:
                 return True
 
-        if self._contains_any_keyword(question, ("作用", "分别起什么作用", "分别做什么")):
-            role_hits = ("作用", "负责", "用来", "这一层", "这一步")
-            if not any(hit in answer for hit in role_hits):
+        if wants_constraints:
+            constraint_hits = ("约束", "限制", "边界", "确认", "预览", "审计", "白名单", "where", "影响范围")
+            if not any(hit.lower() in answer for hit in constraint_hits):
+                return True
+
+        if wants_risks:
+            risk_hits = ("容易出错", "风险", "坑", "翻车", "误差", "错绑", "错位", "越界", "误删")
+            if not any(hit in normalized_answer for hit in risk_hits):
                 return True
 
         if route_key == "web_research" and self._contains_any_keyword(
             question,
             ("文档内证据", "通用经验", "联网", "联网查证", "联网核实"),
         ):
-            document_hits = ("文档", "材料", "当前这份", "单看", "从这份")
-            general_hits = ("通用经验", "通用做法", "一般会", "按通用做法")
+            document_hits = ("文档", "材料", "当前这份", "单看")
+            general_hits = ("通用经验", "通用做法", "一般会")
             web_hits = ("联网", "最新", "再核", "查证", "核实", "外部来源")
-            if not any(hit in answer for hit in document_hits):
+            if not any(hit in normalized_answer for hit in document_hits):
                 return True
-            if not any(hit in answer for hit in general_hits):
+            if not any(hit in normalized_answer for hit in general_hits):
                 return True
-            if not any(hit in answer for hit in web_hits):
+            if not any(hit in normalized_answer for hit in web_hits):
                 return True
 
         if route_key in {"knowledge_explain", "document_summary", "web_research"}:
             paragraph_count = len([part for part in re.split(r"\n\s*\n", normalized_answer) if part.strip()])
             numbered_items = len(re.findall(r"(?m)^\d+\.\s+", normalized_answer))
+            heading_count = len(re.findall(r"(?m)^#{1,6}\s+", normalized_answer))
+            bookish_markers = (
+                "关于这个问题，我们先",
+                "从工程视角看",
+                "本质上",
+                "换句话说",
+                "可以参考以下思路",
+                "下面分几个方面说",
+                "这里最容易出错的主要有三个",
+                "可以，我先把边界拆开说",
+                "按你当前这份材料的上下文看",
+                "这几项先过了",
+                "别把这种扫描件直接往抽取链路里塞",
+            )
             if paragraph_count >= 8 and not wants_stepwise:
                 return True
-            if numbered_items >= 3 and not wants_stepwise:
+            if numbered_items >= 4 and not wants_stepwise:
                 return True
-
-        if route_key == "knowledge_explain":
-            bookish_hits = (
-                "这套流程可以这样设计",
-                "ocr 的作用和常见误差",
-                "版面分析的作用和常见误差",
-                "工程落地的判断边界与流程",
-                "总结一下",
-            )
-            if any(hit in answer for hit in bookish_hits):
+            if heading_count >= 3 and not wants_stepwise:
+                return True
+            if sum(1 for marker in bookish_markers if marker in normalized_answer) >= 2:
                 return True
 
         return False
@@ -684,9 +781,9 @@ class AssistantService:
             return ""
         bullet_text = "\n".join([f"- {item}" for item in requirements])
         return (
-            "上一版回答和用户这轮问题没有完全对齐。请重写，并且明确满足下面这些点：\n"
+            "上一版回答还没有完全对齐用户这一轮的问题。请在不改变已确认事实的前提下，补齐缺失点，并把表达收顺一些：\n"
             f"{bullet_text}\n"
-            "不要把“概览”改写成“风险排查”，也不要把“按顺序分别说明”改写成泛泛而谈的建议。"
+            "保留自然口吻，像真人当面解释，不要套固定开场和固定收尾，不要写成汇报稿，也不要暴露工具、route、payload 或原始定位串。"
         )
 
     def _polish_user_visible_answer(self, text: str, route: str) -> str:
@@ -695,265 +792,17 @@ class AssistantService:
             return ""
         route_key = str(route or "").strip().lower()
         answer = re.sub(r"\*\*(.*?)\*\*", r"\1", answer)
+        answer = self._normalize_internal_status_terms(answer)
+        answer = self._strip_internal_metadata_lines(answer)
+        answer = re.sub(r"(?:原文定位|定位信息|内部定位|引用定位)\s*[:：]\s*[^\n]+", "", answer)
+        answer = re.sub(r"[ \t]+([，。；：！？])", r"\1", answer)
+        answer = re.sub(r"([（(])\s+", r"\1", answer)
+        answer = re.sub(r"\s+([）)])", r"\1", answer)
+        answer = re.sub(r"\n{3,}", "\n\n", answer)
 
-        replacements = [
-            ("如果你还想继续看这条记录里的其他指标，我可以接着往下读。", "要继续看这条记录，直接点指标名就行。"),
-            ("如果你想继续确认，我可以把同一条记录里最相关的字段继续梳理出来。", "要继续确认的话，我可以顺着这条记录把相关字段再往下捋一遍。"),
-            ("结合你当前这份文档来看：", "落到你当前这份文档上："),
-            ("我先给你一个收敛后的判断，尽量只说当前已经能站得住的部分。", "先说现在能确定的部分。"),
-            ("如果把这套思路继续往实现层落，最需要先守住的其实是两件事：证据绑定要稳，执行边界要严。", "真要把这套东西做稳，先守住两条线：证据别漂，执行别越界。"),
-            ("目前我无法直接获取外部的实时联网搜索结果。", "这部分我现在手里没有实时联网结果，所以不能把下面的话当成最新结论。"),
-            ("这套流程可以这样设计：", "更稳的走法可以这样落。"),
-            ("核心原则是", "最该守住的是"),
-            ("关键约束：", "这里要卡严一点的是："),
-            ("容易出错的地方：", "最容易翻车的地方是："),
-            ("在工程实践中，我们需要把这两件事分开看。", "真到实际处理里，这两件事最好分开看。"),
-            ("顺着咱们刚才看的那条", "沿着刚才那条"),
-            ("顺着咱们刚才看过的那条", "沿着刚才那条"),
-            ("顺着咱们刚才一直看的那条", "沿着刚才那条"),
-            ("顺着咱们刚才看的", "沿着刚才那"),
-            ("沿着咱们刚才锁定的那条", "沿着刚才那条"),
-            ("刚才我们看的那条", "刚才那条"),
-            ("刚才锁定的", "刚才那条"),
-            ("顺着当前锁定的", "沿着"),
-            ("结合咱们刚才一直看的那条", "拿刚才那条"),
-            ("关于空气质量数据处理的规范和最佳实践，我们先把文档现有内容、通用工程经验，以及必须联网核实的部分拆开来看。", "先把边界说清楚：文档里能确认的、通用经验里能说的、还有必须联网核实的，不是一回事。"),
-            ("就当前文档来说，里面并没有直接说明处理规范。", "单看当前文档，它并没有直接写处理规范。"),
-            ("如果要把这类结构化抽取结果落库并支持对话式交互，流程和约束上可以参考以下思路。", "如果要把这类抽取结果落库，再支持对话式增删改查，可以按这个链路走。"),
-            ("这里最容易出错、也是工程上最需要防范的坑，主要有三个。", "这块最容易出问题的，主要有三个地方。"),
-            ("通常会按下面几个阶段来做。", "一般就按这几个阶段往下走。"),
-            ("这部分有两个很实用的避坑经验：", "到这一步，有两条经验特别实用："),
-            ("在实际工程落地时，", "真到实际处理里，"),
-            ("等数据落好表，真到做自然语言转 SQL 时，", "等数据落好表，到了自然语言转 SQL 这一步，"),
-            ("如果你准备动手设计这套架构，下一步建议先", "真要动手搭这套架构，建议先"),
-            ("稳妥的流程通常分这几步：", "比较稳的走法大概是这样："),
-            ("具体有下面几个判断点：", "我会先盯这几个点："),
-            ("在这类系统的实际落地中，最容易出错的地方往往不在于模型听不懂，而是边界失控：", "这类系统真容易出问题的，不是模型完全听不懂，而是边界一松就容易出事："),
-            ("所以从工程实践来看，想让结果更稳，最忌讳让模型直接看图写答案。", "所以真要把结果做稳，最忌讳的就是让模型直接看图写答案。"),
-            ("从工程视角看，", ""),
-            ("从工程上看，", ""),
-            ("从工程实践看，", "真到实际处理里，"),
-            ("从工程落地看，", "真到实际处理里，"),
-            ("在实际工程中，", "真到实际处理里，"),
-            ("在实际工程里，", "真到实际处理里，"),
-            ("如果把非结构化文档处理拆开来看，", "先把非结构化文档处理拆开看。"),
-            ("如果把这件事拆开来看，", "先把这件事拆开看。"),
-            ("工程上之所以要把两者分开，是因为", "之所以要把两者分开，是因为"),
-            ("你可以把它理解成：", "你可以先把它理解成："),
-            ("比较可靠的链路通常是：", "比较稳的做法是："),
-            ("更稳妥的链路通常是", "更稳一点的做法是"),
-            ("更稳妥的流程通常是", "更稳一点的流程是"),
-            ("一个更稳妥的流程通常是：", "更稳一点的流程其实就这几步："),
-            ("真正的难点通常不在", "难点往往不在"),
-            ("真正决定体验的，往往不是", "真会影响体验的，不是"),
-            ("换句话说，", "简单说，"),
-            ("本质上，", "说到底，"),
-            ("如果你打算推进这个方案，下一步建议先", "真要往前推进，建议先"),
-            ("从已解析出的摘要看，", "从现在拿到的摘要看，"),
-            ("当前系统已经拿到了文档摘要，这说明它并不是停留在原始图片阶段，而是已经进入了“解析之后再组织回答”的阶段。", "现在已经拿到文档摘要了，这说明它不是只停在原始图片识别，而是已经开始按解析后的结果组织回答。"),
-            ("所以如果你希望", "所以要是你希望"),
-            ("最佳实践通常围绕", "真到实际处理里，一般绕不开"),
-            ("首要原则是", "先抓住一条："),
-            ("首先是", "先看"),
-            ("其次是", "再看"),
-            ("最后是", "最后再看"),
-            (
-                "如果你想顺着这些维度检查表里的其他站点数据，或者有特定想排查的异常范围，可以随时告诉我，我来帮你继续定位。",
-                "要继续排查的话，你直接点一个站点、一个指标，或者一个异常方向，我就顺着往下查。",
-            ),
-            ("放回你当前这份文档里看：", "拿你这份文档说："),
-            ("落到你当前这份文档上：", "拿你这份文档说："),
-            ("整体看，这份文档主要在讲：", "整体看，这份材料主要在讲："),
-        ]
-        for source, target in replacements:
-            answer = answer.replace(source, target)
-
-        if route_key == "table_lookup":
-            answer = answer.replace("我沿用了你刚才锁定的", "这次我就沿着你刚才那条")
-            answer = answer.replace("，所以这次直接按同一条数据继续回答。", "继续答。")
-            answer = answer.replace("我已经把这次问题重新对准了", "这次我就按")
-            answer = answer.replace("，所以先给你稳定值。", "来答，先给你稳定值。")
-            if len(answer) <= 140:
-                answer = re.sub(r"\n{2,}", " ", answer)
-                answer = re.sub(r"\s{2,}", " ", answer)
-
-        if route_key == "field_lookup" and len(answer) <= 180:
+        if route_key in {"table_lookup", "field_lookup"} and len(answer) <= 180:
             answer = re.sub(r"\n{2,}", " ", answer)
             answer = re.sub(r"\s{2,}", " ", answer)
-
-        if route_key in {"knowledge_explain", "document_summary", "web_research"}:
-            answer = answer.replace("您好，", "")
-            answer = answer.replace("您好", "")
-            answer = answer.replace("您", "你")
-            answer = answer.replace("为你说明", "跟你说清楚")
-            answer = answer.replace("我将", "我会")
-            answer = answer.replace("总的来说，", "说到底，")
-            answer = answer.replace("关键在于", "关键就在")
-            answer = answer.replace("通常需要", "通常得")
-            answer = answer.replace("在工程实践中", "真到实际处理里")
-            answer = answer.replace("从工程落地的角度看", "真到实际处理里")
-            answer = answer.replace("从工程落地来看", "真到实际处理里")
-            answer = answer.replace("从工程实现角度看", "真到实际处理里")
-            answer = answer.replace("这其中涉及", "这里面其实牵扯到")
-            answer = answer.replace("整个流程通常可以分为几个关键阶段。", "这件事别一口气做完，通常会拆成几段。")
-            answer = answer.replace("在数据准备好之后，要落库，就需要设计一套清晰的数据库映射规则。", "等数据先站住了，再谈怎么落库和怎么映射。")
-            answer = answer.replace("相当于引入了一个“人工审计”环节。", "这样中间就多了一道人工确认。")
-            answer = answer.replace("在工程实践中，这两者虽然紧密相关，但处理的侧重点和常见的误差来源是不同的。", "这两步经常挨着出现，但真的不是一回事，出错的地方也不一样。")
-            answer = answer.replace("如果你愿意，我可以继续", "你要是想继续，我可以")
-            answer = answer.replace("如果你现在要优先核对，我建议先看这几件事：", "你要是现在就开始核对，我建议先看这几件事：")
-            answer = answer.replace("这轮概览主要依据的是当前已经稳定拿到的结构化结果，范围大致在：", "这轮概览主要还是按当前已经稳定拿到的结构化结果来讲，范围大致在：")
-            answer = answer.replace("目前还没有足够完整的整文摘要，所以这轮结论更适合当作局部概览，而不是全量复盘。", "现在还没有足够完整的整文摘要，所以这轮更适合作局部概览，不适合当全量复盘。")
-            answer = answer.replace("真要把这套东西做稳，先守住两条线：证据别漂，执行别越界。", "真要把它做稳，先守住两条线：证据别漂，执行别越界。")
-            answer = re.sub(r"(^|\n)简单说，简单说，", r"\1简单说，", answer)
-            answer = re.sub(r"(^|\n)真到实际处理里，真到实际处理里，", r"\1真到实际处理里，", answer)
-            answer = re.sub(r"\n{3,}", "\n\n", answer)
-            answer = re.sub(r"(^|\n\n)第一步是", r"\1先看", answer)
-            answer = re.sub(r"(^|\n\n)第二步是", r"\1再看", answer)
-            answer = re.sub(r"(^|\n\n)第三步是", r"\1最后再看", answer)
-            answer = re.sub(r"(^|\n\n)第一步得先", r"\1先看", answer)
-            answer = re.sub(r"(^|\n\n)第二步是", r"\1再看", answer)
-            answer = re.sub(r"(^|\n\n)第三步才是", r"\1最后再看", answer)
-            answer = re.sub(r"(^|\n\n)第一阶段通常是", r"\1先做", answer)
-            answer = re.sub(r"(^|\n\n)第二阶段(?:通常)?是", r"\1再做", answer)
-            answer = re.sub(r"(^|\n\n)第三阶段(?:才)?是", r"\1最后再做", answer)
-            answer = re.sub(r"(^|\n\n)第一是", r"\1先看", answer)
-            answer = re.sub(r"(^|\n\n)第二是", r"\1再看", answer)
-            answer = re.sub(r"(^|\n\n)第三是", r"\1最后再看", answer)
-            answer = re.sub(r"(^|\n\n)首先，", r"\1先说最关键的，", answer)
-            answer = re.sub(r"(^|\n\n)其次，", r"\1再往下看，", answer)
-            answer = re.sub(r"(^|\n\n)最后，", r"\1最后再补一句，", answer)
-            answer = re.sub(r"(^|\n\n)首先是", r"\1先把", answer)
-            answer = re.sub(r"(^|\n\n)其次是", r"\1再把", answer)
-            answer = re.sub(r"(^|\n\n)最后是", r"\1最后再把", answer)
-            answer = re.sub(r"(^|\n\n)第一种是", r"\1一个常见坑是", answer)
-            answer = re.sub(r"(^|\n\n)第二种是", r"\1另一个常见坑是", answer)
-            answer = re.sub(r"(^|\n\n)第三种是", r"\1还有一个坑是", answer)
-            answer = re.sub(r"(^|\n\n)关于[^，。]{2,30}，我们先把", r"\1先把", answer)
-            answer = re.sub(r"(^|\n\n)这里最容易出错[^。]*主要有([一二三四五六七八九十\d]+)[^。]*。", r"\1这块最容易出问题的，主要有\2个地方。", answer)
-            answer = answer.replace("从文档内证据来看", "单看文档里能确认的部分")
-            answer = answer.replace("从通用的数据处理最佳实践来看", "按通用做法看")
-            answer = answer.replace("从整体来看", "整体看")
-            answer = answer.replace("从整体来说", "整体来说")
-            answer = answer.replace("当前锁定的", "刚才那条")
-            answer = answer.replace("当前锁定对象", "当前这条记录")
-            answer = answer.replace("真到实际工程落地里", "真到实际处理里")
-            answer = answer.replace("顺着刚才滕州新二中那条环境监测记录来说", "拿刚才滕州新二中那条环境监测记录举例")
-            answer = answer.replace("顺着刚才滕州新二中那条记录来看", "拿刚才滕州新二中那条记录举例")
-            answer = answer.replace("沿着刚才滕州新二中这条记录看", "拿刚才滕州新二中这条记录举例")
-            answer = re.sub(r"^拿刚才([^。]{2,30})举例，?如果要", r"拿刚才\1举例，如果要", answer)
-            answer = re.sub(r"\n\nOCR 的作用和常见误差\s*\n\n", "\n\n先看 OCR 这一层。\n\n", answer)
-            answer = re.sub(r"\n\n版面分析的作用和常见误差\s*\n\n", "\n\n再看版面分析这一层。\n\n", answer)
-            answer = re.sub(r"\n\n工程落地的判断边界与流程\s*\n\n", "\n\n真到实际处理里，可以这样判断。\n\n", answer)
-            answer = re.sub(r"(^|\n\n)总结一下[，：:]?", r"\1说到底，", answer)
-            answer = re.sub(r"\n\n(?=(先看|再看|最后|比较稳的|还要再核的|文档里能确认的部分|通用经验|需要联网再核的部分))", "\n", answer)
-
-        if route_key == "knowledge_explain":
-            answer = re.sub(
-                r"^在文档处理这类问题上，很多时候 OCR 本身识别文字的准确率已经相当高了，但真正让人头疼的，确实是后续的“绑定”和“结构恢复”。",
-                "很多时候字其实已经能认出来了，真正麻烦的反而是后面谁跟谁配对、整张页面怎么还原。",
-                answer,
-            )
-            answer = re.sub(
-                r"^当面对质量一般、版式不规整的扫描文档时，想让后续的抽取、问答和落库都更稳定，通常需要把处理流程分阶段进行，而不是指望一步到位。",
-                "碰到质量一般、版式又不规整的扫描件，别想着一步到位。更稳的做法就是把处理链路拆开，一段一段过。",
-                answer,
-            )
-            answer = re.sub(
-                r"^要稳妥地将文档抽取结果落库并支持自然语言转 SQL，关键在于建立一个多层防护和验证的流程，而不是简单地让模型直接生成 SQL 语句。",
-                "别让模型拿着抽取结果就直接改库。更稳的做法是把校验、预览、确认和审计一层层卡住。",
-                answer,
-            )
-            answer = re.sub(
-                r"^OCR 和版面分析[^。]*。简单来说，",
-                "别把 OCR 和版面分析混在一起。简单说，",
-                answer,
-            )
-            answer = re.sub(
-                r"^如果想把当前文档抽取结果安全地落到数据库，并支持通过自然语言进行增删改查，最稳妥的思路不是让模型直接生成并执行 SQL，而是要引入多层验证和人工确认机制。核心在于将数据安全和用户控制放在首位。",
-                "别让模型直接生成 SQL 就去改库。更稳的做法是把抽取、校验、预览确认和审计拆开，一层层过。",
-                answer,
-            )
-            answer = re.sub(
-                r"^要把文档抽取结果安全地落到数据库，同时还要支持自然语言转 SQL 进行增删改查，最稳妥的思路是建立一个多层防护和确认机制，而不是让模型直接操作数据库。核心在于确保每一步操作都清晰可控、可追溯。",
-                "别让模型直接碰数据库。更稳的做法是把抽取、校验、预览确认和审计拆开，一层层过。",
-                answer,
-            )
-            answer = re.sub(
-                r"^如果希望将文档的抽取结果稳妥地落库，并支持自然语言转 SQL \(NL2SQL\) 进行增删改查，最稳妥的设计思路是",
-                "别让模型直接把抽取结果写进库。更稳的做法是",
-                answer,
-            )
-            answer = re.sub(
-                r"^当用户上传的扫描文档质量不佳、版式也不规整时，直接一步到位地进行抽取、问答和落库通常会遇到很多困难。为了确保后续处理的稳定性和准确性，工程上我们通常会把它拆分成几个循序渐进的阶段。",
-                "质量一般、版式又不规整的扫描文档，别指望一步到位。更稳的做法就是把处理链路拆开，一段一段过。",
-                answer,
-            )
-            answer = answer.replace(
-                "这套流程的核心在于“安全可控”，确保每一步操作都符合预期，避免数据意外丢失或污染。",
-                "核心其实就两件事：别把证据写错，也别把数据库动作放飞。",
-            )
-            answer = answer.replace("在工程落地时，这两者通常是串联工作的。", "真到实际处理里，这两步通常是串着走的。")
-            answer = answer.replace("随后，版面分析算法会利用", "再往下就是版面分析，它会利用")
-            answer = answer.replace("因此，在实际处理中，", "所以真到落地时，")
-            answer = answer.replace("对于质量一般、版式不规整的扫描文档，", "质量一般、版式又不规整的扫描文档，")
-            answer = answer.replace("通常需要分阶段进行精细化处理。核心思路是，", "更稳的做法就是分阶段处理。核心思路是，")
-            answer = answer.replace("先说最关键的，最关键的一步是", "先说最关键的，就是")
-            answer = answer.replace("你可以把 OCR 理解为", "你可以先把 OCR 理解为")
-        elif route_key == "document_summary":
-            answer = re.sub(r"^好的[，。]?\s*我来[^。]*。\s*", "", answer)
-            answer = re.sub(r"^首先来看当前我们聚焦的对象。\s*", "先看刚才那条记录。", answer)
-            answer = re.sub(r"(^|\n\n)当前聚焦对象能确认什么\s*", r"\1先看当前聚焦对象。", answer)
-            answer = re.sub(r"(^|\n\n)整份文档大致讲了什么\s*", r"\1再看整份文档。", answer)
-            answer = re.sub(r"(^|\n\n)哪些信息比较稳定，哪些还需要谨慎校对\s*", r"\1比较稳的和还要再核的，可以这样分。", answer)
-            answer = answer.replace("先说最关键的，针对刚才那条对象，", "先看刚才那条记录，")
-            answer = answer.replace("沿着刚才我们锁定的那条记录来看，当前聚焦的这条数据是", "先看刚才那条记录，它是")
-            answer = answer.replace("关于信息的稳定性和需要谨慎校对的部分：", "比较稳的和还要再核的，可以这样分。")
-            answer = answer.replace("关于信息的稳定性，可以这样区分：", "比较稳的和还要再核的，可以这样分。")
-            answer = answer.replace("* 当前聚焦对象能确认什么：", "先看当前聚焦对象。")
-            answer = answer.replace("* 整体文档大致讲了什么：", "再看整份文档。")
-            answer = answer.replace("* 哪些信息比较稳定、哪些还需要谨慎校对：", "比较稳的和还要再核的，可以这样分。")
-            answer = answer.replace("* 比较稳定的信息：", "比较稳的部分主要有这几块。")
-            answer = answer.replace("* 仍需谨慎校对的信息：", "还要再核的主要是下面这些。")
-        elif route_key == "web_research":
-            answer = answer.replace("关于文档内证据：", "先看文档里现在能确认的。")
-            answer = answer.replace("关于通用经验：", "再看通用做法。")
-            answer = answer.replace("关于是否需要联网查证：", "最后说还得联网再核的部分。")
-            answer = answer.replace("我现在无法直接进行联网搜索来获取实时更新的资料。", "这会儿我手里没有实时联网结果，所以不能把下面的话说成最新结论。")
-            answer = answer.replace("我能做的是，先基于当前文档中的信息，结合处理这类数据的通用经验来给你一些建议，并明确指出哪些部分需要你进一步联网核实。", "我现在能先按当前文档里能确认的内容，再加上通用做法，帮你把边界说清楚。")
-            answer = re.sub(
-                r"^关于[^。]*最新规范或最佳实践[^。]*，目前我能从几个方面来回答，并区分信息来源。",
-                "如果你问的是最新规范或最佳实践，我现在能先讲文档里能确认的，再讲通用经验；真正最新的那部分还得联网核实。",
-                answer,
-            )
-            answer = re.sub(
-                r"^关于空气质量监测数据处理的最新规范或最佳实践，我将为您区分当前文档能提供的、我作为通用知识能讲的，以及需要外部联网查询的部分。",
-                "如果你问的是最新规范或最佳实践，我现在能先讲文档里能确认的，再讲通用经验；真正最新的那部分还得联网核实。",
-                answer,
-            )
-            answer = re.sub(
-                r"^你好，关于[^。]*，我会按照你要求的顺序，从当前文档、通用经验，以及联网查证需求三个方面来为你说明。",
-                "如果你问的是最新规范或最佳实践，我现在能先讲文档里能确认的，再讲通用经验；真正最新的那部分还得联网核实。",
-                answer,
-            )
-            answer = re.sub(
-                r"^您提到想了解[^。]*。由于当前没有可用的联网搜索结果，我只能基于[^。]*。",
-                "如果你要的是最新规范或最新最佳实践，这部分得联网核实。眼下我只能先按文档里能确认的内容，再加上通用经验来回答。",
-                answer,
-            )
-            answer = re.sub(
-                r"^您好，关于[^。]*。需要指出的是，由于我当前没有联网查询的条件，所以无法为您提供实时更新的“最新”规范或法规细节。",
-                "如果你要的是最新规范或最新最佳实践，这部分得联网核实。眼下我只能先按文档里能确认的内容，再加上通用经验来回答。",
-                answer,
-            )
-            answer = answer.replace(
-                "最后再补一句，关于如何获取最新规范和最佳实践，鉴于当前我无法进行联网搜索，我建议您可以主动查阅",
-                "真要查最新的，建议直接看",
-            )
-            answer = re.sub(r"\n\n1\. 基于当前文档的证据：", "\n\n先看文档里能确认的部分。", answer)
-            answer = re.sub(r"\n\n2\. 通用经验和知识：", "\n\n再看通用经验。", answer)
-            answer = re.sub(r"\n\n3\. 如何获取最新规范或进行联网查证：", "\n\n最后说需要联网再核的部分。", answer)
-            answer = re.sub(r"\n\n2\. 基于通用经验的回答：", "\n\n再看通用经验。", answer)
-            answer = re.sub(r"\n\n3\. 需要联网查证的最新规范和最佳实践：", "\n\n最后说需要联网再核的部分。", answer)
 
         answer = self._normalize_user_visible_spacing(answer)
         return answer.strip()
@@ -979,11 +828,11 @@ class AssistantService:
     def _completed_answer_retry_threshold(route: str) -> int:
         route_key = str(route or "").strip().lower()
         if route_key == "knowledge_explain":
-            return 520
+            return 280
         if route_key == "document_summary":
-            return 260
+            return 180
         if route_key == "web_research":
-            return 320
+            return 220
         return 0
 
     def _should_retry_completed_answer(
@@ -1007,21 +856,15 @@ class AssistantService:
     def _build_completion_repair_messages(route: str, prepared_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         route_key = str(route or "").strip().lower()
         route_hint = {
-            "knowledge_explain": "Prioritize practical workflow, constraints, failure modes, and engineering guidance.",
-            "document_summary": "Prioritize the most important conclusions and the most actionable checks.",
-            "web_research": "Explicitly separate document evidence, general knowledge, and what still needs live verification.",
-        }.get(route_key, "Keep the answer focused and complete.")
+            "knowledge_explain": "优先把概念讲成人话，再补流程、边界和常见坑。",
+            "document_summary": "优先说清当前对象或文档到底在讲什么，再区分已确认和仍需核对的部分。",
+            "web_research": "先把现在能确定的边界说清，再分开文档依据、通用知识和仍待联网核实的部分。",
+        }.get(route_key, "先补齐缺失点，再把表达收顺。")
         repair_instruction = (
-            "Rewrite the final answer in Chinese from scratch. "
-            "Keep it natural, grounded, and complete. "
-            "Do not repeat the question, do not mention tools or routes, and do not stop mid-thought. "
-            "Prefer natural paragraphs over markdown headings. Avoid '### 1/2/3', heavy bolding, and formulaic customer-service closings. "
-            "Avoid stiff report-style phrasing such as '从工程视角看', '真正的难点是', '更稳妥的流程通常是', or repetitive '换句话说'. "
-            "Avoid report-style openings like '关于……，我们先把……' and lecture intros like '这里最容易出错的主要有三个'. "
-            "Avoid classroom transitions like '首先/其次/最后', '第一是/第二是/第三是', or '第一阶段/第二阶段/第三阶段' unless they are truly necessary. "
-            "Use direct, spoken-but-professional Chinese with shorter sentences. Prefer '你' over overly formal honorifics like '您'. "
-            "Do not make short bridge lines like '先看……' or '再看……' stand alone as their own paragraph. "
-            "Keep it compact enough to finish cleanly: at most 4 short sections or 6 bullets. "
+            "请在保留已确认事实不变的前提下，把上一版中文回答补齐并润色成一条更自然的最终答复。"
+            "先补用户真正问到但还没答到的点，再把表达收顺。"
+            "不要提工具、route、payload、JSON、原始定位串，也不要重复问题。"
+            "尽量放在一个连续回答里，优先自然段；除非确有必要，不要写成 1. 2. 3. 的讲义。"
             + route_hint
         )
         return list(prepared_messages) + [{"role": "user", "content": repair_instruction}]
@@ -1041,8 +884,10 @@ class AssistantService:
             return True
         if self._looks_like_incomplete_provider_answer(normalized):
             return True
+        if re.search(r"\b(ref_id|figure_id|table_id|payload|tool_call|assistant_message_id)\b", normalized.lower()):
+            return True
         route_key = str(route or "").strip().lower()
-        if route_key in {"knowledge_explain", "document_summary", "web_research"} and len(normalized) < 220:
+        if route_key in {"knowledge_explain", "document_summary", "web_research"} and len(normalized) < 120:
             return True
         return False
 
@@ -1957,6 +1802,7 @@ class AssistantService:
                 }
             )
             artifacts.answer_context = {**overview, "user_question": user_message}
+            artifacts.prefer_fallback_only = self._prefer_local_document_summary_answer(user_message)
             artifacts.fallback_answer = fallback_answer(route, artifacts.answer_context)
             return artifacts
 
@@ -2014,6 +1860,7 @@ class AssistantService:
                 "live_web_result_available": False,
                 "web_results": [],
             }
+            artifacts.prefer_fallback_only = True
             artifacts.fallback_answer = fallback_answer(route, artifacts.answer_context)
             return artifacts
 
