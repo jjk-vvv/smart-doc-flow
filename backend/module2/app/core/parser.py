@@ -233,6 +233,12 @@ class NativeDocumentParser:
             "true",
             "yes",
         }
+        self.word_pdf_parse_use_source_signals = (
+            os.getenv("MODULE2_WORD_PDF_PARSE_USE_SOURCE_SIGNALS", "false").lower() in {"1", "true", "yes"}
+        )
+        self.word_pdf_docx_chart_xml_merge_enable = (
+            os.getenv("MODULE2_WORD_PDF_DOCX_CHART_XML_MERGE_ENABLE", "true").lower() in {"1", "true", "yes"}
+        )
         self.docx_media_probe_enable = os.getenv("MODULE2_DOCX_MEDIA_PROBE_ENABLE", "true").lower() in {
             "1",
             "true",
@@ -509,6 +515,7 @@ class NativeDocumentParser:
         track: str = "FastTrack",
         source_file_name: Optional[str] = None,
         source_file_bytes: Optional[bytes] = None,
+        source_cache_identity: str = "",
     ) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
         self._last_figure_blocks = []
         self._last_parse_stats = {}
@@ -523,6 +530,7 @@ class NativeDocumentParser:
                 track,
                 source_file_name=source_file_name,
                 source_file_bytes=source_file_bytes,
+                source_cache_identity=source_cache_identity,
             )
         if ext == ".docx":
             force_native_docx = track_key in {"nativedocx", "docxnative", "docx_native"}
@@ -614,6 +622,7 @@ class NativeDocumentParser:
         track: str,
         source_file_name: Optional[str] = None,
         source_file_bytes: Optional[bytes] = None,
+        source_cache_identity: str = "",
     ) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
         reader = PdfReader(io.BytesIO(file_bytes))
         total_pages = len(reader.pages)
@@ -621,12 +630,16 @@ class NativeDocumentParser:
         if total_pages == 0:
             raise ValueError(f"PDF has no pages: {file_name}")
 
-        source_cache_identity = ""
-        source_cache_file_name = ""
+        effective_source_cache_identity = str(source_cache_identity or "").strip()
+        source_cache_file_name = str(source_file_name or "")
         source_suffix = Path(source_file_name or "").suffix.lower()
-        if source_suffix == ".docx" and isinstance(source_file_bytes, (bytes, bytearray)) and source_file_bytes:
-            source_cache_identity = hashlib.sha256(bytes(source_file_bytes)).hexdigest()
-            source_cache_file_name = str(source_file_name or "")
+        if (
+            not effective_source_cache_identity
+            and source_suffix == ".docx"
+            and isinstance(source_file_bytes, (bytes, bytearray))
+            and source_file_bytes
+        ):
+            effective_source_cache_identity = hashlib.sha256(bytes(source_file_bytes)).hexdigest()
 
         if (
             track == "VisualTrack"
@@ -642,7 +655,7 @@ class NativeDocumentParser:
                     file_bytes=file_bytes,
                     reader=reader,
                     page_count=visual_page_count,
-                    source_cache_identity=source_cache_identity,
+                    source_cache_identity=effective_source_cache_identity,
                     source_file_name=source_file_name,
                     source_file_bytes=source_file_bytes,
                 )
@@ -650,7 +663,7 @@ class NativeDocumentParser:
                 visual_error = exc
                 visual_result = None
             if visual_result is not None:
-                if source_cache_identity:
+                if effective_source_cache_identity:
                     self._last_parse_stats["source_cache_identity_applied"] = True
                     self._last_parse_stats["source_cache_identity_file_name"] = source_cache_file_name
                 return visual_result
@@ -799,7 +812,7 @@ class NativeDocumentParser:
             "native_vision_reasons": native_vision_reasons,
             "native_figure_blocks_shallow": shallow_native_figures,
             "native_visual_backend_ready": bool(visual_backend_ready),
-            "source_cache_identity_applied": bool(source_cache_identity),
+            "source_cache_identity_applied": bool(effective_source_cache_identity),
             "source_cache_identity_file_name": source_cache_file_name,
         }
         if track == "VisualTrack" and 'visual_fallback_stats' in locals() and visual_fallback_stats:
@@ -819,12 +832,16 @@ class NativeDocumentParser:
             timeout_sec=self.word_pdf_timeout_sec,
         )
         pdf_name = f"{Path(file_name).stem}.pdf"
+        word_source_cache_identity = hashlib.sha256(bytes(file_bytes)).hexdigest() if file_bytes else ""
+        parse_source_file_name = file_name if self.word_pdf_parse_use_source_signals else None
+        parse_source_file_bytes = file_bytes if self.word_pdf_parse_use_source_signals else None
         markdown, bbox_map, table_blocks = self._parse_pdf(
             pdf_name,
             pdf_bytes,
             "VisualTrack",
-            source_file_name=file_name,
-            source_file_bytes=file_bytes,
+            source_file_name=parse_source_file_name,
+            source_file_bytes=parse_source_file_bytes,
+            source_cache_identity=word_source_cache_identity,
         )
         stats = dict(self._last_parse_stats)
         stats.update(
@@ -839,13 +856,26 @@ class NativeDocumentParser:
                 "office_pdf_artifact_url": str(convert_meta.get("artifact_url", "") or ""),
                 "office_pdf_parse_input_name": pdf_name,
                 "office_pdf_bytes": len(pdf_bytes),
+                "word_pdf_parse_use_source_signals": bool(self.word_pdf_parse_use_source_signals),
+                "word_pdf_parse_source_signals_applied": bool(parse_source_file_name),
+                "word_pdf_docx_chart_xml_merge_enabled": bool(self.word_pdf_docx_chart_xml_merge_enable),
+                "docx_source_file_name": str(file_name or ""),
             }
         )
+        if word_source_cache_identity:
+            stats["source_cache_identity_applied"] = True
+            stats["source_cache_identity_file_name"] = str(file_name or "")
         self._last_parse_stats = stats
-        try:
-            self._merge_docx_chart_xml_into_pdf_figures(file_bytes=file_bytes)
-        except Exception as exc:
-            self._last_parse_stats["docx_chart_xml_merge_error"] = f"{type(exc).__name__}: {exc}"
+        if self.word_pdf_docx_chart_xml_merge_enable:
+            try:
+                self._merge_docx_chart_xml_into_pdf_figures(file_bytes=file_bytes)
+                self._last_parse_stats["docx_source_chart_merge_applied"] = True
+            except Exception as exc:
+                self._last_parse_stats["docx_source_chart_merge_applied"] = False
+                self._last_parse_stats["docx_chart_xml_merge_error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            self._last_parse_stats["docx_source_chart_merge_applied"] = False
+            self._last_parse_stats["docx_source_chart_merge_skipped"] = True
         return markdown, bbox_map, table_blocks
 
     def _merge_docx_chart_xml_into_pdf_figures(self, *, file_bytes: bytes) -> None:
@@ -7979,19 +8009,42 @@ def parse_document_in_subprocess(
     """ProcessPool entrypoint (must be top-level and picklable)."""
 
     parser = NativeDocumentParser()
+    source_suffix = Path(source_file_name or "").suffix.lower()
+    is_word_pdf_context = (
+        str(file_name or "").lower().endswith(".pdf")
+        and source_suffix == ".docx"
+        and isinstance(source_file_bytes, (bytes, bytearray))
+        and bool(source_file_bytes)
+    )
+    parse_source_file_name = source_file_name if (is_word_pdf_context and parser.word_pdf_parse_use_source_signals) else None
+    parse_source_file_bytes = (
+        source_file_bytes if (is_word_pdf_context and parser.word_pdf_parse_use_source_signals) else None
+    )
+    parse_source_cache_identity = (
+        hashlib.sha256(bytes(source_file_bytes)).hexdigest()
+        if is_word_pdf_context
+        else ""
+    )
     markdown, bbox_map, table_blocks = parser.parse_document(
         file_name=file_name,
         file_bytes=file_bytes,
         track=track,
-        source_file_name=source_file_name,
-        source_file_bytes=source_file_bytes,
+        source_file_name=parse_source_file_name,
+        source_file_bytes=parse_source_file_bytes,
+        source_cache_identity=parse_source_cache_identity,
     )
-    source_suffix = Path(source_file_name or "").suffix.lower()
+    parser._last_parse_stats["word_pdf_parse_use_source_signals"] = bool(parser.word_pdf_parse_use_source_signals)
+    parser._last_parse_stats["word_pdf_parse_source_signals_applied"] = bool(parse_source_file_name)
+    parser._last_parse_stats["word_pdf_parse_source_cache_identity_seeded"] = bool(parse_source_cache_identity)
+    if parse_source_cache_identity:
+        parser._last_parse_stats["source_cache_identity_applied"] = True
+        parser._last_parse_stats["source_cache_identity_file_name"] = str(source_file_name or "")
+    parser._last_parse_stats["word_pdf_docx_chart_xml_merge_enabled"] = bool(
+        parser.word_pdf_docx_chart_xml_merge_enable
+    )
     if (
-        str(file_name or "").lower().endswith(".pdf")
-        and source_suffix == ".docx"
-        and isinstance(source_file_bytes, (bytes, bytearray))
-        and source_file_bytes
+        is_word_pdf_context
+        and parser.word_pdf_docx_chart_xml_merge_enable
     ):
         merge_t0 = time.perf_counter()
         try:
@@ -8003,6 +8056,11 @@ def parse_document_in_subprocess(
         finally:
             parser._last_parse_stats["docx_source_chart_merge_ms"] = int((time.perf_counter() - merge_t0) * 1000)
             parser._last_parse_stats["docx_source_file_name"] = str(source_file_name or "")
+    elif is_word_pdf_context:
+        parser._last_parse_stats["docx_source_chart_merge_applied"] = False
+        parser._last_parse_stats["docx_source_chart_merge_skipped"] = True
+        parser._last_parse_stats["docx_source_chart_merge_ms"] = 0
+        parser._last_parse_stats["docx_source_file_name"] = str(source_file_name or "")
     figure_blocks = parser.get_last_figure_blocks()
     parse_stats = parser.get_last_parse_stats()
     return markdown, bbox_map, table_blocks, figure_blocks, parse_stats

@@ -602,6 +602,21 @@ type AssistantActionPreview = {
   payload: Record<string, unknown>;
 };
 
+type Assistant1HistoryMessage = {
+  role: 'system' | 'user' | 'assistant' | 'developer';
+  content: string;
+};
+
+type Assistant1SseEnvelope = {
+  type?: string;
+  payload?: Record<string, unknown>;
+  seq?: number;
+  run_id?: string;
+  turn_id?: string;
+  visibility?: string;
+  phase?: string;
+};
+
 type AssistantToolEvent = {
   tool_name: string;
   status: string;
@@ -729,6 +744,31 @@ const humanizeAssistantToolEvent = (event: {
 }): string => {
   const toolName = String(event.tool_name || '').trim().toLowerCase();
   const status = String(event.status || '').trim().toLowerCase();
+
+  if (toolName === 'search_knowledge_base') {
+    return '正在检索当前文档';
+  }
+  if (toolName === 'search_knowledge_base_grouped') {
+    return '正在按时间和版本整理内容';
+  }
+  if (toolName === 'web_search_tavily') {
+    return '正在补充外部资料';
+  }
+  if (toolName === 'inspect_database_schema') {
+    return '正在检查数据库结构';
+  }
+  if (toolName === 'design_schema_draft') {
+    return '正在整理表结构草案';
+  }
+  if (toolName === 'draft_sql_from_nl') {
+    return '正在生成 SQL 草案';
+  }
+  if (toolName === 'execute_sql_with_audit') {
+    return status === 'error' ? 'SQL 校验或执行失败' : '正在校验并执行 SQL';
+  }
+  if (toolName === 'ingest_document') {
+    return '正在准备文档知识底座';
+  }
 
   if (toolName === 'restore_assistant_context' || toolName === 'load_extraction_payload') {
     return '正在读取当前文档上下文';
@@ -926,6 +966,89 @@ const toAssistantActionPreview = (value: unknown): AssistantActionPreview | null
   value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length > 0
     ? value as AssistantActionPreview
     : null;
+
+const toAssistant1Envelope = (value: unknown): Assistant1SseEnvelope | null => {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const type = String(record.type || '').trim();
+  if (!type) return null;
+  const payload = record.payload && typeof record.payload === 'object'
+    ? record.payload as Record<string, unknown>
+    : undefined;
+  return {
+    type,
+    payload,
+    seq: typeof record.seq === 'number' ? record.seq : undefined,
+    run_id: typeof record.run_id === 'string' ? record.run_id : undefined,
+    turn_id: typeof record.turn_id === 'string' ? record.turn_id : undefined,
+    visibility: typeof record.visibility === 'string' ? record.visibility : undefined,
+    phase: typeof record.phase === 'string' ? record.phase : undefined,
+  };
+};
+
+const toAssistantActionPreviewFromAssistant1 = (value: unknown): AssistantActionPreview | null => {
+  if (!value || typeof value !== 'object') return null;
+  const payload = value as Record<string, unknown>;
+  const title = String(payload.title || '').trim();
+  const actionKind = String(payload.action_kind || payload.action_type || '').trim();
+  const confirmationToken = String(payload.confirmation_token || payload.action_id || '').trim();
+  const sqlPreview = String(payload.sql_preview || '').trim();
+  const notes = String(payload.notes || '').trim();
+  const summary = String(payload.summary || payload.description || '').trim();
+  const target = String(payload.target || actionKind || '').trim();
+  if (!title && !summary && !sqlPreview) {
+    return null;
+  }
+  return {
+    action_id: confirmationToken || `assistant1-action-${Date.now()}`,
+    action_type: actionKind || 'sql_preview',
+    title: title || '动作预览',
+    description: summary || notes,
+    target,
+    requires_confirmation: Boolean(payload.requires_confirmation ?? true),
+    payload: {
+      ...payload,
+      preview_status: 'ready',
+      operation_type: actionKind.includes('sql') ? 'alter' : actionKind,
+      sql_ready: Boolean(sqlPreview),
+      sql_preview_text: sqlPreview,
+      confirmation_checklist: notes ? [notes] : [],
+    },
+  };
+};
+
+const toAssistantCitationsFromEvidenceBundle = (value: unknown): AssistantCitation[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => item && typeof item === 'object')
+    .map((item, index) => {
+      const record = item as Record<string, unknown>;
+      const unitType = String(record.unit_type || record.kind || '').trim().toLowerCase();
+      const citationType =
+        unitType.includes('table')
+          ? 'table'
+          : unitType.includes('figure') || unitType.includes('image')
+            ? 'figure'
+            : 'field';
+      const snippet = String(record.snippet || record.content_preview || '').trim();
+      const title = String(record.title || record.label || '').trim();
+      const objectId = String(record.unit_id || record.object_id || `evidence-${index + 1}`).trim();
+      const pageStart = Number(record.page_start ?? record.page);
+      return {
+        citation_type: citationType,
+        title: title || objectId || '引用证据',
+        page: Number.isFinite(pageStart) && pageStart > 0 ? pageStart : null,
+        ref_id: typeof record.ref_id === 'string' ? record.ref_id : null,
+        object_id: objectId,
+        snippet,
+        payload: {
+          ...record,
+          key_points: snippet ? [snippet] : [],
+        },
+      };
+    })
+    .filter((item) => item.object_id || item.title || item.snippet);
+};
 
 const toAssistantToolEvents = (value: unknown): AssistantToolEvent[] =>
   Array.isArray(value) ? value as AssistantToolEvent[] : [];
@@ -2259,6 +2382,16 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     );
   };
 
+  const buildAssistant1HistoryFromDialog = (messages: AssistantDialogMessage[]): Assistant1HistoryMessage[] =>
+    messages
+      .filter((item) => isRenderableAssistantDialogMessage(item))
+      .map((item) => ({
+        role: item.role === 'assistant' ? 'assistant' : 'user',
+        content: normalizeAssistantDisplayText(item.content),
+      }))
+      .filter((item) => item.content)
+      .slice(-10);
+
   const resetAssistantCompanionState = (keepLock = false) => {
     setAssistantCompanionOpen(false);
     setAssistantCompanionCitations([]);
@@ -2726,59 +2859,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     setExpandedTraceCardKey('');
     const fileHash = activeAssistantSessionKey;
     const storedSessionId = String(readAssistantSessionMap()[fileHash] || '').trim();
-    if (!storedSessionId) {
-      return;
-    }
-    let cancelled = false;
-    const hydrateSession = async () => {
-      try {
-        const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
-        const fetchResult = await fetchExtractWithFallback(
-          '/extract/assistant/session',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              document: activeDoc || undefined,
-              summary: activeSummaryText,
-              session_id: storedSessionId,
-            }),
-          },
-          preferredBase,
-        );
-        extractionJobApiBaseRef.current = fetchResult.usedBase || preferredBase;
-        const response = fetchResult.response;
-        if (!response.ok) {
-          throw new Error('助手会话恢复失败');
-        }
-        const payload = (await response.json()) as AssistantSessionResponse;
-        if (cancelled) return;
-        setAssistantSessionId(String(payload.session_id || '').trim());
-        const nextLock =
-          toAssistantObjectLock(payload.current_object_lock)
-          ?? toAssistantObjectLock(findLatestAssistantPayload(payload.messages).current_object_lock);
-        setAssistantCurrentLock(nextLock);
-        if (Array.isArray(payload.messages) && payload.messages.length > 0) {
-          const nextDialog = payload.messages.map(toAssistantDialogMessage).filter(isRenderableAssistantDialogMessage);
-          const latestPayload = findLatestAssistantPayload(payload.messages);
-          const latestCompanion = toAssistantCompanionState(latestPayload);
-          setAssistantDialog(nextDialog);
-          setAssistantWarnings(toAssistantVisibleWarnings(latestPayload));
-          applyAssistantCompanionState(latestCompanion, { open: Boolean(latestCompanion.actionPreview) });
-        } else {
-          setAssistantDialog([]);
-          setAssistantWarnings([]);
-          resetAssistantCompanionState(true);
-        }
-      } catch {
-        if (cancelled) return;
-        clearAssistantSessionForFile(fileHash);
-      }
-    };
-    void hydrateSession();
-    return () => {
-      cancelled = true;
-    };
+    setAssistantSessionId(storedSessionId);
   }, [activeAssistantSessionKey]);
 
   const fieldItems = useMemo<FieldItem[]>(() => {
@@ -4534,8 +4615,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       return;
     }
 
-    const persistRequested = /(入库|落库|保存|存储|写入数据库|写库)/.test(instruction);
-    const webRequested = /(联网|搜索|查一下|最新|最近|政策|法规|新闻|web|google|bing)/i.test(instruction);
     const userDialogMsg: AssistantDialogMessage = {
       id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'user',
@@ -4563,12 +4642,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     assistantAbortRef.current = controller;
     const fileHash = activeAssistantSessionKey;
     const restoredSessionId = fileHash ? String(readAssistantSessionMap()[fileHash] || '').trim() : '';
+    const assistant1History = buildAssistant1HistoryFromDialog(assistantDialog);
     let streamMessageId = pendingAssistantId;
+    let streamedCompanionCitations: AssistantCitation[] = [];
+    let streamedActionPreview: AssistantActionPreview | null = null;
 
     try {
       const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
       const fetchResult = await fetchExtractWithFallback(
-        '/extract/assistant/chat/stream',
+        '/extract/assistant1/chat/stream',
         {
           method: 'POST',
           headers: {
@@ -4577,14 +4659,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           },
           signal: controller.signal,
           body: JSON.stringify({
-            document: activeDoc || undefined,
-            summary: activeSummaryText,
-            user_message: instruction,
+            message: instruction,
             session_id: assistantSessionId || restoredSessionId || undefined,
-            persist: persistRequested,
-            top_k: 16,
-            enable_web_search: webRequested,
-            current_object_lock: assistantCurrentLock || undefined,
+            file_hash: activeDoc?.file_hash || '',
+            history: assistant1History,
+            top_k: 5,
+            max_steps: 6,
+            client_caps: {
+              supports_replace: true,
+            },
           }),
         },
         preferredBase,
@@ -4604,7 +4687,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       let buffer = '';
 
       const commitSseEvent = (eventName: string, rawData: string) => {
-        const normalizedEvent = String(eventName || 'message').trim() || 'message';
+        let normalizedEvent = String(eventName || 'message').trim() || 'message';
         let parsed: Record<string, unknown> = {};
         if (rawData.trim()) {
           try {
@@ -4615,7 +4698,13 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           }
         }
 
-        if (normalizedEvent === 'assistant_start') {
+        const envelope = toAssistant1Envelope(parsed);
+        if (envelope) {
+          normalizedEvent = String(envelope.type || normalizedEvent).trim() || normalizedEvent;
+          parsed = envelope.payload || {};
+        }
+
+        if (normalizedEvent === 'stream.open' || normalizedEvent === 'assistant.start' || normalizedEvent === 'assistant_start') {
           const nextSessionId = String(parsed.session_id || '').trim();
           const nextAssistantId = String(parsed.assistant_message_id || '').trim();
           if (nextSessionId) {
@@ -4634,28 +4723,53 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           return;
         }
 
-        if (normalizedEvent === 'tool_status') {
+        if (normalizedEvent === 'status') {
+          const nextLabel = String(parsed.label || '').trim();
+          const nextDetail = String(parsed.detail || '').trim();
+          updateAssistantDialogMessage(streamMessageId, (current) => ({
+            ...current,
+            status: 'streaming',
+            payload: {
+              ...(current.payload || {}),
+              progress_label: nextLabel,
+              progress_detail: nextDetail,
+              progress_code: String(parsed.code || '').trim(),
+            },
+          }));
+          if (nextDetail || nextLabel) {
+            setAssistantMessage(nextDetail || nextLabel);
+          }
+          return;
+        }
+
+        if (normalizedEvent === 'tool.status' || normalizedEvent === 'tool_status') {
           const toolEvent: AssistantToolEvent = {
             tool_name: String(parsed.tool_name || '').trim(),
             status: String(parsed.status || '').trim(),
             message: String(parsed.message || '').trim(),
-            detail: String(parsed.detail || '').trim(),
+            detail: String(parsed.detail || parsed.summary || '').trim(),
             human_label: humanizeAssistantToolEvent(parsed),
           };
           setAssistantRuntimeEvents((prev) => [...prev, toolEvent].slice(-8));
           return;
         }
 
-        if (normalizedEvent === 'citation_bundle') {
-          const citations = toAssistantCitations(parsed.citations);
+        if (normalizedEvent === 'evidence.bundle' || normalizedEvent === 'citation_bundle') {
+          const citations = normalizedEvent === 'evidence.bundle'
+            ? toAssistantCitationsFromEvidenceBundle(parsed.items)
+            : toAssistantCitations(parsed.citations);
           const nextLock = toAssistantObjectLock(parsed.current_object_lock);
+          streamedCompanionCitations = citations;
           setAssistantCompanionCitations(citations);
           syncAssistantEvidence(citations, nextLock);
           return;
         }
 
-        if (normalizedEvent === 'action_preview') {
-          const preview = toAssistantActionPreview(parsed);
+        if (normalizedEvent === 'action.preview' || normalizedEvent === 'action_preview') {
+          const preview = normalizedEvent === 'action.preview'
+            ? toAssistantActionPreviewFromAssistant1(parsed)
+            : toAssistantActionPreview(parsed);
+          streamedActionPreview = preview;
           setAssistantCompanionActionPreview(preview);
           if (preview) {
             setAssistantCompanionOpen(true);
@@ -4663,7 +4777,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           return;
         }
 
-        if (normalizedEvent === 'assistant_delta') {
+        if (normalizedEvent === 'warning') {
+          const nextWarning = String(parsed.message || '').trim();
+          if (nextWarning) {
+            setAssistantWarnings((prev) => Array.from(new Set([...prev, nextWarning])));
+          }
+          return;
+        }
+
+        if (normalizedEvent === 'assistant.delta' || normalizedEvent === 'assistant_delta') {
           const deltaText = String(parsed.text || '');
           updateAssistantDialogMessage(streamMessageId, (current) => ({
             ...current,
@@ -4677,15 +4799,32 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           return;
         }
 
-        if (normalizedEvent === 'assistant_done') {
-          const citations = toAssistantCitations(parsed.citations);
-          const actionPreview = toAssistantActionPreview(parsed.action_preview);
+        if (normalizedEvent === 'assistant.replace') {
+          const nextText = normalizeAssistantDisplayText(parsed.text || '');
+          updateAssistantDialogMessage(streamMessageId, (current) => ({
+            ...current,
+            content: nextText || current.content,
+            status: 'streaming',
+          }));
+          return;
+        }
+
+        if (normalizedEvent === 'assistant.done' || normalizedEvent === 'assistant_done') {
+          const citations = normalizedEvent === 'assistant.done'
+            ? streamedCompanionCitations
+            : toAssistantCitations(parsed.citations);
+          const actionPreview = normalizedEvent === 'assistant.done'
+            ? (
+              toAssistantActionPreviewFromAssistant1(parsed.action_preview)
+              || streamedActionPreview
+            )
+            : toAssistantActionPreview(parsed.action_preview);
           const nextLock = toAssistantObjectLock(parsed.current_object_lock);
-          const nextAnswer = normalizeAssistantDisplayText(parsed.answer || '') || '助手已完成处理。';
+          const nextAnswer = normalizeAssistantDisplayText(parsed.final_text || parsed.answer || '') || '助手已完成处理。';
           const nextWarnings = filterAssistantWarnings(parsed.warnings);
           setAssistantAnswer(nextAnswer);
           setAssistantMessage(nextAnswer);
-          setAssistantWarnings(nextWarnings);
+          setAssistantWarnings((prev) => (nextWarnings.length > 0 ? nextWarnings : prev));
           setAssistantCompanionCitations(citations);
           setAssistantCompanionActionPreview(actionPreview);
           if (actionPreview) {
@@ -4704,7 +4843,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           return;
         }
 
-        if (normalizedEvent === 'assistant_error') {
+        if (normalizedEvent === 'error' || normalizedEvent === 'assistant_error') {
           const message = String(parsed.message || parsed.error || '助手处理失败').trim();
           throw new Error(message);
         }

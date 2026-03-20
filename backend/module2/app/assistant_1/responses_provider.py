@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import requests
+from requests import Response
 from requests.exceptions import HTTPError, RequestException
 
 from .config import Assistant1Settings
@@ -82,6 +83,32 @@ def chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Dic
     return input_items
 
 
+def _iter_sse_messages(response: Response) -> Iterator[tuple[str, str]]:
+    current_event = ""
+    current_data_lines: List[str] = []
+    for raw_line in response.iter_lines(decode_unicode=False):
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="ignore")
+        else:
+            line = str(raw_line or "")
+        if not line:
+            if current_event or current_data_lines:
+                yield current_event or "message", "\n".join(current_data_lines).strip()
+                current_event = ""
+                current_data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            current_event = line[len("event:") :].strip()
+            continue
+        if line.startswith("data:"):
+            current_data_lines.append(line[len("data:") :].lstrip())
+            continue
+    if current_event or current_data_lines:
+        yield current_event or "message", "\n".join(current_data_lines).strip()
+
+
 @dataclass
 class ResponsesFunctionCall:
     id: str
@@ -97,6 +124,19 @@ class ResponsesCompletionResult:
     status: str
     output_text: str
     function_calls: List[ResponsesFunctionCall] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResponsesStreamEvent:
+    event: str
+    type: str
+    response_id: str = ""
+    response_status: str = ""
+    output_text_delta: str = ""
+    output_text: str = ""
+    function_call: Optional[ResponsesFunctionCall] = None
+    item_id: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -132,12 +172,144 @@ class Assistant1ResponsesProvider:
     ) -> ResponsesCompletionResult:
         if not self.configured:
             raise RuntimeError("assistant_1 responses provider is not configured")
+        payload = self._build_payload(
+            messages=messages,
+            input_items=input_items,
+            instructions=instructions,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            text_verbosity=text_verbosity,
+            previous_response_id=previous_response_id,
+            metadata=metadata,
+            stream=False,
+        )
+        data = self._request_json(payload)
+        return self._parse_response(data)
+
+    def stream_events(
+        self,
+        *,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        input_items: Optional[List[Dict[str, Any]]] = None,
+        instructions: str = "",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str | Dict[str, Any] = "auto",
+        max_output_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        text_verbosity: str = "",
+        previous_response_id: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Iterator[ResponsesStreamEvent]:
+        if not self.configured:
+            raise RuntimeError("assistant_1 responses provider is not configured")
+        payload = self._build_payload(
+            messages=messages,
+            input_items=input_items,
+            instructions=instructions,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            text_verbosity=text_verbosity,
+            previous_response_id=previous_response_id,
+            metadata=metadata,
+            stream=True,
+        )
+        last_error: Exception | None = None
+        retryable_statuses = {429, 500, 502, 503, 504}
+        for attempt in range(3):
+            emitted_any = False
+            try:
+                with requests.post(
+                    self._request_url(),
+                    json=payload,
+                    headers=self._build_headers(stream=True),
+                    timeout=self.timeout_sec,
+                    stream=True,
+                ) as response:
+                    response.raise_for_status()
+                    response.encoding = "utf-8"
+                    latest_response_id = ""
+                    latest_status = ""
+                    function_calls_by_item_id: Dict[str, ResponsesFunctionCall] = {}
+                    for _, data_text in _iter_sse_messages(response):
+                        if not data_text:
+                            continue
+                        emitted_any = True
+                        if data_text == "[DONE]":
+                            yield ResponsesStreamEvent(
+                                event="response.done",
+                                type="response.done",
+                                response_id=latest_response_id,
+                                response_status=latest_status,
+                                raw={"done": True},
+                            )
+                            return
+                        try:
+                            data = json.loads(data_text)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(data, dict):
+                            continue
+                        if isinstance(data.get("error"), dict):
+                            error_payload = data.get("error") or {}
+                            message = str(
+                                error_payload.get("message")
+                                or error_payload.get("type")
+                                or "assistant_1 responses stream error"
+                            ).strip()
+                            raise RuntimeError(message)
+                        event = self._parse_stream_event(
+                            data=data,
+                            latest_response_id=latest_response_id,
+                            latest_status=latest_status,
+                            function_calls_by_item_id=function_calls_by_item_id,
+                        )
+                        if event.response_id:
+                            latest_response_id = event.response_id
+                        if event.response_status:
+                            latest_status = event.response_status
+                        yield event
+                    return
+            except HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                last_error = exc
+                if emitted_any or status not in retryable_statuses or attempt >= 2:
+                    detail = exc.response.text if exc.response is not None else str(exc)
+                    raise RuntimeError(f"assistant_1 responses http error {status or 'unknown'}: {detail}") from exc
+            except RequestException as exc:
+                last_error = exc
+                if emitted_any or attempt >= 2:
+                    raise RuntimeError(f"assistant_1 responses connection error: {exc}") from exc
+            time.sleep(0.8 * (attempt + 1))
+        if last_error is not None:
+            raise RuntimeError(f"assistant_1 responses connection error: {last_error}") from last_error
+
+    def _build_payload(
+        self,
+        *,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        input_items: Optional[List[Dict[str, Any]]] = None,
+        instructions: str = "",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str | Dict[str, Any] = "auto",
+        max_output_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        text_verbosity: str = "",
+        previous_response_id: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        stream: bool = False,
+    ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "model": self.model,
             "input": input_items if input_items is not None else chat_messages_to_responses_input(messages or []),
             "max_output_tokens": int(max_output_tokens or self.max_output_tokens),
             "temperature": self.temperature,
         }
+        if stream:
+            payload["stream"] = True
         instructions_text = str(instructions or "").strip()
         if instructions_text:
             payload["instructions"] = instructions_text
@@ -157,8 +329,7 @@ class Assistant1ResponsesProvider:
             payload["previous_response_id"] = previous_response_id
         if metadata:
             payload["metadata"] = metadata
-        data = self._request_json(payload)
-        return self._parse_response(data)
+        return payload
 
     def _request_json(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         last_error: Exception | None = None
@@ -168,7 +339,7 @@ class Assistant1ResponsesProvider:
                 response = requests.post(
                     self._request_url(),
                     json=payload,
-                    headers=self._build_headers(),
+                    headers=self._build_headers(stream=False),
                     timeout=self.timeout_sec,
                 )
                 response.raise_for_status()
@@ -201,13 +372,78 @@ class Assistant1ResponsesProvider:
             raise RuntimeError("assistant_1 responses provider is not configured")
         return f"{self.base_url}{self.endpoint_path}"
 
-    def _build_headers(self) -> Dict[str, str]:
+    def _build_headers(self, *, stream: bool) -> Dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream" if stream else "application/json",
             "User-Agent": "smart-doc-flow-assistant1/1.0",
         }
+
+    def _parse_stream_event(
+        self,
+        *,
+        data: Dict[str, Any],
+        latest_response_id: str,
+        latest_status: str,
+        function_calls_by_item_id: Dict[str, ResponsesFunctionCall],
+    ) -> ResponsesStreamEvent:
+        event_type = str(data.get("type") or "").strip() or "message"
+        response_id = latest_response_id
+        response_status = latest_status
+        if isinstance(data.get("response"), dict):
+            response_id = str(data["response"].get("id") or response_id or "")
+            response_status = str(data["response"].get("status") or response_status or "")
+
+        output_text_delta = ""
+        output_text = ""
+        function_call: Optional[ResponsesFunctionCall] = None
+        item_id = str(data.get("item_id") or "")
+
+        if event_type == "response.output_text.delta":
+            output_text_delta = str(data.get("delta") or "")
+        elif event_type == "response.output_text.done":
+            output_text = str(data.get("text") or "")
+        elif event_type in {"response.output_item.added", "response.output_item.done"}:
+            item = data.get("item") if isinstance(data.get("item"), dict) else {}
+            item_id = str(item.get("id") or item_id or "")
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type == "function_call":
+                raw_arguments = str(item.get("arguments") or "")
+                function_call = ResponsesFunctionCall(
+                    id=item_id,
+                    call_id=str(item.get("call_id") or ""),
+                    name=str(item.get("name") or ""),
+                    arguments=_parse_tool_arguments(raw_arguments),
+                    raw_arguments=raw_arguments,
+                )
+                if item_id:
+                    function_calls_by_item_id[item_id] = function_call
+        elif event_type == "response.function_call_arguments.done":
+            item_id = str(data.get("item_id") or "")
+            raw_arguments = str(data.get("arguments") or "")
+            base_call = function_calls_by_item_id.get(item_id)
+            function_call = ResponsesFunctionCall(
+                id=item_id or (base_call.id if base_call else ""),
+                call_id=base_call.call_id if base_call else "",
+                name=base_call.name if base_call else "",
+                arguments=_parse_tool_arguments(raw_arguments),
+                raw_arguments=raw_arguments,
+            )
+            if function_call.id:
+                function_calls_by_item_id[function_call.id] = function_call
+
+        return ResponsesStreamEvent(
+            event=event_type,
+            type=event_type,
+            response_id=response_id,
+            response_status=response_status,
+            output_text_delta=output_text_delta,
+            output_text=output_text,
+            function_call=function_call,
+            item_id=item_id,
+            raw=data,
+        )
 
     @staticmethod
     def _parse_response(data: Dict[str, Any]) -> ResponsesCompletionResult:

@@ -39,6 +39,8 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
+from app.assistant_1.api_models import Assistant1ChatStreamRequest
+from app.assistant_1.stream_runtime import Assistant1StreamingRuntime
 from app.assistant.provider import build_module2_llm_provider
 from app.assistant.service import AssistantService
 from app.agent.graph import AgentState, ExtractionGraph
@@ -449,6 +451,7 @@ app.add_middleware(
 storage = ExtractionStorage(os.getenv("MODULE2_DATABASE_DSN", "postgresql://postgres@127.0.0.1:5432/a23"))
 graph = ExtractionGraph()
 assistant_service = AssistantService(storage)
+assistant1_runtime = Assistant1StreamingRuntime()
 bridge_jobs: Dict[str, BridgeJobState] = {}
 bridge_request_index: Dict[str, str] = {}
 bridge_lock = asyncio.Lock()
@@ -6857,6 +6860,29 @@ async def extract_assistant_session(payload: AssistantSessionRequest) -> Assista
 async def extract_assistant_chat_stream(payload: AssistantChatStreamRequest) -> StreamingResponse:
     return StreamingResponse(
         assistant_service.stream_chat(payload),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/extract/assistant1/chat/stream")
+async def extract_assistant1_chat_stream(payload: Assistant1ChatStreamRequest) -> StreamingResponse:
+    history = [item.model_dump(mode="json") for item in payload.history]
+    return StreamingResponse(
+        assistant1_runtime.stream_chat(
+            user_message=payload.message,
+            file_hash=payload.file_hash,
+            history=history,
+            max_steps=payload.max_steps,
+            top_k=payload.top_k,
+            session_id=payload.session_id or "",
+            debug=payload.debug,
+            client_supports_replace=bool(payload.client_caps.supports_replace),
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
