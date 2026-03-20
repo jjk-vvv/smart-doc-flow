@@ -38,10 +38,17 @@ npm run dev
 npm run dev:module2
 ```
 
+`npm run dev:module2` 浼氬浐瀹氫紭鍏堜娇鐢ㄤ粨搴撴牴鐩殑 `.venv-module2-py311`銆?
+
+```powershell
+$env:MODULE2_PYTHON="D:\smart_doc_flow\smart-doc-flow\.venv-module2-py311\Scripts\python.exe"
+npm run dev:module2
+```
+
 或直接执行：
 
 ```powershell
-python -m uvicorn app.main:app --app-dir backend/module2 --host 0.0.0.0 --port 8000 --reload
+D:\smart_doc_flow\smart-doc-flow\.venv-module2-py311\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
 ```
 
 ## 环境准备

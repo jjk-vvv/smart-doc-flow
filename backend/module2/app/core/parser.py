@@ -38,6 +38,17 @@ TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html",
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
 
+def _limit_env_value(name: str, default: int, *, minimum: int = 0, unlimited_value: Optional[int] = None) -> int:
+    raw = str(os.getenv(name, str(default)) or str(default)).strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(default)
+    if value <= 0 and unlimited_value is not None:
+        return max(minimum, int(unlimited_value))
+    return max(minimum, value)
+
+
 class NativeDocumentParser:
     """Native parser pipeline (PDF/DOCX/XLSX) with built-in libraries only."""
 
@@ -227,17 +238,25 @@ class NativeDocumentParser:
             "true",
             "yes",
         }
-        self.docx_media_max_assets = max(0, int(os.getenv("MODULE2_DOCX_MEDIA_MAX_ASSETS", "24")))
+        unbounded_visual_cap = 1_000_000
+        self.docx_media_max_assets = _limit_env_value(
+            "MODULE2_DOCX_MEDIA_MAX_ASSETS",
+            24,
+            minimum=0,
+            unlimited_value=unbounded_visual_cap,
+        )
         self.docx_media_vision_enable = os.getenv("MODULE2_DOCX_MEDIA_VISION_ENABLE", "true").lower() in {
             "1",
             "true",
             "yes",
         }
-        self.docx_media_vision_max_assets = max(
-            0,
-            min(
-                self.docx_media_max_assets,
-                int(os.getenv("MODULE2_DOCX_MEDIA_VISION_MAX_ASSETS", "6")),
+        self.docx_media_vision_max_assets = min(
+            self.docx_media_max_assets,
+            _limit_env_value(
+                "MODULE2_DOCX_MEDIA_VISION_MAX_ASSETS",
+                6,
+                minimum=0,
+                unlimited_value=self.docx_media_max_assets,
             ),
         )
         self.docx_media_vision_max_bytes = max(
@@ -275,14 +294,23 @@ class NativeDocumentParser:
         self.gemini_vision_timeout_sec = max(5.0, float(os.getenv("MODULE2_GEMINI_VISION_TIMEOUT_SEC", "25")))
         self.gemini_vision_dpi = max(96, int(os.getenv("MODULE2_GEMINI_VISION_DPI", "150")))
         self.gemini_vision_max_side_px = max(768, int(os.getenv("MODULE2_GEMINI_VISION_MAX_SIDE_PX", "1800")))
-        self.gemini_vision_max_pages = max(0, int(os.getenv("MODULE2_GEMINI_VISION_MAX_PAGES", "24")))
-        self.gemini_vision_max_tables_per_page = max(
-            1,
-            int(os.getenv("MODULE2_GEMINI_VISION_MAX_TABLES_PER_PAGE", "5")),
+        self.gemini_vision_max_pages = _limit_env_value(
+            "MODULE2_GEMINI_VISION_MAX_PAGES",
+            24,
+            minimum=0,
+            unlimited_value=self.max_pages_visual,
         )
-        self.gemini_vision_max_figures_per_page = max(
-            0,
-            int(os.getenv("MODULE2_GEMINI_VISION_MAX_FIGURES_PER_PAGE", "8")),
+        self.gemini_vision_max_tables_per_page = _limit_env_value(
+            "MODULE2_GEMINI_VISION_MAX_TABLES_PER_PAGE",
+            5,
+            minimum=1,
+            unlimited_value=512,
+        )
+        self.gemini_vision_max_figures_per_page = _limit_env_value(
+            "MODULE2_GEMINI_VISION_MAX_FIGURES_PER_PAGE",
+            8,
+            minimum=0,
+            unlimited_value=512,
         )
         self.gemini_vision_enable_figures = (
             os.getenv("MODULE2_GEMINI_VISION_ENABLE_FIGURES", "true").lower() in {"1", "true", "yes"}

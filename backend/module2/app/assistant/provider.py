@@ -129,6 +129,25 @@ def resolve_assistant_model(explicit: Optional[str] = None, *, default: str = "g
     )
 
 
+def build_module2_llm_provider(
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    timeout_sec: Optional[float] = None,
+) -> "OpenAICompatibleChatProvider":
+    return OpenAICompatibleChatProvider(
+        base_url=resolve_llm_base_url(base_url),
+        api_key=resolve_llm_api_key(api_key),
+        model=resolve_llm_model(model, default="gemini-3.1-pro"),
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout_sec=timeout_sec,
+    )
+
+
 def _normalize_content(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -263,6 +282,34 @@ class OpenAICompatibleChatProvider:
     @property
     def configured(self) -> bool:
         return bool(self.base_url and self.api_key and self.model)
+
+    def healthcheck(self, *, timeout_sec: Optional[float] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Reply with exactly: ok",
+                },
+                {
+                    "role": "user",
+                    "content": "ping",
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": 8,
+            "stream": False,
+        }
+        data = self._request_json(payload, timeout_sec=timeout_sec)
+        choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+        if not choices:
+            raise RuntimeError("assistant provider healthcheck returned no choices")
+        return {
+            "ok": True,
+            "base_url": self.base_url,
+            "model": str(data.get("model", "") or self.model),
+            "checked_at": time.time(),
+        }
 
     def complete(
         self,
@@ -433,16 +480,17 @@ class OpenAICompatibleChatProvider:
         if last_error is not None:
             raise RuntimeError(f"assistant provider connection error: {last_error}")
 
-    def _request_json(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _request_json(self, payload: Dict[str, Any], *, timeout_sec: Optional[float] = None) -> Dict[str, Any]:
         resp = None
         last_error: Optional[BaseException] = None
+        resolved_timeout = self.timeout_sec if timeout_sec is None else max(5.0, float(timeout_sec))
         for attempt in range(1, self.retry_attempts + 1):
             try:
                 resp = requests.post(
                     self._request_url(),
                     json=payload,
                     headers=self._build_headers(),
-                    timeout=self.timeout_sec,
+                    timeout=resolved_timeout,
                 )
                 resp.raise_for_status()
                 break

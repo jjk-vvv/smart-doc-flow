@@ -992,6 +992,47 @@ type ExtractionJobFileState = PersistedExtractionJobFile;
 
 type ExtractionJobState = PersistedExtractionJob;
 
+type RuntimeExtractionJobFileState = ExtractionJobFileState & {
+  __syncedAtMs?: number;
+};
+
+type RuntimeExtractionJobState = ExtractionJobState & {
+  files: RuntimeExtractionJobFileState[];
+  __syncedAtMs?: number;
+  documents?: DocumentResult[];
+};
+
+const EXTRACTION_STAGE_LABELS: Record<string, string> = {
+  queued: '排队中',
+  cached: '恢复缓存',
+  preflight: '预检查',
+  converting: '转 PDF',
+  parsing: '版面解析',
+  parsed: '版面就绪',
+  extracting: '抽取字段与图表',
+  finalizing: '整理结果',
+  completed: '已完成',
+  failed: '失败',
+};
+
+const EXTRACTION_STAGE_PROGRESS_META: Record<string, { ceiling: number; rampMs: number; maxHeadroom: number }> = {
+  queued: { ceiling: 0.06, rampMs: 8000, maxHeadroom: 0.06 },
+  preflight: { ceiling: 0.12, rampMs: 4000, maxHeadroom: 0.06 },
+  converting: { ceiling: 0.28, rampMs: 22000, maxHeadroom: 0.12 },
+  parsing: { ceiling: 0.74, rampMs: 90000, maxHeadroom: 0.22 },
+  parsed: { ceiling: 0.78, rampMs: 5000, maxHeadroom: 0.08 },
+  extracting: { ceiling: 0.93, rampMs: 70000, maxHeadroom: 0.18 },
+  finalizing: { ceiling: 0.98, rampMs: 15000, maxHeadroom: 0.08 },
+};
+
+const normalizeExtractionStageName = (value: unknown): string =>
+  String(value || '').trim().toLowerCase() || 'queued';
+
+const toExtractionStageLabel = (value: unknown): string => {
+  const stage = normalizeExtractionStageName(value);
+  return EXTRACTION_STAGE_LABELS[stage] || (String(value || '').trim() || '处理中');
+};
+
 const ALLOWED_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'txt', 'md', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'tif', 'tiff']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'bmp', 'webp', 'tif', 'tiff']);
 
@@ -1104,11 +1145,286 @@ const toSessionSnapshot = (
         artifactPath: artifactMap[item.key]?.artifactPath ?? item.artifactPath,
       })),
   officePreviewMap,
-  extractionJob,
+  extractionJob: toPersistedExtractionJob(extractionJob),
 });
 
 const clampProgressPercent = (ratio: number) =>
   Math.max(0, Math.min(100, Math.round(Math.max(0, Math.min(1, Number(ratio || 0))) * 100)));
+
+const formatProgressPercent = (ratio: number, digits = 0): string => {
+  const clampedPercent = Math.max(0, Math.min(100, Math.max(0, Math.min(1, Number(ratio || 0))) * 100));
+  const precision = Math.max(0, Math.min(2, Math.floor(Number(digits) || 0)));
+  if (precision === 0) {
+    return `${Math.round(clampedPercent)}%`;
+  }
+  const factor = 10 ** precision;
+  const rounded = Math.round(clampedPercent * factor) / factor;
+  const normalized = rounded.toFixed(precision).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+  return `${normalized}%`;
+};
+
+const estimateExtractionProgressRatio = (
+  ratio: number,
+  stage: unknown,
+  syncedAtMs?: number,
+  terminal = false,
+  nowMs?: number,
+): number => {
+  const base = Math.max(0, Math.min(1, Number(ratio || 0)));
+  const stageName = normalizeExtractionStageName(stage);
+  if (terminal || ['completed', 'failed', 'cached'].includes(stageName) || !Number.isFinite(syncedAtMs || NaN)) {
+    return base;
+  }
+
+  const meta = EXTRACTION_STAGE_PROGRESS_META[stageName];
+  const ceiling = Math.max(
+    base,
+    Math.min(
+      Number(meta?.ceiling ?? Math.min(0.96, base + 0.12)),
+      base + Math.max(0, Number(meta?.maxHeadroom ?? 0.12)),
+    ),
+  );
+  if (ceiling <= base) {
+    return base;
+  }
+
+  const currentNowMs = Number.isFinite(nowMs || NaN) ? Number(nowMs) : Date.now();
+  const elapsed = Math.max(0, currentNowMs - Number(syncedAtMs || 0));
+  const rampMs = Math.max(1200, Number(meta?.rampMs ?? 10000));
+  const t = Math.min(1, elapsed / rampMs);
+  const eased = 1 - (1 - t) ** 3;
+  return base + (ceiling - base) * eased;
+};
+
+const estimateRuntimeExtractionFileRatio = (
+  extractionJob: RuntimeExtractionJobState | null,
+  jobFile: RuntimeExtractionJobFileState | null,
+  nowMs?: number,
+): number => {
+  if (!jobFile) return 0;
+  const status = String(jobFile.status || '').trim().toLowerCase();
+  return estimateExtractionProgressRatio(
+    jobFile.progress_ratio,
+    jobFile.stage,
+    jobFile.__syncedAtMs ?? extractionJob?.__syncedAtMs,
+    Boolean(extractionJob?.terminal) || ['completed', 'failed', 'cached'].includes(status),
+    nowMs,
+  );
+};
+
+const estimateRuntimeExtractionOverallRatio = (
+  extractionJob: RuntimeExtractionJobState | null,
+  nowMs?: number,
+): number => {
+  if (!extractionJob) return 0;
+  const normalizedNowMs = Number.isFinite(nowMs || NaN) ? Number(nowMs) : Date.now();
+  if (Array.isArray(extractionJob.files) && extractionJob.files.length > 0) {
+    const totalFiles = Math.max(1, Number(extractionJob.progress?.total_files || extractionJob.files.length || 1));
+    const summedRatio = extractionJob.files.reduce(
+      (acc, item) => acc + estimateRuntimeExtractionFileRatio(extractionJob, item, normalizedNowMs),
+      0,
+    );
+    return Math.max(0, Math.min(1, summedRatio / totalFiles));
+  }
+  return estimateExtractionProgressRatio(
+    extractionJob.progress?.progress_ratio || 0,
+    extractionJob.progress?.current_stage,
+    extractionJob.__syncedAtMs,
+    Boolean(extractionJob.terminal),
+    normalizedNowMs,
+  );
+};
+
+const pickCurrentExtractionJobFileState = (
+  extractionJob: RuntimeExtractionJobState | null,
+): RuntimeExtractionJobFileState | null => {
+  if (!extractionJob || !Array.isArray(extractionJob.files) || extractionJob.files.length === 0) {
+    return null;
+  }
+  const currentFileName = String(extractionJob.progress?.current_file_name || '').trim().toLowerCase();
+  const currentIndex = Math.max(0, Number(extractionJob.progress?.current_file_index || 0) - 1);
+  const byIndex = extractionJob.files[currentIndex] || null;
+  if (
+    byIndex
+    && (
+      !currentFileName
+      || String(byIndex.file_name || '').trim().toLowerCase() === currentFileName
+    )
+  ) {
+    return byIndex;
+  }
+  if (currentFileName) {
+    const matched = extractionJob.files.find(
+      (item) => String(item.file_name || '').trim().toLowerCase() === currentFileName,
+    );
+    if (matched) {
+      return matched;
+    }
+  }
+  return extractionJob.files.find((item) => String(item.status || '').trim().toLowerCase() === 'running')
+    || extractionJob.files[0]
+    || null;
+};
+
+const buildExtractionInfoMessage = (
+  extractionJob: RuntimeExtractionJobState | null,
+  nowMs?: number,
+  submitted = false,
+): string => {
+  if (!extractionJob) {
+    return submitted ? '已提交任务，等待后端开始解析。' : '正在处理文档。';
+  }
+
+  const normalizedNowMs = Number.isFinite(nowMs || NaN) ? Number(nowMs) : Date.now();
+  const currentFileName = String(extractionJob.progress?.current_file_name || '').trim();
+  const currentStageLabel = toExtractionStageLabel(extractionJob.progress?.current_stage);
+  const overallRatio = estimateRuntimeExtractionOverallRatio(extractionJob, normalizedNowMs);
+  const overallPercentLabel = formatProgressPercent(overallRatio, extractionJob.terminal ? 0 : 1);
+  const currentFileState = pickCurrentExtractionJobFileState(extractionJob);
+  const currentFileRatio = estimateRuntimeExtractionFileRatio(extractionJob, currentFileState, normalizedNowMs);
+  const currentFilePercentLabel = formatProgressPercent(currentFileRatio, extractionJob.terminal ? 0 : 1);
+  const totalFiles = Math.max(
+    1,
+    Number(extractionJob.progress?.total_files || extractionJob.files.length || 1),
+  );
+  const prefix = submitted ? '已提交任务，正在处理' : '正在处理';
+
+  if (currentFileName) {
+    if (totalFiles > 1) {
+      return `${prefix} ${currentFileName} · ${currentStageLabel || '处理中'} · 当前文件 ${currentFilePercentLabel} · 批次 ${overallPercentLabel}`;
+    }
+    return `${prefix} ${currentFileName} · ${currentStageLabel || '处理中'} · ${currentFilePercentLabel}`;
+  }
+
+  if (totalFiles > 1) {
+    return submitted ? `已提交任务，等待后端开始解析 · 批次 ${overallPercentLabel}` : `正在处理文档 · 批次 ${overallPercentLabel}`;
+  }
+  return submitted ? `已提交任务，等待后端开始解析 · ${overallPercentLabel}` : `正在处理文档 · ${overallPercentLabel}`;
+};
+
+const toPersistedExtractionJob = (job: ExtractionJobState | null): PersistedExtractionJob | null => {
+  if (!job) return null;
+  return {
+    job_id: String(job.job_id || '').trim(),
+    status: String(job.status || 'queued').trim() || 'queued',
+    terminal: Boolean(job.terminal),
+    created_at: Number(job.created_at || 0),
+    updated_at: Number(job.updated_at || 0),
+    progress: {
+      total_files: Math.max(0, Number(job.progress?.total_files || 0)),
+      completed_files: Math.max(0, Number(job.progress?.completed_files || 0)),
+      failed_files: Math.max(0, Number(job.progress?.failed_files || 0)),
+      current_file_index: Math.max(0, Number(job.progress?.current_file_index || 0)),
+      current_file_name: String(job.progress?.current_file_name || '').trim(),
+      current_stage: String(job.progress?.current_stage || 'queued').trim() || 'queued',
+      progress_ratio: Math.max(0, Math.min(1, Number(job.progress?.progress_ratio || 0))),
+    },
+    files: Array.isArray(job.files)
+      ? job.files.map((item) => ({
+          file_name: String(item.file_name || '').trim(),
+          file_hash: String(item.file_hash || '').trim(),
+          status: String(item.status || 'queued').trim() || 'queued',
+          stage: String(item.stage || 'queued').trim() || 'queued',
+          progress_ratio: Math.max(0, Math.min(1, Number(item.progress_ratio || 0))),
+          message: String(item.message || '').trim(),
+          artifact_path: item.artifact_path ?? null,
+          artifact_url: item.artifact_url ?? null,
+          error: String(item.error || '').trim(),
+          track: String(item.track || '').trim(),
+          cached: Boolean(item.cached),
+        }))
+      : [],
+    errors: Array.isArray(job.errors) ? job.errors.map((item) => String(item || '').trim()).filter(Boolean) : [],
+  };
+};
+
+const normalizeExtractionJobPayload = (
+  payload: ExtractionJobState & { documents?: DocumentResult[] },
+  usedBase: string,
+  previous?: RuntimeExtractionJobState | null,
+): RuntimeExtractionJobState => {
+  const syncedAtMs = Date.now();
+  const previousByKey = new Map<string, RuntimeExtractionJobFileState>();
+  if (previous?.job_id === payload.job_id && Array.isArray(previous.files)) {
+    previous.files.forEach((item) => {
+      const key = `${String(item.file_hash || '').trim()}::${String(item.file_name || '').trim().toLowerCase()}`;
+      previousByKey.set(key, item);
+    });
+  }
+
+  const normalizedFiles: RuntimeExtractionJobFileState[] = Array.isArray(payload.files)
+    ? payload.files.map((item) => {
+        const key = `${String(item.file_hash || '').trim()}::${String(item.file_name || '').trim().toLowerCase()}`;
+        const previousFile = previousByKey.get(key);
+        const nextStage = normalizeExtractionStageName(item.stage);
+        const nextStatus = String(item.status || '').trim().toLowerCase();
+        let nextRatio = Math.max(0, Math.min(1, Number(item.progress_ratio || 0)));
+        if (
+          previousFile
+          && !payload.terminal
+          && !['completed', 'failed'].includes(nextStatus)
+          && normalizeExtractionStageName(previousFile.stage) === nextStage
+          && String(previousFile.status || '').trim().toLowerCase() === nextStatus
+        ) {
+          const previousDisplayedRatio = estimateExtractionProgressRatio(
+            Number(previousFile.progress_ratio || 0),
+            previousFile.stage,
+            previousFile.__syncedAtMs,
+            false,
+            syncedAtMs,
+          );
+          nextRatio = Math.max(
+            nextRatio,
+            Math.max(0, Math.min(1, Number(previousFile.progress_ratio || 0))),
+            Math.max(0, Math.min(1, previousDisplayedRatio)),
+          );
+        }
+        return {
+          ...item,
+          progress_ratio: nextRatio,
+          artifact_url: toAbsoluteExtractUrl(String(item.artifact_url || '').trim(), usedBase) || item.artifact_url,
+          __syncedAtMs: syncedAtMs,
+        };
+      })
+    : [];
+
+  let overallRatio = Math.max(0, Math.min(1, Number(payload.progress?.progress_ratio || 0)));
+  if (
+    previous?.job_id === payload.job_id
+    && !payload.terminal
+    && normalizeExtractionStageName(previous.progress?.current_stage) === normalizeExtractionStageName(payload.progress?.current_stage)
+    && String(previous.progress?.current_file_name || '').trim() === String(payload.progress?.current_file_name || '').trim()
+  ) {
+    const previousDisplayedOverallRatio = estimateExtractionProgressRatio(
+      Number(previous.progress?.progress_ratio || 0),
+      previous.progress?.current_stage,
+      previous.__syncedAtMs,
+      false,
+      syncedAtMs,
+    );
+    overallRatio = Math.max(
+      overallRatio,
+      Math.max(0, Math.min(1, Number(previous.progress?.progress_ratio || 0))),
+      Math.max(0, Math.min(1, previousDisplayedOverallRatio)),
+    );
+  }
+
+  return {
+    ...payload,
+    progress: {
+      total_files: Math.max(0, Number(payload.progress?.total_files || normalizedFiles.length || 0)),
+      completed_files: Math.max(0, Number(payload.progress?.completed_files || 0)),
+      failed_files: Math.max(0, Number(payload.progress?.failed_files || 0)),
+      current_file_index: Math.max(0, Number(payload.progress?.current_file_index || 0)),
+      current_file_name: String(payload.progress?.current_file_name || '').trim(),
+      current_stage: String(payload.progress?.current_stage || 'queued').trim() || 'queued',
+      progress_ratio: overallRatio,
+    },
+    files: normalizedFiles,
+    errors: Array.isArray(payload.errors) ? payload.errors : [],
+    __syncedAtMs: syncedAtMs,
+  };
+};
 
 let spreadsheetWarmupIdleHandle: number | null = null;
 const spreadsheetWarmupQueue: File[] = [];
@@ -1197,10 +1513,10 @@ const pickOfficePreviewByFileName = (
 };
 
 const pickExtractionJobFileState = (
-  extractionJob: ExtractionJobState | null,
+  extractionJob: RuntimeExtractionJobState | null,
   file: File,
   index: number,
-): ExtractionJobFileState | null => {
+): RuntimeExtractionJobFileState | null => {
   if (!extractionJob || !Array.isArray(extractionJob.files) || extractionJob.files.length === 0) return null;
   const normalizedName = String(file.name || '').trim().toLowerCase();
   const byIndex = extractionJob.files[index] || null;
@@ -1591,7 +1907,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const [activeDocIndex, setActiveDocIndex] = useState(0);
   const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [extractionJob, setExtractionJob] = useState<ExtractionJobState | null>(null);
+  const [extractionJob, setExtractionJob] = useState<RuntimeExtractionJobState | null>(null);
+  const [progressNowMs, setProgressNowMs] = useState<number>(() => Date.now());
   const [selectedFileArtifacts, setSelectedFileArtifacts] = useState<Record<string, { artifactUrl?: string; artifactPath?: string }>>({});
   const [sessionHydrated, setSessionHydrated] = useState(false);
   const [sessionRestorePending, setSessionRestorePending] = useState(false);
@@ -1640,6 +1957,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   const assistantDialogRef = useRef<HTMLDivElement>(null);
   const workbenchViewportRef = useRef<HTMLDivElement>(null);
   const documentsRef = useRef<DocumentResult[]>([]);
+  const extractionJobStateRef = useRef<RuntimeExtractionJobState | null>(null);
   const summaryRequestSeqRef = useRef(0);
   const traceRequestSeqRef = useRef(0);
   const officePreviewPollRef = useRef<Record<string, string>>({});
@@ -1662,6 +1980,27 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
   useEffect(() => () => {
     clearSpreadsheetPreviewWarmupQueue();
   }, []);
+
+  useEffect(() => {
+    extractionJobStateRef.current = extractionJob;
+  }, [extractionJob]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    setProgressNowMs(Date.now());
+    if (!extractionJob || extractionJob.terminal) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setProgressNowMs(Date.now());
+    }, 120);
+    return () => window.clearInterval(timer);
+  }, [
+    extractionJob?.job_id,
+    extractionJob?.terminal,
+    extractionJob?.progress?.current_stage,
+    extractionJob?.progress?.current_file_name,
+  ]);
 
   useEffect(() => {
     documentsRef.current = documents;
@@ -1696,6 +2035,51 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
     return null;
   }, [activeDoc, activeDocIndex, selectedFiles]);
+  const activeSourceFileIndex = useMemo(() => {
+    if (!activeSourceFile) return -1;
+    const targetKey = fileIdentityKey(activeSourceFile);
+    return selectedFiles.findIndex((file) => fileIdentityKey(file) === targetKey);
+  }, [activeSourceFile, selectedFiles]);
+  const activeExtractionJobFile = useMemo(
+    () => (
+      activeSourceFile
+        ? pickExtractionJobFileState(
+            extractionJob,
+            activeSourceFile,
+            activeSourceFileIndex >= 0 ? activeSourceFileIndex : activeDocIndex,
+          )
+        : null
+    ),
+    [activeDocIndex, activeSourceFile, activeSourceFileIndex, extractionJob],
+  );
+  const activeExtractionJobFileRatio = estimateRuntimeExtractionFileRatio(
+    extractionJob,
+    activeExtractionJobFile,
+    progressNowMs,
+  );
+  const activeExtractionJobFilePercentLabel = formatProgressPercent(
+    activeExtractionJobFileRatio,
+    extractionJob?.terminal ? 0 : 1,
+  );
+  const activeExtractionJobFileStageLabel = toExtractionStageLabel(activeExtractionJobFile?.stage);
+  const showActiveExtractionPreviewStatus = Boolean(
+    activeExtractionJobFile && (!activeDoc || !extractionJob?.terminal),
+  );
+  const resolvedInfoMessage = useMemo(() => {
+    if (extractionJob && !extractionJob.terminal) {
+      const liveMessage = buildExtractionInfoMessage(extractionJob, progressNowMs, false);
+      const normalizedInfoMessage = String(infoMessage || '').trim();
+      if (
+        !normalizedInfoMessage
+        || normalizedInfoMessage === '正在同步最新解析进度...'
+        || normalizedInfoMessage.startsWith('正在处理')
+        || normalizedInfoMessage.startsWith('已提交任务')
+      ) {
+        return liveMessage;
+      }
+    }
+    return infoMessage;
+  }, [extractionJob, infoMessage, progressNowMs]);
   const activeExt = activeSourceFile ? fileExt(activeSourceFile.name) : (activeDoc ? fileExt(activeDoc.file_name) : '');
   const activeDisplayName = activeDoc?.file_name || activeSourceFile?.name || '当前文档';
   const activeSelectionCount = Math.max(documents.length, selectedFiles.length);
@@ -2928,7 +3312,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       return;
     }
     extractionJobPollRef.current = normalizedJobId;
-    const pollIntervalMs = 1200;
+    const pollIntervalMs = 850;
     const pollTimeoutMs = 45 * 60 * 1000;
     const startedAt = Date.now();
     while (Date.now() - startedAt < pollTimeoutMs) {
@@ -2946,26 +3330,23 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           terminal: boolean;
           documents?: DocumentResult[];
         };
-        setExtractionJob(payload);
-        setIsProcessing(!payload.terminal);
+        const normalizedJob = normalizeExtractionJobPayload(
+          payload,
+          usedBase,
+          extractionJobPollRef.current === normalizedJobId ? extractionJobStateRef.current : null,
+        );
+        setExtractionJob(normalizedJob);
+        setIsProcessing(!normalizedJob.terminal);
 
-        const progress = payload.progress;
-        const currentName = String(progress?.current_file_name || '').trim();
-        const currentStage = String(progress?.current_stage || '').trim();
-        const currentPercent = Math.max(0, Math.min(100, Math.round(Number(progress?.progress_ratio || 0) * 100)));
-        if (!payload.terminal) {
-          setInfoMessage(
-            currentName
-              ? `正在处理 ${currentName} · ${currentStage || 'running'} · ${currentPercent}%`
-              : `正在处理文档 · ${currentPercent}%`
-          );
+        if (!normalizedJob.terminal) {
+          setInfoMessage(buildExtractionInfoMessage(normalizedJob, Date.now(), false));
         }
 
-        if (!payload.terminal && Array.isArray(payload.documents) && payload.documents.length > 0) {
+        if (!normalizedJob.terminal && Array.isArray(payload.documents) && payload.documents.length > 0) {
           applyExtractionDocuments(payload.documents, { partial: true });
         }
 
-        if (payload.terminal) {
+        if (normalizedJob.terminal) {
           extractionJobPollRef.current = '';
           if (Array.isArray(payload.documents) && payload.documents.length > 0) {
             applyExtractionDocuments(payload.documents);
@@ -3290,20 +3671,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         throw new Error('后端未返回有效的抽取任务。');
       }
 
-      const normalizedFiles = Array.isArray(payload.files)
-        ? payload.files.map((item) => ({
-            ...item,
-            artifact_url: toAbsoluteExtractUrl(String(item.artifact_url || '').trim(), usedBase) || item.artifact_url,
-          }))
-        : [];
-      const normalizedJob: ExtractionJobState = {
-        ...payload,
-        files: normalizedFiles,
-        errors: Array.isArray(payload.errors) ? payload.errors : [],
-      };
+      const normalizedJob = normalizeExtractionJobPayload(payload, usedBase, extractionJobStateRef.current);
       const nextArtifactMap = selectedFiles.reduce<Record<string, { artifactUrl?: string; artifactPath?: string }>>(
         (acc, file, index) => {
-          const item = normalizedFiles[index];
+          const item = normalizedJob.files[index];
           acc[fileIdentityKey(file)] = {
             artifactUrl: String(item?.artifact_url || '').trim() || undefined,
             artifactPath: String(item?.artifact_path || '').trim() || undefined,
@@ -3327,13 +3698,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         ),
       );
 
-      const currentPercent = clampProgressPercent(normalizedJob.progress?.progress_ratio || 0);
-      const currentFileName = String(normalizedJob.progress?.current_file_name || '').trim();
-      setInfoMessage(
-        currentFileName
-          ? `已提交任务，正在处理 ${currentFileName} · ${currentPercent}%`
-          : `已提交任务，等待后端开始解析 · ${currentPercent}%`
-      );
+      setInfoMessage(buildExtractionInfoMessage(normalizedJob, Date.now(), true));
 
       if (normalizedJob.terminal) {
         if (Array.isArray(payload.documents) && payload.documents.length > 0) {
@@ -4519,9 +4884,23 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       };
   const pendingExtractionCount = selectedFiles.length;
   const showBatchExtractAction = pendingExtractionCount > 0;
-  const extractionOverallPercent = clampProgressPercent(extractionJob?.progress?.progress_ratio || 0);
+  const extractionOverallRatio = estimateRuntimeExtractionOverallRatio(
+    extractionJob,
+    progressNowMs,
+  );
+  const extractionOverallPercent = clampProgressPercent(extractionOverallRatio);
+  const extractionOverallPercentLabel = formatProgressPercent(
+    extractionOverallRatio,
+    extractionJob?.terminal ? 0 : 1,
+  );
+  const extractionTotalFiles = Math.max(
+    0,
+    Number(extractionJob?.progress?.total_files || selectedFiles.length || 0),
+  );
   const batchExtractLabel = isProcessing
-    ? `正在提取（${extractionOverallPercent}%）`
+    ? extractionTotalFiles > 1
+      ? `正在提取（批次 ${extractionOverallPercentLabel}）`
+      : `正在提取（${extractionOverallPercentLabel}）`
     : pendingExtractionCount > 1
       ? `开始批量提取（${pendingExtractionCount}）`
       : '开始提取';
@@ -4708,7 +5087,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
       ? '助手正在处理中'
       : activeSummaryLoading
         ? '摘要同步中'
-        : infoMessage;
+        : resolvedInfoMessage;
   const smartUnitTabs: Array<{ id: SmartUnitTabId; label: string; unread: boolean }> = [
     { id: 'results', label: '提取结果', unread: resultsTabUnread },
     { id: 'assistant', label: '智能助手', unread: assistantTabUnread },
@@ -5023,9 +5402,19 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                       let statusColor = "text-slate-400";
                       let StatusIndicator = <div className="h-2 w-2 rounded-full bg-slate-300 dark:bg-slate-600" />;
                       
-                      if (jobFile && !extractionJob?.terminal) {
-                         const progress = clampProgressPercent(jobFile.progress_ratio);
-                         const message = String(jobFile.message || jobFile.stage || '正在解析').trim() || '正在解析';
+                       if (jobFile && !extractionJob?.terminal) {
+                         const estimatedProgressRatio = estimateRuntimeExtractionFileRatio(
+                           extractionJob,
+                           jobFile,
+                           progressNowMs,
+                         );
+                         const progress = clampProgressPercent(estimatedProgressRatio);
+                         const progressLabel = formatProgressPercent(estimatedProgressRatio, 1);
+                         const progressWidth = Math.max(
+                           estimatedProgressRatio * 100,
+                           jobFile.status === 'queued' ? 8 : 4,
+                         );
+                         const message = String(jobFile.message || toExtractionStageLabel(jobFile.stage) || '正在解析').trim() || '正在解析';
                          if (jobFile.status === 'failed') {
                              statusText = jobFile.error ? `解析失败：${jobFile.error}` : '解析失败';
                              statusColor = "text-red-500";
@@ -5035,17 +5424,17 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                              statusColor = "text-emerald-600";
                              StatusIndicator = <div className="h-2 w-2 rounded-full bg-emerald-500" />;
                          } else {
-                             statusText = progress > 0 ? `${message} ${progress}%` : message;
+                             statusText = progress > 0 ? `${message} ${progressLabel}` : message;
                              statusColor = jobFile.status === 'queued' ? "text-slate-400" : "text-slate-500";
-                             StatusIndicator = (
-                               <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-                                 <div
-                                   className="h-full bg-blue-500 transition-all duration-500"
-                                   style={{ width: `${Math.max(progress, jobFile.status === 'queued' ? 8 : 4)}%` }}
-                                 />
-                               </div>
-                             );
-                         }
+                              StatusIndicator = (
+                                <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                                  <div
+                                    className="h-full bg-gradient-to-r from-sky-500 via-blue-500 to-cyan-400 transition-[width] duration-700 ease-out"
+                                    style={{ width: `${progressWidth}%` }}
+                                  />
+                                </div>
+                              );
+                          }
                       } else if (jobFile) {
                          if (jobFile.status === 'failed') {
                              statusText = jobFile.error ? `解析失败：${jobFile.error}` : '解析失败';
@@ -5295,7 +5684,27 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                               'mt-0.5 flex min-w-0 items-center gap-1.5 font-bold text-slate-500',
                               useDenseWorkbenchChrome ? 'text-[9px]' : 'text-[10px]'
                             )}>
-                                {activeDoc ? (
+                                {showActiveExtractionPreviewStatus ? (
+                                    <>
+                                        <span
+                                          className={cn(
+                                            "h-2 w-2 rounded-full shrink-0",
+                                            activeExtractionJobFile?.status === 'failed'
+                                              ? "bg-red-500"
+                                              : activeExtractionJobFile?.status === 'completed'
+                                                ? "bg-emerald-500"
+                                                : "bg-blue-500"
+                                          )}
+                                        />
+                                        <span className="truncate">
+                                          {activeExtractionJobFile?.status === 'failed'
+                                            ? '解析失败'
+                                            : activeExtractionJobFile?.status === 'completed'
+                                              ? '抽取完成'
+                                              : `${activeExtractionJobFileStageLabel} ${activeExtractionJobFilePercentLabel}`}
+                                        </span>
+                                    </>
+                                ) : activeDoc ? (
                                     <>
                                         <span className={cn("h-2 w-2 rounded-full shrink-0", activeDoc.cached ? "bg-emerald-500" : "bg-amber-500")} />
                                         <span className="truncate">{activeDoc.cached ? "已缓存" : "实时预览"}</span>
@@ -5727,7 +6136,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             {/* Context Bar */}
             <div className="z-20 flex h-9 items-center justify-between border-t border-slate-200/70 bg-white/75 px-3 text-[10px] text-slate-500 sm:px-4 dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-400">
                 <div className="flex min-w-0 items-center gap-2 sm:gap-4">
-                     <span data-testid="module2-info-message" className="truncate">{infoMessage}</span>
+                     <span data-testid="module2-info-message" className="truncate">{resolvedInfoMessage}</span>
                 </div>
                 {activeDoc && (
                     <div className="hidden font-mono opacity-50 sm:block">

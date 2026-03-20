@@ -4,8 +4,8 @@
     "dev:frontend": "npm --prefix frontend run dev -- --port 3000 --host 0.0.0.0",
     "dev:backend": "node scripts/dev-backend.cjs",
     "dev:backend:auth": "node backend/auth/server.cjs",
-    "dev:module2": "python -m uvicorn app.main:app --app-dir backend/module2 --host 0.0.0.0 --port 8000 --reload",
-    "dev:module4": "python -m uvicorn app.main:app --app-dir backend/module4 --host 0.0.0.0 --port 8100 --reload"
+    "dev:module2": "node scripts/dev-module2.cjs",
+    "dev:module4": "node scripts/dev-module4.cjs"
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.19",

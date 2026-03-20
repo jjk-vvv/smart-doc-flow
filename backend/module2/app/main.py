@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import socket
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +39,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
+from app.assistant.provider import build_module2_llm_provider
 from app.assistant.service import AssistantService
 from app.agent.graph import AgentState, ExtractionGraph
 from app.core.office_pdf import convert_doc_bytes_to_docx, convert_word_bytes_to_pdf, is_word_file
@@ -75,6 +77,14 @@ module4_sync_metrics: Dict[str, Any] = {
     "last_batch_id": "",
     "last_endpoint": "",
     "last_source_batch_key": "",
+}
+provider_preflight_lock = Lock()
+provider_preflight_state: Dict[str, Any] = {
+    "ok": False,
+    "checked_at": 0.0,
+    "base_url": "",
+    "model": "",
+    "error": "",
 }
 
 
@@ -152,6 +162,131 @@ class ExtractionJobState:
 
     def terminal(self) -> bool:
         return self.status in {"completed", "failed"}
+
+
+_EXTRACTION_PROGRESS_STAGE_META: Dict[str, Dict[str, float]] = {
+    "queued": {"ceiling": 0.06, "ramp_sec": 8.0, "max_headroom": 0.06},
+    "preflight": {"ceiling": 0.12, "ramp_sec": 4.0, "max_headroom": 0.06},
+    "converting": {"ceiling": 0.28, "ramp_sec": 16.0, "max_headroom": 0.12},
+    "parsing": {"ceiling": 0.74, "ramp_sec": 24.0, "max_headroom": 0.22},
+    "parsed": {"ceiling": 0.78, "ramp_sec": 5.0, "max_headroom": 0.08},
+    "extracting": {"ceiling": 0.93, "ramp_sec": 28.0, "max_headroom": 0.18},
+    "finalizing": {"ceiling": 0.98, "ramp_sec": 12.0, "max_headroom": 0.08},
+}
+
+
+def _normalize_extraction_stage_name(stage: Any) -> str:
+    return str(stage or "").strip().lower() or "queued"
+
+
+def _ease_out_cubic(value: float) -> float:
+    t = max(0.0, min(1.0, float(value or 0.0)))
+    return 1.0 - pow(1.0 - t, 3)
+
+
+def _heartbeat_progress_ratio(
+    *,
+    base_ratio: float,
+    stage: Any,
+    elapsed_sec: float,
+    ceiling_ratio: Optional[float] = None,
+    ramp_sec: Optional[float] = None,
+) -> float:
+    stage_name = _normalize_extraction_stage_name(stage)
+    meta = _EXTRACTION_PROGRESS_STAGE_META.get(stage_name, {})
+    base = max(0.0, min(1.0, float(base_ratio or 0.0)))
+    resolved_ceiling = max(
+        base,
+        min(
+            1.0,
+            float(
+                ceiling_ratio
+                if ceiling_ratio is not None
+                else meta.get("ceiling", min(0.96, base + 0.12))
+            ),
+        ),
+    )
+    if resolved_ceiling <= base:
+        return base
+    resolved_ramp = max(2.0, float(ramp_sec if ramp_sec is not None else meta.get("ramp_sec", 10.0)))
+    return base + (resolved_ceiling - base) * _ease_out_cubic(elapsed_sec / resolved_ramp)
+
+
+def _resolve_parse_progress_ramp_sec(*, parse_input_bytes_len: int, timeout_sec: float) -> float:
+    size_mb = max(0.0, float(parse_input_bytes_len) / (1024.0 * 1024.0))
+    size_driven = 24.0 + min(36.0, size_mb * 9.0)
+    timeout_driven = max(30.0, max(0.0, float(timeout_sec)) * 0.55)
+    return min(110.0, max(size_driven, timeout_driven))
+
+
+def _resolve_extract_progress_ramp_sec(
+    *,
+    timeout_sec: float,
+    schema_field_count: int,
+    table_count: int,
+    figure_count: int,
+) -> float:
+    complexity = (
+        max(0.0, min(float(schema_field_count), 24.0)) * 0.7
+        + max(0.0, min(float(table_count), 24.0)) * 0.4
+        + max(0.0, min(float(figure_count), 120.0)) * 0.08
+    )
+    complexity_driven = 22.0 + min(28.0, complexity * 1.15)
+    timeout_driven = max(24.0, max(0.0, float(timeout_sec)) * 0.42)
+    return min(96.0, max(complexity_driven, timeout_driven))
+
+
+async def _run_with_progress_heartbeat(
+    awaitable: Awaitable[Any],
+    *,
+    emit_progress: Callable[[str, float, str, Optional[Dict[str, Any]]], Awaitable[None]],
+    stage: str,
+    base_ratio: float,
+    message: str,
+    extra: Optional[Dict[str, Any]] = None,
+    ceiling_ratio: Optional[float] = None,
+    ramp_sec: Optional[float] = None,
+    interval_sec: Optional[float] = None,
+) -> Any:
+    stage_name = _normalize_extraction_stage_name(stage)
+    tick_interval_sec = max(0.35, float(interval_sec or os.getenv("MODULE2_PROGRESS_HEARTBEAT_INTERVAL_SEC", "0.8")))
+    started_at = time.perf_counter()
+    stop_event = asyncio.Event()
+
+    async def _heartbeat() -> None:
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=tick_interval_sec)
+                    return
+                except TimeoutError:
+                    pass
+                ratio = _heartbeat_progress_ratio(
+                    base_ratio=base_ratio,
+                    stage=stage_name,
+                    elapsed_sec=max(0.0, time.perf_counter() - started_at),
+                    ceiling_ratio=ceiling_ratio,
+                    ramp_sec=ramp_sec,
+                )
+                if ratio > base_ratio:
+                    await emit_progress(stage_name, ratio, message, extra)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
+    try:
+        return await awaitable
+    finally:
+        stop_event.set()
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
 
 
 EXTRACTION_CACHE_VERSION = (
@@ -1924,6 +2059,125 @@ def _visual_chain_required() -> bool:
     return (os.getenv("MODULE2_REQUIRE_VISUAL_CHAIN", "true") or "true").lower() in {"1", "true", "yes"}
 
 
+def _provider_healthcheck_on_job_create() -> bool:
+    return (os.getenv("MODULE2_PROVIDER_HEALTHCHECK_ON_JOB_CREATE", "true") or "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _fail_on_provider_unavailable() -> bool:
+    return (os.getenv("MODULE2_FAIL_ON_PROVIDER_UNAVAILABLE", "true") or "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _disable_fasttrack_fallback() -> bool:
+    return (os.getenv("MODULE2_DISABLE_FASTTRACK_FALLBACK", "true") or "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _disable_quick_table_fallback() -> bool:
+    return (os.getenv("MODULE2_DISABLE_QUICK_TABLE_FALLBACK", "true") or "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _provider_healthcheck_ttl_sec() -> float:
+    return max(5.0, float(os.getenv("MODULE2_PROVIDER_HEALTHCHECK_TTL_SEC", "120")))
+
+
+def _provider_healthcheck_timeout_sec() -> float:
+    return max(5.0, float(os.getenv("MODULE2_PROVIDER_HEALTHCHECK_TIMEOUT_SEC", "20")))
+
+
+def _provider_preflight_snapshot() -> Dict[str, Any]:
+    with provider_preflight_lock:
+        return dict(provider_preflight_state)
+
+
+def _run_provider_preflight(force: bool = False) -> Dict[str, Any]:
+    ttl_sec = _provider_healthcheck_ttl_sec()
+    now_ts = time.time()
+    with provider_preflight_lock:
+        cached_ok = bool(provider_preflight_state.get("ok"))
+        checked_at = float(provider_preflight_state.get("checked_at", 0.0) or 0.0)
+        if (not force) and cached_ok and (now_ts - checked_at) < ttl_sec:
+            return dict(provider_preflight_state)
+
+    provider = build_module2_llm_provider(
+        temperature=0.0,
+        max_tokens=8,
+        timeout_sec=_provider_healthcheck_timeout_sec(),
+    )
+    if not provider.configured:
+        message = "module2 extraction provider is not fully configured"
+        with provider_preflight_lock:
+            provider_preflight_state.update(
+                {
+                    "ok": False,
+                    "checked_at": time.time(),
+                    "base_url": getattr(provider, "base_url", ""),
+                    "model": getattr(provider, "model", ""),
+                    "error": message,
+                }
+            )
+        raise RuntimeError(message)
+
+    try:
+        result = provider.healthcheck(timeout_sec=_provider_healthcheck_timeout_sec())
+    except Exception as exc:
+        message = str(exc or "").strip() or f"{type(exc).__name__}"
+        with provider_preflight_lock:
+            provider_preflight_state.update(
+                {
+                    "ok": False,
+                    "checked_at": time.time(),
+                    "base_url": provider.base_url,
+                    "model": provider.model,
+                    "error": message,
+                }
+            )
+        raise
+
+    with provider_preflight_lock:
+        provider_preflight_state.update(
+            {
+                "ok": True,
+                "checked_at": float(result.get("checked_at", time.time()) or time.time()),
+                "base_url": str(result.get("base_url", "") or provider.base_url),
+                "model": str(result.get("model", "") or provider.model),
+                "error": "",
+            }
+        )
+        return dict(provider_preflight_state)
+
+
+async def _ensure_provider_ready_for_job_create() -> None:
+    if not _provider_healthcheck_on_job_create():
+        return
+    try:
+        await asyncio.to_thread(_run_provider_preflight)
+    except Exception as exc:
+        logger.warning("module2 provider preflight failed: %s: %s", type(exc).__name__, exc)
+        if _fail_on_provider_unavailable():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Extraction provider preflight failed before job creation: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            ) from exc
+
+
 def _docx_native_recovery_enabled() -> bool:
     return (os.getenv("MODULE2_DOCX_NATIVE_RECOVERY_ENABLE", "false") or "false").lower() in {
         "1",
@@ -2163,9 +2417,29 @@ async def _ensure_office_preview_job_started(
 
 def _serialize_extraction_job(job: ExtractionJobState, *, include_documents: bool = False) -> Dict[str, Any]:
     total_files = max(1, int(job.total_files or 0))
-    progress_ratio = sum(
-        max(0.0, min(1.0, float(item.progress_ratio or 0.0))) for item in job.files
-    ) / float(total_files)
+    serialized_files: List[Dict[str, Any]] = []
+    file_progress_values: List[float] = []
+
+    for idx, item in enumerate(job.files):
+        raw_ratio = max(0.0, min(1.0, float(item.progress_ratio or 0.0)))
+        file_progress_values.append(raw_ratio)
+        serialized_files.append(
+            {
+                "file_name": item.file_name,
+                "file_hash": item.file_hash,
+                "status": item.status,
+                "stage": item.stage,
+                "progress_ratio": round(raw_ratio, 4),
+                "message": item.message,
+                "artifact_path": item.artifact_path,
+                "artifact_url": item.artifact_url,
+                "error": item.error,
+                "track": item.track,
+                "cached": bool(item.cached),
+            }
+        )
+
+    progress_ratio = (sum(file_progress_values) / float(total_files)) if file_progress_values else 0.0
     payload: Dict[str, Any] = {
         "ok": True,
         "job_id": job.job_id,
@@ -2182,22 +2456,7 @@ def _serialize_extraction_job(job: ExtractionJobState, *, include_documents: boo
             "current_stage": job.current_stage,
             "progress_ratio": round(progress_ratio, 4),
         },
-        "files": [
-            {
-                "file_name": item.file_name,
-                "file_hash": item.file_hash,
-                "status": item.status,
-                "stage": item.stage,
-                "progress_ratio": round(max(0.0, min(1.0, float(item.progress_ratio or 0.0))), 4),
-                "message": item.message,
-                "artifact_path": item.artifact_path,
-                "artifact_url": item.artifact_url,
-                "error": item.error,
-                "track": item.track,
-                "cached": bool(item.cached),
-            }
-            for item in job.files
-        ],
+        "files": serialized_files,
         "errors": list(job.errors),
     }
     if include_documents or job.terminal():
@@ -3451,8 +3710,63 @@ def _strip_recovered_extract_warnings(warnings: List[str], *, quality_ok: bool, 
     )
 
 
+def _promote_visual_diagnostics(diagnostics: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(diagnostics, dict):
+        return {}
+    merged = dict(diagnostics)
+    parse_stats = merged.get("parse_stats") if isinstance(merged.get("parse_stats"), dict) else {}
+    for key in (
+        "chain_status",
+        "artifact_status",
+        "vision_status",
+        "visual_baseline_artifact_ready",
+        "mineru_item_count",
+        "mineru_image_asset_count",
+        "mineru_content_list_present",
+        "mineru_markdown_present",
+        "visual_selected_object_count",
+        "visual_vision_candidate_count",
+        "visual_vision_attempted_count",
+        "visual_vision_success_count",
+        "visual_vision_empty_count",
+    ):
+        if key in parse_stats and key not in merged:
+            merged[key] = parse_stats.get(key)
+
+    if "mineru_status" not in merged:
+        mineru_status = ""
+        mineru_run = parse_stats.get("mineru_run") if isinstance(parse_stats.get("mineru_run"), dict) else {}
+        if mineru_run:
+            mineru_status = str(mineru_run.get("status", "") or "").strip()
+        if not mineru_status:
+            chain_contract = merged.get("chain_contract") if isinstance(merged.get("chain_contract"), dict) else {}
+            mineru_status = str(chain_contract.get("mineru_status", "") or "").strip()
+        if mineru_status:
+            merged["mineru_status"] = mineru_status
+    return merged
+
+
+def _resolve_module2_path(raw_value: str, default_path: Path) -> Path:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return default_path.resolve()
+    path = Path(raw)
+    if path.is_absolute():
+        return path.resolve()
+
+    candidate_module2 = (MODULE2_ROOT / path).resolve()
+    candidate_repo = (MODULE2_ROOT.parents[1] / path).resolve()
+    normalized = raw.replace("\\", "/").lower()
+    if normalized.startswith("backend/module2/"):
+        return candidate_repo
+    if candidate_repo.exists() and not candidate_module2.exists():
+        return candidate_repo
+    return candidate_module2
+
+
 def _artifact_root_dir() -> Path:
-    root = Path(os.getenv("MODULE2_ARTIFACT_ROOT_DIR", "backend/module2/.cache")).resolve()
+    configured = os.getenv("MODULE2_ARTIFACT_ROOT_DIR", "backend/module2/artifacts")
+    root = _resolve_module2_path(configured, MODULE2_ROOT / "artifacts")
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -4660,8 +4974,8 @@ def _assistant_build_answer(
     return " ".join(parts)
 
 
-def _clear_artifact_cache_dir() -> int:
-    root = _artifact_root_dir()
+def _clear_directory_contents(root: Path) -> int:
+    root.mkdir(parents=True, exist_ok=True)
     removed = 0
     for child in root.iterdir():
         try:
@@ -4674,6 +4988,52 @@ def _clear_artifact_cache_dir() -> int:
         except Exception:
             continue
     return removed
+
+
+def _clear_module2_materialized_dirs() -> int:
+    removed = 0
+    seen: Set[str] = set()
+    candidates = [
+        _artifact_root_dir(),
+        MODULE2_ROOT / ".mcache",
+        _extraction_job_state_root_dir(),
+    ]
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved).lower() if os.name == "nt" else str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        removed += _clear_directory_contents(resolved)
+    return removed
+
+
+async def _clear_extraction_runtime_state() -> None:
+    pending_tasks = [task for task in extraction_job_tasks.values() if not task.done()]
+    for task in pending_tasks:
+        task.cancel()
+    if pending_tasks:
+        await asyncio.gather(*pending_tasks, return_exceptions=True)
+    async with extraction_lock:
+        extraction_jobs.clear()
+        extraction_job_runtime_specs.clear()
+        extraction_job_persist_markers.clear()
+        extraction_job_tasks.clear()
+    async with office_preview_lock:
+        office_preview_jobs.clear()
+
+
+async def _clear_module4_sync_runtime_state() -> None:
+    pending_tasks = list(module4_sync_tasks)
+    for task in pending_tasks:
+        task.cancel()
+    if pending_tasks:
+        await asyncio.gather(*pending_tasks, return_exceptions=True)
+    module4_sync_tasks.clear()
+    module4_sync_task_index.clear()
 
 
 @app.on_event("startup")
@@ -4853,7 +5213,9 @@ async def _process_single_doc_bytes(
         cached_trace_stats = cached_trace_stats_raw if isinstance(cached_trace_stats_raw, dict) else {}
         cached_track = str(decision.cached_payload.get("track", decision.track))
         cached_diag_raw = decision.cached_payload.get("diagnostics", decision.cached_payload.get("metrics", {}))
-        cached_diag = dict(cached_diag_raw) if isinstance(cached_diag_raw, dict) else {}
+        cached_diag = _promote_visual_diagnostics(
+            dict(cached_diag_raw) if isinstance(cached_diag_raw, dict) else {}
+        )
         cached_tables = decision.cached_payload.get("tables") if isinstance(decision.cached_payload.get("tables"), list) else []
         cached_figures = decision.cached_payload.get("figures") if isinstance(decision.cached_payload.get("figures"), list) else []
         if (cached_tables or cached_figures) and not str(cached_diag.get("assistant_payload_artifact_path") or "").strip():
@@ -5033,11 +5395,19 @@ async def _process_single_doc_bytes(
                 file_hash=decision.file_hash,
             )
             try:
-                pdf_bytes, preview_meta = await _await_or_reuse_office_preview_pdf(
-                    file_name=file_name,
-                    file_hash=decision.file_hash,
-                    timeout_sec=convert_timeout_sec,
-                )
+                pdf_bytes, preview_meta = await _run_with_progress_heartbeat(
+                    _await_or_reuse_office_preview_pdf(
+                        file_name=file_name,
+                        file_hash=decision.file_hash,
+                        timeout_sec=convert_timeout_sec,
+                    ),
+                    emit_progress=_emit_progress,
+                    stage="converting",
+                    base_ratio=0.14,
+                    ceiling_ratio=0.23,
+                    ramp_sec=min(max(6.0, convert_timeout_sec * 0.7), 18.0),
+                    message="正在抽取字段、表格、图片与溯源信息",
+        )
             except TimeoutError as exc:
                 raise HTTPException(
                     status_code=504,
@@ -5259,15 +5629,31 @@ async def _process_single_doc_bytes(
         },
     )
     try:
-        parsed_output = await _run_parse_in_process_pool(
-            loop=loop,
-            file_bytes=parse_input_bytes,
-            file_name=parse_input_name,
-            track=parse_track,
-            timeout_sec=parse_timeout_sec,
-            context_label=f"{file_name}:{parse_track}",
-            source_file_name=parse_source_file_name,
-            source_file_bytes=parse_source_file_bytes,
+        parsed_output = await _run_with_progress_heartbeat(
+            _run_parse_in_process_pool(
+                loop=loop,
+                file_bytes=parse_input_bytes,
+                file_name=parse_input_name,
+                track=parse_track,
+                timeout_sec=parse_timeout_sec,
+                context_label=f"{file_name}:{parse_track}",
+                source_file_name=parse_source_file_name,
+                source_file_bytes=parse_source_file_bytes,
+            ),
+            emit_progress=_emit_progress,
+            stage="parsing",
+            base_ratio=0.32,
+            ceiling_ratio=0.74,
+            ramp_sec=_resolve_parse_progress_ramp_sec(
+                parse_input_bytes_len=len(parse_input_bytes),
+                timeout_sec=parse_timeout_sec,
+            ),
+            message=f"正在执行视觉解析：{parse_input_name}（MinerU 版面定位 -> ROI 裁剪 -> Gemini 图表理解）",
+            extra={
+                "parse_input_name": parse_input_name,
+                "source_file_name": parse_source_file_name or "",
+                "parse_track": parse_track,
+            },
         )
         marked_markdown, bbox_map, table_blocks, figure_blocks, parse_stats = _unpack_parse_output(parsed_output)
     except TimeoutError as exc:
@@ -5421,6 +5807,14 @@ async def _process_single_doc_bytes(
                 fallback_warning = "VisualTrack/MinerU returned no usable layout, auto-fallback to native FastTrack parsing."
 
             if fallback_warning:
+                if _disable_fasttrack_fallback():
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "Required visual PDF chain failed and FastTrack/native fallback is disabled by "
+                            "MODULE2_DISABLE_FASTTRACK_FALLBACK."
+                        ),
+                    ) from exc
                 parse_track = "VisualTrack->FastTrackFallback"
                 parse_warning = f"{parse_warning}|{fallback_warning}" if parse_warning else fallback_warning
                 try:
@@ -5495,7 +5889,7 @@ async def _process_single_doc_bytes(
                 f"{reason_text or 'unknown_reason'}"
             ),
         )
-    await _emit_progress("parsed", 0.64, "版面解析完成，正在抽取字段与图表")
+    await _emit_progress("parsed", 0.76, "版面解析完成，正在抽取字段与图表")
 
     auto_schema_llm_max_mb = max(0.2, float(os.getenv("MODULE2_AUTO_SCHEMA_LLM_MAX_FILE_MB", "1.2")))
     allow_schema_llm = (len(file_bytes) / (1024.0 * 1024.0) <= auto_schema_llm_max_mb) and len(table_blocks) <= 12
@@ -5535,15 +5929,28 @@ async def _process_single_doc_bytes(
 
     extract_t0 = time.perf_counter()
     used_quick_fallback = False
-    await _emit_progress("extracting", 0.72, "正在抽取字段、表格、图片与溯源信息")
+    await _emit_progress("extracting", 0.80, "正在抽取字段、表格、图片与溯源信息")
     try:
-        final_state = await asyncio.wait_for(graph.run(init_state), timeout=extract_timeout_sec)
+        final_state = await _run_with_progress_heartbeat(
+            asyncio.wait_for(graph.run(init_state), timeout=extract_timeout_sec),
+            emit_progress=_emit_progress,
+            stage="extracting",
+            base_ratio=0.80,
+            ceiling_ratio=0.93,
+            ramp_sec=_resolve_extract_progress_ramp_sec(
+                timeout_sec=extract_timeout_sec,
+                schema_field_count=len(effective_schema_fields),
+                table_count=len(table_blocks),
+                figure_count=len(figure_blocks),
+            ),
+            message="正在抽取字段、表格、图片与溯源信息",
+        )
     except TimeoutError as exc:
         fallback_results = _quick_extract_from_tables(
             table_blocks=table_blocks,
             schema_fields=effective_schema_fields,
         )
-        if str(schema_meta.get("mode", "")) == "auto":
+        if str(schema_meta.get("mode", "")) == "auto" and not _disable_quick_table_fallback():
             used_quick_fallback = True
             warning = (
                 f"quick_table_fallback:Extraction timed out for {file_name}"
@@ -5556,7 +5963,13 @@ async def _process_single_doc_bytes(
                 "soft_warnings": [warning],
             }
         else:
-            raise HTTPException(status_code=504, detail=f"Extraction timed out for {file_name}") from exc
+            detail = f"Extraction timed out for {file_name}"
+            if str(schema_meta.get("mode", "")) == "auto" and _disable_quick_table_fallback():
+                detail = (
+                    f"Extraction timed out for {file_name}; quick table fallback is disabled by "
+                    "MODULE2_DISABLE_QUICK_TABLE_FALLBACK."
+                )
+            raise HTTPException(status_code=504, detail=detail) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Extraction graph failed for {file_name}: {exc}") from exc
     extract_ms = int((time.perf_counter() - extract_t0) * 1000)
@@ -5568,7 +5981,7 @@ async def _process_single_doc_bytes(
         len(final_state.get("soft_warnings", []) if isinstance(final_state.get("soft_warnings", []), list) else []),
         extract_ms,
     )
-    await _emit_progress("finalizing", 0.92, "抽取完成，正在整理结果与缓存")
+    await _emit_progress("finalizing", 0.96, "抽取完成，正在整理结果与缓存")
     total_ms = int((time.perf_counter() - t0) * 1000)
 
     final_results = final_state.get("results", {})
@@ -5748,6 +6161,27 @@ async def _process_single_doc_bytes(
         parse_stats["business_extraction_status"] = business_extraction_status
         diagnostics["parse_stats"] = parse_stats
         for key in (
+            "chain_status",
+            "artifact_status",
+            "vision_status",
+            "visual_baseline_artifact_ready",
+            "mineru_item_count",
+            "mineru_image_asset_count",
+            "mineru_content_list_present",
+            "mineru_markdown_present",
+            "visual_selected_object_count",
+            "visual_vision_candidate_count",
+            "visual_vision_attempted_count",
+            "visual_vision_success_count",
+            "visual_vision_empty_count",
+        ):
+            if key in parse_stats:
+                diagnostics[key] = parse_stats.get(key)
+        mineru_run = parse_stats.get("mineru_run") if isinstance(parse_stats.get("mineru_run"), dict) else {}
+        mineru_status = str(mineru_run.get("status", "") or "").strip()
+        if mineru_status:
+            diagnostics["mineru_status"] = mineru_status
+        for key in (
             "plain_ext",
             "docx_chart_xml_seen",
             "docx_chart_xml_parsed",
@@ -5781,6 +6215,8 @@ async def _process_single_doc_bytes(
             diagnostics["assistant_payload_artifact_path"] = artifact_path
             diagnostics["assistant_payload_artifact_url"] = artifact_url
             diagnostics["assistant_payload_version"] = "module2-assistant-payload-v1"
+
+    diagnostics = _promote_visual_diagnostics(diagnostics)
 
     response = DocumentExtractionResponse(
         file_name=file_name,
@@ -6080,6 +6516,7 @@ async def extract_jobs_create(
         raise HTTPException(status_code=400, detail="At most 5 files are allowed per batch")
 
     schema_obj = _parse_schema_form_json(schema_form)
+    await _ensure_provider_ready_for_job_create()
 
     loaded_files: List[Tuple[str, bytes, str, str, str, str]] = []
     for file in files:
@@ -6190,6 +6627,7 @@ async def extract_batch(
         raise HTTPException(status_code=400, detail="At most 5 files are allowed per batch")
 
     schema_obj = _parse_schema_form_json(schema_form)
+    await _ensure_provider_ready_for_job_create()
 
     schema_digest = _schema_hash(schema_obj)
     max_retries = max(0, min(int(os.getenv("MODULE2_MAX_RETRIES", "2")), 6))
@@ -6514,10 +6952,10 @@ async def extract_assistant_chat_stream(payload: AssistantChatStreamRequest) -> 
 
 @app.post("/extract/cache/clear", response_model=CacheClearResponse)
 async def extract_cache_clear() -> CacheClearResponse:
+    await _clear_extraction_runtime_state()
+    await _clear_module4_sync_runtime_state()
     cache_counts = await storage.clear_runtime_cache()
-    removed_artifacts = _clear_artifact_cache_dir()
-    async with office_preview_lock:
-        office_preview_jobs.clear()
+    removed_artifacts = _clear_module2_materialized_dirs()
     return CacheClearResponse(
         ok=True,
         message="模块二缓存已清理",
@@ -6561,8 +6999,18 @@ async def extract_artifact(artifact_path: str, request: Request) -> Response:
 @app.get("/healthz")
 async def healthz() -> Dict[str, str]:
     storage_diag = storage.diagnostics()
+    provider_diag = _provider_preflight_snapshot()
     return {
         "status": "ok",
+        "python_executable": sys.executable,
+        "python_prefix": sys.prefix,
+        "python_base_prefix": sys.base_prefix,
+        "python_venv_active": str(sys.prefix != sys.base_prefix).lower(),
+        "llm_provider_preflight_ok": str(bool(provider_diag.get("ok"))).lower(),
+        "llm_provider_last_checked_at": str(provider_diag.get("checked_at", 0.0) or 0.0),
+        "llm_provider_base_url": str(provider_diag.get("base_url", "") or ""),
+        "llm_provider_model": str(provider_diag.get("model", "") or ""),
+        "llm_provider_last_error": str(provider_diag.get("error", "") or ""),
         "bridge_jobs_in_memory": str(len(bridge_jobs)),
         "bridge_request_index_size": str(len(bridge_request_index)),
         "office_preview_jobs_in_memory": str(len(office_preview_jobs)),

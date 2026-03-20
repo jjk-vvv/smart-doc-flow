@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+MODULE2_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=False)
+
+
+def _env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return default
+
+
+@dataclass(frozen=True)
+class Assistant1Settings:
+    module2_root: Path
+    artifact_root_dir: Path
+    database_dsn: str
+    embedding_api_key: str
+    embedding_base_url: str
+    embedding_model: str
+    embedding_endpoint_style: str
+    embedding_dimensions: int
+    embedding_timeout_sec: float
+    embedding_batch_size: int
+    embedding_document_task_type: str
+    embedding_query_task_type: str
+    similarity_metric: str
+    chat_api_key: str
+    chat_base_url: str
+    chat_endpoint_path: str
+    chat_endpoint_style: str
+    chat_model: str
+    chat_temperature: float
+    chat_timeout_sec: float
+    chat_max_output_tokens: int
+    chat_reasoning_effort: str
+
+    @classmethod
+    def from_env(cls) -> "Assistant1Settings":
+        artifact_root = Path(
+            _env(
+                "ASSISTANT1_ARTIFACT_ROOT_DIR",
+                default=str(MODULE2_ROOT / "artifacts" / "assistant_1"),
+            )
+        ).resolve()
+        artifact_root.mkdir(parents=True, exist_ok=True)
+
+        endpoint_style = _env(
+            "ASSISTANT1_EMBEDDING_ENDPOINT_STYLE",
+            default="auto",
+        ).lower()
+        if endpoint_style not in {"auto", "native", "openai"}:
+            endpoint_style = "auto"
+
+        similarity_metric = _env(
+            "ASSISTANT1_VECTOR_SIMILARITY_METRIC",
+            default="cosine",
+        ).lower()
+        if similarity_metric not in {"cosine", "l2", "inner_product"}:
+            similarity_metric = "cosine"
+
+        chat_endpoint_style = _env(
+            "ASSISTANT1_CHAT_ENDPOINT_STYLE",
+            default="openai_responses",
+        ).lower()
+        if chat_endpoint_style not in {"openai_responses"}:
+            chat_endpoint_style = "openai_responses"
+
+        chat_endpoint_path = _env(
+            "ASSISTANT1_CHAT_ENDPOINT_PATH",
+            default="/v1/responses",
+        ).strip() or "/v1/responses"
+        if not chat_endpoint_path.startswith("/"):
+            chat_endpoint_path = f"/{chat_endpoint_path}"
+
+        chat_reasoning_effort = _env(
+            "ASSISTANT1_CHAT_REASONING_EFFORT",
+            default="minimal",
+        ).strip().lower()
+        if chat_reasoning_effort not in {"", "minimal", "low", "medium", "high"}:
+            chat_reasoning_effort = "minimal"
+
+        return cls(
+            module2_root=MODULE2_ROOT,
+            artifact_root_dir=artifact_root,
+            database_dsn=_env(
+                "ASSISTANT1_DATABASE_DSN",
+                "MODULE2_DATABASE_DSN",
+                default="",
+            ),
+            embedding_api_key=_env(
+                "ASSISTANT1_EMBEDDING_API_KEY",
+                "MODULE2_LLM_API_KEY",
+                "GOOGLE_API_KEY",
+                default="",
+            ),
+            embedding_base_url=_env(
+                "ASSISTANT1_EMBEDDING_BASE_URL",
+                "MODULE2_LLM_BASE_URL",
+                default="https://generativelanguage.googleapis.com",
+            ),
+            embedding_model=_env(
+                "ASSISTANT1_EMBEDDING_MODEL",
+                default="gemini-embedding-001",
+            ),
+            embedding_endpoint_style=endpoint_style,
+            embedding_dimensions=max(128, int(_env("ASSISTANT1_EMBEDDING_DIMENSIONS", default="1536"))),
+            embedding_timeout_sec=max(
+                5.0,
+                float(_env("ASSISTANT1_EMBEDDING_TIMEOUT_SEC", default="45")),
+            ),
+            embedding_batch_size=max(
+                1,
+                int(_env("ASSISTANT1_EMBEDDING_BATCH_SIZE", default="16")),
+            ),
+            embedding_document_task_type=_env(
+                "ASSISTANT1_EMBEDDING_DOCUMENT_TASK_TYPE",
+                default="RETRIEVAL_DOCUMENT",
+            ),
+            embedding_query_task_type=_env(
+                "ASSISTANT1_EMBEDDING_QUERY_TASK_TYPE",
+                default="RETRIEVAL_QUERY",
+            ),
+            similarity_metric=similarity_metric,
+            chat_api_key=_env(
+                "ASSISTANT1_CHAT_API_KEY",
+                "OPENAI_API_KEY",
+                default="",
+            ),
+            chat_base_url=_env(
+                "ASSISTANT1_CHAT_BASE_URL",
+                "OPENAI_BASE_URL",
+                default="https://api.openai.com",
+            ),
+            chat_endpoint_path=chat_endpoint_path,
+            chat_endpoint_style=chat_endpoint_style,
+            chat_model=_env(
+                "ASSISTANT1_CHAT_MODEL",
+                default="gpt-5-mini",
+            ),
+            chat_temperature=max(
+                0.0,
+                min(2.0, float(_env("ASSISTANT1_CHAT_TEMPERATURE", default="0.2"))),
+            ),
+            chat_timeout_sec=max(
+                10.0,
+                float(_env("ASSISTANT1_CHAT_TIMEOUT_SEC", default="120")),
+            ),
+            chat_max_output_tokens=max(
+                256,
+                int(_env("ASSISTANT1_CHAT_MAX_OUTPUT_TOKENS", default="2400")),
+            ),
+            chat_reasoning_effort=chat_reasoning_effort,
+        )

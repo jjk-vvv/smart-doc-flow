@@ -38,7 +38,16 @@ Module 4 no longer accepts direct file uploads. The only supported ingest path i
 3. Run API:
 
 ```powershell
-uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
+npm run dev:module4
+```
+
+`npm run dev:module4` now fixed-prefers `backend/module4/.venv` for the Module 4 runtime.
+
+If you want to override the interpreter explicitly:
+
+```powershell
+$env:MODULE4_PYTHON="D:\smart_doc_flow\smart-doc-flow\backend\module4\.venv\Scripts\python.exe"
+npm run dev:module4
 ```
 
 4. (Optional) start from repository root:
