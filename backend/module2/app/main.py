@@ -165,13 +165,13 @@ class ExtractionJobState:
 
 
 _EXTRACTION_PROGRESS_STAGE_META: Dict[str, Dict[str, float]] = {
-    "queued": {"ceiling": 0.06, "ramp_sec": 8.0, "max_headroom": 0.06},
-    "preflight": {"ceiling": 0.12, "ramp_sec": 4.0, "max_headroom": 0.06},
-    "converting": {"ceiling": 0.28, "ramp_sec": 16.0, "max_headroom": 0.12},
-    "parsing": {"ceiling": 0.74, "ramp_sec": 24.0, "max_headroom": 0.22},
-    "parsed": {"ceiling": 0.78, "ramp_sec": 5.0, "max_headroom": 0.08},
-    "extracting": {"ceiling": 0.93, "ramp_sec": 28.0, "max_headroom": 0.18},
-    "finalizing": {"ceiling": 0.98, "ramp_sec": 12.0, "max_headroom": 0.08},
+    "queued": {"ceiling": 0.06, "ramp_sec": 8.0, "max_headroom": 0.02},
+    "preflight": {"ceiling": 0.12, "ramp_sec": 4.0, "max_headroom": 0.02},
+    "converting": {"ceiling": 0.28, "ramp_sec": 16.0, "max_headroom": 0.05},
+    "parsing": {"ceiling": 0.74, "ramp_sec": 24.0, "max_headroom": 0.04},
+    "parsed": {"ceiling": 0.78, "ramp_sec": 5.0, "max_headroom": 0.01},
+    "extracting": {"ceiling": 0.93, "ramp_sec": 28.0, "max_headroom": 0.05},
+    "finalizing": {"ceiling": 0.98, "ramp_sec": 12.0, "max_headroom": 0.015},
 }
 
 
@@ -209,7 +209,14 @@ def _heartbeat_progress_ratio(
     if resolved_ceiling <= base:
         return base
     resolved_ramp = max(2.0, float(ramp_sec if ramp_sec is not None else meta.get("ramp_sec", 10.0)))
-    return base + (resolved_ceiling - base) * _ease_out_cubic(elapsed_sec / resolved_ramp)
+    eased = base + (resolved_ceiling - base) * _ease_out_cubic(elapsed_sec / resolved_ramp)
+    max_headroom = max(0.0, min(0.12, float(meta.get("max_headroom", 0.0) or 0.0)))
+    if max_headroom <= 0.0 or elapsed_sec <= resolved_ramp:
+        return eased
+    overrun_elapsed = elapsed_sec - resolved_ramp
+    overrun_ramp = max(8.0, resolved_ramp * 2.2)
+    extended_ceiling = min(0.995, resolved_ceiling + max_headroom)
+    return eased + (extended_ceiling - eased) * _ease_out_cubic(overrun_elapsed / overrun_ramp)
 
 
 def _resolve_parse_progress_ramp_sec(*, parse_input_bytes_len: int, timeout_sec: float) -> float:
@@ -2910,89 +2917,6 @@ def _crop_pdf_region_png(
         return None
 
 
-def _attach_missing_artifacts_from_pdf(
-    *,
-    file_name: str,
-    file_hash: str,
-    pdf_bytes: bytes,
-    table_blocks: List[Dict[str, Any]],
-    figure_blocks: List[Dict[str, Any]],
-) -> None:
-    table_dpi = max(120, int(os.getenv("MODULE2_TRACE_TABLE_CROP_DPI", "300")))
-    figure_dpi = max(120, int(os.getenv("MODULE2_TRACE_FIGURE_CROP_DPI", "280")))
-    max_tables = max(0, int(os.getenv("MODULE2_TRACE_TABLE_ARTIFACT_MAX", "24")))
-    max_figures = max(0, int(os.getenv("MODULE2_TRACE_FIGURE_ARTIFACT_MAX", "36")))
-    sub_dir = f"trace_rois/{file_hash[:12]}"
-
-    table_done = 0
-    for table in table_blocks:
-        if table_done >= max_tables:
-            break
-        if str(table.get("artifact_url") or "").strip() or str(table.get("artifact_path") or "").strip():
-            continue
-        page_no = int(table.get("page", 0) or 0)
-        bbox = _normalize_bbox(table.get("bbox_norm"), page_hint=page_no if page_no > 0 else 1)
-        if not _is_meaningful_bbox(bbox):
-            for row in table.get("rows", []):
-                if not isinstance(row, dict):
-                    continue
-                for cell in row.get("cells", []):
-                    if not isinstance(cell, dict):
-                        continue
-                    bbox = _normalize_bbox(cell.get("bbox"), page_hint=page_no if page_no > 0 else 1)
-                    if _is_meaningful_bbox(bbox):
-                        break
-                if _is_meaningful_bbox(bbox):
-                    break
-        if not _is_meaningful_bbox(bbox) and page_no > 0:
-            bbox = [float(page_no), 0.03, 0.10, 0.94, 0.80]
-        if not _is_meaningful_bbox(bbox):
-            continue
-        png = _crop_pdf_region_png(pdf_bytes=pdf_bytes, bbox5=bbox, dpi=table_dpi)
-        if not png:
-            continue
-        table_id = str(table.get("table_id") or f"table_{table_done+1}")
-        frag, url = _write_artifact_bytes(
-            data=png,
-            file_name=f"{Path(file_name).stem}_{table_id}",
-            sub_dir=sub_dir,
-            ext=".png",
-        )
-        table["artifact_path"] = frag
-        table["artifact_url"] = url
-        table_done += 1
-
-    figure_done = 0
-    for figure in figure_blocks:
-        if figure_done >= max_figures:
-            break
-        if str(figure.get("artifact_url") or "").strip() or str(figure.get("artifact_path") or "").strip():
-            continue
-        page_no = int(figure.get("page", 0) or 0)
-        bbox = _normalize_bbox(figure.get("bbox"), page_hint=page_no if page_no > 0 else 1)
-        if not _is_meaningful_bbox(bbox):
-            bbox = _normalize_bbox(figure.get("bbox_norm"), page_hint=page_no if page_no > 0 else 1)
-        if not _is_meaningful_bbox(bbox) and page_no > 0:
-            # Last-resort fallback for figure cues without region boxes:
-            # keep slightly inset full-page crop so users can still view/copy the figure source page.
-            bbox = [float(page_no), 0.03, 0.03, 0.94, 0.94]
-        if not _is_meaningful_bbox(bbox):
-            continue
-        png = _crop_pdf_region_png(pdf_bytes=pdf_bytes, bbox5=bbox, dpi=figure_dpi)
-        if not png:
-            continue
-        figure_id = str(figure.get("figure_id") or f"figure_{figure_done+1}")
-        frag, url = _write_artifact_bytes(
-            data=png,
-            file_name=f"{Path(file_name).stem}_{figure_id}",
-            sub_dir=sub_dir,
-            ext=".png",
-        )
-        figure["artifact_path"] = frag
-        figure["artifact_url"] = url
-        figure_done += 1
-
-
 def _nonpdf_locator_from_ref(ref_id: Optional[str], file_name: str) -> Dict[str, Any]:
     if not ref_id:
         return {}
@@ -3112,7 +3036,9 @@ def _build_document_trace_hits(
     table_blocks: List[Dict[str, Any]],
     figure_blocks: List[Dict[str, Any]],
     markdown: str,
+    bbox_map: Optional[Dict[str, List[float]]] = None,
 ) -> List[Dict[str, Any]]:
+    bbox_lookup = bbox_map if isinstance(bbox_map, dict) else {}
     ref_snippets = _extract_ref_snippets(markdown)
     hits: List[Dict[str, Any]] = []
 
@@ -3206,6 +3132,8 @@ def _build_document_trace_hits(
             continue
         ref_id = str(entity.get("source_ref_id") or "").strip() or None
         bbox = _normalize_bbox(entity.get("bbox"), page_hint=1)
+        if (not _is_meaningful_bbox(bbox)) and ref_id:
+            bbox = _normalize_bbox(bbox_lookup.get(ref_id), page_hint=int(bbox[0]) if len(bbox) == 5 else 1)
         page = _page_from_bbox(bbox)
         value = entity.get("value")
         value_text = "null" if value is None else str(value)
@@ -6082,19 +6010,6 @@ async def _process_single_doc_bytes(
             soft_warnings.append(f"pdf_preview_cache_failed:{type(exc).__name__}")
             soft_warnings = _normalize_soft_warnings(soft_warnings)
 
-    if parse_input_name.lower().endswith(".pdf"):
-        try:
-            _attach_missing_artifacts_from_pdf(
-                file_name=file_name,
-                file_hash=decision.file_hash,
-                pdf_bytes=parse_input_bytes,
-                table_blocks=table_blocks,
-                figure_blocks=figure_blocks,
-            )
-        except Exception as exc:
-            soft_warnings.append(f"trace_artifact_crop_failed:{type(exc).__name__}")
-            soft_warnings = _normalize_soft_warnings(soft_warnings)
-
     trace_hits = _build_document_trace_hits(
         file_name=file_name,
         file_hash=decision.file_hash,
@@ -6102,6 +6017,7 @@ async def _process_single_doc_bytes(
         table_blocks=table_blocks,
         figure_blocks=figure_blocks,
         markdown=marked_markdown,
+        bbox_map=bbox_map,
     )
     trace_stats = _trace_stats(trace_hits)
     polymorphic_links = _build_polymorphic_links(results=final_results, trace_hits=trace_hits)

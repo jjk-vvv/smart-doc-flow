@@ -9,6 +9,8 @@ from .config import Assistant1Settings
 from .ingest_pipeline import Assistant1IngestPipeline
 from .responses_provider import Assistant1ResponsesProvider, ResponsesFunctionCall
 from .retrieval_pipeline import Assistant1RetrievalPipeline
+from .sql_tools import Assistant1SchemaTools, Assistant1SqlTools
+from .tavily_client import TavilySearchClient
 
 
 @dataclass
@@ -33,6 +35,9 @@ class Assistant1AgentRuntime:
         self.provider = Assistant1ResponsesProvider(self.settings)
         self.retrieval = Assistant1RetrievalPipeline(self.settings)
         self.ingest = Assistant1IngestPipeline(self.settings)
+        self.schema_tools = Assistant1SchemaTools(self.settings, self.provider)
+        self.sql_tools = Assistant1SqlTools(self.settings, self.provider)
+        self.tavily = TavilySearchClient(self.settings)
 
     def chat(
         self,
@@ -180,6 +185,8 @@ class Assistant1AgentRuntime:
             "【文档问题】处理文档具体内容时，优先基于当前文档或已取得的证据回答；处理通用方法、方案设计或知识解释时，可以直接回答。",
             "【歧义处理】如果同一对象可能对应多条记录、多个时间点、多个版本或多个统计口径，不要猜测，也不要混成一个值。先点明差异，再分别说明，或请用户补充最关键的限定条件。",
             "【内部信息】不要暴露内部实现、工具调用、检索过程、系统字段或中间技术细节。",
+            "【外部信息】当用户明确需要联网搜索、最新资料、官网信息或文档外背景知识时，优先使用联网搜索能力，不要把过时记忆当成最新事实。",
+            "【数据库任务】当用户要求设计表结构、生成 SQL、查询数据库或执行写操作时，优先结合数据库结构来回答；涉及写操作、DDL 或数据变更时，必须先确认再执行。",
             "【表达方式】默认用自然中文。先回答用户真正想知道的内容；简单问题短答，复杂问题再展开。只有当内容天然适合步骤、对比或清单时才使用列表，否则优先自然段。",
             "【格式服从】如果用户明确指定输出形式，比如一句话、JSON、SQL、表格或极简答复，就严格遵守。",
             "【信息不足】当依据不足时，明确说明不确定点，并给出最小必要的下一步。",
@@ -212,6 +219,12 @@ class Assistant1AgentRuntime:
             return "【本轮提示】这是文档具体问答。如果候选记录不唯一，或时间条件、对象条件不足，请先点明歧义再回答。"
         if self._is_document_specific_question(question) and not has_default_file:
             return "【本轮提示】这是文档具体问答，但当前没有默认文档。先让用户给出文件或定位信息。"
+        if self._is_web_search_request(question):
+            return "【本轮提示】这是联网或外部资料查询。优先调用搜索工具获取外部信息，再整理成自然回答。"
+        if self._is_schema_design_request(question):
+            return "【本轮提示】这是表结构/数据库设计请求。优先调用表结构设计工具产出结构化草案和 DDL，再组织自然回答。"
+        if self._is_sql_request(question):
+            return "【本轮提示】这是数据库 SQL 任务。优先先查看数据库结构，再调用 SQL 草案工具生成或核对 SQL；写操作和 DDL 必须确认。"
         if self._is_capability_question(question):
             return "【本轮提示】这是能力咨询。优先用自然段概括，不要主动展开成完整功能清单；先说现在能帮什么，再说还需要什么信息。"
         if self._is_general_method_question(question) and self._wants_detailed_answer(question):
@@ -235,6 +248,30 @@ class Assistant1AgentRuntime:
         general_method_question = self._is_general_method_question(question)
         document_question = self._is_document_specific_question(question)
         broad_document_question = self._is_broad_document_question(question)
+        web_search_request = self._is_web_search_request(question)
+        schema_design_request = self._is_schema_design_request(question)
+        sql_request = self._is_sql_request(question)
+
+        if web_search_request or schema_design_request or sql_request:
+            tool_names: list[str] = []
+            if web_search_request:
+                tool_names.append("web_search_tavily")
+            if schema_design_request:
+                tool_names.extend(["design_schema_draft", "inspect_database_schema", "execute_sql_with_audit"])
+            if sql_request:
+                tool_names.extend(["inspect_database_schema", "draft_sql_from_nl", "execute_sql_with_audit"])
+            if document_question and has_default_file:
+                tool_names.append("search_knowledge_base")
+                if broad_document_question:
+                    tool_names.append("search_knowledge_base_grouped")
+            deduped_tool_names = tuple(dict.fromkeys(tool_names).keys())
+            return Assistant1ResponsePlan(
+                use_tools=True,
+                text_verbosity="medium" if wants_detailed else "low",
+                max_output_tokens=1200 if wants_detailed else 900,
+                reasoning_effort="minimal",
+                tool_names=deduped_tool_names,
+            )
 
         if strict_minimal:
             return Assistant1ResponsePlan(
@@ -390,6 +427,163 @@ class Assistant1AgentRuntime:
                     "additionalProperties": False,
                 },
             },
+            {
+                "type": "function",
+                "name": "web_search_tavily",
+                "description": (
+                    "Search the public web using Tavily for latest information, official pages, background knowledge, or document-external facts."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The web search query.",
+                        },
+                        "topic": {
+                            "type": "string",
+                            "description": "general or news.",
+                        },
+                        "search_depth": {
+                            "type": "string",
+                            "description": "basic or advanced.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "description": "Maximum result count.",
+                        },
+                        "include_domains": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional domain whitelist.",
+                        },
+                        "days": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 365,
+                            "description": "Optional recency window in days, useful for news queries.",
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "inspect_database_schema",
+                "description": "Inspect the live PostgreSQL schema so the assistant can ground table design and SQL generation in actual database structure.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "schemas": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional schema names to inspect.",
+                        },
+                        "table_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional table name filter.",
+                        },
+                        "include_columns": {
+                            "type": "boolean",
+                            "description": "Whether to include column details.",
+                        },
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "design_schema_draft",
+                "description": "Design a PostgreSQL schema draft for extracted data, document facts, or business records, and return normalized DDL suggestions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "objective": {
+                            "type": "string",
+                            "description": "What the table design needs to support.",
+                        },
+                        "table_name": {
+                            "type": "string",
+                            "description": "Optional preferred base table name.",
+                        },
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Optional candidate fields with names, descriptions, or sample values.",
+                        },
+                        "expected_queries": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional expected query patterns.",
+                        },
+                        "file_context": {
+                            "type": "string",
+                            "description": "Optional document-derived context or requirements summary.",
+                        },
+                    },
+                    "required": ["objective"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "draft_sql_from_nl",
+                "description": "Translate a natural-language database request into a PostgreSQL SQL draft grounded in the live schema.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "request": {
+                            "type": "string",
+                            "description": "The natural-language database request.",
+                        },
+                        "allowed_tables": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional table allowlist.",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "description": "read_only or read_write_draft.",
+                        },
+                    },
+                    "required": ["request"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "execute_sql_with_audit",
+                "description": "Execute a PostgreSQL SQL statement with audit logging. Write operations and DDL require explicit confirmation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sql": {
+                            "type": "string",
+                            "description": "The SQL statement to execute.",
+                        },
+                        "params": {
+                            "type": "array",
+                            "items": {},
+                            "description": "Optional positional parameters.",
+                        },
+                        "confirmed": {
+                            "type": "boolean",
+                            "description": "Must be true for write or DDL statements.",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Why this statement should be executed.",
+                        },
+                    },
+                    "required": ["sql"],
+                    "additionalProperties": False,
+                },
+            },
         ]
         if not tool_names:
             return definitions
@@ -405,6 +599,16 @@ class Assistant1AgentRuntime:
             return self._tool_search_knowledge_base(arguments, context, grouped=True)
         if name == "ingest_document":
             return self._tool_ingest_document(arguments, context)
+        if name == "web_search_tavily":
+            return self._tool_web_search(arguments)
+        if name == "inspect_database_schema":
+            return self._tool_inspect_database_schema(arguments)
+        if name == "design_schema_draft":
+            return self._tool_design_schema_draft(arguments)
+        if name == "draft_sql_from_nl":
+            return self._tool_draft_sql_from_nl(arguments)
+        if name == "execute_sql_with_audit":
+            return self._tool_execute_sql_with_audit(arguments)
         return {
             "ok": False,
             "error": f"unknown tool: {name}",
@@ -520,6 +724,62 @@ class Assistant1AgentRuntime:
             "artifact_dir": str(result.get("artifact_dir") or ""),
         }
 
+    def _tool_web_search(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self.tavily.search(
+                str(arguments.get("query") or ""),
+                topic=str(arguments.get("topic") or "general"),
+                search_depth=str(arguments.get("search_depth") or "basic"),
+                max_results=arguments.get("max_results"),
+                include_domains=arguments.get("include_domains") if isinstance(arguments.get("include_domains"), list) else [],
+                days=arguments.get("days") if isinstance(arguments.get("days"), int) else None,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _tool_inspect_database_schema(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self.sql_tools.inspect_database_schema(
+                schemas=arguments.get("schemas") if isinstance(arguments.get("schemas"), list) else [],
+                table_names=arguments.get("table_names") if isinstance(arguments.get("table_names"), list) else [],
+                include_columns=bool(arguments.get("include_columns", True)),
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _tool_design_schema_draft(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self.schema_tools.design_schema_draft(
+                objective=str(arguments.get("objective") or ""),
+                table_name=str(arguments.get("table_name") or ""),
+                fields=arguments.get("fields") if isinstance(arguments.get("fields"), list) else [],
+                expected_queries=arguments.get("expected_queries") if isinstance(arguments.get("expected_queries"), list) else [],
+                file_context=str(arguments.get("file_context") or ""),
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _tool_draft_sql_from_nl(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self.sql_tools.draft_sql_from_nl(
+                request=str(arguments.get("request") or ""),
+                allowed_tables=arguments.get("allowed_tables") if isinstance(arguments.get("allowed_tables"), list) else [],
+                mode=str(arguments.get("mode") or "read_only"),
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _tool_execute_sql_with_audit(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self.sql_tools.execute_sql_with_audit(
+                sql=str(arguments.get("sql") or ""),
+                params=arguments.get("params") if isinstance(arguments.get("params"), list) else [],
+                confirmed=bool(arguments.get("confirmed", False)),
+                reason=str(arguments.get("reason") or ""),
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     @staticmethod
     def _tool_result_preview(result: Dict[str, Any]) -> Dict[str, Any]:
         preview: Dict[str, Any] = {
@@ -546,6 +806,33 @@ class Assistant1AgentRuntime:
         if "knowledge_unit_count" in result:
             preview["knowledge_unit_count"] = int(result.get("knowledge_unit_count") or 0)
             preview["warning_count"] = int(result.get("warning_count") or 0)
+        if "table_count" in result:
+            preview["table_count"] = int(result.get("table_count") or 0)
+            preview["tables"] = [
+                str(item.get("table_name") or "")
+                for item in result.get("tables", [])[:5]
+                if isinstance(item, dict) and str(item.get("table_name") or "").strip()
+            ]
+        if "ddl_statements" in result:
+            preview["ddl_count"] = len(result.get("ddl_statements") or [])
+            preview["table_names"] = [
+                str(item.get("name") or "")
+                for item in result.get("tables", [])[:5]
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+        if "sql" in result:
+            preview["statement_type"] = str(result.get("statement_type") or "")
+            preview["sql_preview"] = Assistant1AgentRuntime._trim_text(result.get("sql"), 120)
+        if "row_count" in result:
+            preview["statement_type"] = str(result.get("statement_type") or "")
+            preview["row_count"] = int(result.get("row_count") or 0)
+        if "results" in result and isinstance(result.get("results"), list):
+            preview["result_count"] = len(result.get("results") or [])
+            preview["top_titles"] = [
+                str(item.get("title") or "")
+                for item in result.get("results", [])[:3]
+                if isinstance(item, dict) and str(item.get("title") or "").strip()
+            ]
         return preview
 
     @classmethod
@@ -653,6 +940,24 @@ class Assistant1AgentRuntime:
             "版式",
         )
         return any(marker.lower() in text.lower() for marker in markers)
+
+    @staticmethod
+    def _is_web_search_request(question: str) -> bool:
+        text = str(question or "").strip().lower()
+        markers = ("联网", "上网", "web search", "tavily", "最新", "最近", "官网", "新闻", "搜索一下", "查一下网上")
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _is_schema_design_request(question: str) -> bool:
+        text = str(question or "").strip().lower()
+        markers = ("表结构", "建表", "schema", "ddl", "数据库设计", "表设计", "字段设计", "create table")
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _is_sql_request(question: str) -> bool:
+        text = str(question or "").strip().lower()
+        markers = ("sql", "nl2sql", "查询数据库", "执行sql", "执行这条sql", "写一条sql", "select ", "insert ", "update ", "delete ", "alter table", "drop table")
+        return any(marker in text for marker in markers)
 
     @staticmethod
     def _is_document_specific_question(question: str) -> bool:

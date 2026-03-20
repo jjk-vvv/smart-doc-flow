@@ -43,6 +43,12 @@ class Assistant1Settings:
     chat_timeout_sec: float
     chat_max_output_tokens: int
     chat_reasoning_effort: str
+    tavily_api_key: str
+    tavily_search_url: str
+    tavily_timeout_sec: float
+    tavily_max_results: int
+    sql_timeout_sec: float
+    sql_max_preview_rows: int
 
     @classmethod
     def from_env(cls) -> "Assistant1Settings":
@@ -88,6 +94,11 @@ class Assistant1Settings:
         ).strip().lower()
         if chat_reasoning_effort not in {"", "minimal", "low", "medium", "high"}:
             chat_reasoning_effort = "minimal"
+
+        tavily_search_url = _env(
+            "ASSISTANT1_TAVILY_SEARCH_URL",
+            default="https://api.tavily.com/search",
+        ).strip() or "https://api.tavily.com/search"
 
         return cls(
             module2_root=MODULE2_ROOT,
@@ -160,4 +171,25 @@ class Assistant1Settings:
                 int(_env("ASSISTANT1_CHAT_MAX_OUTPUT_TOKENS", default="2400")),
             ),
             chat_reasoning_effort=chat_reasoning_effort,
+            tavily_api_key=_env(
+                "ASSISTANT1_TAVILY_API_KEY",
+                default="",
+            ),
+            tavily_search_url=tavily_search_url,
+            tavily_timeout_sec=max(
+                5.0,
+                float(_env("ASSISTANT1_TAVILY_TIMEOUT_SEC", default="20")),
+            ),
+            tavily_max_results=max(
+                1,
+                min(10, int(_env("ASSISTANT1_TAVILY_MAX_RESULTS", default="6"))),
+            ),
+            sql_timeout_sec=max(
+                5.0,
+                float(_env("ASSISTANT1_SQL_TIMEOUT_SEC", default="20")),
+            ),
+            sql_max_preview_rows=max(
+                1,
+                min(200, int(_env("ASSISTANT1_SQL_MAX_PREVIEW_ROWS", default="50"))),
+            ),
         )
