@@ -23,9 +23,9 @@ from dotenv import load_dotenv
 from pypdf import PdfReader
 
 MODULE2_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=False)
+load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=True)
 
-from app.assistant.provider import OpenAICompatibleChatProvider, resolve_llm_api_key, resolve_llm_base_url
+from app.core.llm_provider import resolve_llm_api_key, resolve_llm_native_api_url
 from app.core.layout_mineru import MineruLayoutExtractor
 from app.core.office_pdf import convert_word_bytes_to_pdf
 from app.core.roi_cropper import RoiCropper
@@ -345,6 +345,10 @@ class NativeDocumentParser:
             1,
             int(os.getenv("MODULE2_GEMINI_VISION_CONSECUTIVE_FAIL_STOP", "2")),
         )
+        self.visual_vision_concurrency = max(
+            1,
+            min(4, int(os.getenv("MODULE2_VISION_CONCURRENCY", "2"))),
+        )
         self.pipeline_mode = (os.getenv("MODULE2_PIPELINE_MODE", "visual_first") or "visual_first").strip().lower()
         if self.pipeline_mode not in {"legacy", "hybrid", "visual_first"}:
             self.pipeline_mode = "hybrid"
@@ -432,6 +436,89 @@ class NativeDocumentParser:
         self.visual_runtime_large_doc_refine_budget = max(
             0,
             int(os.getenv("MODULE2_VISUAL_LARGE_DOC_REFINE_BUDGET", "4")),
+        )
+        self.visual_runtime_extreme_doc_page_threshold = max(
+            self.visual_runtime_large_doc_page_threshold + 4,
+            int(os.getenv("MODULE2_VISUAL_EXTREME_DOC_PAGE_THRESHOLD", "32")),
+        )
+        self.visual_runtime_extreme_doc_max_objects = max(
+            8,
+            int(os.getenv("MODULE2_VISUAL_EXTREME_DOC_MAX_OBJECTS", "56")),
+        )
+        self.visual_runtime_extreme_doc_figure_max_per_page = max(
+            1,
+            int(os.getenv("MODULE2_VISUAL_EXTREME_DOC_FIGURE_MAX_PER_PAGE", "2")),
+        )
+        self.visual_runtime_extreme_doc_cueless_fallback_max = max(
+            0,
+            int(os.getenv("MODULE2_VISUAL_EXTREME_DOC_CUELESS_FALLBACK_MAX", "0")),
+        )
+        self.visual_runtime_extreme_doc_chart_score_min = max(
+            self.visual_runtime_large_doc_chart_score_min,
+            int(os.getenv("MODULE2_VISUAL_EXTREME_DOC_CHART_SCORE_MIN", "5")),
+        )
+        self.visual_runtime_extreme_doc_refine_budget = max(
+            0,
+            int(os.getenv("MODULE2_VISUAL_EXTREME_DOC_REFINE_BUDGET", "2")),
+        )
+        self.visual_runtime_extreme_doc_layout_page_cap = max(
+            12,
+            int(os.getenv("MODULE2_VISUAL_EXTREME_DOC_LAYOUT_PAGE_CAP", "40")),
+        )
+        self.visual_runtime_office_text_layout_page_cap = max(
+            12,
+            int(
+                os.getenv(
+                    "MODULE2_VISUAL_OFFICE_TEXT_LAYOUT_PAGE_CAP",
+                    str(self.visual_runtime_extreme_doc_layout_page_cap),
+                )
+            ),
+        )
+        self.visual_runtime_mixed_text_layout_page_cap = max(
+            16,
+            int(os.getenv("MODULE2_VISUAL_MIXED_TEXT_LAYOUT_PAGE_CAP", "48")),
+        )
+        self.mineru_text_first_office_pdf_enable = (
+            os.getenv("MODULE2_MINERU_TEXT_FIRST_OFFICE_PDF_ENABLE", "true").lower() in {"1", "true", "yes"}
+        )
+        self.mineru_text_first_office_pdf_min_pages = max(
+            4,
+            int(
+                os.getenv(
+                    "MODULE2_MINERU_TEXT_FIRST_OFFICE_PDF_MIN_PAGES",
+                    str(self.visual_runtime_large_doc_page_threshold),
+                )
+            ),
+        )
+        self.mineru_text_first_office_pdf_min_probe_chars = max(
+            self.native_text_threshold,
+            int(os.getenv("MODULE2_MINERU_TEXT_FIRST_OFFICE_PDF_MIN_PROBE_CHARS", "900")),
+        )
+        self.pdf_text_first_enable = (
+            os.getenv("MODULE2_PDF_TEXT_FIRST_ENABLE", "true").lower() in {"1", "true", "yes"}
+        )
+        self.pdf_text_heavy_min_probe_chars = max(
+            self.native_text_threshold * 2,
+            int(os.getenv("MODULE2_PDF_TEXT_HEAVY_MIN_PROBE_CHARS", "1800")),
+        )
+        self.pdf_text_heavy_min_chars_per_page = max(
+            self.native_text_threshold,
+            int(os.getenv("MODULE2_PDF_TEXT_HEAVY_MIN_CHARS_PER_PAGE", "850")),
+        )
+        self.pdf_text_heavy_max_visual_cues = max(
+            0,
+            int(os.getenv("MODULE2_PDF_TEXT_HEAVY_MAX_VISUAL_CUES", "1")),
+        )
+        self.pdf_mixed_text_pref_min_chars_per_page = max(
+            self.native_text_threshold,
+            int(os.getenv("MODULE2_PDF_MIXED_TEXT_PREF_MIN_CHARS_PER_PAGE", "520")),
+        )
+        self.pdf_mixed_text_pref_max_visual_cues = max(
+            self.pdf_text_heavy_max_visual_cues,
+            int(os.getenv("MODULE2_PDF_MIXED_TEXT_PREF_MAX_VISUAL_CUES", "4")),
+        )
+        self.pdf_text_only_short_circuit_enable = (
+            os.getenv("MODULE2_PDF_TEXT_ONLY_SHORT_CIRCUIT_ENABLE", "true").lower() in {"1", "true", "yes"}
         )
         self.visual_context_max_chars = max(600, int(os.getenv("MODULE2_VISUAL_CONTEXT_MAX_CHARS", "2400")))
         self.visual_use_table_html_fallback = (
@@ -646,7 +733,6 @@ class NativeDocumentParser:
             and self.enable_mineru_layout
             and self.pipeline_mode in {"visual_first", "hybrid"}
         ):
-            visual_page_count = min(total_pages, self.visual_first_max_pages)
             visual_error: Exception | None = None
             visual_fallback_stats: Dict[str, Any] = {}
             try:
@@ -654,7 +740,7 @@ class NativeDocumentParser:
                     file_name=file_name,
                     file_bytes=file_bytes,
                     reader=reader,
-                    page_count=visual_page_count,
+                    page_count=total_pages,
                     source_cache_identity=effective_source_cache_identity,
                     source_file_name=source_file_name,
                     source_file_bytes=source_file_bytes,
@@ -1079,6 +1165,320 @@ class NativeDocumentParser:
                 out.append(vals)
         return out
 
+    @staticmethod
+    def _count_figure_markers_in_text(text: str) -> int:
+        return len(
+            re.findall(
+                r"(?:图|fig(?:ure)?)\s*[0-9A-Za-z一二三四五六七八九十百千]+",
+                str(text or ""),
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _strip_figure_caption_noise(self, text: str) -> str:
+        cleaned = self._normalize_text(str(text or ""))
+        if not cleaned:
+            return ""
+        cleaned = re.sub(
+            r"^\s*(?:图|fig(?:ure)?)\s*[0-9A-Za-z一二三四五六七八九十百千.\-_:： ]+\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"[（(]\s*(?:单位|unit)\s*[:：][^()（）]{0,24}[)）]\s*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?:单位|unit)\s*[:：]\s*[A-Za-z0-9\u4e00-\u9fff%％‰/°℃μ\- ]{1,24}\s*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^[：:、，,;；.\- ]+", "", cleaned)
+        cleaned = re.sub(r"[：:、，,;；.\- ]+$", "", cleaned)
+        return self._normalize_text(cleaned)
+
+    def _figure_text_is_low_signal(self, text: str) -> bool:
+        cleaned = self._normalize_text(str(text or ""))
+        if not cleaned:
+            return True
+        lowered = cleaned.lower()
+        if self._header_token_is_generic(cleaned):
+            return True
+        if re.fullmatch(r"(?:单位|unit)\s*[:：]\s*[A-Za-z0-9\u4e00-\u9fff%％‰/°℃μ\- ]{1,24}", cleaned, flags=re.IGNORECASE):
+            return True
+        if lowered.startswith("the unit of measurement is"):
+            return True
+        if lowered.startswith("the image contains the text"):
+            probe = self._normalize_text(re.sub(r"^the image contains the text\s*", "", cleaned, flags=re.IGNORECASE))
+            if not probe or re.fullmatch(r"['\"“”‘’\s:：]*(?:单位|unit)[^A-Za-z\u4e00-\u9fff0-9]*.*", probe, flags=re.IGNORECASE):
+                return True
+        semantic = self._strip_figure_caption_noise(cleaned)
+        if not semantic and self._count_figure_markers_in_text(cleaned) <= 1:
+            return True
+        return False
+
+    def _figure_axis_dimension_label(self, values: List[str], *, fallback: str = "类别") -> str:
+        normalized = [self._normalize_text(v) for v in values if self._normalize_text(v)]
+        if not normalized:
+            return fallback
+        if self._column_year_ratio(normalized) >= 0.6:
+            return "年份"
+        if self._column_date_ratio(normalized) >= 0.6:
+            return "日期"
+        if self._column_geo_ratio(normalized) >= 0.6:
+            return "地区"
+        return fallback
+
+    def _recover_figure_title_and_caption(
+        self,
+        *,
+        title: str,
+        caption: str,
+        key_points: List[str],
+        text_blocks: List[str],
+        fallback_texts: List[str],
+        dataframe_headers: List[str],
+        series_labels: List[str],
+        x_axis: str = "",
+        y_axis: str = "",
+    ) -> Tuple[str, str]:
+        normalized_title = self._normalize_text(title)
+        normalized_caption = self._normalize_text(caption)
+        if self._figure_text_is_low_signal(normalized_title):
+            normalized_title = ""
+        if self._figure_text_is_low_signal(normalized_caption):
+            normalized_caption = ""
+
+        semantic_caption = self._strip_figure_caption_noise(normalized_caption)
+        semantic_title = self._strip_figure_caption_noise(normalized_title)
+
+        candidate_pool: List[str] = []
+        if semantic_title:
+            candidate_pool.append(semantic_title)
+        if semantic_caption:
+            candidate_pool.append(semantic_caption)
+        for item in key_points + text_blocks + fallback_texts:
+            probe = self._strip_figure_caption_noise(item)
+            if probe and not self._figure_text_is_low_signal(probe):
+                candidate_pool.append(probe)
+        meaningful_headers = [
+            self._normalize_text(header)
+            for header in dataframe_headers
+            if self._normalize_text(header) and not self._header_token_is_generic(self._normalize_text(header))
+        ]
+        preferred_headers = [header for header in meaningful_headers if header not in {"年份", "日期", "地区", "类别"}]
+        if preferred_headers:
+            candidate_pool.append(" / ".join(preferred_headers[:2]))
+        elif series_labels:
+            candidate_pool.append(" / ".join(series_labels[:2]))
+        elif y_axis:
+            candidate_pool.append(self._normalize_text(y_axis))
+        elif x_axis:
+            candidate_pool.append(self._normalize_text(x_axis))
+
+        recovered_title = ""
+        for candidate in candidate_pool:
+            probe = self._normalize_text(candidate)
+            if probe and not self._figure_text_is_low_signal(probe):
+                recovered_title = probe
+                break
+
+        recovered_caption = normalized_caption
+        if not recovered_caption and recovered_title:
+            recovered_caption = recovered_title
+        if not recovered_title and semantic_caption:
+            recovered_title = semantic_caption
+        return recovered_title, recovered_caption
+
+    def _figure_has_structured_signal(self, item: Dict[str, Any]) -> bool:
+        dataframe = item.get("dataframe") if isinstance(item.get("dataframe"), dict) else {}
+        df_rows = dataframe.get("rows") if isinstance(dataframe.get("rows"), list) else []
+        if any(isinstance(row, list) and any(str(cell or "").strip() for cell in row) for row in df_rows[:6]):
+            return True
+        key_values = item.get("key_values") if isinstance(item.get("key_values"), list) else []
+        if key_values:
+            return True
+        legend = item.get("legend") if isinstance(item.get("legend"), list) else []
+        if legend:
+            return True
+        axes = item.get("axes") if isinstance(item.get("axes"), dict) else {}
+        if str(axes.get("x") or "").strip() or str(axes.get("y") or "").strip():
+            return True
+        topology = item.get("topology") if isinstance(item.get("topology"), dict) else {}
+        nodes = topology.get("nodes") if isinstance(topology.get("nodes"), list) else []
+        edges = topology.get("edges") if isinstance(topology.get("edges"), list) else []
+        return bool(nodes or edges)
+
+    def _figure_semantic_key(self, figure: Dict[str, Any]) -> str:
+        title = self._normalize_text(str(figure.get("title", "") or ""))
+        caption = self._normalize_text(str(figure.get("caption", "") or ""))
+        semantic = self._strip_figure_caption_noise(title) or self._strip_figure_caption_noise(caption)
+        if not semantic:
+            return ""
+        semantic = re.sub(r"\s+", "", semantic)
+        return self._normalize_token_for_compare(semantic)
+
+    def _summarize_pdf_metadata_signals(self, reader: PdfReader) -> Dict[str, Any]:
+        metadata = getattr(reader, "metadata", None) or {}
+        creator = self._normalize_text(str(metadata.get("/Creator") or ""))
+        producer = self._normalize_text(str(metadata.get("/Producer") or ""))
+        haystack = f"{creator}\n{producer}".strip().lower()
+        haystack_normalized = re.sub(r"[^a-z0-9]+", " ", haystack).strip()
+        office_keywords = (
+            "microsoft word",
+            "microsoft office",
+            "libreoffice",
+            "openoffice",
+            "wps office",
+            "wps writer",
+        )
+        office_like = any(keyword in haystack_normalized for keyword in office_keywords)
+        return {
+            "creator": creator,
+            "producer": producer,
+            "normalized": haystack_normalized,
+            "office_like": office_like,
+        }
+
+    def _count_pdf_visual_cues(self, text: str) -> int:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return 0
+        patterns = (
+            r"\bfig(?:ure)?\.?\s*[A-Za-z0-9]",
+            r"\btable\s*[A-Za-z0-9]",
+            r"\bchart\b",
+            r"\bdiagram\b",
+            r"\bequation\b",
+            r"\beq\.\s*[A-Za-z0-9]",
+            r"\bformula\b",
+            r"图\s*[0-9A-Za-z一二三四五六七八九十百千]",
+            r"表\s*[0-9A-Za-z一二三四五六七八九十百千]",
+            r"(公式|方程|流程图|示意图|曲线|柱状|折线|饼图|反应式|化学式)",
+        )
+        hit_count = 0
+        for pattern in patterns:
+            hit_count += len(re.findall(pattern, normalized, flags=re.IGNORECASE))
+        return min(24, int(hit_count))
+
+    def _ordered_mineru_fallbacks(self, requested_method: str) -> List[str]:
+        requested = str(requested_method or "").strip().lower()
+        raw_methods = [requested]
+        raw_methods.extend(
+            [part.strip().lower() for part in str(self.mineru_method_fallbacks or "").split(",") if part.strip()]
+        )
+        ordered: List[str] = []
+        seen = set()
+        for item in raw_methods:
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            ordered.append(item)
+        return [item for item in ordered if item != requested]
+
+    def _classify_pdf_visual_profile(
+        self,
+        *,
+        file_name: str,
+        page_count: int,
+        probe_pages: int,
+        probe_chars: int,
+        probe_text: str,
+        pdf_metadata_signals: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        effective_probe_pages = max(1, int(probe_pages or 1))
+        chars_per_page = float(probe_chars) / float(effective_probe_pages)
+        office_like = bool(pdf_metadata_signals.get("office_like"))
+        visual_cue_hits = self._count_pdf_visual_cues(f"{file_name}\n{probe_text}")
+        method_default = str(self.mineru_method or "auto").strip().lower() or "auto"
+        scanned_method_raw = str(self.mineru_scanned_method or self.mineru_method or "auto").strip().lower() or "auto"
+        scanned_method = "ocr" if scanned_method_raw == "auto" else scanned_method_raw
+        scanned_fallbacks = ["txt"] if scanned_method == "ocr" else self._ordered_mineru_fallbacks(scanned_method)
+
+        if probe_chars < self.native_text_threshold:
+            method = scanned_method
+            return {
+                "profile": "visual_scanned_pdf",
+                "reason": "low_native_text",
+                "method": method,
+                "method_fallbacks": scanned_fallbacks,
+                "stop_on_usable_text": False,
+                "page_count_cap": self.visual_first_max_pages_scanned,
+                "probe_chars_per_page": round(chars_per_page, 2),
+                "visual_cue_hits": int(visual_cue_hits),
+                "office_like": office_like,
+            }
+
+        if (
+            self.mineru_text_first_office_pdf_enable
+            and method_default == "auto"
+            and office_like
+            and page_count >= self.mineru_text_first_office_pdf_min_pages
+            and probe_chars >= self.mineru_text_first_office_pdf_min_probe_chars
+        ):
+            method = "txt"
+            return {
+                "profile": "office_text_pdf",
+                "reason": "office_pdf_strong_native_text",
+                "method": method,
+                "method_fallbacks": self._ordered_mineru_fallbacks(method),
+                "stop_on_usable_text": False,
+                "page_count_cap": page_count,
+                "probe_chars_per_page": round(chars_per_page, 2),
+                "visual_cue_hits": int(visual_cue_hits),
+                "office_like": office_like,
+            }
+
+        short_pdf = page_count <= max(self.visual_probe_pages, 12)
+        if (
+            self.pdf_text_first_enable
+            and probe_chars >= self.pdf_text_heavy_min_probe_chars
+            and chars_per_page >= float(self.pdf_text_heavy_min_chars_per_page)
+            and visual_cue_hits <= self.pdf_text_heavy_max_visual_cues
+            and short_pdf
+        ):
+            method = "txt"
+            return {
+                "profile": "text_heavy_pdf",
+                "reason": "strong_native_text_low_visual_cues",
+                "method": method,
+                "method_fallbacks": self._ordered_mineru_fallbacks(method),
+                "stop_on_usable_text": bool(self.pdf_text_only_short_circuit_enable),
+                "page_count_cap": page_count,
+                "probe_chars_per_page": round(chars_per_page, 2),
+                "visual_cue_hits": int(visual_cue_hits),
+                "office_like": office_like,
+            }
+
+        if (
+            self.pdf_text_first_enable
+            and chars_per_page >= float(self.pdf_mixed_text_pref_min_chars_per_page)
+            and visual_cue_hits <= self.pdf_mixed_text_pref_max_visual_cues
+        ):
+            method = "txt"
+            tiny_low_cue_pdf = page_count <= 2 and visual_cue_hits <= 0
+            return {
+                "profile": "mixed_text_pref_pdf",
+                "reason": (
+                    "strong_native_text_prefers_txt_no_visual_cues"
+                    if tiny_low_cue_pdf
+                    else "strong_native_text_prefers_txt"
+                ),
+                "method": method,
+                "method_fallbacks": self._ordered_mineru_fallbacks(method),
+                "stop_on_usable_text": bool(self.pdf_text_only_short_circuit_enable and tiny_low_cue_pdf),
+                "page_count_cap": page_count,
+                "probe_chars_per_page": round(chars_per_page, 2),
+                "visual_cue_hits": int(visual_cue_hits),
+                "office_like": office_like,
+            }
+
+        return {
+            "profile": "mixed_visual_pdf",
+            "reason": "configured_default",
+            "method": method_default,
+            "method_fallbacks": self._ordered_mineru_fallbacks(method_default),
+            "stop_on_usable_text": False,
+            "page_count_cap": page_count,
+            "probe_chars_per_page": round(chars_per_page, 2),
+            "visual_cue_hits": int(visual_cue_hits),
+            "office_like": office_like,
+        }
+
     def _parse_pdf_visual_first(
         self,
         *,
@@ -1093,6 +1493,7 @@ class NativeDocumentParser:
         if page_count <= 0:
             return None
         visual_t0 = time.perf_counter()
+        native_page_count = max(1, min(int(page_count or 1), self.visual_first_max_pages, self.max_pages))
 
         vision = self._get_visual_vision_extractor()
         vision_ready = bool(vision.ready)
@@ -1102,17 +1503,41 @@ class NativeDocumentParser:
             except Exception:
                 pass
 
-        probe_pages = min(page_count, max(3, self.visual_probe_pages))
+        probe_pages = min(native_page_count, max(3, self.visual_probe_pages))
         probe_chars = 0
+        probe_text_parts: List[str] = []
         for page_idx in range(probe_pages):
             try:
-                probe_chars += len(self._normalize_text(reader.pages[page_idx].extract_text() or ""))
+                page_text = self._normalize_text(reader.pages[page_idx].extract_text() or "")
             except Exception:
                 continue
-        mineru_method = self.mineru_method
-        if probe_chars < self.native_text_threshold:
-            mineru_method = self.mineru_scanned_method or self.mineru_method
-            page_count = min(page_count, self.visual_first_max_pages_scanned)
+            probe_chars += len(page_text)
+            if page_text:
+                probe_text_parts.append(page_text[:1200])
+        pdf_metadata_signals = self._summarize_pdf_metadata_signals(reader)
+        pdf_profile = self._classify_pdf_visual_profile(
+            file_name=file_name,
+            page_count=native_page_count,
+            probe_pages=probe_pages,
+            probe_chars=probe_chars,
+            probe_text="\n".join(probe_text_parts),
+            pdf_metadata_signals=pdf_metadata_signals,
+        )
+        mineru_method = str(pdf_profile.get("method") or self.mineru_method or "auto").strip().lower() or "auto"
+        mineru_method_reason = str(pdf_profile.get("reason") or "configured_default")
+        mineru_method_fallbacks = list(pdf_profile.get("method_fallbacks") or [])
+        stop_on_usable_text = bool(pdf_profile.get("stop_on_usable_text"))
+        page_count_cap = int(pdf_profile.get("page_count_cap") or native_page_count)
+        layout_page_count = min(native_page_count, max(1, page_count_cap))
+        pdf_profile_name = str(pdf_profile.get("profile") or "").strip().lower()
+        office_like = bool(pdf_profile.get("office_like"))
+        if native_page_count >= self.visual_runtime_extreme_doc_page_threshold:
+            if pdf_profile_name == "office_text_pdf":
+                layout_page_count = min(layout_page_count, self.visual_runtime_office_text_layout_page_cap)
+            elif pdf_profile_name == "mixed_text_pref_pdf":
+                layout_page_count = min(layout_page_count, self.visual_runtime_mixed_text_layout_page_cap)
+            elif office_like or Path(source_file_name or "").suffix.lower() == ".docx":
+                layout_page_count = min(layout_page_count, self.visual_runtime_extreme_doc_layout_page_cap)
 
         layout = self._get_mineru_layout_extractor()
         layout_t0 = time.perf_counter()
@@ -1120,8 +1545,10 @@ class NativeDocumentParser:
             pdf_bytes=file_bytes,
             file_name=file_name,
             start_page=1,
-            end_page=page_count,
+            end_page=layout_page_count,
             method=mineru_method,
+            method_fallbacks=mineru_method_fallbacks,
+            stop_on_usable_text=stop_on_usable_text,
             source_cache_identity=source_cache_identity,
         )
         layout_extract_ms = int((time.perf_counter() - layout_t0) * 1000)
@@ -1131,13 +1558,28 @@ class NativeDocumentParser:
             file_name=file_name,
             source_file_name=source_file_name,
             source_file_bytes=source_file_bytes,
-            page_count=page_count,
+            page_count=native_page_count,
+            layout_page_count=layout_page_count,
             objects=objects,
         )
+        visual_method_stats = {
+            "visual_pdf_profile": str(pdf_profile.get("profile") or ""),
+            "visual_probe_chars": int(probe_chars),
+            "visual_probe_pages": int(probe_pages),
+            "visual_probe_chars_per_page": float(pdf_profile.get("probe_chars_per_page") or 0.0),
+            "visual_pdf_cue_hits": int(pdf_profile.get("visual_cue_hits", 0) or 0),
+            "visual_pdf_metadata_signals": pdf_metadata_signals,
+            "visual_mineru_method_requested": str(mineru_method or ""),
+            "visual_mineru_method_reason": mineru_method_reason,
+            "visual_mineru_method_fallbacks": list(mineru_method_fallbacks),
+            "visual_text_only_short_circuit_enabled": bool(stop_on_usable_text),
+            "visual_text_page_count": int(native_page_count),
+            "visual_layout_page_count": int(layout_page_count),
+        }
         native_page_lines: Dict[int, List[str]] = {}
         native_page_chunks: Dict[int, List[str]] = {}
         native_context_t0 = time.perf_counter()
-        for page_idx in range(page_count):
+        for page_idx in range(native_page_count):
             page_no = page_idx + 1
             try:
                 raw_text = reader.pages[page_idx].extract_text() or ""
@@ -1161,9 +1603,10 @@ class NativeDocumentParser:
             if mineru_status and mineru_status != "ok":
                 self._last_parse_stats = {
                     "pipeline": "visual_first",
-                    "visual_page_count": int(page_count),
+                    "visual_page_count": int(native_page_count),
                     "visual_failure": "no_layout_objects",
                     "visual_runtime_limits": runtime_limits,
+                    **visual_method_stats,
                     "visual_phase_ms": {
                         "layout_extract_ms": layout_extract_ms,
                         "native_context_ms": native_context_ms,
@@ -1180,21 +1623,24 @@ class NativeDocumentParser:
                 return None
             text_only_result = self._build_visual_text_only_result(
                 page_lines=page_lines,
-                page_count=page_count,
+                page_count=native_page_count,
                 visual_t0=visual_t0,
                 layout_extract_ms=layout_extract_ms,
                 native_context_ms=native_context_ms,
                 merge_context_ms=merge_context_ms,
                 failure_reason="no_layout_objects",
                 layout_object_count=0,
+                extra_stats=visual_method_stats,
+                runtime_limits=runtime_limits,
             )
             if text_only_result is not None:
                 return text_only_result
             self._last_parse_stats = {
                 "pipeline": "visual_first",
-                "visual_page_count": int(page_count),
+                "visual_page_count": int(native_page_count),
                 "visual_failure": "no_layout_objects",
                 "visual_runtime_limits": runtime_limits,
+                **visual_method_stats,
                 "visual_phase_ms": {
                     "layout_extract_ms": layout_extract_ms,
                     "total_ms": int((time.perf_counter() - visual_t0) * 1000),
@@ -1204,8 +1650,8 @@ class NativeDocumentParser:
 
         parts: List[str] = []
         bbox_map: Dict[str, List[float]] = {}
-        page_dims = self._build_page_dimensions(reader=reader, page_count=page_count)
-        for page_no in range(1, page_count + 1):
+        page_dims = self._build_page_dimensions(reader=reader, page_count=native_page_count)
+        for page_no in range(1, native_page_count + 1):
             chunks = native_page_chunks.get(page_no, [])
             if chunks:
                 for chunk_idx, chunk in enumerate(chunks, start=1):
@@ -1220,7 +1666,7 @@ class NativeDocumentParser:
         selected_objects, object_selection_stats = self._prioritize_layout_objects(
             objects,
             file_name=file_name,
-            page_count=page_count,
+            page_count=native_page_count,
             page_lines=page_lines,
             runtime_limits=runtime_limits,
         )
@@ -1228,7 +1674,7 @@ class NativeDocumentParser:
         if not selected_objects:
             text_only_result = self._build_visual_text_only_result(
                 page_lines=page_lines,
-                page_count=page_count,
+                page_count=native_page_count,
                 visual_t0=visual_t0,
                 layout_extract_ms=layout_extract_ms,
                 native_context_ms=native_context_ms,
@@ -1237,14 +1683,17 @@ class NativeDocumentParser:
                 failure_reason="no_selected_objects",
                 layout_object_count=len(objects),
                 object_selection_stats=object_selection_stats,
+                extra_stats=visual_method_stats,
+                runtime_limits=runtime_limits,
             )
             if text_only_result is not None:
                 return text_only_result
             self._last_parse_stats = {
                 "pipeline": "visual_first",
-                "visual_page_count": int(page_count),
+                "visual_page_count": int(native_page_count),
                 "visual_failure": "no_selected_objects",
                 "visual_runtime_limits": runtime_limits,
+                **visual_method_stats,
                 **object_selection_stats,
                 "visual_phase_ms": {
                     "layout_extract_ms": layout_extract_ms,
@@ -1286,10 +1735,15 @@ class NativeDocumentParser:
         table_vision_ms = 0
         figure_crop_ms = 0
         figure_vision_ms = 0
+        visual_vision_wall_ms = 0
         vision_candidate_count = 0
         vision_attempted_count = 0
         vision_success_count = 0
         vision_empty_count = 0
+        vision_job_error_count = 0
+        vision_serial_recovery_retry_count = 0
+        vision_serial_recovery_success_count = 0
+        vision_jobs: List[Dict[str, Any]] = []
 
         for item in selected_objects:
             obj_type = str(item.get("object_type", "") or "")
@@ -1299,11 +1753,6 @@ class NativeDocumentParser:
 
             if obj_type == "table":
                 vision_candidate_count += 1
-                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0)
-                if table_count_by_page[page_no] >= runtime_table_max_per_page:
-                    continue
-                if emitted_cells >= self.table_cell_cap:
-                    break
 
                 crop_t0 = time.perf_counter()
                 roi_bytes, roi_mime, _ = cropper.load_or_crop(item=item, pdf_bytes=file_bytes, is_table=True)
@@ -1317,56 +1766,21 @@ class NativeDocumentParser:
                     item=item,
                     page_lines=page_lines,
                 )
-                vision_t0 = time.perf_counter()
-                if vision_ready:
-                    vision_attempted_count += 1
-                table_payload = (
-                    vision.extract_table(
-                        image_bytes=roi_bytes,
-                        mime_type=roi_mime,
-                        context=context,
-                    )
-                    if vision_ready
-                    else {}
+                vision_jobs.append(
+                    {
+                        "index": len(vision_jobs),
+                        "kind": "table",
+                        "page_no": page_no,
+                        "item": item,
+                        "roi_bytes": roi_bytes,
+                        "roi_mime": roi_mime,
+                        "context": context,
+                    }
                 )
-                table_vision_ms += int((time.perf_counter() - vision_t0) * 1000)
-                table_id = f"pdf_mineru_gemini_t{table_idx}"
-                built_table, emitted_cells = self._build_table_from_visual_payload(
-                    table_id=table_id,
-                    page_no=page_no,
-                    payload=table_payload or {},
-                    item=item,
-                    parts=parts,
-                    bbox_map=bbox_map,
-                    page_dims=page_dims,
-                    emitted_cells=emitted_cells,
-                    source=table_source,
-                )
-                if built_table is None:
-                    continue
-                table_payload_has_content = self._table_payload_has_content(table_payload or {})
-                built_table["vision_status"] = (
-                    "attempted_success"
-                    if vision_ready and table_payload_has_content
-                    else "attempted_empty"
-                    if vision_ready
-                    else "not_needed"
-                )
-                if vision_ready:
-                    if table_payload_has_content:
-                        vision_success_count += 1
-                    else:
-                        vision_empty_count += 1
-                table_blocks.append(built_table)
-                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0) + 1
-                table_idx += 1
                 continue
 
             if obj_type == "image" and runtime_figure_max_per_page > 0:
                 vision_candidate_count += 1
-                figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0)
-                if figure_count_by_page[page_no] >= runtime_figure_max_per_page:
-                    continue
 
                 figure_eval = item.get("_visual_figure_eval") if isinstance(item.get("_visual_figure_eval"), dict) else {}
                 figure_score = max(0, int(figure_eval.get("score", 0) or 0))
@@ -1390,25 +1804,104 @@ class NativeDocumentParser:
                     item=item,
                     page_lines=page_lines,
                 )
-                vision_t0 = time.perf_counter()
-                if vision_ready:
-                    vision_attempted_count += 1
-                figure_payload = (
-                    vision.extract_figure(
-                        image_bytes=roi_bytes,
-                        mime_type=roi_mime,
-                        context=context,
-                        allow_refine=allow_chart_refine,
-                    )
-                    if vision_ready
-                    else {}
+                vision_jobs.append(
+                    {
+                        "index": len(vision_jobs),
+                        "kind": "figure",
+                        "page_no": page_no,
+                        "item": item,
+                        "roi_bytes": roi_bytes,
+                        "roi_mime": roi_mime,
+                        "context": context,
+                        "allow_refine": allow_chart_refine,
+                    }
                 )
-                figure_vision_ms += int((time.perf_counter() - vision_t0) * 1000)
+
+        table_count_by_page = {}
+        figure_count_by_page = {}
+        if vision_jobs:
+            vision_jobs_t0 = time.perf_counter()
+            vision_results = self._run_visual_vision_jobs(
+                jobs=vision_jobs,
+                vision=vision,
+                vision_ready=vision_ready,
+            )
+            visual_vision_wall_ms = int((time.perf_counter() - vision_jobs_t0) * 1000)
+        else:
+            vision_results = {}
+
+        for job in vision_jobs:
+            job_index = int(job.get("index", -1) or -1)
+            result = vision_results.get(job_index) if isinstance(vision_results, dict) else None
+            if not isinstance(result, dict):
+                result = {"index": job_index, "kind": str(job.get("kind", "") or ""), "payload": {}, "attempted": False, "elapsed_ms": 0}
+
+            kind = str(job.get("kind", "") or "")
+            page_no = int(job.get("page_no", 0) or 0)
+            item = job.get("item") if isinstance(job.get("item"), dict) else {}
+            payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+            attempted = bool(result.get("attempted"))
+            elapsed_ms = int(result.get("elapsed_ms", 0) or 0)
+            recovered_retry = bool(result.get("serial_recovery_retry"))
+            if str(result.get("error", "") or "").strip():
+                vision_job_error_count += 1
+            if recovered_retry:
+                vision_serial_recovery_retry_count += 1
+            if attempted:
+                vision_attempted_count += 1
+
+            if kind == "table":
+                table_vision_ms += elapsed_ms
+                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0)
+                if table_count_by_page[page_no] >= runtime_table_max_per_page:
+                    continue
+                if emitted_cells >= self.table_cell_cap:
+                    break
+
+                table_id = f"pdf_mineru_gemini_t{table_idx}"
+                built_table, emitted_cells = self._build_table_from_visual_payload(
+                    table_id=table_id,
+                    page_no=page_no,
+                    payload=payload or {},
+                    item=item,
+                    parts=parts,
+                    bbox_map=bbox_map,
+                    page_dims=page_dims,
+                    emitted_cells=emitted_cells,
+                    source=table_source,
+                )
+                if built_table is None:
+                    continue
+                table_payload_has_content = self._table_payload_has_content(payload or {})
+                built_table["vision_status"] = (
+                    "attempted_success"
+                    if vision_ready and table_payload_has_content
+                    else "attempted_empty"
+                    if vision_ready
+                    else "not_needed"
+                )
+                if attempted:
+                    if table_payload_has_content:
+                        vision_success_count += 1
+                        if recovered_retry:
+                            vision_serial_recovery_success_count += 1
+                    else:
+                        vision_empty_count += 1
+                table_blocks.append(built_table)
+                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0) + 1
+                table_idx += 1
+                continue
+
+            if kind == "figure":
+                figure_vision_ms += elapsed_ms
+                figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0)
+                if figure_count_by_page[page_no] >= runtime_figure_max_per_page:
+                    continue
                 figure_id = f"pdf_mineru_gemini_f{figure_idx}"
                 built_figure = self._build_figure_from_visual_payload(
                     figure_id=figure_id,
                     page_no=page_no,
-                    payload=figure_payload or {},
+                    payload=payload or {},
                     item=item,
                     parts=parts,
                     bbox_map=bbox_map,
@@ -1417,7 +1910,7 @@ class NativeDocumentParser:
                 )
                 if built_figure is None:
                     continue
-                figure_payload_has_content = self._figure_payload_has_content(figure_payload or {})
+                figure_payload_has_content = self._figure_payload_has_content(payload or {})
                 built_figure["vision_status"] = (
                     "attempted_success"
                     if vision_ready and figure_payload_has_content
@@ -1425,9 +1918,11 @@ class NativeDocumentParser:
                     if vision_ready
                     else "not_needed"
                 )
-                if vision_ready:
+                if attempted:
                     if figure_payload_has_content:
                         vision_success_count += 1
+                        if recovered_retry:
+                            vision_serial_recovery_success_count += 1
                     else:
                         vision_empty_count += 1
                 figure_blocks.append(built_figure)
@@ -1437,13 +1932,19 @@ class NativeDocumentParser:
         if not table_blocks and not figure_blocks:
             self._last_parse_stats = {
                 "pipeline": "visual_first",
-                "visual_page_count": int(page_count),
+                "visual_page_count": int(native_page_count),
                 "visual_layout_object_count": len(selected_objects),
                 "visual_runtime_limits": runtime_limits,
+                **visual_method_stats,
                 "visual_selected_table_candidates": selected_table_candidates,
                 "visual_selected_figure_candidates": selected_figure_candidates,
                 **object_selection_stats,
                 "visual_failure": "no_visual_blocks",
+                "visual_vision_concurrency": int(self.visual_vision_concurrency),
+                "visual_vision_job_count": len(vision_jobs),
+                "visual_vision_job_error_count": int(vision_job_error_count),
+                "visual_vision_serial_recovery_retry_count": int(vision_serial_recovery_retry_count),
+                "visual_vision_serial_recovery_success_count": int(vision_serial_recovery_success_count),
                 "visual_figure_refine_slots_total": int(runtime_limits.get("figure_refine_budget", self.visual_figure_refine_budget) or self.visual_figure_refine_budget),
                 "visual_figure_refine_slots_used": figure_refine_grants,
                 "visual_phase_ms": {
@@ -1455,6 +1956,7 @@ class NativeDocumentParser:
                     "table_vision_ms": table_vision_ms,
                     "figure_crop_ms": figure_crop_ms,
                     "figure_vision_ms": figure_vision_ms,
+                    "vision_wall_ms": visual_vision_wall_ms,
                     "total_ms": int((time.perf_counter() - visual_t0) * 1000),
                 },
             }
@@ -1493,9 +1995,10 @@ class NativeDocumentParser:
         postprocess_ms = int((time.perf_counter() - postprocess_t0) * 1000)
         self._last_parse_stats = {
             "pipeline": "visual_first",
-            "visual_page_count": int(page_count),
+            "visual_page_count": int(native_page_count),
             "visual_layout_object_count": len(selected_objects),
             "visual_runtime_limits": runtime_limits,
+            **visual_method_stats,
             "visual_selected_table_candidates": selected_table_candidates,
             "visual_selected_figure_candidates": selected_figure_candidates,
             **object_selection_stats,
@@ -1504,6 +2007,11 @@ class NativeDocumentParser:
             "visual_figure_count": len(figure_blocks),
             "visual_table_source": table_source,
             "visual_figure_source": figure_source,
+            "visual_vision_concurrency": int(self.visual_vision_concurrency),
+            "visual_vision_job_count": len(vision_jobs),
+            "visual_vision_job_error_count": int(vision_job_error_count),
+            "visual_vision_serial_recovery_retry_count": int(vision_serial_recovery_retry_count),
+            "visual_vision_serial_recovery_success_count": int(vision_serial_recovery_success_count),
             "visual_figure_refine_slots_total": int(runtime_limits.get("figure_refine_budget", self.visual_figure_refine_budget) or self.visual_figure_refine_budget),
             "visual_figure_refine_slots_used": figure_refine_grants,
             "visual_phase_ms": {
@@ -1515,6 +2023,7 @@ class NativeDocumentParser:
                 "table_vision_ms": table_vision_ms,
                 "figure_crop_ms": figure_crop_ms,
                 "figure_vision_ms": figure_vision_ms,
+                "vision_wall_ms": visual_vision_wall_ms,
                 "postprocess_ms": postprocess_ms,
                 "total_ms": int((time.perf_counter() - visual_t0) * 1000),
             },
@@ -1558,6 +2067,8 @@ class NativeDocumentParser:
         layout_object_count: int,
         select_ms: int = 0,
         object_selection_stats: Dict[str, Any] | None = None,
+        extra_stats: Dict[str, Any] | None = None,
+        runtime_limits: Dict[str, Any] | None = None,
     ) -> Optional[Tuple[str, Dict[str, List[float]], TableBlocks]]:
         parts: List[str] = []
         bbox_map: Dict[str, List[float]] = {}
@@ -1601,6 +2112,10 @@ class NativeDocumentParser:
                 "total_ms": int((time.perf_counter() - visual_t0) * 1000),
             },
         }
+        if runtime_limits:
+            stats["visual_runtime_limits"] = dict(runtime_limits)
+        if extra_stats:
+            stats.update(dict(extra_stats))
         if object_selection_stats:
             stats.update(object_selection_stats)
         stats.update(
@@ -1749,6 +2264,7 @@ class NativeDocumentParser:
         source_file_name: Optional[str],
         source_file_bytes: Optional[bytes],
         page_count: int,
+        layout_page_count: Optional[int],
         objects: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         image_object_count = 0
@@ -1768,10 +2284,12 @@ class NativeDocumentParser:
         source_docx_media_count = int(source_signals.get("source_docx_media_count", 0) or 0)
         source_docx_chart_xml_count = int(source_signals.get("source_docx_chart_xml_count", 0) or 0)
         is_docx_source = source_suffix == ".docx"
+        effective_layout_page_count = max(1, min(int(layout_page_count or page_count or 1), int(page_count or 1)))
         large_visual_doc = (
             page_count >= self.visual_runtime_large_doc_page_threshold
             and image_object_count >= self.visual_runtime_large_doc_image_threshold
         )
+        extreme_visual_doc = page_count >= self.visual_runtime_extreme_doc_page_threshold
         docx_chart_heavy = is_docx_source and (
             image_object_count >= max(6, self.visual_runtime_large_doc_image_threshold - 2)
             or source_docx_media_count >= 8
@@ -1785,7 +2303,14 @@ class NativeDocumentParser:
         chart_score_min = self.visual_figure_chart_score_min
         cueless_fallback_max = self.visual_figure_cueless_fallback_max
         figure_refine_budget = self.visual_figure_refine_budget
-        if docx_chart_heavy or large_visual_doc:
+        if extreme_visual_doc:
+            profile = "extreme_visual_doc"
+            max_objects = min(max_objects, self.visual_runtime_extreme_doc_max_objects)
+            figure_max_per_page = min(figure_max_per_page, self.visual_runtime_extreme_doc_figure_max_per_page)
+            cueless_fallback_max = min(cueless_fallback_max, self.visual_runtime_extreme_doc_cueless_fallback_max)
+            chart_score_min = max(chart_score_min, self.visual_runtime_extreme_doc_chart_score_min)
+            figure_refine_budget = min(figure_refine_budget, self.visual_runtime_extreme_doc_refine_budget)
+        elif docx_chart_heavy or large_visual_doc:
             profile = "docx_chart_heavy" if docx_chart_heavy else "large_visual_doc"
             max_objects = min(max_objects, self.visual_runtime_large_doc_max_objects)
             figure_max_per_page = min(figure_max_per_page, self.visual_runtime_large_doc_figure_max_per_page)
@@ -1803,6 +2328,7 @@ class NativeDocumentParser:
             "figure_refine_budget": figure_refine_budget,
             "figure_refine_min_score": self.visual_figure_refine_min_score,
             "page_count": int(page_count),
+            "layout_page_count": int(effective_layout_page_count),
             "image_object_count": int(image_object_count),
             "table_object_count": int(table_object_count),
             "source_signals": source_signals,
@@ -1841,13 +2367,19 @@ class NativeDocumentParser:
             return [], {
                 "visual_selected_table_candidates": 0,
                 "visual_selected_figure_candidates": 0,
+                "visual_table_candidate_count_total": 0,
+                "visual_figure_candidate_count_total": 0,
+                "visual_figure_candidates_kept_by_rule": 0,
                 "visual_figure_candidates_chart_like": 0,
                 "visual_figure_candidates_filtered_nonchart": 0,
                 "visual_figure_fallback_selected": 0,
+                "visual_selected_table_pages": 0,
+                "visual_selected_figure_pages": 0,
+                "visual_selection_strategy": "page_coverage_then_priority",
                 "visual_figure_chart_only": bool(self.visual_figure_chart_only),
                 "visual_figure_chart_score_min": chart_score_min,
             }
-        cleaned = []
+        cleaned: List[Dict[str, Any]] = []
         for item in objects:
             obj_type = str(item.get("object_type", "") or "")
             if obj_type not in {"table", "image"}:
@@ -1870,104 +2402,221 @@ class NativeDocumentParser:
                     page_lines=page_lines,
                     chart_score_min=chart_score_min,
                 )
-            cleaned.append((item, page_no, obj_type, cap_len, area, figure_eval))
+            item_copy = dict(item)
+            if isinstance(figure_eval, dict):
+                item_copy["_visual_figure_eval"] = dict(figure_eval)
+            cleaned.append(
+                {
+                    "item": item_copy,
+                    "page_no": page_no,
+                    "obj_type": obj_type,
+                    "cap_len": cap_len,
+                    "area": area,
+                    "figure_eval": dict(figure_eval or {}),
+                }
+            )
         if not cleaned:
             return [], {
                 "visual_selected_table_candidates": 0,
                 "visual_selected_figure_candidates": 0,
+                "visual_table_candidate_count_total": 0,
+                "visual_figure_candidate_count_total": 0,
+                "visual_figure_candidates_kept_by_rule": 0,
                 "visual_figure_candidates_chart_like": 0,
                 "visual_figure_candidates_filtered_nonchart": 0,
                 "visual_figure_fallback_selected": 0,
+                "visual_selected_table_pages": 0,
+                "visual_selected_figure_pages": 0,
+                "visual_selection_strategy": "page_coverage_then_priority",
                 "visual_figure_chart_only": bool(self.visual_figure_chart_only),
                 "visual_figure_chart_score_min": chart_score_min,
             }
-
-        cleaned.sort(
-            key=lambda x: (
-                x[1],
-                0 if x[2] == "table" else 1,
-                0 if (x[5] or {}).get("chart_like") else 1,
-                -int((x[5] or {}).get("score", 0) or 0),
-                -x[3],
-                -x[4],
-            )
-        )
 
         selected: List[Dict[str, Any]] = []
         summary: Dict[str, Any] = {
             "visual_selected_table_candidates": 0,
             "visual_selected_figure_candidates": 0,
+            "visual_table_candidate_count_total": 0,
+            "visual_figure_candidate_count_total": 0,
+            "visual_figure_candidates_kept_by_rule": 0,
             "visual_figure_candidates_chart_like": 0,
             "visual_figure_candidates_filtered_nonchart": 0,
             "visual_figure_fallback_selected": 0,
+            "visual_selected_table_pages": 0,
+            "visual_selected_figure_pages": 0,
+            "visual_selection_strategy": "page_coverage_then_priority",
             "visual_figure_chart_only": bool(self.visual_figure_chart_only),
             "visual_figure_chart_score_min": chart_score_min,
         }
-        table_count_by_page: Dict[int, int] = {}
-        figure_count_by_page: Dict[int, int] = {}
-        fallback_images: List[Tuple[int, int, float, Dict[str, Any]]] = []
-        selected_chart_figures = 0
-        for item, page_no, obj_type, cap_len, area, figure_eval in cleaned:
-            if len(selected) >= max_objects:
-                break
+        table_candidates: List[Dict[str, Any]] = []
+        figure_candidates: List[Dict[str, Any]] = []
+        fallback_images: List[Dict[str, Any]] = []
+
+        for candidate in cleaned:
+            obj_type = str(candidate.get("obj_type", "") or "")
             if obj_type == "table":
-                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0)
-                if table_count_by_page[page_no] >= table_max_per_page:
-                    continue
-                table_count_by_page[page_no] += 1
-                summary["visual_selected_table_candidates"] = int(summary.get("visual_selected_table_candidates", 0)) + 1
-            else:
-                summary["visual_selected_figure_candidates"] = int(summary.get("visual_selected_figure_candidates", 0)) + 1
-                chart_like = bool((figure_eval or {}).get("chart_like"))
-                if chart_like:
-                    summary["visual_figure_candidates_chart_like"] = int(summary.get("visual_figure_candidates_chart_like", 0)) + 1
-                if self.visual_figure_chart_only and not chart_like:
-                    summary["visual_figure_candidates_filtered_nonchart"] = int(
-                        summary.get("visual_figure_candidates_filtered_nonchart", 0)
-                    ) + 1
-                    if self.visual_figure_allow_cueless_fallback and cueless_fallback_max > 0:
-                        item_copy = dict(item)
-                        if isinstance(figure_eval, dict):
-                            item_copy["_visual_figure_eval"] = dict(figure_eval)
-                        fallback_images.append((page_no, cap_len, area, item_copy))
-                if figure_max_per_page <= 0:
-                    continue
-                figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0)
-                if figure_count_by_page[page_no] >= figure_max_per_page:
-                    continue
-                figure_count_by_page[page_no] += 1
-                if chart_like:
-                    selected_chart_figures += 1
-            item_copy = dict(item)
-            if isinstance(figure_eval, dict):
-                item_copy["_visual_figure_eval"] = dict(figure_eval)
-            selected.append(item_copy)
+                summary["visual_table_candidate_count_total"] = int(summary.get("visual_table_candidate_count_total", 0)) + 1
+                table_candidates.append(candidate)
+                continue
+
+            summary["visual_figure_candidate_count_total"] = int(summary.get("visual_figure_candidate_count_total", 0)) + 1
+            figure_eval = candidate.get("figure_eval") if isinstance(candidate.get("figure_eval"), dict) else {}
+            chart_like = bool(figure_eval.get("chart_like"))
+            keep_when_chart_only = bool(figure_eval.get("keep_when_chart_only"))
+            if chart_like:
+                summary["visual_figure_candidates_chart_like"] = int(summary.get("visual_figure_candidates_chart_like", 0)) + 1
+            keep_candidate = chart_like or not self.visual_figure_chart_only or keep_when_chart_only
+            if not keep_candidate:
+                summary["visual_figure_candidates_filtered_nonchart"] = int(
+                    summary.get("visual_figure_candidates_filtered_nonchart", 0)
+                ) + 1
+                if self.visual_figure_allow_cueless_fallback and cueless_fallback_max > 0:
+                    fallback_images.append(candidate)
+                continue
+            summary["visual_figure_candidates_kept_by_rule"] = int(
+                summary.get("visual_figure_candidates_kept_by_rule", 0)
+            ) + 1
+            if figure_max_per_page > 0:
+                figure_candidates.append(candidate)
+
+        table_candidates.sort(key=lambda item: self._layout_selection_sort_key(item, for_global=False))
+        figure_candidates.sort(key=lambda item: self._layout_selection_sort_key(item, for_global=False))
+
+        selected = self._select_layout_candidates_with_page_coverage(
+            tables=table_candidates,
+            figures=figure_candidates,
+            max_objects=max_objects,
+            table_max_per_page=table_max_per_page,
+            figure_max_per_page=figure_max_per_page,
+        )
 
         if (
             self.visual_figure_chart_only
-            and selected_chart_figures == 0
             and not any(str(item.get("object_type", "") or "") == "image" for item in selected)
             and self.visual_figure_allow_cueless_fallback
             and cueless_fallback_max > 0
         ):
-            fallback_images.sort(key=lambda item: (-item[1], -item[2], item[0]))
+            fallback_images.sort(key=lambda item: self._layout_selection_sort_key(item, for_global=True))
             fallback_used = 0
-            for page_no, _cap_len, _area, item in fallback_images:
+            fallback_count_by_page: Dict[int, int] = {}
+            for fallback in fallback_images:
                 if len(selected) >= max_objects:
                     break
                 if fallback_used >= cueless_fallback_max:
                     break
                 if figure_max_per_page <= 0:
                     break
-                figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0)
-                if figure_count_by_page[page_no] >= figure_max_per_page:
+                page_no = int(fallback.get("page_no", 0) or 0)
+                fallback_count_by_page[page_no] = fallback_count_by_page.get(page_no, 0)
+                if fallback_count_by_page[page_no] >= 1:
                     continue
-                figure_count_by_page[page_no] += 1
-                selected.append(item)
+                selected.append(dict(fallback.get("item") or {}))
+                fallback_count_by_page[page_no] += 1
                 fallback_used += 1
             summary["visual_figure_fallback_selected"] = fallback_used
 
+        summary["visual_selected_table_candidates"] = sum(
+            1 for item in selected if str(item.get("object_type", "") or "") == "table"
+        )
+        summary["visual_selected_figure_candidates"] = sum(
+            1 for item in selected if str(item.get("object_type", "") or "") == "image"
+        )
+        summary["visual_selected_table_pages"] = len(
+            {int(item.get("page", 0) or 0) for item in selected if str(item.get("object_type", "") or "") == "table"}
+        )
+        summary["visual_selected_figure_pages"] = len(
+            {int(item.get("page", 0) or 0) for item in selected if str(item.get("object_type", "") or "") == "image"}
+        )
+
         return selected, summary
+
+    @staticmethod
+    def _layout_selection_sort_key(candidate: Dict[str, Any], *, for_global: bool) -> Tuple[Any, ...]:
+        page_no = int(candidate.get("page_no", 0) or 0)
+        obj_type = str(candidate.get("obj_type", "") or "")
+        cap_len = int(candidate.get("cap_len", 0) or 0)
+        area = float(candidate.get("area", 0.0) or 0.0)
+        figure_eval = candidate.get("figure_eval") if isinstance(candidate.get("figure_eval"), dict) else {}
+        selection_priority = int(figure_eval.get("selection_priority", 3) or 3)
+        score = int(figure_eval.get("score", 0) or 0)
+        if obj_type == "table":
+            base = (-cap_len, -area)
+        else:
+            base = (selection_priority, -score, -cap_len, -area)
+        if for_global:
+            return base + (page_no,)
+        return (page_no,) + base
+
+    def _select_layout_candidates_with_page_coverage(
+        self,
+        *,
+        tables: List[Dict[str, Any]],
+        figures: List[Dict[str, Any]],
+        max_objects: int,
+        table_max_per_page: int,
+        figure_max_per_page: int,
+    ) -> List[Dict[str, Any]]:
+        selected: List[Dict[str, Any]] = []
+        table_count_by_page: Dict[int, int] = {}
+        figure_count_by_page: Dict[int, int] = {}
+        table_pages: Dict[int, List[Dict[str, Any]]] = {}
+        figure_pages: Dict[int, List[Dict[str, Any]]] = {}
+
+        for candidate in tables:
+            table_pages.setdefault(int(candidate.get("page_no", 0) or 0), []).append(candidate)
+        for candidate in figures:
+            figure_pages.setdefault(int(candidate.get("page_no", 0) or 0), []).append(candidate)
+
+        def _push(candidate: Dict[str, Any]) -> bool:
+            if len(selected) >= max_objects:
+                return False
+            obj_type = str(candidate.get("obj_type", "") or "")
+            page_no = int(candidate.get("page_no", 0) or 0)
+            if obj_type == "table":
+                table_count_by_page[page_no] = table_count_by_page.get(page_no, 0)
+                if table_count_by_page[page_no] >= table_max_per_page:
+                    return False
+                table_count_by_page[page_no] += 1
+            else:
+                figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0)
+                if figure_count_by_page[page_no] >= figure_max_per_page:
+                    return False
+                figure_count_by_page[page_no] += 1
+            selected.append(dict(candidate.get("item") or {}))
+            return True
+
+        coverage_pages = sorted(set(table_pages.keys()) | set(figure_pages.keys()))
+        for page_no in coverage_pages:
+            if len(selected) >= max_objects:
+                break
+            table_candidates = table_pages.get(page_no) or []
+            if table_candidates:
+                _push(table_candidates.pop(0))
+            if len(selected) >= max_objects:
+                break
+            figure_candidates = figure_pages.get(page_no) or []
+            if figure_candidates:
+                _push(figure_candidates.pop(0))
+
+        remaining_tables = sorted(
+            [candidate for items in table_pages.values() for candidate in items],
+            key=lambda item: self._layout_selection_sort_key(item, for_global=True),
+        )
+        for candidate in remaining_tables:
+            if len(selected) >= max_objects:
+                break
+            _push(candidate)
+
+        remaining_figures = sorted(
+            [candidate for items in figure_pages.values() for candidate in items],
+            key=lambda item: self._layout_selection_sort_key(item, for_global=True),
+        )
+        for candidate in remaining_figures:
+            if len(selected) >= max_objects:
+                break
+            _push(candidate)
+
+        return selected
 
     def _evaluate_visual_figure_candidate(
         self,
@@ -1978,6 +2627,9 @@ class NativeDocumentParser:
         page_lines: Dict[int, List[str]],
         chart_score_min: Optional[int] = None,
     ) -> Dict[str, Any]:
+        artifact_subtype = self._normalize_text(
+            str(item.get("object_subtype", "") or item.get("source_object_type", "") or "")
+        )
         caption_text = self._normalize_text(
             " ".join(self._safe_text_list(item.get("caption"), max_items=4, max_len=200))
         )
@@ -1987,10 +2639,16 @@ class NativeDocumentParser:
         page_hint = ""
         if not caption_text and not footnote_text:
             page_hint = self._normalize_text(" ".join(page_lines.get(page_no, [])[:24]))
-        cue_text = self._normalize_text(" ".join(part for part in [file_name, caption_text, footnote_text, page_hint] if part))
+        cue_text = self._normalize_text(
+            " ".join(part for part in [file_name, artifact_subtype, caption_text, footnote_text, page_hint] if part)
+        )
         inferred_type = self._infer_figure_type_from_text(cue_text)
         score = 0
         reasons: List[str] = []
+        table_like = bool(
+            (caption_text and self._contains_table_marker(caption_text))
+            or (cue_text and self._contains_table_marker(cue_text))
+        )
 
         if caption_text and self._contains_figure_marker(caption_text):
             score += 3
@@ -2006,12 +2664,26 @@ class NativeDocumentParser:
             score += 1
             reasons.append("context_cue")
 
+        if artifact_subtype == "formula":
+            score += 2
+            reasons.append("subtype_formula")
+
+        if table_like:
+            score += 2
+            reasons.append("table_marker")
+
         if inferred_type == "chart":
             score += 3
             reasons.append("type_chart")
         elif inferred_type == "diagram":
             score += 2
             reasons.append("type_diagram")
+        elif inferred_type == "formula":
+            score += 2
+            reasons.append("type_formula")
+        elif inferred_type == "photo" and caption_text:
+            score += 1
+            reasons.append("captioned_photo")
 
         if caption_text and re.search(r"\d{2,}", caption_text):
             score += 1
@@ -2019,11 +2691,28 @@ class NativeDocumentParser:
 
         effective_score_min = max(1, int(chart_score_min or self.visual_figure_chart_score_min))
         chart_like = score >= effective_score_min or inferred_type in {"chart", "diagram"}
+        keep_when_chart_only = bool(
+            chart_like
+            or inferred_type in {"diagram", "formula"}
+            or table_like
+            or (caption_text and self._contains_figure_marker(caption_text))
+        )
+        selection_priority = 3
+        if chart_like:
+            selection_priority = 0
+        elif inferred_type in {"diagram", "formula"} or table_like:
+            selection_priority = 1
+        elif caption_text or footnote_text:
+            selection_priority = 2
         return {
             "chart_like": bool(chart_like),
+            "keep_when_chart_only": bool(keep_when_chart_only),
+            "selection_priority": int(selection_priority),
             "score": int(score),
             "reasons": reasons[:6],
             "inferred_type": inferred_type,
+            "table_like": bool(table_like),
+            "artifact_subtype": artifact_subtype[:80],
             "chart_score_min": effective_score_min,
             "caption_text": caption_text[:240],
             "footnote_text": footnote_text[:240],
@@ -2061,6 +2750,112 @@ class NativeDocumentParser:
             "nearby_text": page_text,
             "domain_hints": domain_hints,
         }
+
+    def _run_visual_vision_jobs(
+        self,
+        *,
+        jobs: List[Dict[str, Any]],
+        vision: GeminiVisionExtractor,
+        vision_ready: bool,
+    ) -> Dict[int, Dict[str, Any]]:
+        results: Dict[int, Dict[str, Any]] = {}
+        if not jobs:
+            return results
+
+        def _execute(job: Dict[str, Any]) -> Dict[str, Any]:
+            job_index = int(job.get("index", -1) or -1)
+            kind = str(job.get("kind", "") or "")
+            t0 = time.perf_counter()
+            attempted = False
+            payload: Dict[str, Any] = {}
+            error = ""
+            if vision_ready:
+                attempted = True
+                try:
+                    if kind == "table":
+                        payload = (
+                            vision.extract_table(
+                                image_bytes=bytes(job.get("roi_bytes") or b""),
+                                mime_type=str(job.get("roi_mime", "") or "image/png"),
+                                context=job.get("context") if isinstance(job.get("context"), dict) else {},
+                            )
+                            or {}
+                        )
+                    elif kind == "figure":
+                        payload = (
+                            vision.extract_figure(
+                                image_bytes=bytes(job.get("roi_bytes") or b""),
+                                mime_type=str(job.get("roi_mime", "") or "image/png"),
+                                context=job.get("context") if isinstance(job.get("context"), dict) else {},
+                                allow_refine=bool(job.get("allow_refine", False)),
+                            )
+                            or {}
+                        )
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+            return {
+                "index": job_index,
+                "kind": kind,
+                "payload": payload or {},
+                "attempted": attempted,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                "error": error[:400],
+            }
+
+        max_workers = min(len(jobs), max(1, int(self.visual_vision_concurrency)))
+        if (not vision_ready) or max_workers <= 1 or len(jobs) <= 1:
+            for job in jobs:
+                result = _execute(job)
+                results[int(result.get("index", -1) or -1)] = result
+            return results
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(_execute, job): int(job.get("index", -1) or -1) for job in jobs}
+            for future in concurrent.futures.as_completed(future_map):
+                job_index = future_map.get(future, -1)
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {
+                        "index": job_index,
+                        "kind": str((jobs[job_index] or {}).get("kind", "") or ""),
+                        "payload": {},
+                        "attempted": bool(vision_ready),
+                        "elapsed_ms": 0,
+                        "error": f"{type(exc).__name__}: {exc}"[:400],
+                    }
+                results[int(result.get("index", -1) or -1)] = result
+
+        retry_indexes = [
+            idx
+            for idx, result in results.items()
+            if self._is_retryable_visual_transport_error(str(result.get("error", "") or ""))
+        ]
+        for idx in sorted(retry_indexes):
+            if idx < 0 or idx >= len(jobs):
+                continue
+            retry_result = _execute(jobs[idx])
+            retry_result["serial_recovery_retry"] = True
+            results[idx] = retry_result
+        return results
+
+    @staticmethod
+    def _is_retryable_visual_transport_error(error_text: str) -> bool:
+        raw = str(error_text or "").strip().lower()
+        if not raw:
+            return False
+        retry_markers = (
+            "ssleoferror",
+            "unexpected eof",
+            "eof occurred in violation of protocol",
+            "connection aborted",
+            "connection reset",
+            "remote disconnected",
+            "temporarily unavailable",
+            "timed out",
+            "timeout",
+        )
+        return any(marker in raw for marker in retry_markers)
 
     def _infer_domain_hints(self, text: str) -> List[str]:
         probe = self._normalize_text(text).lower()
@@ -2266,6 +3061,13 @@ class NativeDocumentParser:
             if emitted_cells >= self.table_cell_cap:
                 break
 
+        headers, raw_rows_payload = self._recover_low_signal_headers(
+            headers,
+            raw_rows_payload,
+            caption=caption,
+            notes=notes,
+        )
+
         if not raw_rows_payload:
             table = {
                 "table_id": table_id,
@@ -2392,13 +3194,14 @@ class NativeDocumentParser:
         page_dims: Dict[int, Tuple[float, float]],
         source: str = "pdf_mineru_gemini",
     ) -> Optional[Dict[str, Any]]:
+        title = self._normalize_text(str(payload.get("title") or ""))
         caption = self._normalize_text(
             str(payload.get("caption") or payload.get("title") or " ".join(self._safe_text_list(item.get("caption"))))
         )
         figure_type = self._normalize_text(str(payload.get("type", "") or ""))
         if figure_type not in {"chart", "diagram", "formula", "photo", "other"}:
             figure_type = self._infer_figure_type_from_text(
-                f"{caption} {figure_type} {item.get('object_subtype', '')} {item.get('source_object_type', '')}"
+                f"{title} {caption} {figure_type} {item.get('object_subtype', '')} {item.get('source_object_type', '')}"
             )
         axes = payload.get("axes")
         x_axis = ""
@@ -2408,6 +3211,7 @@ class NativeDocumentParser:
             y_axis = self._normalize_text(str(axes.get("y", "") or ""))
         legend = self._safe_text_list(payload.get("legend"), max_items=8, max_len=120)
         insights = self._safe_text_list(payload.get("insights"), max_items=8, max_len=180)
+        key_points = [item for item in insights if not self._figure_text_is_low_signal(item)]
         content_modes = [
             self._normalize_text(str(x or "")).lower()
             for x in (payload.get("content_modes") if isinstance(payload.get("content_modes"), list) else [])
@@ -2423,7 +3227,11 @@ class NativeDocumentParser:
         topology = payload.get("topology") if isinstance(payload.get("topology"), dict) else {}
         topo_nodes = topology.get("nodes") if isinstance(topology.get("nodes"), list) else []
         topo_edges = topology.get("edges") if isinstance(topology.get("edges"), list) else []
-        text_blocks = self._safe_text_list(payload.get("text_blocks"), max_items=10, max_len=180)
+        text_blocks = [
+            item
+            for item in self._safe_text_list(payload.get("text_blocks"), max_items=10, max_len=180)
+            if not self._figure_text_is_low_signal(item)
+        ]
         key_values = self._normalize_figure_key_values(payload.get("key_values"), max_items=6)
         for item_raw in key_values:
             name = self._normalize_text(item_raw.get("name", ""))
@@ -2438,6 +3246,19 @@ class NativeDocumentParser:
             rows=df_rows,
             key_values=key_values,
             fallback_texts=text_blocks + insights,
+            caption_hint=caption or title,
+            series_labels=legend,
+            x_axis=x_axis,
+            y_axis=y_axis,
+        )
+        title, caption = self._recover_figure_title_and_caption(
+            title=title,
+            caption=caption,
+            key_points=key_points,
+            text_blocks=text_blocks,
+            fallback_texts=insights,
+            dataframe_headers=df_headers,
+            series_labels=legend,
             x_axis=x_axis,
             y_axis=y_axis,
         )
@@ -2453,6 +3274,8 @@ class NativeDocumentParser:
             insights.append(f"dataframe: {len(df_rows)}x{max(len(r) for r in df_rows)}")
         if topo_nodes or topo_edges:
             insights.append(f"topology: nodes={len(topo_nodes)}, edges={len(topo_edges)}")
+        if figure_type in {"", "other"} and (df_rows or key_values or legend or x_axis or y_axis):
+            figure_type = "chart"
         if (df_headers and df_rows) and "dataframe" not in content_modes:
             content_modes.append("dataframe")
         if (topo_nodes or topo_edges) and "topology" not in content_modes:
@@ -2462,6 +3285,12 @@ class NativeDocumentParser:
         insights = [self._normalize_text(x) for x in insights if self._normalize_text(x)]
         if len(insights) > 8:
             insights = insights[:8]
+        low_signal_only = not caption and not title and not df_rows and not key_values and not topo_nodes and not topo_edges
+        if low_signal_only and not key_points and not text_blocks:
+            return None
+        ambiguous_caption = self._count_figure_markers_in_text(caption or title) > 1
+        if ambiguous_caption and not df_rows and not key_values and not topo_nodes and not topo_edges:
+            return None
         confidence = self._to_float_or_none(payload.get("confidence"))
         if confidence is None:
             confidence = 0.68
@@ -2482,8 +3311,10 @@ class NativeDocumentParser:
             "source": source,
             "page": page_no,
             "figure_type": figure_type or "other",
+            "title": title,
             "caption": caption,
             "insights": insights[:6],
+            "key_points": key_points[:6] if key_points else insights[:6],
             "quality": round(confidence, 4),
             "ref_ids": ref_ids,
             "bbox_raw": item.get("bbox"),
@@ -2492,6 +3323,9 @@ class NativeDocumentParser:
             "artifact_subtype": str(item.get("object_subtype", "") or item.get("source_object_type", "") or "image"),
             "source_object_type": str(item.get("source_object_type", "") or item.get("object_type", "") or "image"),
             "content_modes": content_modes,
+            "axes": {"x": x_axis, "y": y_axis},
+            "legend": legend[:8],
+            "key_values": key_values[:6],
             "dataframe": {
                 "headers": df_headers,
                 "rows": df_rows,
@@ -2507,37 +3341,40 @@ class NativeDocumentParser:
 
     def _extract_headers_from_table_payload(self, payload: Dict[str, Any]) -> List[str]:
         headers = self._safe_text_list(payload.get("headers"), max_items=self.table_max_cols, max_len=200)
-        if headers:
+        if headers and not self._headers_need_recovery(headers):
             return headers
         header_rows_raw = payload.get("header_rows")
-        if not isinstance(header_rows_raw, list):
-            return []
-        header_rows: List[List[str]] = []
-        for row in header_rows_raw[:4]:
-            if not isinstance(row, list):
-                continue
-            vals = [self._normalize_text(str(x or "")) for x in row[: self.table_max_cols]]
-            if any(vals):
-                header_rows.append(vals)
-        if not header_rows:
-            return []
-        max_cols = max(len(r) for r in header_rows)
-        merged: List[str] = []
-        for col_idx in range(max_cols):
-            parts: List[str] = []
-            seen = set()
-            for row in header_rows:
-                val = self._normalize_text(str(row[col_idx] if col_idx < len(row) else ""))
-                if not val:
+        if isinstance(header_rows_raw, list):
+            header_rows: List[List[str]] = []
+            for row in header_rows_raw[:4]:
+                if not isinstance(row, list):
                     continue
-                key = self._normalize_token_for_compare(val)
-                if key and key in seen:
-                    continue
-                if key:
-                    seen.add(key)
-                parts.append(val)
-            merged.append(" / ".join(parts))
-        return [h for h in merged if h]
+                vals = [self._normalize_text(str(x or "")) for x in row[: self.table_max_cols]]
+                if any(vals):
+                    header_rows.append(vals)
+            if header_rows:
+                max_cols = max(len(r) for r in header_rows)
+                merged: List[str] = []
+                for col_idx in range(max_cols):
+                    parts: List[str] = []
+                    seen = set()
+                    for row in header_rows:
+                        val = self._normalize_text(str(row[col_idx] if col_idx < len(row) else ""))
+                        if not val:
+                            continue
+                        key = self._normalize_token_for_compare(val)
+                        if key and key in seen:
+                            continue
+                        if key:
+                            seen.add(key)
+                        parts.append(val)
+                    merged.append(" / ".join(parts))
+                merged = [h for h in merged if h]
+                if merged and not self._headers_need_recovery(merged):
+                    return merged
+                if merged:
+                    headers = merged
+        return headers if headers else []
 
     def _extract_rows_from_table_payload(self, payload: Dict[str, Any]) -> List[List[str]]:
         rows_raw = payload.get("rows")
@@ -2660,7 +3497,276 @@ class NativeDocumentParser:
         t = str(text or "").strip().lower()
         if not t:
             return True
-        return bool(re.fullmatch(r"col[_\s\-]?\d{1,3}", t))
+        compact = re.sub(r"[\s_\-/:|]+", "", t)
+        if bool(re.fullmatch(r"col\d{1,3}", compact)):
+            return True
+        if bool(re.fullmatch(r"[\?？�_\-—–~·\.]{1,24}", t)):
+            return True
+        if bool(re.fullmatch(r"(?:value|metric|category|item|desc|description)[_\s\-]?\d{0,2}", compact)):
+            return True
+        if bool(re.fullmatch(r"(?:数值|类别|项目|说明|指标)[_\s\-]?\d{0,2}", str(text or "").strip())):
+            return True
+        if compact in {"na", "n/a", "null", "none", "unknown", "unk", "待定", "未知", "未识别"}:
+            return True
+        meaningful = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", compact)
+        if not meaningful:
+            return True
+        return False
+
+    def _headers_need_recovery(self, headers: List[str]) -> bool:
+        normalized = [self._normalize_text(str(item or "")) for item in headers]
+        normalized = [item for item in normalized if item]
+        if not normalized:
+            return True
+        generic_count = sum(1 for item in normalized if self._header_token_is_generic(item))
+        numeric_like_count = sum(1 for item in normalized if self._cell_text_numeric_like(item))
+        temporal_like_count = sum(
+            1
+            for item in normalized
+            if re.fullmatch(r"(?:19|20)\d{2}年?", item)
+            or re.fullmatch(r"(?:19|20)\d{2}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?", item)
+        )
+        if generic_count <= 0:
+            if numeric_like_count > 0 and temporal_like_count < numeric_like_count:
+                return numeric_like_count / float(max(len(normalized), 1)) >= 0.4
+            return False
+        meaningful_count = len(normalized) - generic_count
+        if meaningful_count <= 0:
+            return True
+        return generic_count / float(max(len(normalized), 1)) >= 0.5
+
+    def _row_payload_texts(self, row: Dict[str, Any], col_count: int) -> List[str]:
+        cells = sorted(row.get("cells", []), key=lambda c: int(c.get("col_index", 0) or 0))
+        cell_map: Dict[int, str] = {}
+        for cell in cells:
+            col_index = int(cell.get("col_index", 0) or 0)
+            if col_index <= 0:
+                continue
+            cell_map[col_index] = self._normalize_text(str(cell.get("text", "") or ""))
+        return [cell_map.get(idx, "") for idx in range(1, max(col_count, 0) + 1)]
+
+    @staticmethod
+    def _cell_text_numeric_like(text: str) -> bool:
+        value = str(text or "").strip()
+        if not value:
+            return False
+        compact = re.sub(r"[\s,\uFF0C]", "", value)
+        if re.fullmatch(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?[%％]?", compact):
+            return True
+        if re.fullmatch(r"(?:19|20)\d{2}年?", compact):
+            return True
+        return bool(re.search(r"\d", compact))
+
+    def _column_numeric_ratio(self, values: List[str]) -> float:
+        non_empty = [self._normalize_text(v) for v in values if self._normalize_text(v)]
+        if not non_empty:
+            return 0.0
+        numeric_hits = sum(1 for value in non_empty if self._cell_text_numeric_like(value))
+        return numeric_hits / float(len(non_empty))
+
+    def _column_percent_ratio(self, values: List[str]) -> float:
+        non_empty = [self._normalize_text(v) for v in values if self._normalize_text(v)]
+        if not non_empty:
+            return 0.0
+        hits = sum(1 for value in non_empty if "%" in value or "％" in value or "占比" in value)
+        return hits / float(len(non_empty))
+
+    def _column_year_ratio(self, values: List[str]) -> float:
+        non_empty = [self._normalize_text(v) for v in values if self._normalize_text(v)]
+        if not non_empty:
+            return 0.0
+        hits = sum(1 for value in non_empty if re.fullmatch(r"(?:19|20)\d{2}年?", value))
+        return hits / float(len(non_empty))
+
+    def _column_date_ratio(self, values: List[str]) -> float:
+        non_empty = [self._normalize_text(v) for v in values if self._normalize_text(v)]
+        if not non_empty:
+            return 0.0
+        hits = sum(
+            1
+            for value in non_empty
+            if re.fullmatch(r"(?:19|20)\d{2}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?", value)
+        )
+        return hits / float(len(non_empty))
+
+    def _column_geo_ratio(self, values: List[str]) -> float:
+        non_empty = [self._normalize_text(v) for v in values if self._normalize_text(v)]
+        if not non_empty:
+            return 0.0
+        geo_tokens = (
+            "省",
+            "市",
+            "区",
+            "县",
+            "乡",
+            "镇",
+            "村",
+            "全国",
+            "全省",
+            "全市",
+            "城区",
+            "农村",
+            "城市",
+            "地区",
+        )
+        hits = sum(1 for value in non_empty if any(token in value for token in geo_tokens))
+        return hits / float(len(non_empty))
+
+    def _caption_metric_hint(self, caption: str, notes: Optional[List[str]] = None) -> str:
+        text = self._normalize_text(" ".join([caption] + [str(item or "") for item in (notes or [])]))
+        if not text:
+            return ""
+        text = re.sub(r"^(?:表|图)\s*[0-9A-Za-z一二三四五六七八九十.\-]+", "", text)
+        text = re.sub(r"[（(][^()（）]{0,24}[)）]", "", text)
+        text = re.sub(
+            r"(?:统计表|统计图|汇总表|情况表|情况图|趋势图|分布图|结构图|对比图|示意图|统计情况|统计|情况|汇总|变化趋势|变化|趋势|分布|构成|明细|一览表)$",
+            "",
+            text,
+        )
+        text = self._normalize_text(text)
+        if len(text) > 16:
+            text = text[:16].rstrip("、，,;；:： ")
+        return text
+
+    def _should_promote_first_data_row_to_header(
+        self,
+        row1: List[str],
+        row2: List[str],
+        col_count: int,
+    ) -> bool:
+        vals1 = [self._normalize_text(v) for v in row1 if self._normalize_text(v)]
+        vals2 = [self._normalize_text(v) for v in row2 if self._normalize_text(v)]
+        if not vals1 or not vals2:
+            return False
+        if self._is_caption_like_header_row(row1, col_count):
+            return False
+        if not self._looks_like_header_row(row1):
+            return False
+        numeric_ratio1 = self._column_numeric_ratio(vals1)
+        numeric_ratio2 = self._column_numeric_ratio(vals2)
+        if numeric_ratio1 > 0.34:
+            return False
+        if numeric_ratio2 >= 0.45 and numeric_ratio2 >= (numeric_ratio1 + 0.2):
+            return True
+        return False
+
+    def _guess_header_from_column_values(
+        self,
+        *,
+        col_index: int,
+        values: List[str],
+        numeric_rank: int,
+        numeric_col_count: int,
+        caption_hint: str,
+    ) -> str:
+        non_empty = [self._normalize_text(v) for v in values if self._normalize_text(v)]
+        if not non_empty:
+            return f"col_{col_index + 1}"
+        if self._column_year_ratio(non_empty) >= 0.6:
+            return "年份"
+        if self._column_date_ratio(non_empty) >= 0.6:
+            return "日期"
+        if self._column_percent_ratio(non_empty) >= 0.5:
+            return "占比"
+        if self._column_geo_ratio(non_empty) >= 0.6:
+            return "地区"
+
+        numeric_ratio = self._column_numeric_ratio(non_empty)
+        if numeric_ratio <= 0.25:
+            avg_len = sum(len(item) for item in non_empty) / float(max(len(non_empty), 1))
+            if avg_len >= 10 and col_index > 0:
+                return "说明"
+            if col_index == 0:
+                return "类别"
+            return f"类别_{col_index + 1}"
+
+        if caption_hint and numeric_col_count <= 1:
+            return caption_hint
+        if caption_hint and numeric_rank > 0 and numeric_col_count > 1 and numeric_rank <= 2:
+            return f"{caption_hint}_{numeric_rank}"
+        if numeric_col_count <= 1:
+            return "数值"
+        return f"数值_{max(1, numeric_rank)}"
+
+    def _recover_low_signal_headers(
+        self,
+        headers: List[str],
+        rows_payload: List[Dict[str, Any]],
+        *,
+        caption: str = "",
+        notes: Optional[List[str]] = None,
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        col_count = max(
+            len(headers),
+            max((len(row.get("cells", [])) for row in rows_payload), default=0),
+        )
+        if col_count <= 0:
+            return headers, rows_payload
+
+        normalized_headers = [self._normalize_text(str(item or "")) for item in headers[:col_count]]
+        if len(normalized_headers) < col_count:
+            normalized_headers.extend([""] * (col_count - len(normalized_headers)))
+
+        repaired_rows = list(rows_payload)
+        needs_recovery = self._headers_need_recovery(normalized_headers)
+        if needs_recovery and len(repaired_rows) >= 2:
+            row1 = self._row_payload_texts(repaired_rows[0], col_count)
+            row2 = self._row_payload_texts(repaired_rows[1], col_count)
+            if self._should_promote_first_data_row_to_header(row1, row2, col_count):
+                normalized_headers = row1[:]
+                repaired_rows = repaired_rows[1:]
+                needs_recovery = self._headers_need_recovery(normalized_headers)
+
+        caption_hint = self._caption_metric_hint(caption, notes=notes)
+        column_values: List[List[str]] = []
+        for col_idx in range(1, col_count + 1):
+            values: List[str] = []
+            for row in repaired_rows[:8]:
+                row_vals = self._row_payload_texts(row, col_count)
+                value = row_vals[col_idx - 1] if (col_idx - 1) < len(row_vals) else ""
+                if value:
+                    values.append(value)
+            column_values.append(values)
+
+        numeric_positions = [
+            idx
+            for idx, values in enumerate(column_values)
+            if self._column_numeric_ratio(values) >= 0.5
+        ]
+        numeric_rank_map = {idx: rank for rank, idx in enumerate(numeric_positions, start=1)}
+
+        repaired_headers: List[str] = []
+        for idx in range(col_count):
+            current = normalized_headers[idx] if idx < len(normalized_headers) else ""
+            preserve_current = bool(current) and not self._header_token_is_generic(current)
+            if preserve_current and needs_recovery:
+                current_norm = self._normalize_token_for_compare(current)
+                sample_norms = {
+                    self._normalize_token_for_compare(value)
+                    for value in (column_values[idx] if idx < len(column_values) else [])
+                    if self._normalize_token_for_compare(value)
+                }
+                temporal_header = bool(
+                    re.fullmatch(r"(?:19|20)\d{2}年?", current)
+                    or re.fullmatch(r"(?:19|20)\d{2}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?", current)
+                )
+                if (current_norm and current_norm in sample_norms) or (
+                    self._cell_text_numeric_like(current) and not temporal_header
+                ):
+                    preserve_current = False
+            if preserve_current:
+                repaired_headers.append(current)
+                continue
+            replacement = self._guess_header_from_column_values(
+                col_index=idx,
+                values=column_values[idx] if idx < len(column_values) else [],
+                numeric_rank=numeric_rank_map.get(idx, 0),
+                numeric_col_count=len(numeric_positions),
+                caption_hint=caption_hint,
+            )
+            repaired_headers.append(self._normalize_text(replacement) or f"col_{idx + 1}")
+
+        return repaired_headers, repaired_rows
 
     def _effective_header_tokens(self, table: Dict[str, Any]) -> List[str]:
         tokens: List[str] = []
@@ -4982,6 +6088,8 @@ class NativeDocumentParser:
         rows: List[List[str]],
         key_values: List[Dict[str, str]],
         fallback_texts: List[str],
+        caption_hint: str = "",
+        series_labels: Optional[List[str]] = None,
         x_axis: str = "",
         y_axis: str = "",
     ) -> Tuple[List[str], List[List[str]], str]:
@@ -4989,17 +6097,45 @@ class NativeDocumentParser:
         normalized_rows = self._normalize_dataframe_matrix(rows)
 
         if normalized_rows:
+            max_cols = max((len(row) for row in normalized_rows), default=0)
             if not normalized_headers:
-                max_cols = max((len(row) for row in normalized_rows), default=0)
                 if max_cols == 2 and (x_axis or y_axis):
                     normalized_headers = [
                         self._normalize_text(x_axis or "维度"),
                         self._normalize_text(y_axis or "数值"),
                     ]
+                elif max_cols >= 2 and series_labels and len(series_labels) >= (max_cols - 1):
+                    first_column_values = [row[0] for row in normalized_rows if row]
+                    first_header = self._figure_axis_dimension_label(first_column_values)
+                    normalized_headers = [first_header] + [self._normalize_text(label) for label in series_labels[: max_cols - 1]]
                 elif max_cols == 3:
                     normalized_headers = ["指标", "值", "单位"]
                 elif max_cols > 0:
                     normalized_headers = [f"列{i + 1}" for i in range(max_cols)]
+            if normalized_headers and max_cols > 0 and self._headers_need_recovery(normalized_headers):
+                if max_cols >= 2 and series_labels and len(series_labels) >= (max_cols - 1):
+                    first_column_values = [row[0] for row in normalized_rows if row]
+                    first_header = self._figure_axis_dimension_label(first_column_values)
+                    normalized_headers = [first_header] + [self._normalize_text(label) for label in series_labels[: max_cols - 1]]
+                else:
+                    rows_payload: List[Dict[str, Any]] = []
+                    for row_idx, row in enumerate(normalized_rows, start=1):
+                        cells = []
+                        for col_idx, value in enumerate(row, start=1):
+                            if not self._normalize_text(value):
+                                continue
+                            cells.append({"col_index": col_idx, "text": value})
+                        if cells:
+                            rows_payload.append({"row_index": row_idx, "cells": cells})
+                    normalized_headers, _ = self._recover_low_signal_headers(
+                        normalized_headers,
+                        rows_payload,
+                        caption=caption_hint,
+                        notes=fallback_texts[:6],
+                    )
+                normalized_headers = [self._normalize_text(item) or f"列{i + 1}" for i, item in enumerate(normalized_headers[:max_cols])]
+                if len(normalized_headers) < max_cols:
+                    normalized_headers.extend([f"列{i + 1}" for i in range(len(normalized_headers), max_cols)])
             return normalized_headers, normalized_rows, "model"
 
         key_value_rows: List[List[str]] = []
@@ -5107,15 +6243,21 @@ class NativeDocumentParser:
                 continue
             title = self._normalize_text(str(figure_raw.get("title", "") or ""))
             caption = self._normalize_text(str(figure_raw.get("caption", "") or ""))
-            if not caption:
-                caption = title
-            kind = self._normalize_text(str(figure_raw.get("type", "") or "")) or self._infer_figure_type_from_text(caption)
+            kind = self._normalize_text(str(figure_raw.get("type", "") or "")) or self._infer_figure_type_from_text(f"{title} {caption}")
             if kind not in {"chart", "diagram", "photo", "other"}:
                 kind = self._infer_figure_type_from_text(kind)
 
-            key_points = self._safe_text_list(figure_raw.get("key_points"), max_items=8, max_len=180)
+            key_points = [
+                item
+                for item in self._safe_text_list(figure_raw.get("key_points"), max_items=8, max_len=180)
+                if not self._figure_text_is_low_signal(item)
+            ]
             legend_items = self._safe_text_list(figure_raw.get("legend"), max_items=8, max_len=80)
-            text_blocks = self._safe_text_list(figure_raw.get("text_blocks"), max_items=10, max_len=180)
+            text_blocks = [
+                item
+                for item in self._safe_text_list(figure_raw.get("text_blocks"), max_items=10, max_len=180)
+                if not self._figure_text_is_low_signal(item)
+            ]
             axes = figure_raw.get("axes")
             if isinstance(axes, dict):
                 x_axis = self._normalize_text(str(axes.get("x", "") or ""))
@@ -5153,6 +6295,19 @@ class NativeDocumentParser:
                 rows=df_rows,
                 key_values=key_values,
                 fallback_texts=text_blocks + key_points + insights,
+                caption_hint=caption or title,
+                series_labels=legend_items,
+                x_axis=x_axis,
+                y_axis=y_axis,
+            )
+            title, caption = self._recover_figure_title_and_caption(
+                title=title,
+                caption=caption,
+                key_points=key_points,
+                text_blocks=text_blocks,
+                fallback_texts=insights,
+                dataframe_headers=df_headers,
+                series_labels=legend_items,
                 x_axis=x_axis,
                 y_axis=y_axis,
             )
@@ -5186,6 +6341,8 @@ class NativeDocumentParser:
                 )
             if topo_nodes or topo_edges:
                 insights.append(f"topology: nodes={len(topo_nodes)}, edges={len(topo_edges)}")
+            if kind in {"", "other"} and (df_rows or key_values or legend_items or x_axis or y_axis):
+                kind = "chart"
 
             content_modes = [
                 self._normalize_text(str(x or "")).lower()
@@ -5203,7 +6360,7 @@ class NativeDocumentParser:
 
             insights = [x for x in insights if x]
 
-            if not caption and not insights:
+            if not title and not caption and not insights and not df_rows and not key_values and not topo_nodes and not topo_edges:
                 continue
 
             confidence = self._to_float_or_none(figure_raw.get("confidence"))
@@ -5211,6 +6368,8 @@ class NativeDocumentParser:
                 confidence = 0.72
             confidence = max(0.1, min(1.0, float(confidence)))
             if confidence < self.gemini_vision_min_figure_quality and not caption:
+                continue
+            if self._count_figure_markers_in_text(caption or title) > 1 and not df_rows and not key_values and not topo_nodes and not topo_edges:
                 continue
 
             figure_id = f"{source_prefix}_f{figure_idx}"
@@ -5236,12 +6395,16 @@ class NativeDocumentParser:
                     "source": source_prefix,
                     "page": page_no,
                     "figure_type": kind or "other",
+                    "title": title,
                     "caption": caption,
                     "insights": insights[:6],
                     "key_points": key_points[:6] if key_points else insights[:6],
                     "quality": round(confidence, 4),
                     "ref_ids": ref_ids,
                     "content_modes": content_modes[:4],
+                    "axes": {"x": x_axis, "y": y_axis},
+                    "legend": legend_items[:8],
+                    "key_values": key_values[:6],
                     "dataframe": {
                         "headers": df_headers,
                         "rows": df_rows,
@@ -5258,17 +6421,23 @@ class NativeDocumentParser:
 
     def _figure_deep_score(self, item: Dict[str, Any]) -> int:
         score = 0
+        title = self._normalize_text(str(item.get("title", "") or ""))
         key_points = item.get("key_points") if isinstance(item.get("key_points"), list) else []
         insights = item.get("insights") if isinstance(item.get("insights"), list) else []
         text_blocks = item.get("text_blocks") if isinstance(item.get("text_blocks"), list) else []
+        key_values = item.get("key_values") if isinstance(item.get("key_values"), list) else []
         dataframe = item.get("dataframe") if isinstance(item.get("dataframe"), dict) else {}
         df_rows = dataframe.get("rows") if isinstance(dataframe.get("rows"), list) else []
+        if title:
+            score += 1
         if key_points:
             score += min(3, len(key_points))
         if insights:
             score += min(2, len(insights))
         if text_blocks:
             score += 1
+        if key_values:
+            score += min(2, len(key_values))
         if df_rows:
             score += 4
         return score
@@ -5296,7 +6465,8 @@ class NativeDocumentParser:
         for figure in list(left) + list(right):
             page_no = int(figure.get("page", 0) or 0)
             caption = self._normalize_text(str(figure.get("caption", "") or ""))
-            key_norm = self._normalize_token_for_compare(caption)
+            title = self._normalize_text(str(figure.get("title", "") or ""))
+            key_norm = self._normalize_token_for_compare(caption or title)
             if key_norm:
                 key = (page_no, key_norm[:96])
                 prev = merged.get(key)
@@ -5317,6 +6487,47 @@ class NativeDocumentParser:
             passthrough.append(dict(figure))
 
         out = list(merged.values()) + passthrough
+        semantic_groups: Dict[str, List[Dict[str, Any]]] = {}
+        non_semantic_items: List[Dict[str, Any]] = []
+        for item in out:
+            semantic_key = self._figure_semantic_key(item)
+            if not semantic_key:
+                non_semantic_items.append(item)
+                continue
+            semantic_groups.setdefault(semantic_key, []).append(item)
+
+        out = list(non_semantic_items)
+        for _, items in semantic_groups.items():
+            if len(items) <= 1:
+                out.extend(items)
+                continue
+            ranked = sorted(
+                items,
+                key=lambda item: (
+                    self._figure_deep_score(item),
+                    1 if self._figure_has_structured_signal(item) else 0,
+                    float(item.get("quality", 0.0) or 0.0),
+                    len(self._normalize_text(str(item.get("caption", "") or ""))),
+                ),
+                reverse=True,
+            )
+            best = ranked[0]
+            best_id = str(best.get("figure_id", "") or "")
+            best_is_strong = self._figure_deep_score(best) >= 4 or self._figure_has_structured_signal(best)
+            out.append(best)
+            for item in ranked[1:]:
+                if not best_is_strong:
+                    out.append(item)
+                    continue
+                item_id = str(item.get("figure_id", "") or "")
+                if item_id == best_id:
+                    continue
+                ambiguous_caption = self._count_figure_markers_in_text(str(item.get("caption", "") or "")) > 1
+                weak_duplicate = self._figure_deep_score(item) <= 1 and not self._figure_has_structured_signal(item)
+                if ambiguous_caption or weak_duplicate:
+                    continue
+                out.append(item)
+
         by_page: Dict[int, List[Dict[str, Any]]] = {}
         for item in out:
             page_no = int(item.get("page", 0) or 0)
@@ -5459,53 +6670,18 @@ class NativeDocumentParser:
                 "Do not invent values that are not visible."
             )
 
-        model = self.gemini_vision_model.strip() or "gemini-3-pro"
-        base_url = resolve_llm_base_url()
-        if base_url:
-            provider = OpenAICompatibleChatProvider(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                temperature=0.0,
-                max_tokens=self.gemini_vision_max_output_tokens,
-                timeout_sec=self.gemini_vision_timeout_sec,
-            )
-            if not provider.configured:
-                return ""
-            data_url = f"data:image/png;base64,{base64.b64encode(image_png).decode('ascii')}"
-            try:
-                result = provider.complete(
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": data_url}},
-                            ],
-                        }
-                    ],
-                    temperature=0.0,
-                    max_tokens=self.gemini_vision_max_output_tokens,
-                    response_format={"type": "json_object"},
-                    reasoning_effort=self.gemini_vision_reasoning_effort,
-                )
-            except Exception:
-                if not (self.gemini_native_fallback_enabled and native_api_key):
-                    return ""
-            else:
-                content = str(result.content or "").strip()
-                if content:
-                    return content
-                if not (self.gemini_native_fallback_enabled and native_api_key):
-                    return ""
-        elif not (self.gemini_native_fallback_enabled and native_api_key):
+        model = self.gemini_vision_model.strip() or "gemini-3.1-pro-preview"
+        request_candidates: List[Tuple[str, str]] = []
+        primary_url = self._resolve_gemini_native_url(model)
+        if primary_url and api_key:
+            request_candidates.append((primary_url, api_key))
+        if self.gemini_native_fallback_enabled and native_api_key:
+            google_url = self._build_google_native_url(model)
+            if google_url and all(url != google_url or key != native_api_key for url, key in request_candidates):
+                request_candidates.append((google_url, native_api_key))
+        if not request_candidates:
             return ""
 
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{urllib.parse.quote(model, safe='')}:generateContent"
-            f"?key={urllib.parse.quote(native_api_key, safe='')}"
-        )
         payload = {
             "contents": [
                 {
@@ -5523,36 +6699,28 @@ class NativeDocumentParser:
             "generationConfig": {
                 "temperature": 0.0,
                 "maxOutputTokens": self.gemini_vision_max_output_tokens,
-                "responseMimeType": "application/json",
             },
         }
 
-        def _post_json(payload_obj: Dict[str, Any]) -> str:
+        def _post_json(url: str, auth_key: str) -> str:
             req = urllib.request.Request(
                 url=url,
-                data=json.dumps(payload_obj, ensure_ascii=False).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=self._build_gemini_native_headers(url, auth_key),
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=self.gemini_vision_timeout_sec) as resp:
                 return resp.read().decode("utf-8", errors="ignore")
 
-        try:
-            raw = _post_json(payload)
-        except urllib.error.HTTPError as http_exc:
-            status = int(getattr(http_exc, "code", 0) or 0)
-            if status != 400:
-                return ""
-            # Fallback for endpoints/models that reject responseMimeType.
-            cfg = dict(payload.get("generationConfig", {}))
-            cfg.pop("responseMimeType", None)
-            payload_retry = dict(payload)
-            payload_retry["generationConfig"] = cfg
+        raw = ""
+        for url, auth_key in request_candidates:
             try:
-                raw = _post_json(payload_retry)
+                raw = _post_json(url, auth_key)
             except Exception:
-                return ""
-        except Exception:
+                continue
+            if raw:
+                break
+        if not raw:
             return ""
 
         try:
@@ -5562,12 +6730,51 @@ class NativeDocumentParser:
 
         texts: List[str] = []
         for candidate in obj.get("candidates", []):
-            content = candidate.get("content", {})
+            content = candidate.get("content", {}) if isinstance(candidate.get("content"), dict) else {}
             for part in content.get("parts", []):
-                txt = part.get("text")
-                if isinstance(txt, str) and txt.strip():
-                    texts.append(txt.strip())
+                if not isinstance(part, dict):
+                    continue
+                txt = str(part.get("text", "") or "").strip()
+                if txt:
+                    texts.append(txt)
         return "\n".join(texts)
+
+    @staticmethod
+    def _build_google_native_url(model: str) -> str:
+        return (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{urllib.parse.quote(str(model or '').strip() or 'gemini-3.1-pro-preview', safe='')}:generateContent"
+        )
+
+    @staticmethod
+    def _apply_model_to_native_url(url: str, model: str) -> str:
+        raw_url = str(url or "").strip()
+        model_name = str(model or "").strip()
+        if not raw_url or not model_name:
+            return raw_url
+        quoted_model = urllib.parse.quote(model_name, safe="")
+        return re.sub(r"(/models/)([^/?:]+)(:generateContent)", rf"\1{quoted_model}\3", raw_url, count=1)
+
+    def _resolve_gemini_native_url(self, model: str) -> str:
+        raw = resolve_llm_native_api_url()
+        if not raw:
+            return ""
+        return self._apply_model_to_native_url(raw, model)
+
+    @staticmethod
+    def _build_gemini_native_headers(url: str, api_key: str) -> Dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "smart-doc-flow-module2-parser/1.0",
+        }
+        url_lower = str(url or "").lower()
+        key = str(api_key or "").strip()
+        if "generativelanguage.googleapis.com" in url_lower and "key=" not in url_lower and key.startswith("AIza"):
+            headers["x-goog-api-key"] = key
+        else:
+            headers["Authorization"] = f"Bearer {key}"
+        return headers
 
     @staticmethod
     def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
@@ -5702,6 +6909,12 @@ class NativeDocumentParser:
                 continue
 
             headers, data_rows = self._infer_headers_and_data_rows(raw_rows_payload)
+            headers, data_rows = self._recover_low_signal_headers(
+                headers,
+                data_rows,
+                caption=self._normalize_text(str(table_raw.get("caption") or table_raw.get("title") or "")),
+                notes=self._safe_text_list(table_raw.get("notes"), max_items=4, max_len=120),
+            )
             data_rows = self._drop_redundant_header_like_rows(data_rows, headers)
             data_rows = self._decorate_rows_with_meta(data_rows, headers)
             if len(data_rows) < self.ocr_table_min_rows:
@@ -5733,9 +6946,9 @@ class NativeDocumentParser:
             return []
 
         matrix: List[List[str]] = []
-        headers_raw = table_raw.get("headers", [])
-        if isinstance(headers_raw, list):
-            header_row = [self._normalize_text(str(x or "")) for x in headers_raw[: self.table_max_cols]]
+        headers = self._extract_headers_from_table_payload(table_raw)
+        if headers and not self._headers_need_recovery(headers):
+            header_row = [self._normalize_text(str(x or "")) for x in headers[: self.table_max_cols]]
             if any(header_row):
                 matrix.append(header_row)
 
@@ -6447,6 +7660,10 @@ class NativeDocumentParser:
                 headers = [f"col_{i+1}" for i in range(max(col_count, 1))]
                 data_rows = rows_payload[header_start:]
 
+        headers = [h if h else f"col_{i+1}" for i, h in enumerate(headers)]
+        if self._headers_need_recovery(headers):
+            data_rows = rows_payload[header_start:]
+        headers, data_rows = self._recover_low_signal_headers(headers, data_rows)
         headers = [h if h else f"col_{i+1}" for i, h in enumerate(headers)]
         return headers, data_rows
 
@@ -7451,6 +8668,20 @@ class NativeDocumentParser:
         if re.search(r"^\s*图\s*[0-9A-Za-z一二三四五六七八九十.\-]+", t):
             return True
         if re.search(r"[\s(（]图\s*[0-9A-Za-z一二三四五六七八九十.\-]+", t):
+            return True
+        return False
+
+    @staticmethod
+    def _contains_table_marker(text: str) -> bool:
+        t = str(text or "").strip()
+        if not t:
+            return False
+        lower = t.lower()
+        if re.search(r"\btable\.?\s*\d+", lower):
+            return True
+        if re.search(r"^\s*表\s*[0-9A-Za-z一二三四五六七八九十.\-]+", t):
+            return True
+        if re.search(r"[\s(（]表\s*[0-9A-Za-z一二三四五六七八九十.\-]+", t):
             return True
         return False
 

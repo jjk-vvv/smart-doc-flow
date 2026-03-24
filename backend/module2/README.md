@@ -95,21 +95,25 @@ Copy-Item backend/module2/.env.example backend/module2/.env
 - `MODULE2_ENABLE_MINERU_LAYOUT`
 - `MODULE2_DOC_TO_PDF_ENABLE`
 - `GEMINI_API_KEY`
-- `MODULE2_ASSISTANT_MODEL`
-- `MODULE2_ASSISTANT_TUNING_MODEL`
+- `ASSISTANT1_CHAT_BASE_URL`
+- `ASSISTANT1_CHAT_API_KEY`
+- `ASSISTANT1_CHAT_MODEL`
+- `ASSISTANT1_EMBEDDING_MODEL`
+- `MODULE2_LLM_MODEL`
 
 配置样例见：`backend/module2/.env.example`
 
 ### 运行时模型与微调目标模型
 
-模块二现在区分两类模型配置：
+模块二现在主要维护三类模型配置：
 
-- `MODULE2_ASSISTANT_MODEL`
-  运行时主模型，用于正式问答、流式回答、工具调用与验收链路。
-- `MODULE2_ASSISTANT_TUNING_MODEL`
-  微调目标模型，用于后续 SFT / preference tuning 数据集与训练流程配置。
+- `ASSISTANT1_CHAT_MODEL`
+  assistant_1 对话主模型，用于前端流式问答、工具调用和会话交互。
+- `ASSISTANT1_EMBEDDING_MODEL`
+  assistant_1 向量模型，用于文档知识库入库和检索。
+- `MODULE2_LLM_MODEL`
+  模块二的抽取 / schema / field JSON 链路模型，用于正式解析和结构化抽取。
 
-这两个配置建议分开维护。比如当前可以继续保留运行时正式验收模型为 `gemini-3-pro`，同时把微调目标模型单独设为 `gemini-2.5-flash`。
 
 ## 外部依赖要求
 
@@ -341,24 +345,20 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 
 ### 6. 助手查询
 
-`POST /extract/assistant/query`
+`POST /extract/assistant1/chat/stream`
 
 输入：
 
-- `document`
-- `summary`
-- `user_instruction`
-- `persist`
+- `message`
+- `session_id`
+- `file_hash`
+- `history`
 - `top_k`
+- `max_steps`
 
 返回：
 
-- `answer`
-- `matched_fields`
-- `matched_trace_hits`
-- `persisted`
-- `persisted_rows`
-- `warnings`
+- SSE stream events such as `assistant.start`, `status`, `assistant.delta`, `assistant.replace`, `assistant.done`, `warning`, `error`
 
 ### 7. 缓存清理
 

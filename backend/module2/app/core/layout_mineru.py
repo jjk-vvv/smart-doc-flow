@@ -10,7 +10,21 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Tuple
+
+
+_GLOBAL_RUNTIME_PROBE_LOCK = Lock()
+_GLOBAL_RUNTIME_PROBE_CACHE: Dict[str, Dict[str, Any]] = {}
+_GLOBAL_RUNTIME_MODEL_LOCK = Lock()
+_GLOBAL_RUNTIME_MODEL_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def clear_mineru_process_runtime_cache() -> None:
+    with _GLOBAL_RUNTIME_PROBE_LOCK:
+        _GLOBAL_RUNTIME_PROBE_CACHE.clear()
+    with _GLOBAL_RUNTIME_MODEL_LOCK:
+        _GLOBAL_RUNTIME_MODEL_CACHE.clear()
 
 
 class MineruLayoutExtractor:
@@ -238,6 +252,8 @@ class MineruLayoutExtractor:
         start_page: int = 1,
         end_page: int | None = None,
         method: str | None = None,
+        method_fallbacks: List[str] | None = None,
+        stop_on_usable_text: bool = False,
         source_cache_identity: str | None = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[int, List[str]]]:
         self._last_run_meta = {}
@@ -252,7 +268,7 @@ class MineruLayoutExtractor:
         end_idx = end_page - 1
 
         run_method = (method or self.method or "txt").strip() or "txt"
-        methods_to_try = self._candidate_methods(run_method)
+        methods_to_try = self._candidate_methods(run_method, method_fallbacks=method_fallbacks)
         run_key = self._build_run_key(
             pdf_bytes=pdf_bytes,
             file_name=file_name,
@@ -282,6 +298,8 @@ class MineruLayoutExtractor:
             "device": self.device,
             "cache_version": self.cache_version,
             "method_candidates": list(methods_to_try),
+            "strict_method_cache_lookup": True,
+            "stop_on_usable_text": bool(stop_on_usable_text),
             "source_cache_identity_applied": bool(str(source_cache_identity or "").strip()),
         }
         if str(source_cache_identity or "").strip():
@@ -324,10 +342,12 @@ class MineruLayoutExtractor:
             run_meta["output_root"] = str(output_root.resolve())
             content_json = self._find_content_list_json(output_root, method=run_method)
             markdown_file = self._find_markdown_file(output_root, method=run_method)
-            if content_json is None:
-                content_json = self._find_content_list_json(output_root)
-            if markdown_file is None:
-                markdown_file = self._find_markdown_file(output_root)
+            available_cached_methods = self._list_content_methods(output_root)
+            cross_method_cached = [method_name for method_name in available_cached_methods if method_name != run_method]
+            run_meta["available_cached_methods"] = list(available_cached_methods)
+            run_meta["requested_method_cache_found"] = bool(content_json and content_json.exists())
+            if cross_method_cached:
+                run_meta["cross_method_cached_methods_ignored"] = list(cross_method_cached)
 
             attempts: List[Dict[str, Any]] = []
             cached_method = str(content_json.parent.name).strip().lower() if content_json is not None else ""
@@ -340,8 +360,15 @@ class MineruLayoutExtractor:
                 try:
                     parsed_content = self._parse_content_json(content_json)
                     best_candidate = parsed_content
-                    run_meta["method_used"] = cached_method or run_method
+                    resolved_cached_method = cached_method or run_method
+                    run_meta["method_used"] = resolved_cached_method
+                    run_meta["cached_content_method"] = resolved_cached_method
+                    run_meta["cached_content_requested_method_match"] = resolved_cached_method == run_method
                     run_meta["cached_content_reused"] = True
+                    if stop_on_usable_text and self._parsed_content_has_usable_text(parsed_content):
+                        run_meta["text_only_short_circuit"] = True
+                        run_meta["text_only_short_circuit_method"] = resolved_cached_method
+                        run_meta["text_only_short_circuit_source"] = "requested_cache"
                 except Exception as exc:
                     run_meta["cached_content_reused"] = False
                     run_meta["cached_content_error"] = f"{type(exc).__name__}: {exc}"
@@ -349,7 +376,9 @@ class MineruLayoutExtractor:
             else:
                 run_meta["cached_content_reused"] = False
 
-            if parsed_content is None or not parsed_content.get("objects"):
+            parsed_has_objects = bool(parsed_content and parsed_content.get("objects"))
+            parsed_has_usable_text = bool(parsed_content and self._parsed_content_has_usable_text(parsed_content))
+            if parsed_content is None or (not parsed_has_objects and not (stop_on_usable_text and parsed_has_usable_text)):
                 runtime_probe = self._probe_runtime()
                 run_meta["runtime_probe"] = runtime_probe
                 if not runtime_probe.get("ok", False):
@@ -399,10 +428,6 @@ class MineruLayoutExtractor:
 
                     content_json_try = self._find_content_list_json(output_root, method=method_try)
                     markdown_file_try = self._find_markdown_file(output_root, method=method_try)
-                    if content_json_try is None:
-                        content_json_try = self._find_content_list_json(output_root)
-                    if markdown_file_try is None:
-                        markdown_file_try = self._find_markdown_file(output_root)
                     attempt["duration_sec"] = round(time.perf_counter() - started_at, 3)
                     attempt["content_list_found"] = bool(content_json_try and content_json_try.exists())
                     attempt["markdown_found"] = bool(markdown_file_try and markdown_file_try.exists())
@@ -441,6 +466,16 @@ class MineruLayoutExtractor:
                             best_content_json = content_json_try
                             best_markdown_file = markdown_file_try
                             run_meta["method_used"] = method_try
+
+                    if stop_on_usable_text and parsed_try is not None and self._parsed_content_has_usable_text(parsed_try):
+                        parsed_content = parsed_try
+                        content_json = content_json_try
+                        markdown_file = markdown_file_try
+                        run_meta["method_used"] = method_try
+                        run_meta["text_only_short_circuit"] = True
+                        run_meta["text_only_short_circuit_method"] = method_try
+                        run_meta["text_only_short_circuit_source"] = "attempt"
+                        break
 
                     if parsed_try is not None and parsed_try.get("objects"):
                         parsed_content = parsed_try
@@ -569,7 +604,7 @@ class MineruLayoutExtractor:
             raise RuntimeError(f"MinerU command failed: {msg[:800]}")
         return exec_meta
 
-    def _build_runtime_env(self) -> Dict[str, str]:
+    def _build_runtime_env(self, *, runtime_meta: Dict[str, Any] | None = None) -> Dict[str, str]:
         env = os.environ.copy()
         # Torch>=2.6 defaults to weights_only=True, which breaks doclayout_yolo checkpoints.
         env.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
@@ -579,15 +614,21 @@ class MineruLayoutExtractor:
         existing_warnings = str(env.get("PYTHONWARNINGS", "") or "").strip()
         if warning_filter not in existing_warnings:
             env["PYTHONWARNINGS"] = ",".join(filter(None, [existing_warnings, warning_filter]))
-        runtime_meta = self._ensure_local_model_runtime()
+        runtime_meta = runtime_meta if runtime_meta is not None else self._ensure_local_model_runtime()
         if runtime_meta.get("ok"):
             env["MINERU_MODEL_SOURCE"] = "local"
             env["MINERU_TOOLS_CONFIG_JSON"] = str(runtime_meta.get("config_path") or "")
         return env
 
     def _ensure_local_model_runtime(self) -> Dict[str, Any]:
+        cache_key = self._runtime_model_cache_key()
+        with _GLOBAL_RUNTIME_MODEL_LOCK:
+            shared_cached = copy.deepcopy(_GLOBAL_RUNTIME_MODEL_CACHE.get(cache_key) or {})
         cached = dict(self._runtime_model_meta)
+        if shared_cached and not cached:
+            cached = dict(shared_cached)
         if cached.get("ok") or str(cached.get("status") or "") == "disabled":
+            self._runtime_model_meta = dict(cached)
             return copy.deepcopy(cached)
 
         if not self.force_local_models:
@@ -650,6 +691,8 @@ class MineruLayoutExtractor:
             "required_files": list(required_files),
         }
         self._runtime_model_meta = meta
+        with _GLOBAL_RUNTIME_MODEL_LOCK:
+            _GLOBAL_RUNTIME_MODEL_CACHE[cache_key] = copy.deepcopy(meta)
         return copy.deepcopy(meta)
 
     def _discover_pipeline_source_root(self) -> Path | None:
@@ -725,11 +768,11 @@ class MineruLayoutExtractor:
 
     def _probe_runtime(self) -> Dict[str, Any]:
         now = time.time()
-        cached = dict(self._runtime_probe_meta)
-        if cached:
-            checked_at = float(cached.get("checked_at", 0.0) or 0.0)
+        local_cached = dict(self._runtime_probe_meta)
+        if local_cached:
+            checked_at = float(local_cached.get("checked_at", 0.0) or 0.0)
             if checked_at > 0 and now - checked_at <= self.runtime_probe_ttl_sec:
-                return copy.deepcopy(cached)
+                return copy.deepcopy(local_cached)
 
         if not self.runtime_probe_enable:
             meta = {
@@ -741,7 +784,19 @@ class MineruLayoutExtractor:
             self._runtime_probe_meta = meta
             return copy.deepcopy(meta)
 
+        runtime_meta = self._ensure_local_model_runtime()
         probe_python = self._resolve_probe_python()
+        cache_key = self._runtime_probe_cache_key(probe_python=probe_python, runtime_meta=runtime_meta)
+        with _GLOBAL_RUNTIME_PROBE_LOCK:
+            shared_cached = copy.deepcopy(_GLOBAL_RUNTIME_PROBE_CACHE.get(cache_key) or {})
+        cached = shared_cached or local_cached
+        if cached:
+            checked_at = float(cached.get("checked_at", 0.0) or 0.0)
+            if checked_at > 0 and now - checked_at <= self.runtime_probe_ttl_sec:
+                cached["cache_scope"] = "process"
+                self._runtime_probe_meta = dict(cached)
+                return copy.deepcopy(cached)
+
         cmd = [probe_python, "-c", "import torch; print('torch_runtime_probe_ok')"]
         started = time.perf_counter()
         try:
@@ -751,7 +806,7 @@ class MineruLayoutExtractor:
                 text=True,
                 timeout=self.runtime_probe_timeout_sec,
                 check=False,
-                env=self._build_runtime_env(),
+                env=self._build_runtime_env(runtime_meta=runtime_meta),
             )
             duration_sec = round(time.perf_counter() - started, 3)
             stderr = (proc.stderr or "").strip()
@@ -793,7 +848,33 @@ class MineruLayoutExtractor:
             }
 
         self._runtime_probe_meta = meta
+        with _GLOBAL_RUNTIME_PROBE_LOCK:
+            _GLOBAL_RUNTIME_PROBE_CACHE[cache_key] = copy.deepcopy(meta)
         return copy.deepcopy(meta)
+
+    def _runtime_model_cache_key(self) -> str:
+        payload = {
+            "runtime_models_dir": str(self.runtime_models_dir),
+            "force_local_models": bool(self.force_local_models),
+            "local_pipeline_root_override": str(self.local_pipeline_root_override or ""),
+            "enable_table": bool(self.enable_table),
+            "enable_formula": bool(self.enable_formula),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")
+        ).hexdigest()
+
+    def _runtime_probe_cache_key(self, *, probe_python: str, runtime_meta: Dict[str, Any]) -> str:
+        payload = {
+            "probe_python": str(probe_python or ""),
+            "force_local_models": bool(self.force_local_models),
+            "config_path": str(runtime_meta.get("config_path", "") or ""),
+            "pipeline_root": str(runtime_meta.get("pipeline_root", "") or ""),
+            "runtime_models_dir": str(self.runtime_models_dir),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")
+        ).hexdigest()
 
     @staticmethod
     def _build_run_key(
@@ -839,6 +920,20 @@ class MineruLayoutExtractor:
         if not candidates:
             return None
         return max(candidates, key=lambda p: p.stat().st_mtime)
+
+    @staticmethod
+    def _list_content_methods(output_root: Path) -> List[str]:
+        if not output_root.exists():
+            return []
+        methods: List[str] = []
+        seen = set()
+        for candidate in sorted(output_root.rglob("*_content_list.json")):
+            method_name = str(candidate.parent.name or "").strip().lower()
+            if not method_name or method_name in seen:
+                continue
+            seen.add(method_name)
+            methods.append(method_name)
+        return methods
 
     @staticmethod
     def _find_markdown_file(output_root: Path, method: str | None = None) -> Path | None:
@@ -980,9 +1075,12 @@ class MineruLayoutExtractor:
             return cand, count
         return None, 0
 
-    def _candidate_methods(self, requested_method: str) -> List[str]:
+    def _candidate_methods(self, requested_method: str, method_fallbacks: List[str] | None = None) -> List[str]:
         candidates = [str(requested_method or "").strip()]
-        candidates.extend(self.method_fallbacks)
+        if method_fallbacks is None:
+            candidates.extend(self.method_fallbacks)
+        else:
+            candidates.extend([str(item or "").strip() for item in method_fallbacks])
         out: List[str] = []
         seen = set()
         for item in candidates:
@@ -994,6 +1092,24 @@ class MineruLayoutExtractor:
             seen.add(method)
             out.append(method)
         return out or ["auto"]
+
+    @staticmethod
+    def _parsed_content_has_usable_text(parsed_content: Dict[str, Any] | None) -> bool:
+        if not isinstance(parsed_content, dict):
+            return False
+        page_text_lines = parsed_content.get("page_text_lines")
+        if isinstance(page_text_lines, dict):
+            for lines in page_text_lines.values():
+                if isinstance(lines, list) and any(str(line or "").strip() for line in lines):
+                    return True
+        items = parsed_content.get("items")
+        if isinstance(items, list):
+            for item in items[:24]:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type", "") or "").strip().lower() == "text" and str(item.get("text", "") or "").strip():
+                    return True
+        return False
 
     def _finalize_run_meta(
         self,

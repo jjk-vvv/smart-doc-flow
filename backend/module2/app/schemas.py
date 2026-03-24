@@ -158,111 +158,12 @@ class SummarizeResponse(BaseModel):
     summary: str
 
 
-class AssistantQueryRequest(BaseModel):
-    document: Optional[DocumentExtractionResponse] = None
-    summary: str = ""
-    user_instruction: str = Field(..., min_length=1, max_length=2000)
-    persist: bool = False
-    top_k: int = Field(default=12, ge=1, le=80)
-
-
-class AssistantQueryResponse(BaseModel):
-    ok: bool = True
-    answer: str
-    summary_used: str = ""
-    matched_fields: List[Dict[str, Any]] = Field(default_factory=list)
-    matched_trace_hits: List[TraceHit] = Field(default_factory=list)
-    persisted: bool = False
-    persisted_rows: int = 0
-    warnings: List[str] = Field(default_factory=list)
-
-
-class AssistantObjectLock(BaseModel):
-    lock_type: str = ""
-    lock_quality: str = ""
-    object_id: str = ""
-    label: str = ""
-    page: Optional[int] = None
-    ref_id: Optional[str] = None
-    table_id: Optional[str] = None
-    row_index: Optional[int] = None
-    source_row_index: Optional[int] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class AssistantCitation(BaseModel):
-    citation_type: str = "other"
-    title: str = ""
-    page: Optional[int] = None
-    ref_id: Optional[str] = None
-    object_id: str = ""
-    snippet: str = ""
-    payload: Dict[str, Any] = Field(default_factory=dict)
-
-
-class AssistantActionPreview(BaseModel):
-    action_id: str
-    action_type: str
-    title: str
-    description: str = ""
-    target: str = ""
-    requires_confirmation: bool = True
-    payload: Dict[str, Any] = Field(default_factory=dict)
-
-
-class AssistantSessionMessage(BaseModel):
-    message_id: str
-    role: str
-    message_type: str = "assistant_text"
-    content: str = ""
-    payload: Dict[str, Any] = Field(default_factory=dict)
-    created_at: str = ""
-
-
-class AssistantSessionRequest(BaseModel):
-    document: Optional[DocumentExtractionResponse] = None
-    summary: str = ""
-    session_id: Optional[str] = None
-
-
-class AssistantSessionResponse(BaseModel):
-    session_id: str
-    summary_used: str = ""
-    current_object_lock: Optional[AssistantObjectLock] = None
-    messages: List[AssistantSessionMessage] = Field(default_factory=list)
-
-
-class AssistantChatStreamRequest(BaseModel):
-    document: Optional[DocumentExtractionResponse] = None
-    summary: str = ""
-    user_message: str = Field(..., min_length=1, max_length=4000)
-    session_id: Optional[str] = None
-    persist: bool = False
-    top_k: int = Field(default=12, ge=1, le=80)
-    enable_web_search: Optional[bool] = None
-    current_object_lock: Optional[AssistantObjectLock] = None
-    extraction_payload: Dict[str, Any] = Field(default_factory=dict)
-
-
-class AssistantActionConfirmRequest(BaseModel):
-    session_id: str = Field(..., min_length=8, max_length=128)
-    action_id: str = Field(..., min_length=8, max_length=128)
-    approved: bool
-    user_comment: str = ""
-
-
-class AssistantActionConfirmResponse(BaseModel):
-    ok: bool = True
-    action_id: str
-    execution_id: str
-    status: str
-    message: str
-    affected_rows: int = 0
-    payload: Dict[str, Any] = Field(default_factory=dict)
-
-
 class CacheClearResponse(BaseModel):
     ok: bool = True
     message: str
+    scope: str = "results"
     cache_counts: Dict[str, int] = Field(default_factory=dict)
     removed_artifacts: int = 0
+    removed_runtime_models: int = 0
+    removed_materialized: Dict[str, int] = Field(default_factory=dict)
+    process_pool_reset_generation: int = 0

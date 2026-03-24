@@ -3,7 +3,7 @@
 
 @layer base {
   :root {
-    --app-font-ui: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Heiti SC", system-ui, -apple-system, sans-serif;
+    --app-font-ui: "Microsoft YaHei", "PingFang SC", "Heiti SC", system-ui, -apple-system, sans-serif;
     /* Light Mode Variables - Crisp, Modern, High Contrast */
     --background: 210 40% 98%; /* Slate 50 */
     --foreground: 222.2 84% 4.9%; /* Slate 900 */
@@ -93,7 +93,26 @@
 
 .module2-workbench {
   --module2-font-ui: var(--app-font-ui);
+  --module2-bg: 210 40% 98%; /* slate-50 */
+  --module2-surface: 0 0% 100%; /* white */
+  --module2-surface-hover: 210 40% 96.1%; /* slate-100 */
+  --module2-border: 214.3 31.8% 91.4%; /* slate-200 */
+  --module2-text-primary: 222.2 47.4% 11.2%; /* slate-900 */
+  --module2-text-secondary: 215.4 16.3% 46.9%; /* slate-500 */
+  --module2-primary: 221.2 83.2% 53.3%; /* blue-600 */
+  --module2-primary-bg: 214 100% 97%; /* blue-50 */
   font-family: var(--module2-font-ui);
+}
+
+.dark .module2-workbench {
+  --module2-bg: 222.2 84% 4.9%; /* dark slate-900 / #0B0F19 */
+  --module2-surface: 217.2 32.6% 17.5%; /* slate-800 */
+  --module2-surface-hover: 215 27.9% 16.9%; /* slate-700 */
+  --module2-border: 217.2 32.6% 17.5%; /* slate-700 / slate-800 */
+  --module2-text-primary: 210 40% 98%; /* slate-100 */
+  --module2-text-secondary: 215 20.2% 65.1%; /* slate-400 */
+  --module2-primary: 217.2 91.2% 59.8%; /* blue-500 */
+  --module2-primary-bg: 222.2 84% 4.9%; /* deep blue/slate */
 }
 
 .module2-workbench,
@@ -117,20 +136,44 @@
   transition: background-color 160ms ease;
 }
 
+/* 扩展拖拽热区，避免 1px 宽度难以点击 */
+.module2-pane-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  right: -5px;
+  z-index: 10;
+  cursor: col-resize;
+}
+
 .module2-pane-handle::before {
   content: "";
-  display: block;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
   width: 1px;
-  height: 100%;
-  margin: 0 auto;
-  background: rgba(148, 163, 184, 0.32);
+  background: rgba(226, 232, 240, 0.6); /* match border-slate-200/60 */
   transition: background-color 160ms ease, box-shadow 160ms ease;
+  z-index: 11;
+}
+
+.dark .module2-pane-handle::before {
+  background: rgba(30, 41, 59, 0.6); /* match border-slate-800/60 */
 }
 
 .module2-pane-handle:hover::before,
 .module2-pane-handle[data-active='true']::before {
-  background: rgba(37, 99, 235, 0.78);
-  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.12);
+  background: rgba(37, 99, 235, 0.5);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.1);
+}
+
+.dark .module2-pane-handle:hover::before,
+.dark .module2-pane-handle[data-active='true']::before {
+  background: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.1);
 }
 
 .module2-pane-handle[data-active='true'] {
@@ -138,24 +181,21 @@
 }
 
 .module4-workbench {
-  --module4-surface: #fbfaf6;
+  --module4-surface: #f8fafc;
   --module4-surface-strong: #ffffff;
-  --module4-sidebar: #f6f3ec;
-  --module4-muted: #f1ede5;
-  --module4-muted-2: #e9e2d7;
-  --module4-border: #ddd6c8;
-  --module4-border-strong: #cfc5b3;
-  --module4-text: #142132;
-  --module4-subtle: #526072;
-  --module4-accent: #0f766e;
-  --module4-accent-2: #c27a17;
+  --module4-sidebar: #f1f5f9;
+  --module4-muted: #e2e8f0;
+  --module4-muted-2: #cbd5e1;
+  --module4-border: #e2e8f0;
+  --module4-border-strong: #cbd5e1;
+  --module4-text: #0f172a;
+  --module4-subtle: #475569;
+  --module4-accent: #3b82f6;
+  --module4-accent-2: #0ea5e9;
   --module4-nav-bridge: linear-gradient(90deg, #f8fafc 0%, #eff6ff 56%, #dbeafe 100%);
   font-family: var(--app-font-ui);
   color: var(--module4-text);
-  background:
-    radial-gradient(circle at top left, rgba(45, 212, 191, 0.11), transparent 26%),
-    radial-gradient(circle at top right, rgba(245, 158, 11, 0.12), transparent 22%),
-    var(--module4-surface);
+  background: var(--module4-surface);
 }
 
 .dark .module4-workbench {
@@ -186,29 +226,33 @@
 }
 
 .module4-ide-sidebar {
-  min-height: 0;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0) 18%),
-    var(--module4-sidebar);
-  border-color: var(--module4-border-strong);
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  bottom: 1rem;
+  z-index: 10;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (min-width: 1024px) {
   .module4-ide-sidebar {
     width: 360px;
-    flex: 0 0 360px;
   }
 }
 
 .module4-ide-main {
-  min-width: 0;
-  min-height: 0;
-  flex: 1 1 auto;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   display: flex;
   flex-direction: column;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 16%),
-    var(--module4-surface);
+  background: var(--module4-surface);
 }
 
 .module4-ide-scroll {
@@ -426,18 +470,17 @@
 
 .module4-graph-stage {
   background:
-    linear-gradient(90deg, rgba(15, 118, 110, 0.06), transparent 38%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.6)),
+    linear-gradient(180deg, rgba(252, 253, 255, 0.98), rgba(247, 249, 252, 0.99)),
     var(--module4-surface-strong);
 }
 
 .module4-graph-host {
   background:
-    linear-gradient(to right, rgba(148, 163, 184, 0.14) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(148, 163, 184, 0.14) 1px, transparent 1px),
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.08), transparent 34%),
+    linear-gradient(to right, rgba(148, 163, 184, 0.09) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.09) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.96)),
     var(--module4-surface-strong);
-  background-size: 28px 28px, 28px 28px, auto, auto;
+  background-size: 36px 36px, 36px 36px, auto, auto;
 }
 
 .module4-empty-state {
@@ -599,7 +642,7 @@
 }
 
 .dark .module2-pane-handle::before {
-  background: rgba(100, 116, 139, 0.42);
+  background: rgba(30, 41, 59, 0.8);
 }
 
 /* Module 4 workbench override: graph-first Morandi layout */
@@ -628,20 +671,41 @@
 
 .module4-ide-shell > .flex {
   min-height: 0;
-  flex-direction: column !important;
+  position: relative;
+  /* flex-direction: column !important; */
 }
 
 .module4-ide-main {
   order: 1;
   min-height: 0;
+  overflow: hidden;
   background: transparent;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.module4-graph-host {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 0;
+  min-height: unset !important;
 }
 
 .module4-ide-toolbar {
-  border-bottom: 1px solid var(--module4-border);
-  background: var(--module4-nav-bridge);
-  position: relative;
-  overflow: hidden;
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  border-radius: 100px;
+  border: 1px solid var(--module4-border);
+  background: rgba(243, 248, 253, 0.88);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  padding: 0.5rem 1.5rem;
+  width: auto;
+  max-width: 90vw;
 }
 
 .module4-ide-toolbar::before {
@@ -703,11 +767,11 @@
 .module4-toolbar-view-switch {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.55rem;
   align-self: flex-start;
   border: 1px solid rgba(110, 137, 162, 0.18);
-  border-radius: 16px;
-  padding: 0.45rem 0.55rem 0.45rem 0.8rem;
+  border-radius: 14px;
+  padding: 0.36rem 0.46rem 0.36rem 0.65rem;
   background: rgba(243, 248, 253, 0.88);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
@@ -715,7 +779,7 @@
 }
 
 .module4-toolbar-label {
-  font-size: 0.68rem;
+  font-size: 0.64rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--module4-subtle);
@@ -767,10 +831,10 @@
   display: inline-flex;
   min-width: 0;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.5rem;
   border: 1px solid rgba(109, 135, 159, 0.2);
-  border-radius: 18px;
-  padding: 0.55rem 0.8rem 0.55rem 0.9rem;
+  border-radius: 16px;
+  padding: 0.46rem 0.7rem 0.46rem 0.78rem;
   background: rgba(247, 251, 255, 0.88);
   color: var(--module4-text);
   box-shadow:
@@ -802,16 +866,16 @@
 }
 
 .module4-toolbar-trigger-summary {
-  max-width: min(28rem, 42vw);
+  max-width: min(21rem, 28vw);
 }
 
 .module4-toolbar-trigger-source {
-  min-width: min(20rem, 42vw);
-  max-width: min(30rem, 52vw);
+  min-width: min(16rem, 24vw);
+  max-width: min(20rem, 30vw);
 }
 
 .module4-toolbar-trigger-compact {
-  min-width: 8.5rem;
+  min-width: 7.3rem;
 }
 
 .module4-toolbar-trigger-main {
@@ -820,7 +884,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.82rem;
+  font-size: 0.77rem;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
@@ -832,7 +896,7 @@
   padding: 0.18rem 0.48rem;
   background: rgba(113, 146, 176, 0.12);
   color: var(--module4-accent-strong);
-  font-size: 0.67rem;
+  font-size: 0.62rem;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -849,7 +913,8 @@
 
 .module4-toolbar-menu {
   position: absolute;
-  top: calc(100% + 0.7rem);
+  bottom: calc(100% + 0.7rem);
+  top: auto;
   left: 0;
   z-index: 40;
   border: 1px solid rgba(109, 135, 159, 0.22);
@@ -1011,7 +1076,7 @@
   align-items: stretch;
   overflow: hidden;
   border: 1px solid rgba(109, 135, 159, 0.2);
-  border-radius: 18px;
+  border-radius: 16px;
   background: rgba(247, 251, 255, 0.9);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.74),
@@ -1031,13 +1096,13 @@
 
 .module4-toolbar-tool-fit {
   gap: 0.45rem;
-  padding: 0 1rem;
-  font-size: 0.82rem;
+  padding: 0 0.82rem;
+  font-size: 0.77rem;
   font-weight: 700;
 }
 
 .module4-toolbar-tool-icon {
-  width: 2.5rem;
+  width: 2.28rem;
   border-left: 1px solid rgba(109, 135, 159, 0.16);
 }
 
@@ -1109,14 +1174,19 @@
     var(--module4-surface-strong);
 }
 
+.module4-graph-stage > div {
+  gap: 0.55rem;
+}
+
 .module4-graph-stage .module4-toolbar-chip {
-  padding: 0.28rem 0.56rem;
+  padding: 0.24rem 0.5rem;
   background: rgba(246, 250, 255, 0.9);
 }
 
 .module4-stage-select {
   box-shadow: none;
   background: rgba(247, 251, 255, 0.95);
+  min-height: 2.45rem;
 }
 
 @media (max-width: 1279px) {
@@ -1170,39 +1240,27 @@
 }
 
 .module4-graph-host {
+  min-height: clamp(420px, calc(100vh - 214px), 760px);
   background:
-    linear-gradient(to right, rgba(128, 153, 178, 0.09) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(128, 153, 178, 0.09) 1px, transparent 1px),
-    radial-gradient(circle at 16% 18%, rgba(233, 242, 251, 0.98), transparent 36%),
-    radial-gradient(circle at 82% 22%, rgba(205, 221, 238, 0.44), transparent 32%),
-    radial-gradient(circle at 50% 100%, rgba(216, 231, 244, 0.38), transparent 30%),
-    linear-gradient(180deg, rgba(243, 249, 255, 0.97), rgba(230, 240, 249, 0.97)),
+    linear-gradient(to right, rgba(128, 153, 178, 0.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(128, 153, 178, 0.07) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(250, 252, 255, 0.98), rgba(244, 247, 251, 0.98)),
     var(--module4-surface-strong);
-  background-size: 22px 22px, 22px 22px, auto, auto, auto, auto, auto;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.76),
-    inset 0 0 0 1px rgba(128, 154, 181, 0.12),
-    0 10px 28px rgba(132, 156, 180, 0.08);
+  background-size: 28px 28px, 28px 28px, auto, auto;
+  box-shadow: inset 0 0 0 1px rgba(128, 154, 181, 0.1);
 }
 
 .module4-graph-host::before,
 .module4-graph-host::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
+  display: none;
 }
 
 .module4-graph-host::before {
-  background:
-    radial-gradient(circle at 26% 32%, rgba(255, 255, 255, 0.4), transparent 0, transparent 28%),
-    radial-gradient(circle at 74% 18%, var(--module4-glow), transparent 36%),
-    radial-gradient(circle at 68% 72%, rgba(214, 228, 242, 0.3), transparent 28%);
+  content: none;
 }
 
 .module4-graph-host::after {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), transparent 14%, transparent 86%, rgba(173, 194, 214, 0.12));
-  mix-blend-mode: screen;
+  content: none;
 }
 
 .module4-empty-state {
@@ -1343,22 +1401,19 @@
 }
 
 .module4-ide-sidebar {
-  height: 58px;
-  overflow: hidden;
+  /* Removed height constraint for floating panel */
   transition:
-    height 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 240ms cubic-bezier(0.22, 1, 0.36, 1),
     background 180ms ease,
     box-shadow 180ms ease,
     border-color 180ms ease;
 }
 
 .module4-ide-sidebar-collapsed {
-  height: 58px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 
 .module4-ide-sidebar-expanded {
-  height: clamp(212px, 23vh, 224px);
   box-shadow:
     0 -14px 30px rgba(112, 136, 160, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.42);
@@ -1386,10 +1441,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.85rem;
+  gap: 0.65rem;
   width: 100%;
-  min-height: 58px;
-  padding: 0.72rem 0.95rem;
+  min-height: 48px;
+  padding: 0.42rem 0.8rem;
   border: 0;
   background: linear-gradient(90deg, rgba(246, 250, 255, 0.98), rgba(232, 241, 249, 0.98));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62);
@@ -1419,8 +1474,8 @@
 .module4-utility-strip-title {
   flex: 0 0 auto;
   min-width: 0;
-  font-size: 0.94rem;
-  font-weight: 600;
+  font-size: 0.82rem;
+  font-weight: 700;
   letter-spacing: 0.01em;
   color: var(--module4-text);
 }
@@ -1431,14 +1486,14 @@
   min-width: 0;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 0.45rem;
+  gap: 0.35rem;
 }
 
 .module4-utility-strip-toggle {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.22rem;
   color: var(--module4-accent-strong);
 }
 
@@ -1456,12 +1511,12 @@
 }
 
 .module4-utility-grid {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
-  gap: 0;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  padding: 0.82rem 0.96rem 0.9rem;
+  gap: 1rem;
+  padding: 0.68rem 0.82rem 0.76rem;
 }
 
 .module4-utility-filters,
@@ -1477,12 +1532,15 @@
 }
 
 .module4-utility-filters {
-  padding-right: 0.95rem;
+  padding-right: 0;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--module4-border);
 }
 
 .module4-utility-alerts {
-  border-left: 1px solid var(--module4-border);
-  padding-left: 0.95rem;
+  border-left: none;
+  padding-left: 0;
+  flex: 1 1 auto;
 }
 
 .module4-utility-pane-head {
@@ -1814,13 +1872,11 @@
 
 .dark .module4-graph-host {
   background:
-    linear-gradient(to right, rgba(131, 149, 169, 0.08) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(131, 149, 169, 0.08) 1px, transparent 1px),
-    radial-gradient(circle at 18% 18%, rgba(74, 97, 120, 0.22), transparent 34%),
-    radial-gradient(circle at 80% 24%, rgba(110, 138, 165, 0.12), transparent 30%),
-    linear-gradient(180deg, rgba(17, 28, 40, 0.96), rgba(13, 23, 34, 0.96)),
+    linear-gradient(to right, rgba(131, 149, 169, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(131, 149, 169, 0.06) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(17, 28, 40, 0.98), rgba(13, 23, 34, 0.98)),
     var(--module4-surface-strong);
-  background-size: 22px 22px, 22px 22px, auto, auto, auto, auto;
+  background-size: 28px 28px, 28px 28px, auto, auto;
 }
 
 .dark .module4-utility-dock,

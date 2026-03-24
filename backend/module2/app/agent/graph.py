@@ -11,13 +11,16 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
-from app.assistant.provider import (
+from app.core.field_naming import build_field_aliases
+from app.core.llm_provider import (
+    build_module2_llm_provider,
     OpenAICompatibleChatProvider,
     extract_json_object,
     resolve_llm_api_key,
     resolve_llm_base_url,
     resolve_llm_model,
 )
+from app.core.prompt_assets import load_prompt_assets, prompt_asset_names, prompt_asset_versions
 
 if TYPE_CHECKING:
     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -82,6 +85,14 @@ class AgentState(TypedDict):
 
 class ExtractionGraph:
     def __init__(self, llm: Optional["ChatGoogleGenerativeAI"] = None) -> None:
+        prompt_assets = load_prompt_assets()
+        prompt_map = prompt_assets.get("prompts", {})
+        self._prompt_version = str(prompt_assets.get("version") or "")
+        self._prompt_names = prompt_asset_names()
+        self._prompt_versions = prompt_asset_versions()
+        self._system_prompt = str(prompt_map.get("extract_fields", {}).get("content") or "")
+        self._table_system_prompt = str(prompt_map.get("extract_table_fields", {}).get("content") or "")
+        self._json_repair_system_prompt = str(prompt_map.get("json_repair", {}).get("content") or "")
         temperature = float(os.getenv("MODULE2_LLM_TEMPERATURE", "0"))
         primary_model = resolve_llm_model(default="gemini-3.1-pro")
         fallback_models = [
@@ -96,21 +107,21 @@ class ExtractionGraph:
         self._temperature = temperature
         self._base_url = resolve_llm_base_url()
         self._api_key = resolve_llm_api_key()
-        self._max_tokens = max(512, int(os.getenv("MODULE2_ASSISTANT_MAX_TOKENS", "1600")))
-        self._json_retry_count = max(1, int(os.getenv("MODULE2_ASSISTANT_JSON_RETRY_COUNT", "3")))
-        self._json_max_tokens = max(self._max_tokens, int(os.getenv("MODULE2_ASSISTANT_JSON_MAX_TOKENS", "4096")))
+        self._max_tokens = max(512, int(os.getenv("MODULE2_LLM_MAX_TOKENS", "1600")))
+        self._json_retry_count = max(1, int(os.getenv("MODULE2_LLM_JSON_RETRY_COUNT", "3")))
+        self._json_max_tokens = max(self._max_tokens, int(os.getenv("MODULE2_LLM_JSON_MAX_TOKENS", "4096")))
         raw_reasoning_effort = str(os.getenv("MODULE2_LLM_REASONING_EFFORT", "minimal") or "minimal").strip().lower()
         self._reasoning_effort = raw_reasoning_effort if raw_reasoning_effort in {"minimal", "low", "medium", "high"} else "minimal"
         self._timeout_sec = max(
             10.0,
             float(
                 os.getenv(
-                    "MODULE2_ASSISTANT_TIMEOUT_SEC",
+                    "MODULE2_LLM_TIMEOUT_SEC",
                     os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "90"),
                 )
             ),
         )
-        debug_dir_raw = str(os.getenv("MODULE2_ASSISTANT_DEBUG_DIR", ".runlogs/module2-llm-debug") or "").strip()
+        debug_dir_raw = str(os.getenv("MODULE2_LLM_DEBUG_DIR", ".runlogs/module2-llm-debug") or "").strip()
         self._debug_dir = Path(debug_dir_raw).resolve() if debug_dir_raw else None
         self._llm_disabled_reason: Optional[str] = None
         self._provider: Optional[OpenAICompatibleChatProvider] = None
@@ -119,17 +130,17 @@ class ExtractionGraph:
             self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
         else:
             has_key = bool(self._api_key)
-            if self._base_url and has_key:
+            provider = build_module2_llm_provider(
+                api_key=self._api_key,
+                model=primary_model,
+                temperature=temperature,
+                max_tokens=self._max_tokens,
+                timeout_sec=self._timeout_sec,
+            )
+            if provider.configured:
                 self.llm = None
                 self.structured_llm = None
-                self._provider = OpenAICompatibleChatProvider(
-                    base_url=self._base_url,
-                    api_key=self._api_key,
-                    model=primary_model,
-                    temperature=temperature,
-                    max_tokens=self._max_tokens,
-                    timeout_sec=self._timeout_sec,
-                )
+                self._provider = provider
             elif has_key:
                 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -144,6 +155,20 @@ class ExtractionGraph:
                 self.structured_llm = None
                 self._llm_disabled_reason = "missing_gemini_api_key"
         self.graph = self._build_graph()
+
+    def diagnostics(self) -> Dict[str, Any]:
+        provider_mode = "disabled"
+        if self._provider is not None:
+            provider_mode = "openai_compatible"
+        elif self.llm is not None:
+            provider_mode = "gemini_native"
+        return {
+            "prompt_version": self._prompt_version,
+            "prompt_names": list(self._prompt_names),
+            "prompt_versions": dict(self._prompt_versions),
+            "llm_provider_mode": provider_mode,
+            "llm_model_candidates": list(self._model_candidates),
+        }
 
     async def run(self, state: AgentState) -> AgentState:
         return await self.graph.ainvoke(state)
@@ -327,7 +352,7 @@ class ExtractionGraph:
                 payload = await asyncio.wait_for(
                     self._invoke_with_model_fallback(
                         [
-                            {"role": "system", "content": TABLE_SYSTEM_PROMPT},
+                            {"role": "system", "content": self._table_system_prompt},
                             {"role": "user", "content": user_prompt},
                         ],
                         purpose="table_extract",
@@ -467,7 +492,7 @@ class ExtractionGraph:
                 payload = await asyncio.wait_for(
                     self._invoke_with_model_fallback(
                         [
-                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "system", "content": self._system_prompt},
                             {"role": "user", "content": user_prompt},
                         ],
                         purpose="field_extract",
@@ -1332,6 +1357,13 @@ class ExtractionGraph:
         if not target_fields:
             return []
         batch_size = max(1, int(os.getenv(env_name, str(default_size)) or default_size))
+        field_count = len(target_fields)
+        if field_count >= 18:
+            batch_size = max(batch_size, min(8, max(default_size, field_count // 3)))
+        elif field_count >= 12:
+            batch_size = max(batch_size, min(6, max(default_size, field_count // 3)))
+        elif field_count >= 8:
+            batch_size = max(batch_size, min(5, default_size + 1))
         items = list(target_fields.items())
         return [dict(items[index : index + batch_size]) for index in range(0, len(items), batch_size)]
 
@@ -1420,14 +1452,16 @@ class ExtractionGraph:
     ) -> Dict[str, Any]:
         last_exc: Exception | None = None
         for model_name in self._model_candidates:
-            provider = OpenAICompatibleChatProvider(
-                base_url=self._base_url,
+            provider = build_module2_llm_provider(
                 api_key=self._api_key,
                 model=model_name,
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
                 timeout_sec=self._timeout_sec,
             )
+            if not provider.configured:
+                last_exc = RuntimeError("llm provider unavailable")
+                continue
             try:
                 return await self._invoke_provider_json_with_retry(
                     provider,
@@ -1562,7 +1596,7 @@ class ExtractionGraph:
 
         fallback_shape = json.dumps(self._empty_json_shape(purpose), ensure_ascii=False)
         repair_messages = [
-            {"role": "system", "content": JSON_REPAIR_SYSTEM_PROMPT},
+            {"role": "system", "content": self._json_repair_system_prompt},
             {
                 "role": "user",
                 "content": (
@@ -2033,6 +2067,7 @@ class ExtractionGraph:
             aliases.extend(["\u6d41\u91cf", "flow rate"])
         if "material" in key or "substance" in key or "component" in key:
             aliases.extend(["\u7269\u6599", "\u6750\u6599", "\u7ec4\u5206"])
+        aliases.extend(build_field_aliases(str(field_name)))
 
         seen: Set[str] = set()
         unique: List[str] = []
@@ -2042,9 +2077,13 @@ class ExtractionGraph:
                 continue
             seen.add(text)
             unique.append(text)
+            compact = re.sub(r"[\s_\-/:,().]+", "", text)
+            if compact and compact not in seen:
+                seen.add(compact)
+                unique.append(compact)
             if len(unique) >= 20:
                 break
-        return unique
+        return unique[:20]
 
     @staticmethod
     def _results_summary(results: Dict[str, Dict[str, Any]]) -> str:

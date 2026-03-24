@@ -1,0 +1,15 @@
+{
+  "version": "schema-selection-rules-v1",
+  "rule_candidate_templates": [
+    "government_statistical_bulletin",
+    "chemical_process_experiment",
+    "scientific_appendix_exercise"
+  ],
+  "figure_rich_max_fields": 8,
+  "xlsx_or_table_heavy_max_fields": 6,
+  "pdf_max_fields_env": "MODULE2_AUTO_SCHEMA_PDF_MAX_FIELDS",
+  "pdf_max_fields_default": 8,
+  "candidate_pool_multiplier": 4,
+  "candidate_pool_extra_cap": 12,
+  "candidate_pool_max": 40
+}

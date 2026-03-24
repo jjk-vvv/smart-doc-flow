@@ -3,14 +3,18 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
-import urllib.error
+import time
 import urllib.parse
-import urllib.request
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, Optional
 
-from app.assistant.provider import OpenAICompatibleChatProvider, resolve_llm_base_url
+import requests
+from requests.exceptions import HTTPError, RequestException
+
+from app.core.llm_provider import resolve_llm_native_api_url
 
 
 class GeminiVisionExtractor:
@@ -36,12 +40,21 @@ class GeminiVisionExtractor:
         self.timeout_sec = max(5.0, float(timeout_sec))
         self.max_output_tokens = max(512, int(max_output_tokens))
         self.retry_count = max(0, int(retry_count))
+        self.request_retry_attempts = max(
+            self.retry_count + 1,
+            int(os.getenv("MODULE2_VISION_PROVIDER_RETRY_ATTEMPTS", "4")),
+        )
+        self.request_retry_backoff_sec = max(
+            0.2,
+            float(os.getenv("MODULE2_VISION_PROVIDER_RETRY_BACKOFF_SEC", "1.2")),
+        )
         self.enable_cache = bool(enable_cache)
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
         effort = str(reasoning_effort or "minimal").strip().lower()
         self.reasoning_effort = effort if effort in {"minimal", "low", "medium", "high"} else "minimal"
         self.native_fallback_enabled = bool(native_fallback_enabled)
-        self.prompt_version = "v5_visual_full_chart_json_hiapi"
+        self.prompt_version = "v6_visual_full_chart_json_gemini_native"
+        self._state_lock = Lock()
         self._last_debug: Dict[str, Any] = {}
         self.reset_stats()
 
@@ -50,26 +63,33 @@ class GeminiVisionExtractor:
         return bool(self.api_key or self.native_api_key)
 
     def reset_stats(self) -> None:
-        self._stats = {
-            "requests": 0,
-            "cache_hits": 0,
-            "provider_success": 0,
-            "provider_failures": 0,
-            "http_errors": 0,
-            "parse_success": 0,
-            "parse_failures": 0,
-            "truncated_responses": 0,
-        }
-        self._last_debug = {}
+        with self._state_lock:
+            self._stats = {
+                "requests": 0,
+                "cache_hits": 0,
+                "provider_success": 0,
+                "provider_failures": 0,
+                "transport_failures": 0,
+                "retryable_transport_failures": 0,
+                "request_retries": 0,
+                "http_errors": 0,
+                "parse_success": 0,
+                "parse_failures": 0,
+                "truncated_responses": 0,
+            }
+            self._last_debug = {}
 
     def get_stats_snapshot(self) -> Dict[str, Any]:
-        return dict(self._stats)
+        with self._state_lock:
+            return dict(self._stats)
 
     def get_last_debug(self) -> Dict[str, Any]:
-        return dict(self._last_debug)
+        with self._state_lock:
+            return dict(self._last_debug)
 
     def _bump_stat(self, key: str, amount: int = 1) -> None:
-        self._stats[key] = int(self._stats.get(key, 0) or 0) + int(amount)
+        with self._state_lock:
+            self._stats[key] = int(self._stats.get(key, 0) or 0) + int(amount)
 
     def _set_debug(self, **kwargs: Any) -> None:
         cleaned: Dict[str, Any] = {}
@@ -80,7 +100,8 @@ class GeminiVisionExtractor:
                 cleaned[key] = value[:1800]
             else:
                 cleaned[key] = value
-        self._last_debug = cleaned
+        with self._state_lock:
+            self._last_debug = cleaned
 
     def extract_table(
         self,
@@ -270,110 +291,124 @@ class GeminiVisionExtractor:
                 )
                 return cached
 
-        base_url = resolve_llm_base_url()
-        if base_url:
-            provider = OpenAICompatibleChatProvider(
-                base_url=base_url,
-                api_key=self.api_key,
-                model=self.model,
-                temperature=0.0,
-                max_tokens=self.max_output_tokens,
-                timeout_sec=self.timeout_sec,
+        raw_content = ""
+        finish_reason = ""
+        model_name = self.model
+        request_source = ""
+        last_exc_text = ""
+        try:
+            response = self._request_native_multimodal(
+                prompt=prompt,
+                image_bytes=image_bytes,
+                mime_type=mime_type,
             )
-            if provider.configured:
-                data_url = f"data:{mime_type or 'image/png'};base64,{base64.b64encode(image_bytes).decode('ascii')}"
-                last_exc_text = ""
-                result = None
-                for _ in range(max(0, self.retry_count) + 1):
-                    try:
-                        result = provider.complete(
-                            messages=[
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": prompt},
-                                        {"type": "image_url", "image_url": {"url": data_url}},
-                                    ],
-                                }
-                            ],
-                            temperature=0.0,
-                            max_tokens=self.max_output_tokens,
-                            response_format={"type": "json_object"},
-                            reasoning_effort=self.reasoning_effort,
-                        )
-                        break
-                    except Exception as exc:
-                        last_exc_text = f"{type(exc).__name__}: {exc}"
-                        result = None
-                if result is not None:
-                    self._bump_stat("provider_success")
-                    finish_reason = str(result.finish_reason or "").strip()
-                    if finish_reason.lower() == "length":
-                        self._bump_stat("truncated_responses")
-                    raw_content = str(result.content or "").strip()
-                    payload_value = self._extract_json_payload(raw_content)
-                    payload = self._normalize_payload_shape(payload_value, mode=mode)
-                    if payload is not None:
-                        self._bump_stat("parse_success")
-                        self._set_debug(
-                            mode=mode,
-                            status="ok",
-                            request_source="openai_compatible",
-                            finish_reason=finish_reason,
-                            model=str(result.model or self.model),
-                            parse_mode=self._infer_parse_mode(payload_value),
-                            raw_excerpt=raw_content[:1200],
-                        )
-                        if self.enable_cache and self.cache_dir is not None:
-                            self._cache_put(cache_key, payload)
-                        return payload
-                    self._bump_stat("parse_failures")
-                    self._set_debug(
-                        mode=mode,
-                        status="parse_failed",
-                        request_source="openai_compatible",
-                        finish_reason=finish_reason,
-                        model=str(result.model or self.model),
-                        parse_mode="unrecognized",
-                        raw_excerpt=raw_content[:1200],
-                        error="vision_response_unrecognized",
-                    )
-                    if not self._allow_google_native_fallback():
-                        return None
-                else:
-                    self._bump_stat("provider_failures")
-                    if (
-                        "http error" in last_exc_text.lower()
-                        or "401" in last_exc_text
-                        or "403" in last_exc_text
-                        or "429" in last_exc_text
-                    ):
-                        self._bump_stat("http_errors")
-                    self._set_debug(
-                        mode=mode,
-                        status="request_failed",
-                        request_source="openai_compatible",
-                        error=last_exc_text[:1200],
-                    )
-                    if not self._allow_google_native_fallback():
-                        return None
+            raw_content = str(response.get("content", "") or "").strip()
+            finish_reason = str(response.get("finish_reason", "") or "").strip()
+            model_name = str(response.get("model", "") or self.model)
+            request_source = str(response.get("request_source", "") or "gemini_native")
+        except Exception as exc:
+            last_exc_text = f"{type(exc).__name__}: {exc}"
 
-        if not self._allow_google_native_fallback():
-            if not self._last_debug:
+        if raw_content:
+            self._bump_stat("provider_success")
+            if finish_reason.lower() == "length":
+                self._bump_stat("truncated_responses")
+            payload_value = self._extract_json_payload(raw_content)
+            payload = self._normalize_payload_shape(payload_value, mode=mode)
+            if payload is not None:
+                self._bump_stat("parse_success")
                 self._set_debug(
                     mode=mode,
-                    status="request_failed",
-                    request_source="vision_unavailable",
-                    error="no_usable_vision_provider",
+                    status="ok",
+                    request_source=request_source or "gemini_native",
+                    finish_reason=finish_reason,
+                    model=model_name,
+                    parse_mode=self._infer_parse_mode(payload_value),
+                    raw_excerpt=raw_content[:1200],
                 )
+                if self.enable_cache and self.cache_dir is not None:
+                    self._cache_put(cache_key, payload)
+                return payload
+            self._bump_stat("parse_failures")
+            self._set_debug(
+                mode=mode,
+                status="parse_failed",
+                request_source=request_source or "gemini_native",
+                finish_reason=finish_reason,
+                model=model_name,
+                parse_mode="unrecognized",
+                raw_excerpt=raw_content[:1200],
+                error="vision_response_unrecognized",
+            )
             return None
 
-        native_key = self.native_api_key.strip()
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{urllib.parse.quote(self.model, safe='')}:generateContent"
-            f"?key={urllib.parse.quote(native_key, safe='')}"
+        self._bump_stat("provider_failures")
+        lowered_error = last_exc_text.lower()
+        if "http error" in lowered_error or "401" in last_exc_text or "403" in last_exc_text or "429" in last_exc_text:
+            self._bump_stat("http_errors")
+        if last_exc_text:
+            self._bump_stat("transport_failures")
+            if self._is_retryable_request_error_text(last_exc_text):
+                self._bump_stat("retryable_transport_failures")
+        self._set_debug(
+            mode=mode,
+            status="request_failed",
+            request_source=request_source or "gemini_native",
+            error=(last_exc_text or "no_usable_vision_provider")[:1200],
         )
+        return None
+
+    def _request_native_multimodal(
+        self,
+        *,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str,
+    ) -> Dict[str, str]:
+        last_exc: Optional[Exception] = None
+        request_candidates: list[tuple[str, str, str]] = []
+        primary_url = self._resolve_primary_native_url()
+        primary_key = self._resolve_primary_api_key()
+        if primary_url and primary_key:
+            request_candidates.append((primary_url, primary_key, "gemini_native"))
+        if self._allow_google_native_fallback():
+            google_key = self.native_api_key.strip()
+            google_url = self._build_google_native_url(self.model)
+            if google_key and google_url and all(url != google_url or key != google_key for url, key, _ in request_candidates):
+                request_candidates.append((google_url, google_key, "gemini_native_google_fallback"))
+        if not request_candidates:
+            raise RuntimeError("no_usable_vision_provider")
+
+        for url, api_key, source in request_candidates:
+            for attempt in range(1, self.request_retry_attempts + 1):
+                try:
+                    return self._post_native_multimodal(
+                        url=url,
+                        api_key=api_key,
+                        source=source,
+                        prompt=prompt,
+                        image_bytes=image_bytes,
+                        mime_type=mime_type,
+                    )
+                except Exception as exc:
+                    last_exc = exc
+                    if not self._should_retry_transport_exception(exc) or attempt >= self.request_retry_attempts:
+                        break
+                    self._bump_stat("request_retries")
+                    time.sleep(self._retry_sleep_seconds(attempt))
+        raise last_exc or RuntimeError("vision provider returned empty response")
+
+    def _post_native_multimodal(
+        self,
+        *,
+        url: str,
+        api_key: str,
+        source: str,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str,
+    ) -> Dict[str, str]:
+        request_url = self._apply_model_to_native_url(url, self.model)
         payload = {
             "contents": [
                 {
@@ -391,79 +426,130 @@ class GeminiVisionExtractor:
             "generationConfig": {
                 "temperature": 0.0,
                 "maxOutputTokens": self.max_output_tokens,
-                "responseMimeType": "application/json",
             },
         }
-        raw_result = self._request_json(url=url, payload=payload)
-        if raw_result is None and self.retry_count > 0:
-            for _ in range(self.retry_count):
-                raw_result = self._request_json(url=url, payload=payload)
-                if raw_result is not None:
-                    break
-        result = self._normalize_payload_shape(raw_result, mode=mode)
-        if result is not None and self.enable_cache and self.cache_dir is not None:
-            self._cache_put(cache_key, result)
-        if result is not None:
-            self._bump_stat("parse_success")
-            self._set_debug(
-                mode=mode,
-                status="ok",
-                request_source="google_native",
-                parse_mode="object",
-            )
-        else:
-            self._bump_stat("parse_failures")
-            self._set_debug(
-                mode=mode,
-                status="parse_failed",
-                request_source="google_native",
-                error="vision_response_unrecognized",
-            )
-        return result
-
-    def _request_json(self, *, url: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        def _post(payload_obj: Dict[str, Any]) -> str:
-            req = urllib.request.Request(
-                url=url,
-                data=json.dumps(payload_obj, ensure_ascii=False).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
-                return resp.read().decode("utf-8", errors="ignore")
-
-        try:
-            raw = _post(payload)
-        except urllib.error.HTTPError as exc:
-            status = int(getattr(exc, "code", 0) or 0)
-            if status != 400:
-                return None
-            cfg = dict(payload.get("generationConfig", {}))
-            cfg.pop("responseMimeType", None)
-            retry_payload = dict(payload)
-            retry_payload["generationConfig"] = cfg
-            try:
-                raw = _post(retry_payload)
-            except Exception:
-                return None
-        except Exception:
-            return None
-
+        resp = requests.post(
+            request_url,
+            json=payload,
+            headers=self._build_native_headers(request_url, api_key),
+            timeout=self.timeout_sec,
+        )
+        resp.raise_for_status()
+        raw = resp.text
         try:
             obj = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("vision provider returned invalid JSON") from exc
+        candidates = obj.get("candidates") if isinstance(obj.get("candidates"), list) else []
+        first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
         texts = []
-        for candidate in obj.get("candidates", []):
-            content = candidate.get("content", {})
-            for part in content.get("parts", []):
-                text = part.get("text")
-                if isinstance(text, str) and text.strip():
-                    texts.append(text.strip())
-        if not texts:
-            return None
-        return self._extract_json_object("\n".join(texts))
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+            parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                text = str(part.get("text", "") or "").strip()
+                if text:
+                    texts.append(text)
+        raw_content = "\n".join(texts).strip()
+        if not raw_content:
+            raise RuntimeError("vision provider returned empty content")
+        return {
+            "content": raw_content,
+            "finish_reason": self._normalize_finish_reason(first.get("finishReason")),
+            "model": str(obj.get("modelVersion", "") or self.model),
+            "request_source": source,
+        }
+
+    def _resolve_primary_native_url(self) -> str:
+        raw = resolve_llm_native_api_url()
+        if raw:
+            return self._apply_model_to_native_url(raw, self.model)
+        if self._allow_google_native_fallback():
+            return self._build_google_native_url(self.model)
+        return ""
+
+    def _resolve_primary_api_key(self) -> str:
+        return str(self.api_key or self.native_api_key or "").strip()
+
+    @staticmethod
+    def _build_google_native_url(model: str) -> str:
+        return (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{urllib.parse.quote(str(model or '').strip() or 'gemini-2.5-flash', safe='')}:generateContent"
+        )
+
+    @staticmethod
+    def _apply_model_to_native_url(url: str, model: str) -> str:
+        raw_url = str(url or "").strip()
+        model_name = str(model or "").strip()
+        if not raw_url or not model_name:
+            return raw_url
+        quoted_model = urllib.parse.quote(model_name, safe="")
+        return re.sub(r"(/models/)([^/?:]+)(:generateContent)", rf"\1{quoted_model}\3", raw_url, count=1)
+
+    @staticmethod
+    def _build_native_headers(url: str, api_key: str) -> Dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "smart-doc-flow-module2-vision/1.0",
+            "Connection": "close",
+        }
+        url_lower = str(url or "").lower()
+        key = str(api_key or "").strip()
+        if "generativelanguage.googleapis.com" in url_lower and "key=" not in url_lower and key.startswith("AIza"):
+            headers["x-goog-api-key"] = key
+        else:
+            headers["Authorization"] = f"Bearer {key}"
+        return headers
+
+    def _retry_sleep_seconds(self, attempt: int) -> float:
+        attempt_value = max(1.0, float(attempt))
+        return self.request_retry_backoff_sec * min(6.0, 1.35 ** (attempt_value - 1.0))
+
+    @staticmethod
+    def _should_retry_http_error(exc: HTTPError) -> bool:
+        response = exc.response
+        status = response.status_code if response is not None else None
+        return bool(status in {408, 409, 425, 429} or (status is not None and status >= 500))
+
+    def _should_retry_transport_exception(self, exc: Exception) -> bool:
+        if isinstance(exc, HTTPError):
+            return self._should_retry_http_error(exc)
+        if isinstance(exc, RequestException):
+            return self._is_retryable_request_error_text(str(exc))
+        return self._is_retryable_request_error_text(f"{type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _is_retryable_request_error_text(error_text: str) -> bool:
+        raw = str(error_text or "").strip().lower()
+        if not raw:
+            return False
+        retry_markers = (
+            "ssleoferror",
+            "unexpected eof",
+            "eof occurred in violation of protocol",
+            "connection aborted",
+            "connection reset",
+            "remote disconnected",
+            "temporarily unavailable",
+            "timed out",
+            "timeout",
+        )
+        return any(marker in raw for marker in retry_markers)
+
+    @staticmethod
+    def _normalize_finish_reason(raw_reason: Any) -> str:
+        reason = str(raw_reason or "").strip().upper()
+        if reason == "MAX_TOKENS":
+            return "length"
+        if reason == "STOP":
+            return "stop"
+        return reason.lower()
 
     def _allow_google_native_fallback(self) -> bool:
         return bool(self.native_fallback_enabled and self.native_api_key.startswith("AIza"))

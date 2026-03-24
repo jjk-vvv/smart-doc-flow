@@ -12,6 +12,7 @@ class Assistant1PathResolver:
     def __init__(self, settings: Assistant1Settings | None = None) -> None:
         self.settings = settings or Assistant1Settings.from_env()
         self.module2_root = self.settings.module2_root
+        self.artifact_root = self.module2_root / "artifacts"
 
     def resolve(self, file_hash: str) -> DocumentSourceBundle:
         normalized_hash = str(file_hash or "").strip()
@@ -21,6 +22,13 @@ class Assistant1PathResolver:
         warnings: list[str] = []
         assistant_payload_path = self._find_assistant_payload(normalized_hash)
         assistant_payload = self._read_json(Path(assistant_payload_path)) if assistant_payload_path else {}
+        assistant_source_manifest_path = self._find_assistant_source_manifest(normalized_hash)
+        assistant_source_meta = (
+            self._read_json(Path(assistant_source_manifest_path))
+            if assistant_source_manifest_path
+            else {}
+        )
+        uploaded_text_artifact_path = self._find_uploaded_text_artifact(normalized_hash)
 
         mineru_logical_dir = self.module2_root / "artifacts" / "pdf_parse" / "mineru" / normalized_hash
         pointer_path = mineru_logical_dir / "mineru_run_pointer.json"
@@ -51,6 +59,14 @@ class Assistant1PathResolver:
             fallback_markdown = actual_run_dir / "o" / "i" / "auto" / "i.md"
             if fallback_markdown.exists():
                 markdown_path = str(fallback_markdown)
+        if not markdown_path:
+            assistant_source_markdown = self._resolve_artifact_path(
+                assistant_source_meta.get("markdown_artifact_path", "")
+            )
+            if assistant_source_markdown and Path(assistant_source_markdown).exists():
+                markdown_path = assistant_source_markdown
+        if not markdown_path and uploaded_text_artifact_path:
+            markdown_path = uploaded_text_artifact_path
         if not content_list_path and actual_run_dir:
             fallback_content_list = actual_run_dir / "o" / "i" / "auto" / "i_content_list.json"
             if fallback_content_list.exists():
@@ -69,7 +85,13 @@ class Assistant1PathResolver:
 
         return DocumentSourceBundle(
             file_hash=normalized_hash,
-            file_name=str(meta_data.get("file_name", "") or assistant_payload.get("file_name", "") or ""),
+            file_name=str(
+                meta_data.get("file_name", "")
+                or assistant_payload.get("file_name", "")
+                or assistant_source_meta.get("file_name", "")
+                or (Path(uploaded_text_artifact_path).name if uploaded_text_artifact_path else "")
+                or ""
+            ),
             mineru_run_key=str(meta_data.get("run_key", "") or pointer_data.get("run_key", "") or ""),
             mineru_run_token=str(meta_data.get("run_token", "") or pointer_data.get("run_token", "") or ""),
             mineru_run_dir=str(actual_run_dir) if actual_run_dir else "",
@@ -83,6 +105,8 @@ class Assistant1PathResolver:
                 "pointer_data": pointer_data,
                 "meta_data": meta_data,
                 "assistant_payload_path": assistant_payload_path,
+                "assistant_source_manifest_path": assistant_source_manifest_path,
+                "assistant_source_meta": assistant_source_meta,
             },
             warnings=warnings,
         )
@@ -97,12 +121,42 @@ class Assistant1PathResolver:
                 return str(candidate)
         return ""
 
+    def _find_assistant_source_manifest(self, file_hash: str) -> str:
+        manifest_dir = self.artifact_root / "assistant_1_source" / file_hash[:12]
+        if not manifest_dir.exists():
+            return ""
+        for candidate in sorted(manifest_dir.glob("*.json")):
+            payload = self._read_json(candidate)
+            if str(payload.get("file_hash", "") or "").strip() == file_hash:
+                return str(candidate)
+        return ""
+
+    def _find_uploaded_text_artifact(self, file_hash: str) -> str:
+        upload_dir = self.artifact_root / "preview" / "uploaded"
+        if not upload_dir.exists():
+            return ""
+        allowed_suffixes = {".md", ".txt", ".csv", ".json"}
+        for candidate in sorted(upload_dir.glob(f"*_{file_hash[:16]}.*")):
+            if candidate.suffix.lower() not in allowed_suffixes:
+                continue
+            return str(candidate)
+        return ""
+
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+
+    def _resolve_artifact_path(self, path_value: Any) -> str:
+        raw = str(path_value or "").strip()
+        if not raw:
+            return ""
+        candidate = Path(raw)
+        if candidate.is_absolute():
+            return str(candidate)
+        return str((self.artifact_root / Path(*raw.replace("\\", "/").split("/"))).resolve())
 
     @staticmethod
     def _infer_run_dir_from_assistant_payload(payload: dict[str, Any]) -> str:

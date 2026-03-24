@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Send, Bot, Sparkles, RotateCcw } from 'lucide-react';
+import { X, Send, Bot, Sparkles, RotateCcw, Plus } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { readExtractionDocuments, readExtractionUpdatedAt, type ExtractionDocument } from '../lib/extractionStore';
 import { createParser } from 'eventsource-parser';
@@ -121,6 +121,7 @@ export const AIAssistant: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [dialogSize, setDialogSize] = useState(DEFAULT_DIALOG_SIZE);
   const [dialogPosition, setDialogPosition] = useState<DialogPosition>(() => getInitialDialogPosition(DEFAULT_DIALOG_SIZE));
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
 
   const messagesRef = useRef<ChatMessage[]>([]);
   const messageSeqRef = useRef(0);
@@ -600,18 +601,45 @@ export const AIAssistant: React.FC = () => {
                 <div ref={messagesEndRef} className="h-1" />
               </div>
 
-              <div className="border-t border-slate-200/70 bg-gradient-to-b from-white via-slate-50/90 to-slate-100/70 p-3 dark:border-slate-700/40 dark:bg-gradient-to-b dark:from-[#0b162a] dark:via-[#0c1a32] dark:to-[#0b1a30]">
+              <div className="border-t border-slate-100/80 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-900/50">
                 <form
                   onSubmit={handleFormSubmit}
-                  className="relative flex items-end overflow-hidden rounded-xl border border-slate-200/70 bg-white/95 shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-shadow focus-within:ring-2 focus-within:ring-indigo-500/30 dark:border-slate-700/40 dark:bg-gradient-to-b dark:from-[#0d223f] dark:via-[#0f2745] dark:to-[#0e213e] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),_0_10px_30px_rgba(3,7,18,0.45)] dark:focus-within:ring-cyan-300/30"
+                  className={`relative flex flex-col rounded-[24px] border ${isDraggingFile ? 'border-blue-400 bg-blue-50/50 shadow-md ring-2 ring-blue-100' : 'border-slate-200/80 bg-white shadow-sm hover:border-slate-300'} transition-all focus-within:border-blue-400/50 focus-within:shadow-md dark:border-slate-700 dark:bg-slate-800 dark:focus-within:border-blue-500/50 dark:hover:border-slate-600`}
+                  onDragOver={(e) => { 
+                    e.preventDefault(); 
+                    e.stopPropagation(); 
+                    setIsDraggingFile(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDraggingFile(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDraggingFile(false);
+                    // Implement file drop handling here if needed
+                    const files = e.dataTransfer.files;
+                    if (files && files.length > 0) {
+                       // Temporary alert for demo purposes
+                       alert(`已接收文件：${files[0].name}，文件解析功能开发中。`);
+                    }
+                  }}
                 >
-                  <div className="absolute inset-x-3 top-2 h-px bg-gradient-to-r from-transparent via-slate-200/70 to-transparent dark:via-cyan-400/20" />
-                  <div className="pointer-events-none absolute inset-0 rounded-xl border border-white/50 opacity-60 dark:border-cyan-200/10" />
+                  {isDraggingFile && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-[24px] bg-blue-50/80 backdrop-blur-sm">
+                      <div className="flex items-center gap-2 text-blue-600 font-medium">
+                        <Plus size={18} />
+                        <span>松开以上传文件</span>
+                      </div>
+                    </div>
+                  )}
                   <textarea
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    placeholder="输入消息，开始对话..."
-                    className="min-h-[50px] max-h-[120px] w-full resize-none bg-transparent py-3 pl-4 pr-12 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none dark:text-slate-200 dark:placeholder:text-slate-400/70"
+                    placeholder="有什么我可以帮您的？"
+                    className="min-h-[56px] max-h-[160px] w-full resize-none bg-transparent px-5 pt-4 pb-2 text-[14px] leading-relaxed text-slate-800 placeholder:text-slate-400 outline-none dark:text-slate-200 custom-scrollbar"
                     rows={1}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
@@ -622,13 +650,31 @@ export const AIAssistant: React.FC = () => {
                       }
                     }}
                   />
-                  <button
-                    type="submit"
-                    disabled={!input.trim() || isLoading}
-                    className="absolute bottom-2 right-2 rounded-lg bg-slate-900 p-2 text-white shadow-sm transition-colors hover:bg-slate-800 disabled:opacity-50 disabled:hover:bg-slate-900 dark:bg-gradient-to-br dark:from-cyan-200 dark:via-cyan-300 dark:to-sky-200 dark:text-slate-900 dark:shadow-[0_8px_18px_rgba(34,211,238,0.2)] dark:hover:from-cyan-100 dark:hover:to-sky-100"
-                  >
-                    <Send size={15} className={input.trim() ? '-translate-y-0.5 translate-x-0.5 transition-transform' : ''} />
-                  </button>
+                  <div className="flex items-center justify-between px-3 pb-2.5 pt-1">
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-100/80 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+                            title="上传文档进行分析 (当前仅用于展示)"
+                        >
+                            <Plus size={16} />
+                        </button>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button
+                          type="submit"
+                          disabled={!input.trim() || isLoading}
+                          className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-all duration-300 ${
+                            !input.trim() || isLoading
+                                ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500'
+                                : 'bg-[#a3b8d7] text-white shadow-sm hover:bg-[#8ba3c7] hover:scale-105 active:scale-95 dark:bg-blue-600 dark:hover:bg-blue-700'
+                          }`}
+                          title={isLoading ? "正在回答..." : "发送"}
+                        >
+                          {isLoading ? <X size={14} /> : <Send size={14} className="ml-0.5" />}
+                        </button>
+                    </div>
+                  </div>
                 </form>
               </div>
               <div className="absolute -top-1.5 left-3 right-3 z-20 h-3 cursor-ns-resize" onPointerDown={(event) => startResize('n', event)} style={{ touchAction: 'none' }} />

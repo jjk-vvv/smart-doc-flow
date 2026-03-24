@@ -821,7 +821,7 @@ async function runAssistant(page, instruction) {
   await page.getByTestId("module2-assistant-input").fill(instruction);
   const assistantPromise = page
     .waitForResponse(
-      (res) => res.url().includes("/extract/assistant/query") && res.request().method() === "POST",
+      (res) => res.url().includes("/extract/assistant1/chat/stream") && res.request().method() === "POST",
       { timeout: 120_000 }
     )
     .catch((err) => err);
@@ -833,7 +833,14 @@ async function runAssistant(page, instruction) {
   const status = response.status();
   let payload = null;
   try {
-    payload = await response.json();
+    await page.waitForFunction(
+      () => {
+        const btn = document.querySelector('[data-testid="module2-assistant-send"]');
+        return btn instanceof HTMLButtonElement && String(btn.title || "") === "发送";
+      },
+      null,
+      { timeout: 240_000 }
+    );
   } catch {
     payload = null;
   }

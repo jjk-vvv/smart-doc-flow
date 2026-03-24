@@ -74,6 +74,12 @@ const buildReloadArgs = ({
   for (const dir of sourceDirs) {
     args.push('--reload-dir', dir);
   }
+  // Uvicorn's Click-based CLI on Windows may expand wildcard option values
+  // like `artifacts/*` into a long argv list, which then breaks startup.
+  // Keeping reload enabled but skipping exclude globs is the most stable path.
+  if (process.platform === 'win32') {
+    return args;
+  }
   for (const pattern of excludeGlobs) {
     args.push('--reload-exclude', pattern);
   }

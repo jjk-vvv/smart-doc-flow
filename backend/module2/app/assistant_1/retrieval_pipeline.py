@@ -15,6 +15,9 @@ class Assistant1RetrievalPipeline:
         self.settings = settings or Assistant1Settings.from_env()
         self.embedder = GeminiEmbeddingClient(self.settings)
 
+    def stats(self, file_hash: str) -> dict[str, Any]:
+        return asyncio.run(self._file_stats(file_hash=file_hash))
+
     def query(
         self,
         text: str,
@@ -42,6 +45,14 @@ class Assistant1RetrievalPipeline:
             "match_count": len(matches),
             "matches": [self._json_ready_match(match) for match in matches],
         }
+
+    async def _file_stats(self, *, file_hash: str) -> dict[str, Any]:
+        store = Assistant1PgVectorStore(self.settings)
+        try:
+            await store.init_schema()
+            return await store.file_stats(file_hash)
+        finally:
+            await store.close()
 
     async def _query_store(
         self,

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 
 MODULE2_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=False)
+load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=True)
 
 
 def _env(*names: str, default: str = "") -> str:

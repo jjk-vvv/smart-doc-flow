@@ -134,6 +134,23 @@ class Assistant1PgVectorStore:
                 json.dumps(stats or {}, ensure_ascii=False),
             )
 
+    async def file_stats(self, file_hash: str) -> dict[str, int]:
+        await self.connect()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            document_row = await conn.fetchrow(
+                "SELECT COUNT(*) AS c FROM doc_knowledge_document WHERE file_hash = $1",
+                file_hash,
+            )
+            unit_row = await conn.fetchrow(
+                "SELECT COUNT(*) AS c FROM doc_knowledge_unit WHERE file_hash = $1",
+                file_hash,
+            )
+        return {
+            "document_count": int(document_row["c"] or 0) if document_row else 0,
+            "unit_count": int(unit_row["c"] or 0) if unit_row else 0,
+        }
+
     async def query_similar(
         self,
         embedding: list[float],

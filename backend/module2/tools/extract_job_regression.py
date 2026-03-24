@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,8 +19,24 @@ def parse_args() -> argparse.Namespace:
         default='{"auto_infer": true, "prefer_llm": true, "max_auto_fields": 12}',
         help="Schema JSON string",
     )
+    parser.add_argument(
+        "--prefer-llm",
+        choices=["true", "false"],
+        default="",
+        help="Override schema prefer_llm flag without having to escape full JSON on the command line.",
+    )
     parser.add_argument("--poll-sec", type=float, default=10.0, help="Polling interval in seconds")
     parser.add_argument("--clear-cache", action="store_true", help="Clear Module 2 runtime/artifact cache first")
+    parser.add_argument(
+        "--disable-provider-preflight",
+        action="store_true",
+        help="Disable job-create provider healthcheck for local parser regressions.",
+    )
+    parser.add_argument(
+        "--allow-provider-failure",
+        action="store_true",
+        help="Do not fail job creation when provider preflight is unavailable.",
+    )
     return parser.parse_args()
 
 
@@ -32,10 +49,17 @@ def main() -> int:
 
     from app.main import app  # noqa: WPS433
 
+    if args.disable_provider_preflight:
+        os.environ["MODULE2_PROVIDER_HEALTHCHECK_ON_JOB_CREATE"] = "false"
+    if args.allow_provider_failure:
+        os.environ["MODULE2_FAIL_ON_PROVIDER_UNAVAILABLE"] = "false"
+
     input_path = Path(args.file).resolve()
     run_dir = Path(args.run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     schema = json.loads(args.schema_json)
+    if args.prefer_llm:
+        schema["prefer_llm"] = args.prefer_llm.lower() == "true"
 
     with TestClient(app) as client:
         if args.clear_cache:

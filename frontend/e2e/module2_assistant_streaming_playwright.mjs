@@ -14,7 +14,7 @@ const configuredExecutablePath = String(
   process.env.MODULE2_PLAYWRIGHT_EXECUTABLE_PATH || process.env.PLAYWRIGHT_EXECUTABLE_PATH || "",
 ).trim();
 const outputDir =
-  process.env.MODULE2_ASSISTANT_CHECK_OUTPUT_DIR ||
+  process.env.MODULE2_ASSISTANT1_CHECK_OUTPUT_DIR ||
   path.join(projectRoot, ".runlogs", "module2-frontend-assistant-check", new Date().toISOString().replace(/[:.]/g, "-"));
 const browserExecutableCandidates = [
   configuredExecutablePath,
@@ -45,7 +45,7 @@ const defaultScenarios = [
 ];
 
 const scenarios = (() => {
-  const raw = String(process.env.MODULE2_ASSISTANT_SCENARIOS_JSON || "").trim();
+  const raw = String(process.env.MODULE2_ASSISTANT1_SCENARIOS_JSON || "").trim();
   if (!raw) return defaultScenarios;
   try {
     const parsed = JSON.parse(raw);

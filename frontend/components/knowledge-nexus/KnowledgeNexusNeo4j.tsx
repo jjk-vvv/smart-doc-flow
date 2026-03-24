@@ -199,6 +199,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const asRecord = (value: unknown) => (isRecord(value) ? value : {});
+const asList = (value: unknown) => (Array.isArray(value) ? value : []);
 
 const firstText = (...values: unknown[]) => {
   for (const value of values) {
@@ -349,6 +350,32 @@ const extractSemanticTitle = (value: unknown, fallback = '') => {
 const looksLikeArtifactName = (value: unknown) => {
   const text = normalizeText(value);
   return text ? ARTIFACT_PATTERNS.some((pattern) => pattern.test(text)) : false;
+};
+
+const looksLikeFileNameText = (value: unknown) => {
+  const text = normalizeText(value);
+  if (!text) return false;
+  return /[\\/]/.test(text) || /\.(pdf|doc|docx|xls|xlsx|csv|txt|md|json|png|jpe?g|webp)$/i.test(text);
+};
+
+const looksLikePlaceholderText = (value: unknown) => {
+  const text = normalizeText(value);
+  if (!text) return true;
+  const stripped = text.replace(/[?？·|/\\()[\]{}:;,.，。、“”‘’"'`~!@#$%^&*_+=-]+/g, '');
+  return !/[A-Za-z0-9\u4e00-\u9fa5]/.test(stripped);
+};
+
+const looksLikeLowSignalArtifactTitle = (value: unknown, objectId: unknown = '') => {
+  const text = cleanArtifactText(value);
+  if (!text) return true;
+  if (looksLikePlaceholderText(text)) return true;
+  if (looksLikeFileNameText(text)) return true;
+  const lower = text.toLowerCase();
+  if (/^(?:位于)?第?\s*\d+\s*页$/i.test(text)) return true;
+  if (/^(?:page|p)\s*\d+$/i.test(lower)) return true;
+  const normalizedObjectId = normalizeText(objectId).toLowerCase();
+  if (normalizedObjectId && lower.includes(normalizedObjectId)) return true;
+  return /(?:^|\s)(table|figure|image|fig)[\s_-]*\d+(?:\s|$)/i.test(lower);
 };
 
 const looksLikeSystemGeneratedName = (value: unknown) => {
@@ -686,11 +713,7 @@ const sparsifyOverviewSemanticEdges = (
         .slice(0, OVERVIEW_MAX_SEMANTIC_EDGES);
 };
 
-const projectGraphForMode = (graph: Module4GraphResponse, viewMode: GraphViewMode): Module4GraphResponse => {
-  if (viewMode === 'evidence') {
-    return graph;
-  }
-
+const buildOverviewGraph = (graph: Module4GraphResponse): Module4GraphResponse => {
   const visibleNodes = graph.nodes.filter((node) => OVERVIEW_NODE_TYPES.has(typeKeyOf(node)));
   if (visibleNodes.length === 0) {
     return EMPTY_GRAPH;
@@ -812,6 +835,18 @@ const projectGraphForMode = (graph: Module4GraphResponse, viewMode: GraphViewMod
   };
 };
 
+const overviewProjectionHasSignal = (graph: Module4GraphResponse) => {
+  if (graph.edges.length > 0) return true;
+  if (graph.nodes.length > 1) return true;
+  return graph.nodes.some((node) => typeKeyOf(node) !== 'document');
+};
+
+const shouldPreferEvidenceGraph = (rawGraph: Module4GraphResponse, overviewGraph: Module4GraphResponse) => {
+  if (rawGraph.nodes.length === 0) return false;
+  if (rawGraph.nodes.length === 1 && rawGraph.edges.length === 0) return false;
+  return !overviewProjectionHasSignal(overviewGraph);
+};
+
 const preferredFitNodeIds = (graph: Module4GraphResponse, viewMode: GraphViewMode) => {
   if (!graph.nodes.length) return [];
   if (viewMode === 'evidence') {
@@ -835,25 +870,25 @@ const visualSpecOf = (node: Module4GraphNode) => {
   const attrs = asRecord(node.attrs);
   const entityType = normalizeTypeKey(firstText(attrs.entity_type, attrs.object_type));
 
-  if (key === 'document') return { color: '#2563EB', size: 62, minRadius: 30, maxRadius: 46 };
+  if (key === 'document') return { color: '#2563EB', size: 50, minRadius: 24, maxRadius: 34 };
   if (key === 'entity') {
-    if (entityType.includes('geo')) return { color: '#0F766E', size: 58, minRadius: 20, maxRadius: 34 };
-    if (entityType.includes('organization')) return { color: '#2563EB', size: 58, minRadius: 20, maxRadius: 34 };
-    if (entityType.includes('person')) return { color: '#E11D48', size: 58, minRadius: 20, maxRadius: 34 };
-    if (entityType.includes('event')) return { color: '#F97316', size: 58, minRadius: 21, maxRadius: 34 };
-    if (entityType.includes('indicator')) return { color: '#7C3AED', size: 58, minRadius: 20, maxRadius: 33 };
-    if (entityType.includes('facility')) return { color: '#0891B2', size: 58, minRadius: 20, maxRadius: 33 };
-    if (entityType.includes('project')) return { color: '#0EA5E9', size: 58, minRadius: 20, maxRadius: 33 };
-    if (entityType.includes('material')) return { color: '#EA580C', size: 58, minRadius: 20, maxRadius: 33 };
-    return { color: '#4F46E5', size: 58, minRadius: 20, maxRadius: 34 };
+    if (entityType.includes('geo')) return { color: '#0F766E', size: 50, minRadius: 18, maxRadius: 28 };
+    if (entityType.includes('organization')) return { color: '#2563EB', size: 50, minRadius: 18, maxRadius: 28 };
+    if (entityType.includes('person')) return { color: '#E11D48', size: 50, minRadius: 18, maxRadius: 28 };
+    if (entityType.includes('event')) return { color: '#F97316', size: 50, minRadius: 18, maxRadius: 28 };
+    if (entityType.includes('indicator')) return { color: '#7C3AED', size: 50, minRadius: 18, maxRadius: 27 };
+    if (entityType.includes('facility')) return { color: '#0891B2', size: 50, minRadius: 18, maxRadius: 27 };
+    if (entityType.includes('project')) return { color: '#0EA5E9', size: 50, minRadius: 18, maxRadius: 27 };
+    if (entityType.includes('material')) return { color: '#EA580C', size: 50, minRadius: 18, maxRadius: 27 };
+    return { color: '#4F46E5', size: 50, minRadius: 18, maxRadius: 28 };
   }
-  if (key === 'field') return { color: '#4F46E5', size: 56, minRadius: 18, maxRadius: 29 };
-  if (key === 'community') return { color: '#D97706', size: 64, minRadius: 24, maxRadius: 36 };
-  if (key === 'risk') return { color: '#F97316', size: 60, minRadius: 22, maxRadius: 34 };
-  if (key === 'figure' || key === 'image') return { color: '#0EA5E9', size: 56, minRadius: 18, maxRadius: 28 };
-  if (key === 'table') return { color: '#14B8A6', size: 56, minRadius: 18, maxRadius: 29 };
-  if (key === 'chunk') return { color: '#64748B', size: 50, minRadius: 15, maxRadius: 32 };
-  return { color: '#475569', size: 52, minRadius: 18, maxRadius: 30 };
+  if (key === 'field') return { color: '#4F46E5', size: 44, minRadius: 14, maxRadius: 22 };
+  if (key === 'community') return { color: '#D97706', size: 52, minRadius: 21, maxRadius: 32 };
+  if (key === 'risk') return { color: '#F97316', size: 50, minRadius: 18, maxRadius: 28 };
+  if (key === 'figure' || key === 'image') return { color: '#0EA5E9', size: 42, minRadius: 14, maxRadius: 22 };
+  if (key === 'table') return { color: '#14B8A6', size: 44, minRadius: 15, maxRadius: 23 };
+  if (key === 'chunk') return { color: '#64748B', size: 40, minRadius: 12, maxRadius: 20 };
+  return { color: '#475569', size: 44, minRadius: 14, maxRadius: 22 };
 };
 
 const relationToneOf = (edge: Module4GraphEdge | string) => {
@@ -955,6 +990,28 @@ const displayNameOfNode = (node: Module4GraphNode) => {
     );
   }
 
+  if (key === 'table' || key === 'figure' || key === 'image') {
+    const label = presentTypeLabel(node);
+    const captionHint = cleanArtifactText(nestedText(context, 'caption_hint'));
+    const snippetTitle = titleFromSnippet(firstText(attrs.snippet, captionHint), key);
+    const directTitle = cleanArtifactText(firstText(attrs.title, attrs.caption, attrs.name));
+    const objectId = firstText(attrs.object_id, node.display_name);
+    const artifactTitle = firstText(
+      looksLikeLowSignalArtifactTitle(directTitle, objectId) ? '' : directTitle,
+      looksLikeLowSignalArtifactTitle(captionHint, objectId) ? '' : captionHint,
+      looksLikeLowSignalArtifactTitle(snippetTitle, objectId) ? '' : snippetTitle
+    );
+    const page = pageLocatorOfNode(node);
+
+    return firstText(
+      artifactTitle ? `${label} · ${artifactTitle}` : '',
+      page ? `${label} · ${page}` : '',
+      !looksLikeArtifactName(rawDisplay) && !looksLikePlaceholderText(primaryDisplay) ? primaryDisplay : '',
+      !looksLikePlaceholderText(cleanedDisplay) ? cleanedDisplay : '',
+      label
+    );
+  }
+
   if (!looksLikeArtifactName(rawDisplay) && primaryDisplay) {
     return primaryDisplay;
   }
@@ -970,10 +1027,85 @@ const displayNameOfNode = (node: Module4GraphNode) => {
   );
 };
 
+const pageLocatorOfNode = (node: Module4GraphNode) => {
+  const attrs = asRecord(node.attrs);
+  const context = asRecord(attrs.context);
+  const page = firstText(attrs.page_no, attrs.page, nestedText(context, 'page'));
+  return page ? `P${page}` : '';
+};
+
+const isRedundantArtifactPageSnippet = (node: Module4GraphNode, snippet: string) => {
+  const typeKey = typeKeyOf(node);
+  if (!(typeKey === 'table' || typeKey === 'figure' || typeKey === 'image')) return false;
+  const page = pageLocatorOfNode(node);
+  if (!page) return false;
+
+  const normalizedSnippet = normalizeText(snippet).toLowerCase();
+  const normalizedPage = page.toLowerCase();
+  if (normalizedSnippet.includes(normalizedPage)) return true;
+
+  const pageNumber = normalizedPage.replace(/^p/, '');
+  const numericMatches = normalizedSnippet.match(/\d+/g) || [];
+  if (numericMatches.length !== 1 || numericMatches[0] !== pageNumber) return false;
+
+  return normalizedSnippet.length <= 16;
+};
+
+const isGenericArtifactCaption = (value: string, typeKey: string) => {
+  const text = normalizeText(value);
+  if (!text) return true;
+  const lower = text.toLowerCase();
+
+  if (typeKey === 'table') {
+    return lower === 'table' || /^table\b/.test(lower) || /^(表格|表)$/.test(text) || text.length <= 3;
+  }
+
+  if (typeKey === 'figure' || typeKey === 'image') {
+    return (
+      lower === 'image' ||
+      lower === 'figure' ||
+      lower === 'fig' ||
+      /^formula/.test(lower) ||
+      /^(图像|图片|插图|公式图像)$/.test(text) ||
+      text.length <= 4
+    );
+  }
+
+  return false;
+};
+
+const compactDocumentCaption = (value: string) =>
+  normalizeText(stripFileExtension(value))
+    .replace(/[（(][^）)]{4,16}[）)]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
 const captionOfNode = (node: Module4GraphNode, max = 22) => {
   const base = displayNameOfNode(node);
-  const compact = typeKeyOf(node) === 'document' ? stripFileExtension(base) : base;
-  const maxLength = typeKeyOf(node) === 'chunk' ? Math.min(max, 16) : max;
+  const attrs = asRecord(node.attrs);
+  const typeKey = typeKeyOf(node);
+  const compact = typeKey === 'document' ? compactDocumentCaption(base) || stripFileExtension(base) : base;
+  const maxLength = typeKey === 'document' ? Math.min(max, 18) : typeKey === 'chunk' ? Math.min(max, 16) : max;
+
+  if (typeKey === 'table' || typeKey === 'figure' || typeKey === 'image') {
+    const page = pageLocatorOfNode(node);
+    const candidate = cleanArtifactText(compact);
+
+    if (isGenericArtifactCaption(candidate, typeKey)) {
+      const refinedTitle = cleanArtifactText(firstText(attrs.title, attrs.name));
+      const artifactBase =
+        refinedTitle && !looksLikeArtifactName(refinedTitle)
+          ? `${presentTypeLabel(node)} · ${refinedTitle}`
+          : page
+            ? `${presentTypeLabel(node)} · ${page}`
+            : presentTypeLabel(node);
+      return shortText(artifactBase, Math.max(10, maxLength));
+    }
+
+    const candidateHasPage = Boolean(page) && normalizeText(candidate).toLowerCase().includes(page.toLowerCase());
+    return shortText(page && !candidateHasPage ? `${candidate} · ${page}` : candidate, maxLength);
+  }
+
   return shortText(compact, maxLength);
 };
 
@@ -993,7 +1125,7 @@ const summaryOfNode = (node: Module4GraphNode) => {
       extractSemanticTitle(attrs.raw_content)
     )
   );
-  if (snippet) return shortText(snippet, 180);
+  if (snippet && !isRedundantArtifactPageSnippet(node, snippet)) return shortText(snippet, 180);
 
   if (typeKeyOf(node) === 'document') {
     const parts = [
@@ -1031,7 +1163,6 @@ const detailFactsOfNode = (node: Module4GraphNode): DetailFact[] => {
   if (numberOrNull(diagnostics.figure_count)) push('图像数', diagnostics.figure_count);
   if (numberOrNull(diagnostics.table_count)) push('表格数', diagnostics.table_count);
   push('质量状态', diagnostics.quality_status);
-  push('文件哈希', attrs.file_hash);
 
   return facts.slice(0, 8);
 };
@@ -1040,6 +1171,7 @@ const attributeRowsOfNode = (node: Module4GraphNode): DetailFact[] => {
   const attrs = asRecord(node.attrs);
   const context = asRecord(attrs.context);
   const rows: DetailFact[] = [];
+  const snippet = cleanArtifactText(firstText(attrs.snippet, nestedText(context, 'caption_hint')));
 
   const push = (label: string, value: unknown) => {
     const text = normalizeText(value);
@@ -1048,12 +1180,12 @@ const attributeRowsOfNode = (node: Module4GraphNode): DetailFact[] => {
     rows.push({ label, value: shortText(text, 200) });
   };
 
-  push('显示名称', displayNameOfNode(node));
-  push('摘要', summaryOfNode(node));
-  push('来源片段', cleanArtifactText(firstText(attrs.snippet, nestedText(context, 'caption_hint'))));
+  if (snippet && !isRedundantArtifactPageSnippet(node, snippet)) {
+    push('来源片段', snippet);
+  }
   push('告警详情', humanizeWarning(attrs.warning));
-  push('原始键', node.canonical_key);
   push('引用 ID', firstText(attrs.source_ref_id, attrs.ref_id));
+  push('文件哈希', attrs.file_hash);
 
   return rows.slice(0, 8);
 };
@@ -1080,6 +1212,96 @@ const buildStats = (nodes: Module4GraphNode[], edges: Module4GraphEdge[]) => {
   };
 };
 
+type SeedLaneKey =
+  | 'anchor'
+  | 'semantic-primary'
+  | 'semantic-secondary'
+  | 'structural'
+  | 'evidence-primary'
+  | 'evidence-secondary'
+  | 'risk';
+
+const SEED_LANE_LAYOUT: Record<
+  SeedLaneKey,
+  {
+    x: number;
+    y: number;
+    spacing: number;
+    sway: number;
+  }
+> = {
+  anchor: { x: -298, y: 8, spacing: 148, sway: 10 },
+  'semantic-primary': { x: 96, y: -168, spacing: 120, sway: 18 },
+  'semantic-secondary': { x: 262, y: -286, spacing: 108, sway: 14 },
+  structural: { x: -12, y: 168, spacing: 104, sway: 14 },
+  'evidence-primary': { x: 334, y: 92, spacing: 112, sway: 18 },
+  'evidence-secondary': { x: 468, y: 232, spacing: 102, sway: 14 },
+  risk: { x: 482, y: -156, spacing: 96, sway: 12 },
+};
+
+const GRAPH_LAYER_GUIDES = [
+  {
+    id: 'semantic',
+    label: '语义层',
+    lanes: ['semantic-primary', 'semantic-secondary'] as SeedLaneKey[],
+    x: -18,
+    y: -332,
+    width: 412,
+    height: 224,
+    fill: 'rgba(15, 118, 110, 0.035)',
+    stroke: 'rgba(15, 118, 110, 0.12)',
+    text: '#0f766e',
+  },
+  {
+    id: 'structural',
+    label: '结构层',
+    lanes: ['structural'] as SeedLaneKey[],
+    x: -172,
+    y: 96,
+    width: 352,
+    height: 212,
+    fill: 'rgba(100, 116, 139, 0.04)',
+    stroke: 'rgba(100, 116, 139, 0.12)',
+    text: '#475569',
+  },
+  {
+    id: 'evidence',
+    label: '证据层',
+    lanes: ['evidence-primary', 'evidence-secondary'] as SeedLaneKey[],
+    x: 214,
+    y: 24,
+    width: 382,
+    height: 324,
+    fill: 'rgba(14, 165, 233, 0.035)',
+    stroke: 'rgba(14, 165, 233, 0.12)',
+    text: '#0369a1',
+  },
+  {
+    id: 'risk',
+    label: '风险层',
+    lanes: ['risk'] as SeedLaneKey[],
+    x: 406,
+    y: -222,
+    width: 164,
+    height: 116,
+    fill: 'rgba(249, 115, 22, 0.03)',
+    stroke: 'rgba(249, 115, 22, 0.12)',
+    text: '#c2410c',
+  },
+] as const;
+
+const seedLaneOfNode = (node: Module4GraphNode, rootId: string): SeedLaneKey => {
+  if (node.node_id === rootId || typeKeyOf(node) === 'document') return 'anchor';
+
+  const typeKey = typeKeyOf(node);
+  if (typeKey === 'community') return 'semantic-secondary';
+  if (typeKey === 'entity') return 'semantic-primary';
+  if (typeKey === 'risk') return 'risk';
+  if (typeKey === 'table') return 'evidence-primary';
+  if (typeKey === 'figure' || typeKey === 'image') return 'evidence-secondary';
+  return 'structural';
+};
+
 const buildSeedPositions = (nodes: Module4GraphNode[], edges: Module4GraphEdge[]) => {
   const positionMap = new Map<string, NodePositionState>();
   if (!nodes.length) return positionMap;
@@ -1101,59 +1323,60 @@ const buildSeedPositions = (nodes: Module4GraphNode[], edges: Module4GraphEdge[]
   });
 
   const rootId = pickLayoutRootId(rankedNodes, degreeMap) || rankedNodes[0]?.node_id || nodes[0]?.node_id;
-  const levels = new Map<string, number>();
-  const queue = rootId ? [rootId] : [];
-  if (rootId) levels.set(rootId, 0);
-
-  while (queue.length > 0) {
-    const currentId = queue.shift() as string;
-    const currentLevel = levels.get(currentId) || 0;
-    (adjacency.get(currentId) || new Set()).forEach((neighborId) => {
-      if (!levels.has(neighborId)) {
-        levels.set(neighborId, currentLevel + 1);
-        queue.push(neighborId);
-      }
-    });
-  }
-
-  let fallbackLevel = Math.max(0, ...Array.from(levels.values())) + 1;
+  const groups = new Map<SeedLaneKey, Module4GraphNode[]>();
   nodes.forEach((node) => {
-    if (!levels.has(node.node_id)) {
-      levels.set(node.node_id, fallbackLevel);
-      fallbackLevel += 1;
-    }
-  });
-
-  const groups = new Map<number, Module4GraphNode[]>();
-  nodes.forEach((node) => {
-    const level = levels.get(node.node_id) || 0;
-    const bucket = groups.get(level) || [];
+    const lane = seedLaneOfNode(node, rootId);
+    const bucket = groups.get(lane) || [];
     bucket.push(node);
-    groups.set(level, bucket);
+    groups.set(lane, bucket);
   });
 
-  Array.from(groups.entries())
-    .sort((left, right) => left[0] - right[0])
-    .forEach(([level, group]) => {
-      const ordered = [...group].sort((left, right) => {
-        const typeDiff = typePriority(typeKeyOf(left)) - typePriority(typeKeyOf(right));
-        if (typeDiff !== 0) return typeDiff;
-        return displayNameOfNode(left).localeCompare(displayNameOfNode(right), 'zh-CN');
-      });
+  (
+    [
+      'anchor',
+      'semantic-primary',
+      'semantic-secondary',
+      'structural',
+      'evidence-primary',
+      'evidence-secondary',
+      'risk',
+    ] as SeedLaneKey[]
+  ).forEach((laneKey) => {
+    const group = groups.get(laneKey) || [];
+    if (group.length === 0) return;
 
-      const radius = level === 0 ? 0 : 140 + (level - 1) * 120 + Math.max(0, ordered.length - 6) * 8;
-      const angleOffset = level * 0.68;
-      const yCompression = level === 0 ? 1 : 0.84;
+    const lane = SEED_LANE_LAYOUT[laneKey];
+    const ordered = [...group].sort((left, right) => {
+      const leftAdjacency = adjacency.get(left.node_id)?.size || 0;
+      const rightAdjacency = adjacency.get(right.node_id)?.size || 0;
+      if (rightAdjacency !== leftAdjacency) return rightAdjacency - leftAdjacency;
 
-      ordered.forEach((node, index) => {
-        const angle =
-          ordered.length === 1 ? angleOffset : (Math.PI * 2 * index) / ordered.length + angleOffset;
-        positionMap.set(node.node_id, {
-          x: radius === 0 ? 0 : Math.cos(angle) * radius,
-          y: radius === 0 ? 0 : Math.sin(angle) * radius * yCompression,
-        });
+      const degreeDiff = (degreeMap.get(right.node_id) || 0) - (degreeMap.get(left.node_id) || 0);
+      if (degreeDiff !== 0) return degreeDiff;
+
+      const typeDiff = typePriority(typeKeyOf(left)) - typePriority(typeKeyOf(right));
+      if (typeDiff !== 0) return typeDiff;
+
+      return displayNameOfNode(left).localeCompare(displayNameOfNode(right), 'zh-CN');
+    });
+
+    const totalHeight = Math.max(0, (ordered.length - 1) * lane.spacing);
+
+    ordered.forEach((node, index) => {
+      const offset = index - (ordered.length - 1) / 2;
+      const sway = Math.sign(offset) * Math.min(Math.abs(offset) * lane.sway, lane.sway * 2.25);
+      const x =
+        lane.x +
+        Math.abs(offset) * lane.sway * 0.42 +
+        (node.node_id === rootId ? 0 : Math.min(22, (degreeMap.get(node.node_id) || 0) * 3));
+      const y = lane.y + index * lane.spacing - totalHeight / 2 + sway;
+
+      positionMap.set(node.node_id, {
+        x,
+        y,
       });
     });
+  });
 
   return positionMap;
 };
@@ -1624,9 +1847,6 @@ const simulationMetricLabel = (value: string) => {
   return labels[normalized] || prettifyToken(value);
 };
 
-const explainEvidenceSummary = (value: Record<string, unknown>) =>
-  firstText(value.title, value.summary, value.snippet, value.rule_id, value.alert_id) || '未提供解释证据';
-
 const sortRulesForDisplay = (items: Module4RuleItem[]) =>
   [...items].sort((left, right) => {
     const enabledDiff = Number(right.enabled) - Number(left.enabled);
@@ -1727,9 +1947,121 @@ const formatDateTime = (value?: string | null) => {
 };
 
 const evidenceTitle = (item: Module4EvidenceItem) => {
+  const locator = asRecord(item.locator);
   const objectType = normalizeText(item.object_type) || 'evidence';
+  const objectLabel = presentTypeLabel(objectType);
+  const preview = asRecord(locator.table_preview);
+  const previewHeaders = asList(preview.headers).map((value) => cleanArtifactText(value)).filter(Boolean).slice(0, 4);
+  const caption = cleanArtifactText(firstText(locator.title, locator.caption));
+  const keyPoints = asList(locator.key_points).map((value) => cleanArtifactText(value)).filter(Boolean).slice(0, 2);
+  const textBlocks = asList(locator.text_blocks).map((value) => cleanArtifactText(value)).filter(Boolean).slice(0, 1);
   const objectId = normalizeText(item.object_id) || normalizeText(item.ref_id) || '未命名对象';
-  return `${prettifyToken(objectType)} · ${shortText(objectId, 36)}`;
+  const page = firstText((item as any).page, locator.page);
+  const title = firstText(
+    looksLikeLowSignalArtifactTitle(caption, objectId) ? '' : caption,
+    page ? `P${page}` : '',
+    objectId
+  );
+  return `${objectLabel} · ${shortText(title, 32)}`;
+};
+
+type EvidenceDataframePreview = {
+  headers: string[];
+  rows: string[][];
+  rowCount: number;
+  colCount: number;
+};
+
+const evidenceDataframePreview = (item: Module4EvidenceItem): EvidenceDataframePreview | null => {
+  const locator = asRecord(item.locator);
+  const candidates = [asRecord(locator.table_preview), asRecord(locator.dataframe)];
+  for (const candidate of candidates) {
+    const headers = asList(candidate.headers).map((value) => cleanArtifactText(value)).filter(Boolean).slice(0, 6);
+    const rows = asList(candidate.rows)
+      .map((row) =>
+        Array.isArray(row) ? row.map((cell) => cleanArtifactText(cell)).slice(0, 6).filter((cell) => cell !== '') : []
+      )
+      .filter((row) => row.length > 0)
+      .slice(0, 6);
+    const rowCount = numberOrNull(candidate.row_count) || rows.length;
+    const colCount = numberOrNull(candidate.col_count) || headers.length || Math.max(0, ...rows.map((row) => row.length));
+    if (headers.length > 0 || rows.length > 0) {
+      return {
+        headers,
+        rows,
+        rowCount,
+        colCount,
+      };
+    }
+  }
+  return null;
+};
+
+const evidenceInsightChips = (item: Module4EvidenceItem) => {
+  const locator = asRecord(item.locator);
+  const chips = [
+    cleanArtifactText(firstText(locator.caption, locator.title)),
+    ...asList(locator.key_points).map((value) => cleanArtifactText(value)).filter(Boolean).slice(0, 3),
+  ].filter(Boolean);
+  return chips.slice(0, 4);
+};
+
+const evidenceSnippetText = (item: Module4EvidenceItem) => {
+  const text = cleanArtifactText(item.snippet);
+  if (!text || looksLikePlaceholderText(text)) return '';
+  const titleParts = evidenceTitle(item).split('·');
+  const titleText = cleanArtifactText(titleParts.length > 1 ? titleParts.slice(1).join('·') : titleParts[0]);
+  const pageOnlyMatch = text.match(/第\s*(\d+)\s*页/);
+  if (pageOnlyMatch && titleText.toLowerCase().includes(`p${pageOnlyMatch[1]}`)) return '';
+  if (titleText && normalizeText(text) === normalizeText(titleText)) return '';
+  return text;
+};
+
+const renderEvidenceDataframe = (item: Module4EvidenceItem) => {
+  const preview = evidenceDataframePreview(item);
+  if (!preview) return null;
+  return (
+    <div className="mt-3 overflow-hidden border border-slate-200/90 dark:border-slate-700/80">
+      <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/80 px-3 py-2 text-[11px] font-medium text-slate-500 dark:border-slate-700/80 dark:bg-slate-900/70 dark:text-slate-400">
+        <span>DataFrame 预览</span>
+        <span>
+          {preview.rowCount} 行 · {preview.colCount} 列
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full border-collapse text-xs">
+          {preview.headers.length > 0 && (
+            <thead>
+              <tr className="bg-slate-50/70 dark:bg-slate-900/60">
+                {preview.headers.map((header, index) => (
+                  <th
+                    key={`${header}-${index}`}
+                    className="border-b border-r border-slate-200/80 px-3 py-2 text-left font-semibold text-slate-600 dark:border-slate-700/80 dark:text-slate-300"
+                  >
+                    {shortText(header, 28)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          )}
+          <tbody>
+            {preview.rows.map((row, rowIndex) => (
+              <tr key={`row-${rowIndex}`} className="odd:bg-white even:bg-slate-50/50 dark:odd:bg-slate-950 dark:even:bg-slate-900/40">
+                {row.map((cell, cellIndex) => (
+                  <td
+                    key={`cell-${rowIndex}-${cellIndex}`}
+                    className="border-b border-r border-slate-200/70 px-3 py-2 align-top text-slate-600 dark:border-slate-700/70 dark:text-slate-300"
+                  >
+                    {shortText(cell, 42)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 };
 
 const evidenceLocatorText = (item: Module4EvidenceItem) => {
@@ -1803,8 +2135,11 @@ type ForceGraphNodeDatum = SimulationNodeDatum & {
   importance: number;
   emphasisTier: NodeEmphasisTier;
   color: string;
+  seedLane: SeedLaneKey;
   seedX: number;
   seedY: number;
+  laneX: number;
+  laneY: number;
   x: number;
   y: number;
   fx: number | null;
@@ -1837,8 +2172,6 @@ type ForceGraphProps = {
 const DRAG_ACTIVATION_DISTANCE = 3;
 const DRAG_CLICK_SUPPRESS_MS = 220;
 const PAN_CLICK_SUPPRESS_MS = 120;
-const EDGE_LABEL_GRAPH_LIMIT = 18;
-const EDGE_LABEL_MIN_ZOOM = 1.08;
 
 const splitNodeLabel = (value: string, maxChars = 8, maxLines = 2) => {
   const text = normalizeText(value);
@@ -1862,23 +2195,42 @@ const shouldRenderNodeLabel = (
   }
 ) => {
   if (options.isSelected) return true;
-  if (node.emphasisTier === 'primary' || node.emphasisTier === 'secondary') return true;
+  if (options.isFocused) return true;
 
   const typeKey = typeKeyOf(node.node);
-  if (typeKey !== 'chunk') return true;
+  if (typeKey === 'document' || typeKey === 'community' || node.emphasisTier === 'primary') {
+    return options.zoom >= 1.08;
+  }
+  if (typeKey === 'entity' || typeKey === 'risk') {
+    if (node.emphasisTier === 'secondary') return options.zoom >= 1.14;
+    if (node.emphasisTier === 'tertiary') return options.zoom >= 1.2;
+    return options.zoom >= 1.26;
+  }
 
   const label = normalizeText(node.label);
   if (!label) return false;
+  if (options.zoom < 1.02) return false;
+
+  const highDensityType =
+    typeKey === 'chunk' ||
+    typeKey === 'field' ||
+    typeKey === 'table' ||
+    typeKey === 'figure' ||
+    typeKey === 'image';
 
   const isVerbose =
     label.length > 16 || /^[[(（《【]/.test(label) || /[。；，、:：]/.test(label) || /\d{3,}/.test(label);
 
-  if (!isVerbose) return true;
-  if (options.isFocused) return true;
-  if (node.emphasisTier === 'tertiary') return true;
-  if (options.zoom >= 0.94) return true;
-  if (options.graphSize <= 42) return true;
-  return false;
+  if (!highDensityType) {
+    if (node.emphasisTier === 'secondary') return options.zoom >= 1.18;
+    if (node.emphasisTier === 'tertiary') return options.zoom >= 1.26;
+    return options.zoom >= 1.34;
+  }
+
+  if (!isVerbose && node.emphasisTier === 'secondary') return options.zoom >= 1.24;
+  if (node.emphasisTier === 'secondary') return options.zoom >= 1.3;
+  if (node.emphasisTier === 'tertiary') return options.zoom >= 1.38;
+  return options.zoom >= 1.48;
 };
 
 const buildHierarchyPositions = (nodes: Module4GraphNode[], edges: Module4GraphEdge[]) => {
@@ -1991,9 +2343,19 @@ const curvedEdgeGeometry = (
   const normalY = unitX;
   const role = edgeRoleOf(link.edge);
   const curvatureBase =
-    role === 'semantic' ? 0.12 : role === 'anchor' ? 0.08 : role === 'evidence' ? 0.06 : 0.05;
-  const curvature = Math.min(34, Math.max(8, distance * curvatureBase));
-  const direction = stableHash(link.id) % 2 === 0 ? 1 : -1;
+    role === 'semantic' ? 0.072 : role === 'anchor' ? 0.02 : role === 'evidence' ? 0.038 : 0.03;
+  const nearStraight = Math.abs(deltaY) < Math.max(18, distance * 0.1);
+  const curvature = nearStraight
+    ? Math.min(10, Math.max(1.5, distance * 0.016))
+    : Math.min(22, Math.max(4, distance * curvatureBase));
+  const direction =
+    Math.abs(deltaY) <= 8
+      ? deltaX >= 0
+        ? 1
+        : -1
+      : deltaY >= 0
+        ? 1
+        : -1;
   const controlX = (startX + endX) / 2 + normalX * curvature * direction;
   const controlY = (startY + endY) / 2 + normalY * curvature * direction;
 
@@ -2170,7 +2532,27 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
         if (!containerSize.width || !containerSize.height) return;
         const activeNodes = nodesRef.current.filter((node) => !nodeIds?.length || nodeIds.includes(node.id));
         if (!activeNodes.length) return;
-        const padding = activeNodes.length > 120 ? 28 : activeNodes.length > 64 ? 24 : 20;
+
+        if (activeNodes.length === 1) {
+          const node = activeNodes[0];
+          const currentViewport = viewportRef.current;
+          const zoomLimit = options?.maxZoom ?? 1.14;
+          const targetZoom = options?.outOnly ? Math.min(currentViewport.zoom, zoomLimit) : zoomLimit;
+          const nodeX = Number(node.x || 0);
+          const nodeY = Number(node.y || 0);
+
+          animateViewport(
+            {
+              zoom: targetZoom,
+              x: containerSize.width / 2 - nodeX * targetZoom,
+              y: containerSize.height / 2 - nodeY * targetZoom,
+            },
+            options?.animated !== false
+          );
+          return;
+        }
+
+        const padding = activeNodes.length > 120 ? 28 : activeNodes.length > 64 ? 22 : 18;
 
         let minX = Number.POSITIVE_INFINITY;
         let minY = Number.POSITIVE_INFINITY;
@@ -2189,9 +2571,11 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
 
         const width = Math.max(1, maxX - minX);
         const height = Math.max(1, maxY - minY);
-        const zoomLimit = options?.maxZoom ?? (activeNodes.length === 1 ? 1.14 : 1.04);
+        const zoomLimit =
+          options?.maxZoom ??
+          (activeNodes.length <= 24 ? 1.18 : activeNodes.length <= 48 ? 1.1 : activeNodes.length === 1 ? 1.14 : 1.04);
         const nextZoom = clamp(
-          Math.min(containerSize.width / width, containerSize.height / height) * 0.88,
+          Math.min(containerSize.width / width, containerSize.height / height) * 0.92,
           0.18,
           zoomLimit
         );
@@ -2300,12 +2684,29 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
 
       const nextNodes = graph.nodes.map((node) => {
         const visual = visualSpecOf(node);
+        const isDocumentNode = typeKeyOf(node) === 'document';
         const degree = importanceContext.degreeMap.get(node.node_id) || 0;
         const emphasisTier = emphasisTierOfNode(node, degree, importanceContext);
         const importance = nodeImportanceOf(node, degree, emphasisTier, importanceContext);
+        const seedLane = seedLaneOfNode(node, importanceContext.rootNodeId);
+        const laneLayout = SEED_LANE_LAYOUT[seedLane];
         const densityRatio = clamp(degree / Math.max(1, importanceContext.maxDegree), 0, 1);
         const tierRadiusBoost =
-          emphasisTier === 'primary' ? 6 : emphasisTier === 'secondary' ? 3.5 : emphasisTier === 'tertiary' ? 1.5 : 0;
+          isDocumentNode
+            ? emphasisTier === 'primary'
+              ? 3.5
+              : emphasisTier === 'secondary'
+                ? 2
+                : emphasisTier === 'tertiary'
+                  ? 0.75
+                  : 0
+            : emphasisTier === 'primary'
+              ? 6
+              : emphasisTier === 'secondary'
+                ? 3.5
+                : emphasisTier === 'tertiary'
+                  ? 1.5
+                  : 0;
         const radius = clamp(
           visual.minRadius + (visual.maxRadius - visual.minRadius) * (densityRatio * 0.72 + emphasisTierWeight(emphasisTier) * 0.38),
           visual.minRadius,
@@ -2326,8 +2727,11 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
           importance,
           emphasisTier,
           color: visual.color,
+          seedLane,
           seedX: seeded?.x ?? x,
           seedY: seeded?.y ?? y,
+          laneX: laneLayout.x,
+          laneY: laneLayout.y,
           x,
           y,
           fx: isPinned ? cached?.fx ?? x : null,
@@ -2376,20 +2780,22 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
             .id((node) => node.id)
             .distance((link) => {
               const typeKey = normalizeTypeKey(link.edge.relation_type);
-              if (typeKey.includes('overview_context')) return 232;
-              if (typeKey.includes('community')) return 248;
-              if (typeKey.includes('part')) return 168;
-              if (typeKey.includes('entity')) return 132;
-              if (typeKey.includes('related')) return 148;
-              return 138;
+              if (typeKey.includes('overview_context')) return 236;
+              if (typeKey.includes('community')) return 202;
+              if (typeKey.includes('part')) return 134;
+              if (typeKey.includes('entity')) return 116;
+              if (typeKey.includes('related')) return 124;
+              if (typeKey.includes('evidence')) return 152;
+              return 120;
             })
             .strength((link) => {
               const typeKey = normalizeTypeKey(link.edge.relation_type);
-              if (typeKey.includes('overview_context')) return 0.08;
-              if (typeKey.includes('community')) return 0.12;
-              if (typeKey.includes('part')) return 0.26;
-              if (typeKey.includes('entity')) return 0.2;
-              return 0.16;
+              if (typeKey.includes('overview_context')) return 0.18;
+              if (typeKey.includes('community')) return 0.22;
+              if (typeKey.includes('part')) return 0.34;
+              if (typeKey.includes('entity')) return 0.26;
+              if (typeKey.includes('evidence')) return 0.22;
+              return 0.19;
             })
         )
         .force(
@@ -2399,44 +2805,64 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
               const typeKey = typeKeyOf(node.node);
               const emphasisMultiplier =
                 node.emphasisTier === 'primary'
-                  ? 1.18
+                  ? 1.1
                   : node.emphasisTier === 'secondary'
-                    ? 1.08
+                    ? 1.04
                     : node.emphasisTier === 'tertiary'
-                      ? 1.03
+                      ? 1.01
                       : 1;
-              const radiusInfluence = Math.max(0, node.radius - 18) * 8;
-              if (typeKey === 'community') return (-1240 - radiusInfluence) * emphasisMultiplier;
-              if (typeKey === 'document') return (-920 - radiusInfluence) * emphasisMultiplier;
-              if (typeKey === 'chunk') return (graph.nodes.length > 180 ? -420 : -500) * emphasisMultiplier;
-              return ((graph.nodes.length > 180 ? -560 : -680) - radiusInfluence * 0.4) * emphasisMultiplier;
+              const radiusInfluence = Math.max(0, node.radius - 18) * 6;
+              if (typeKey === 'community') return (-980 - radiusInfluence) * emphasisMultiplier;
+              if (typeKey === 'document') return (-760 - radiusInfluence) * emphasisMultiplier;
+              if (typeKey === 'chunk') return (graph.nodes.length > 180 ? -260 : -320) * emphasisMultiplier;
+              return ((graph.nodes.length > 180 ? -380 : -460) - radiusInfluence * 0.32) * emphasisMultiplier;
             })
-            .distanceMax(1100)
+            .distanceMax(760)
         )
         .force('center', forceCenter<ForceGraphNodeDatum>(0, 0))
-        .force('seed-x', forceX<ForceGraphNodeDatum>((node) => node.seedX).strength(graph.nodes.length > 180 ? 0.022 : 0.034))
-        .force('seed-y', forceY<ForceGraphNodeDatum>((node) => node.seedY).strength(graph.nodes.length > 180 ? 0.022 : 0.034))
+        .force(
+          'lane-x',
+          forceX<ForceGraphNodeDatum>((node) => node.laneX).strength((node) => {
+            if (node.seedLane === 'anchor') return 0.12;
+            if (node.seedLane === 'risk') return 0.1;
+            if (node.seedLane.startsWith('evidence')) return 0.086;
+            if (node.seedLane.startsWith('semantic')) return 0.082;
+            return 0.074;
+          })
+        )
+        .force(
+          'lane-y',
+          forceY<ForceGraphNodeDatum>((node) => node.laneY).strength((node) => {
+            if (node.seedLane === 'anchor') return 0.088;
+            if (node.seedLane === 'risk') return 0.094;
+            if (node.seedLane.startsWith('semantic')) return 0.076;
+            if (node.seedLane.startsWith('evidence')) return 0.072;
+            return 0.064;
+          })
+        )
+        .force('seed-x', forceX<ForceGraphNodeDatum>((node) => node.seedX).strength(graph.nodes.length > 180 ? 0.024 : 0.036))
+        .force('seed-y', forceY<ForceGraphNodeDatum>((node) => node.seedY).strength(graph.nodes.length > 180 ? 0.022 : 0.032))
         .force(
           'collide',
           forceCollide<ForceGraphNodeDatum>()
             .radius((node) => {
               const tierPadding =
                 node.emphasisTier === 'primary'
-                  ? 30
+                  ? 24
                   : node.emphasisTier === 'secondary'
-                    ? 26
+                    ? 20
                     : node.emphasisTier === 'tertiary'
-                      ? 22
+                      ? 16
                       : typeKeyOf(node.node) === 'chunk'
-                        ? 18
-                        : 22;
+                        ? 12
+                        : 15;
               return node.radius + tierPadding;
             })
             .iterations(4)
         )
-        .alpha(0.92)
-        .alphaDecay(0.028)
-        .velocityDecay(0.18)
+        .alpha(0.68)
+        .alphaDecay(0.05)
+        .velocityDecay(0.34)
         .on('tick', () => {
           nextNodes.forEach((node) => {
             cachedPositions.set(node.id, {
@@ -2670,13 +3096,37 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
             onCanvasClick();
           }}
         >
-          <defs>
-            <filter id="module4-node-shadow" x="-40%" y="-40%" width="180%" height="180%">
-              <feDropShadow dx="0" dy="18" stdDeviation="14" floodColor="rgba(15,23,42,0.14)" />
-            </filter>
-          </defs>
           <rect x="0" y="0" width="100%" height="100%" fill="transparent" />
           <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`}>
+            {false &&
+              layoutMode === ForceDirectedLayoutType &&
+              GRAPH_LAYER_GUIDES.filter((guide) =>
+                renderNodes.some((node) => guide.lanes.includes(node.seedLane))
+              ).map((guide) => (
+                <g key={guide.id} pointerEvents="none">
+                  <rect
+                    x={guide.x}
+                    y={guide.y}
+                    width={guide.width}
+                    height={guide.height}
+                    rx={24}
+                    fill={guide.fill}
+                    stroke={guide.stroke}
+                    strokeWidth={1}
+                    strokeDasharray="7 10"
+                  />
+                  <text
+                    x={guide.x + 18}
+                    y={guide.y + 26}
+                    fontSize={11}
+                    fontWeight={700}
+                    fill={guide.text}
+                    letterSpacing="0.12em"
+                  >
+                    {guide.label}
+                  </text>
+                </g>
+              ))}
             {renderLinks.map((link) => {
               const source = getLinkEndpoint(link.source);
               const target = getLinkEndpoint(link.target);
@@ -2688,10 +3138,7 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
               const active = inSelection || hovered;
               const dimmed = selectionNeighborhood ? !inSelection && !hovered : false;
               const labelText = shortText(link.label, 14);
-              const showLabel =
-                hovered ||
-                inSelection ||
-                (graph.nodes.length <= EDGE_LABEL_GRAPH_LIMIT && viewport.zoom >= EDGE_LABEL_MIN_ZOOM);
+              const showLabel = hovered;
               const strokeColor = dimmed ? mixHexColor(link.color, '#dbe4f0', 0.64) : link.color;
               const labelWidth = Math.max(64, labelText.length * 7.2 + 18);
               const edgeRole = edgeRoleOf(link.edge);
@@ -2701,9 +3148,20 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
                   <path
                     d={geometry.path}
                     fill="none"
+                    stroke="rgba(0,0,0,0)"
+                    strokeOpacity={0}
+                    strokeWidth={18}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    onMouseEnter={() => setHoveredEdgeId(link.id)}
+                    onMouseLeave={() => setHoveredEdgeId((current) => (current === link.id ? '' : current))}
+                  />
+                  <path
+                    d={geometry.path}
+                    fill="none"
                     stroke={strokeColor}
-                    strokeOpacity={dimmed ? 0.16 : active ? 0.92 : edgeRole === 'semantic' ? 0.42 : 0.24}
-                    strokeWidth={active ? Math.min(4.2, link.width + 0.85) : Math.max(1.15, link.width - 0.2)}
+                    strokeOpacity={dimmed ? 0.14 : active ? 0.92 : edgeRole === 'semantic' ? 0.34 : 0.2}
+                    strokeWidth={active ? Math.min(4, link.width + 0.72) : Math.max(1.05, link.width - 0.3)}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeDasharray={edgeRole === 'anchor' ? '7 7' : undefined}
@@ -2741,44 +3199,45 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
               const isPinned = pinnedNodeIds.includes(node.id);
               const isFocused = selectionNeighborhood ? selectionNeighborhood.nodeIds.has(node.id) : false;
               const isDimmed = selectionNeighborhood ? !isFocused : false;
+              const isDocumentNode = typeKeyOf(node.node) === 'document';
               const nodeFill = isDimmed ? mixHexColor(node.color, '#e2e8f0', 0.56) : node.color;
               const haloRadius =
                 node.radius +
                 (isSelected
-                  ? 12
+                  ? isDocumentNode ? 6 : 8
                   : node.emphasisTier === 'primary'
-                    ? 15
+                    ? isDocumentNode ? 5 : 8
                     : node.emphasisTier === 'secondary'
-                      ? 11
-                      : node.emphasisTier === 'tertiary'
-                        ? 8
-                        : 4);
-              const haloFill = isSelected
-                ? 'rgba(15,23,42,0.1)'
-                : node.emphasisTier === 'primary'
-                  ? hexToRgba(node.color, isDimmed ? 0.08 : 0.18)
-                  : node.emphasisTier === 'secondary'
-                    ? hexToRgba(node.color, isDimmed ? 0.06 : 0.12)
+                      ? 5
                     : node.emphasisTier === 'tertiary'
-                      ? hexToRgba(node.color, isDimmed ? 0.05 : 0.08)
-                      : 'rgba(255,255,255,0.28)';
+                        ? 3
+                        : 1);
+              const haloFill = isSelected
+                ? 'rgba(37,99,235,0.08)'
+                : node.emphasisTier === 'primary'
+                  ? hexToRgba(node.color, isDimmed ? 0.025 : 0.065)
+                  : node.emphasisTier === 'secondary'
+                    ? hexToRgba(node.color, isDimmed ? 0.018 : 0.045)
+                    : node.emphasisTier === 'tertiary'
+                      ? hexToRgba(node.color, isDimmed ? 0.014 : 0.028)
+                      : 'rgba(255,255,255,0.04)';
               const outerRingStroke = isSelected
-                ? '#0f172a'
+                ? '#1d4ed8'
                 : node.emphasisTier === 'primary'
                   ? mixHexColor(node.color, '#ffffff', 0.74)
                   : node.emphasisTier === 'secondary'
                     ? mixHexColor(node.color, '#ffffff', 0.66)
                     : 'rgba(255,255,255,0.9)';
               const outerRingOpacity =
-                node.emphasisTier === 'primary' ? 0.95 : node.emphasisTier === 'secondary' ? 0.82 : 0;
+                node.emphasisTier === 'primary' ? 0.48 : node.emphasisTier === 'secondary' ? 0.22 : 0;
               const labelFontSize =
                 node.emphasisTier === 'primary'
-                  ? 13
+                  ? 11
                   : node.emphasisTier === 'secondary'
-                    ? 12
-                    : node.radius >= 28
-                      ? 11
-                      : 10;
+                    ? 11
+                    : node.radius >= 24
+                      ? 10
+                      : 9;
               const shouldShowLabel = shouldRenderNodeLabel(node, {
                 graphSize: graph.nodes.length,
                 zoom: viewport.zoom,
@@ -2787,11 +3246,23 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
               });
               const labelLines = splitNodeLabel(
                 node.label,
-                node.emphasisTier === 'primary' ? 10 : node.radius >= 32 ? 9 : node.radius >= 26 ? 8 : 7,
-                2
+                node.emphasisTier === 'primary' ? 11 : node.radius >= 32 ? 9 : node.radius >= 26 ? 8 : 7,
+                node.emphasisTier === 'primary' ? 3 : 2
               );
+              const detachedLabel = false;
+              const detachedLabelLines = detachedLabel ? splitNodeLabel(node.label, 14, 2) : [];
+              const detachedLabelWidth = detachedLabel
+                ? Math.max(
+                    148,
+                    detachedLabelLines.reduce((max, line) => Math.max(max, line.length * 9.2 + 34), 0)
+                  )
+                : 0;
+              const detachedLabelHeight = detachedLabel ? 18 + detachedLabelLines.length * 13 : 0;
+              const detachedLabelY = detachedLabel ? -(node.radius + detachedLabelHeight + 22) : 0;
               const isDragging =
                 dragStateRef.current?.nodeId === node.id && dragStateRef.current?.activated;
+              const shouldShowInnerRing =
+                isSelected || node.emphasisTier === 'primary' || node.emphasisTier === 'secondary';
 
               return (
                 <g
@@ -2854,17 +3325,54 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
                   }}
                   style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
                 >
+                  {detachedLabel && (
+                    <g pointerEvents="none">
+                      <line
+                        x1="0"
+                        y1={detachedLabelY + detachedLabelHeight}
+                        x2="0"
+                        y2={-node.radius - 8}
+                        stroke="rgba(148,163,184,0.78)"
+                        strokeWidth={1.05}
+                      />
+                      <rect
+                        x={-detachedLabelWidth / 2}
+                        y={detachedLabelY}
+                        width={detachedLabelWidth}
+                        height={detachedLabelHeight}
+                        rx={14}
+                        fill="rgba(255,255,255,0.94)"
+                        stroke="rgba(148,163,184,0.72)"
+                        strokeWidth={1.1}
+                      />
+                      <circle cx={-detachedLabelWidth / 2 + 16} cy={detachedLabelY + 16} r={4} fill={nodeFill} />
+                      {detachedLabelLines.map((line, index) => (
+                        <text
+                          key={`${node.id}-detached-${line}-${index}`}
+                          x={0}
+                          y={detachedLabelY + 17 + index * 13}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fontSize={index === 0 ? 11.5 : 10.5}
+                          fontWeight={index === 0 ? 800 : 700}
+                          fill="#0f172a"
+                        >
+                          {line}
+                        </text>
+                      ))}
+                    </g>
+                  )}
                   <circle
                     r={haloRadius}
                     fill={haloFill}
                   />
                   {outerRingOpacity > 0 && (
                     <circle
-                      r={node.radius + (node.emphasisTier === 'primary' ? 6 : 4)}
+                      r={node.radius + (node.emphasisTier === 'primary' ? (isDocumentNode ? 4 : 6) : 4)}
                       fill="none"
                       stroke={outerRingStroke}
                       strokeOpacity={outerRingOpacity}
-                      strokeWidth={node.emphasisTier === 'primary' ? 1.8 : 1.4}
+                      strokeWidth={node.emphasisTier === 'primary' ? (isDocumentNode ? 1.55 : 1.8) : 1.4}
                     />
                   )}
                   <circle
@@ -2872,7 +3380,7 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
                     fill={nodeFill}
                     stroke={
                       isSelected
-                        ? '#0f172a'
+                        ? '#1d4ed8'
                         : isPinned
                           ? '#0f172a'
                           : node.emphasisTier === 'primary'
@@ -2883,32 +3391,32 @@ const Neo4jStyleForceGraph = forwardRef<ForceGraphHandle, ForceGraphProps>(
                     }
                     strokeWidth={
                       isSelected
-                        ? 3.2
+                        ? 2.8
                         : isPinned
-                          ? 2.4
+                          ? 2.1
                           : node.emphasisTier === 'primary'
-                            ? 2.8
+                            ? 2.2
                             : node.emphasisTier === 'secondary'
-                              ? 2.2
-                              : 1.6
+                              ? 1.8
+                              : 1.25
                     }
-                    filter="url(#module4-node-shadow)"
                   />
-                  <circle
-                    r={Math.max(9, node.radius - (node.emphasisTier === 'primary' ? 8 : 6))}
-                    fill="none"
-                    stroke={
-                      isSelected
-                        ? 'rgba(255,255,255,0.96)'
-                        : node.emphasisTier === 'primary'
-                          ? 'rgba(255,255,255,0.74)'
-                          : node.emphasisTier === 'secondary'
-                            ? 'rgba(255,255,255,0.56)'
-                            : 'rgba(255,255,255,0.34)'
-                    }
-                    strokeWidth={node.emphasisTier === 'primary' ? 1.5 : 1.2}
-                  />
+                  {shouldShowInnerRing && (
+                    <circle
+                      r={Math.max(9, node.radius - (node.emphasisTier === 'primary' ? 8 : 6))}
+                      fill="none"
+                      stroke={
+                        isSelected
+                          ? 'rgba(255,255,255,0.96)'
+                          : node.emphasisTier === 'primary'
+                            ? 'rgba(255,255,255,0.58)'
+                            : 'rgba(255,255,255,0.4)'
+                      }
+                      strokeWidth={node.emphasisTier === 'primary' ? 1.15 : 0.95}
+                    />
+                  )}
                   {shouldShowLabel &&
+                    !detachedLabel &&
                     labelLines.map((line, index) => (
                       <text
                         key={`${node.id}-${line}-${index}`}
@@ -2980,9 +3488,16 @@ export const KnowledgeNexus: React.FC = () => {
   );
   const currentProjection = currentGraphFile?.projection || null;
   const canUseFileGraph = Boolean(currentFileHash && graphFileHasUsableVersion(currentGraphFile));
+  const overviewGraph = useMemo(() => buildOverviewGraph(graphData), [graphData]);
+  const preferEvidenceView = useMemo(
+    () => shouldPreferEvidenceGraph(graphData, overviewGraph),
+    [graphData, overviewGraph]
+  );
+  const effectiveGraphViewMode =
+    graphViewMode === 'overview' && preferEvidenceView ? 'evidence' : graphViewMode;
   const projectedGraph = useMemo(
-    () => projectGraphForMode(graphData, graphViewMode),
-    [graphData, graphViewMode]
+    () => (effectiveGraphViewMode === 'overview' ? overviewGraph : graphData),
+    [effectiveGraphViewMode, graphData, overviewGraph]
   );
 
   const graphNodeMap = useMemo(
@@ -3132,7 +3647,8 @@ export const KnowledgeNexus: React.FC = () => {
     [detailNode, visibleAlerts]
   );
   const sourceLabel = UI_TEXT.module4Source;
-  const graphViewModeLabel = graphViewMode === 'overview' ? UI_TEXT.overviewGraph : UI_TEXT.evidenceGraph;
+  const graphViewModeLabel =
+    effectiveGraphViewMode === 'overview' ? UI_TEXT.overviewGraph : UI_TEXT.evidenceGraph;
   const openAlertCount = visibleAlerts.filter((item) => item.status === 'open').length;
   const hasActiveFilters = Boolean(filters.query.trim() || filters.nodeTypes.length > 0);
   const alertPreviewItems = useMemo(() => visibleAlerts.slice(0, 4), [visibleAlerts]);
@@ -3156,11 +3672,21 @@ export const KnowledgeNexus: React.FC = () => {
       : '';
   const canRunExplain = Boolean(primaryDetailAlert || detailNode);
   const canRunSimulate = Boolean(primaryDetailAlert);
+  const detailNodeTypeKey = detailNode ? typeKeyOf(detailNode) : '';
+  const isDocumentDetailNode = detailNodeTypeKey === 'document';
+  const isArtifactDetailNode =
+    detailNodeTypeKey === 'table' || detailNodeTypeKey === 'figure' || detailNodeTypeKey === 'image';
+  const showNodeEvidenceSection =
+    detailEvidence.length > 0 || (!isDocumentDetailNode && detailEdgeEvidenceRows.length === 0);
+  const showEdgeEvidenceSection =
+    detailEdgeEvidenceRows.length > 0 || (isDocumentDetailNode && detailEvidence.length === 0);
+  const nodeEvidenceTitle = isArtifactDetailNode ? '来源证据' : UI_TEXT.nodeEvidence;
+  const edgeEvidenceTitle = isDocumentDetailNode ? '关键证据关系' : UI_TEXT.edgeEvidence;
 
   const fitGraph = useCallback(
     (nodeIds?: string[], outOnly = false) => {
       const nvl = nvlRef.current;
-      const ids = nodeIds?.length ? nodeIds : preferredFitNodeIds(filteredGraph, graphViewMode);
+      const ids = nodeIds?.length ? nodeIds : preferredFitNodeIds(filteredGraph, effectiveGraphViewMode);
       if (!nvl || !ids.length) return;
 
       nvl.fit(ids, {
@@ -3169,7 +3695,7 @@ export const KnowledgeNexus: React.FC = () => {
         maxZoom: ids.length === 1 ? 1.14 : 1.04,
       });
     },
-    [filteredGraph, graphViewMode]
+    [effectiveGraphViewMode, filteredGraph]
   );
 
   const focusNode = useCallback(
@@ -3635,6 +4161,13 @@ export const KnowledgeNexus: React.FC = () => {
   }, [currentFileHash, currentGraphFile]);
 
   useEffect(() => {
+    if (graphViewMode !== 'overview' || !preferEvidenceView) return;
+    fitPendingRef.current = true;
+    setGraphViewMode('evidence');
+    setMessage('当前图谱以证据节点为主，已自动切换到证据图以保证完整展示。');
+  }, [graphViewMode, preferEvidenceView]);
+
+  useEffect(() => {
     if (!currentGraphFile || currentGraphFile.status === 'ready') {
       return () => undefined;
     }
@@ -3651,7 +4184,7 @@ export const KnowledgeNexus: React.FC = () => {
 
     const validNodeIds = new Set(graphData.nodes.map((node) => node.node_id));
     setPinnedNodeIds((current) => current.filter((nodeId) => validNodeIds.has(nodeId)));
-  }, [fullGraphSignature, graphData.nodes, graphViewMode]);
+  }, [effectiveGraphViewMode, fullGraphSignature, graphData.nodes]);
 
   useEffect(() => {
     if (!selectedNodeId) return;
@@ -3816,6 +4349,7 @@ export const KnowledgeNexus: React.FC = () => {
 
     const debugApi = {
       openNode: (nodeId: string) => openInspector(nodeId),
+      closeInspector,
       focusNode,
       expandNeighborhood,
       getGraph: () => graphData,
@@ -3827,36 +4361,45 @@ export const KnowledgeNexus: React.FC = () => {
     return () => {
       delete (window as Window & { __module4GraphDebug?: typeof debugApi }).__module4GraphDebug;
     };
-  }, [expandNeighborhood, focusNode, graphData, openInspector, selectedNodeId]);
+  }, [closeInspector, expandNeighborhood, focusNode, graphData, openInspector, selectedNodeId]);
 
   return (
-    <section className="module4-workbench module4-ide-shell">
-      <div className="flex h-full flex-col lg:flex-row">
+    <section className="module4-workbench module4-ide-shell relative">
+      <div className="pointer-events-none absolute inset-0 z-10 flex h-full flex-col lg:flex-row">
+        {false && (
         <aside
           className={cn(
-            'module4-ide-sidebar flex w-full shrink-0 flex-col border-b border-slate-200 lg:border-b-0 lg:border-r',
-            isUtilityDockOpen ? 'module4-ide-sidebar-expanded' : 'module4-ide-sidebar-collapsed'
+            'pointer-events-auto module4-ide-sidebar absolute left-4 top-20 bottom-24 z-20 flex shrink-0 flex-col bg-white/80 backdrop-blur-xl shadow-xl border border-slate-200/60 rounded-[24px] overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]',
+            isUtilityDockOpen ? 'w-[320px] opacity-100' : 'w-[60px] opacity-100'
           )}
         >
           <div className="flex h-full flex-col">
             <div className="module4-utility-dock" data-state={isUtilityDockOpen ? 'open' : 'collapsed'}>
               <button
                 type="button"
-                className="module4-utility-strip"
+                className="module4-utility-strip flex-col justify-center gap-2 py-4"
                 onClick={() => setIsUtilityDockOpen((current) => !current)}
                 aria-expanded={isUtilityDockOpen}
                 aria-controls="module4-utility-dock-panel"
                 aria-label={utilityDockToggleLabel}
               >
-                <span className="module4-utility-strip-title">{UI_TEXT.utilityDockTitle}</span>
-                <span className="module4-utility-strip-summary">
-                  <span className="module4-toolbar-chip text-xs">{utilityNodeCountLabel}</span>
-                  <span className="module4-toolbar-chip text-xs">{utilityAlertCountLabel}</span>
-                </span>
-                <span className="module4-utility-strip-toggle">
-                  <span className="text-xs font-medium text-slate-600">{utilityDockToggleLabel}</span>
-                  <ChevronDown size={16} className="module4-utility-strip-icon" />
-                </span>
+                <div className="flex w-full items-center justify-between">
+                  <span className={cn("module4-utility-strip-title whitespace-nowrap transition-all", !isUtilityDockOpen && "opacity-0 w-0 hidden")}>
+                    {UI_TEXT.utilityDockTitle}
+                  </span>
+                  <span className="module4-utility-strip-toggle mx-auto">
+                    <span className={cn("text-xs font-medium text-slate-600 transition-all", !isUtilityDockOpen && "hidden")}>
+                      {utilityDockToggleLabel}
+                    </span>
+                    <ChevronDown size={16} className={cn("module4-utility-strip-icon", !isUtilityDockOpen && "-rotate-90")} />
+                  </span>
+                </div>
+                {isUtilityDockOpen && (
+                  <span className="module4-utility-strip-summary">
+                    <span className="module4-toolbar-chip text-xs">{utilityNodeCountLabel}</span>
+                    <span className="module4-toolbar-chip text-xs">{utilityAlertCountLabel}</span>
+                  </span>
+                )}
               </button>
 
               <AnimatePresence initial={false}>
@@ -3971,7 +4514,7 @@ export const KnowledgeNexus: React.FC = () => {
 
                         <div className="module4-alert-stream custom-scrollbar">
                           {alertPreviewItems.length === 0 && (
-                            <div className="border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                            <div className="border border-dashed border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 px-4 py-5 text-sm text-slate-500 dark:text-slate-400">
                               {UI_TEXT.noAlerts}
                             </div>
                           )}
@@ -4081,7 +4624,7 @@ export const KnowledgeNexus: React.FC = () => {
 
               <div className="mt-4 max-h-[340px] space-y-3 overflow-y-auto pr-1">
                 {sortedRules.length === 0 && (
-                  <div className="border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                  <div className="border border-dashed border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 px-4 py-5 text-sm text-slate-500 dark:text-slate-400">
                     {UI_TEXT.noRules}
                   </div>
                 )}
@@ -4282,7 +4825,7 @@ export const KnowledgeNexus: React.FC = () => {
 
                 <div className="mt-4 space-y-3">
                   {visibleAlerts.length === 0 && (
-                    <div className="border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                    <div className="border border-dashed border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 px-4 py-6 text-center text-sm text-slate-500 dark:text-slate-400">
                       {UI_TEXT.noAlerts}
                     </div>
                   )}
@@ -4353,296 +4896,163 @@ export const KnowledgeNexus: React.FC = () => {
             </div>
           </div>
         </aside>
+        )}
 
-        <div className="module4-ide-main">
-          <header className="module4-ide-toolbar module4-toolbar-shell px-4 py-2">
-            <div className="flex min-h-0 flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-              <div className="min-w-0 flex-1">
-                <div>
-                  <div className="text-lg font-semibold tracking-tight text-slate-950">全域知识图谱</div>
-                </div>
+        <div className="module4-ide-main pointer-events-none absolute inset-0 z-10">
+          {/* 悬浮左上角控制面板 */}
+          <header className="pointer-events-auto absolute left-6 top-6 z-20 flex items-center gap-4 rounded-2xl border border-blue-100/60 bg-[#fbfcfd]/90 px-5 py-3 shadow-sm backdrop-blur-md">
+            <div className="flex items-center gap-3">
+              <div className="text-base font-semibold tracking-tight text-slate-800">全域知识图谱</div>
+              
+              <div className="h-4 w-px bg-blue-200/50" />
+              
+              <div className="flex items-center gap-2">
+                <select
+                  data-testid="module4-file-select"
+                  value={sourceMode === 'manual-select' ? manualFileHash : currentFileHash}
+                  onChange={(event) => {
+                    setManualFileHash(event.target.value);
+                    setSourceMode('manual-select');
+                  }}
+                  className="bg-transparent text-sm font-medium text-slate-600 outline-none transition-colors hover:text-[#a3b8d7] cursor-pointer"
+                >
+                  <option value="">{UI_TEXT.followActiveFile}</option>
+                  {graphFiles.map((item) => (
+                    <option key={item.graph_file_id} value={item.file_hash}>
+                      {item.file_name}
+                    </option>
+                  ))}
+                </select>
               </div>
+            </div>
+          </header>
 
-              <div className="module4-toolbar-view-switch">
-                <span className="module4-toolbar-label">{UI_TEXT.graphMode}</span>
-                <div className="module4-toolbar-segment" role="tablist" aria-label={UI_TEXT.graphMode}>
+          <div className="relative flex min-h-0 flex-1 flex-row overflow-hidden pointer-events-none h-full w-full">
+            
+            {/* 左侧图谱区域 */}
+            <div className="relative flex h-full flex-1 flex-col overflow-hidden">
+              {/* 悬浮右上角控制面板 */}
+              <div className="pointer-events-auto absolute right-6 top-6 z-20 flex items-center gap-5 rounded-2xl border border-blue-100/60 bg-[#fbfcfd]/90 px-4 py-2.5 shadow-sm backdrop-blur-md">
+                <div className="flex items-center gap-2">
+                  <select
+                    data-testid="module4-layout-select"
+                    value={layoutMode === ForceDirectedLayoutType ? 'force' : 'hierarchical'}
+                    onChange={(e) => {
+                      fitPendingRef.current = true;
+                      setLayoutMode(e.target.value === 'force' ? ForceDirectedLayoutType : HierarchicalLayoutType);
+                    }}
+                    className="bg-transparent text-sm font-medium text-slate-600 outline-none transition-colors hover:text-[#a3b8d7] cursor-pointer"
+                  >
+                    <option value="force">{UI_TEXT.forceLayout}</option>
+                    <option value="hierarchical">{UI_TEXT.hierarchicalLayout}</option>
+                  </select>
+                </div>
+
+                <div className="h-4 w-px bg-blue-200/50" />
+
+                <div className="flex items-center gap-1 rounded-lg bg-blue-50/50 p-0.5">
                   <button
                     type="button"
+                    data-testid="module4-view-overview"
                     onClick={() => {
-                      setActiveToolbarMenu(null);
                       fitPendingRef.current = true;
+                      if (preferEvidenceView) {
+                        setGraphViewMode('evidence');
+                        setMessage('当前图谱以证据节点为主，概览图暂不适用，已保持证据图展示。');
+                        return;
+                      }
                       setGraphViewMode('overview');
                     }}
-                    className={cn('module4-segment-btn px-3 py-1.5 text-xs font-medium transition', graphViewMode === 'overview' && 'module4-segment-btn-active')}
+                    className={cn(
+                      'px-3 py-1 text-xs font-medium rounded-md transition-all',
+                      effectiveGraphViewMode === 'overview' 
+                        ? 'bg-white text-blue-600 shadow-sm border border-blue-100/50' 
+                        : 'text-slate-500 hover:text-slate-800 hover:bg-slate-200/30'
+                    )}
                   >
                     {UI_TEXT.overviewGraph}
                   </button>
                   <button
                     type="button"
+                    data-testid="module4-view-evidence"
                     onClick={() => {
-                      setActiveToolbarMenu(null);
                       fitPendingRef.current = true;
                       setGraphViewMode('evidence');
                     }}
-                    className={cn('module4-segment-btn px-3 py-1.5 text-xs font-medium transition', graphViewMode === 'evidence' && 'module4-segment-btn-active')}
+                    className={cn(
+                      'px-3 py-1 text-xs font-medium rounded-md transition-all',
+                      effectiveGraphViewMode === 'evidence' 
+                        ? 'bg-white text-blue-600 shadow-sm border border-blue-100/50' 
+                        : 'text-slate-500 hover:text-slate-800 hover:bg-slate-200/30'
+                    )}
                   >
                     {UI_TEXT.evidenceGraph}
                   </button>
                 </div>
               </div>
-            </div>
-          </header>
 
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-white">
-              <div className="module4-graph-stage border-b border-slate-200 px-4 py-2.5">
-                <div ref={toolbarMenuRef} className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-slate-600">
-                    <span className="font-medium text-slate-900">{UI_TEXT.currentSummary}</span>
-                    <div className="module4-toolbar-dropdown">
-                      <button
-                        type="button"
-                        aria-haspopup="dialog"
-                        aria-expanded={activeToolbarMenu === 'summary'}
-                        onClick={() =>
-                          setActiveToolbarMenu((current) => (current === 'summary' ? null : 'summary'))
-                        }
-                        className="module4-toolbar-trigger module4-toolbar-trigger-summary"
-                        data-open={activeToolbarMenu === 'summary'}
-                      >
-                        <span className="module4-toolbar-trigger-main">{`${filteredGraph.nodes.length} 个节点 · ${filteredGraph.edges.length} 条关系`}</span>
-                        <span className="module4-toolbar-trigger-note">{toolbarGraphStatusLabel}</span>
-                        <ChevronDown
-                          size={14}
-                          className={cn('module4-toolbar-trigger-caret', activeToolbarMenu === 'summary' && 'rotate-180')}
-                        />
-                      </button>
-                      {activeToolbarMenu === 'summary' && (
-                        <div className="module4-toolbar-menu module4-toolbar-menu-summary">
-                          <div className="module4-toolbar-menu-header">
-                            <div className="module4-toolbar-menu-title">图谱概况</div>
-                            <span className="module4-toolbar-menu-kicker">{graphViewModeLabel}</span>
-                          </div>
-                          <div className="module4-toolbar-stat-grid">
-                            {metricCards.map((card) => (
-                              <div key={`toolbar-metric-${card.label}`} className={cn('module4-toolbar-stat-card bg-gradient-to-br', card.tone)}>
-                                <span className="module4-toolbar-stat-label">{card.label}</span>
-                                <strong className="module4-toolbar-stat-value">{card.value}</strong>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="module4-toolbar-status-list">
-                            <div className="module4-toolbar-status-row">
-                              <span className="module4-toolbar-status-label">{UI_TEXT.fileStatus}</span>
-                              <span
-                                className={cn(
-                                  'module4-toolbar-status-pill',
-                                  currentGraphFile?.status === 'ready'
-                                    ? 'border-blue-200 bg-blue-50 text-blue-700'
-                                    : currentGraphFile
-                                      ? 'border-amber-200 bg-amber-50 text-amber-700'
-                                      : 'border-slate-200 bg-slate-50 text-slate-600'
-                                )}
-                              >
-                                {toolbarGraphStatusLabel}
-                              </span>
-                            </div>
-                            {compactDiagnostics.map((item) => (
-                              <div key={`toolbar-diagnostic-${item.label}`} className="module4-toolbar-status-row">
-                                <span className="module4-toolbar-status-label">{item.label}</span>
-                                <span className={cn('module4-toolbar-status-pill', item.tone)}>{item.value}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex min-w-0 flex-wrap items-center gap-2 self-start xl:justify-end">
-                    <div className="module4-toolbar-dropdown module4-toolbar-dropdown-source">
-                      <button
-                        type="button"
-                        aria-haspopup="dialog"
-                        aria-expanded={activeToolbarMenu === 'source'}
-                        onClick={() =>
-                          setActiveToolbarMenu((current) => (current === 'source' ? null : 'source'))
-                        }
-                        className="module4-toolbar-trigger module4-toolbar-trigger-source"
-                        data-open={activeToolbarMenu === 'source'}
-                      >
-                        <span className="module4-toolbar-trigger-main truncate">{toolbarSourceFileLabel}</span>
-                        <span className="module4-toolbar-trigger-note">{toolbarSourceModeLabel}</span>
-                        <ChevronDown
-                          size={14}
-                          className={cn('module4-toolbar-trigger-caret', activeToolbarMenu === 'source' && 'rotate-180')}
-                        />
-                      </button>
-                      {activeToolbarMenu === 'source' && (
-                        <div className="module4-toolbar-menu module4-toolbar-menu-source">
-                          <div className="module4-toolbar-menu-header">
-                            <div className="module4-toolbar-menu-title">{UI_TEXT.sourceSwitch}</div>
-                            <span className="module4-toolbar-menu-kicker">{UI_TEXT.currentFile}</span>
-                          </div>
-                          <div className="module4-toolbar-segment module4-toolbar-segment-block" role="tablist" aria-label={UI_TEXT.sourceSwitch}>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSourceMode('follow-active-doc');
-                                setActiveToolbarMenu(null);
-                              }}
-                              className={cn('module4-segment-btn px-3 py-1.5 text-xs font-medium transition', sourceMode === 'follow-active-doc' && 'module4-segment-btn-active')}
-                            >
-                              {UI_TEXT.followActiveFile}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (currentGraphFile?.file_hash) {
-                                  setManualFileHash(currentGraphFile.file_hash);
-                                }
-                                setSourceMode('manual-select');
-                              }}
-                              className={cn('module4-segment-btn px-3 py-1.5 text-xs font-medium transition', sourceMode === 'manual-select' && 'module4-segment-btn-active')}
-                            >
-                              {UI_TEXT.manualSelect}
-                            </button>
-                          </div>
-                          <select
-                            value={sourceMode === 'manual-select' ? manualFileHash : currentFileHash}
-                            onChange={(event) => {
-                              setManualFileHash(event.target.value);
-                              setSourceMode('manual-select');
-                              setActiveToolbarMenu(null);
-                            }}
-                            aria-label={UI_TEXT.currentFile}
-                            className="module4-select module4-stage-select module4-toolbar-select h-10 w-full border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
-                          >
-                            <option value="">{UI_TEXT.selectGraphFile}</option>
-                            {graphFiles.map((item) => (
-                              <option key={item.graph_file_id} value={item.file_hash}>
-                                {`${item.file_name} · ${graphFileStatusLabel(item.status)}`}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="module4-toolbar-dropdown">
-                      <button
-                        type="button"
-                        aria-haspopup="dialog"
-                        aria-expanded={activeToolbarMenu === 'layout'}
-                        onClick={() =>
-                          setActiveToolbarMenu((current) => (current === 'layout' ? null : 'layout'))
-                        }
-                        className="module4-toolbar-trigger module4-toolbar-trigger-compact"
-                        data-open={activeToolbarMenu === 'layout'}
-                      >
-                        <span className="module4-toolbar-trigger-main">{toolbarLayoutLabel}</span>
-                        <ChevronDown
-                          size={14}
-                          className={cn('module4-toolbar-trigger-caret', activeToolbarMenu === 'layout' && 'rotate-180')}
-                        />
-                      </button>
-                      {activeToolbarMenu === 'layout' && (
-                        <div className="module4-toolbar-menu module4-toolbar-menu-layout">
-                          <div className="module4-toolbar-menu-header">
-                            <div className="module4-toolbar-menu-title">{UI_TEXT.layoutMode}</div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              fitPendingRef.current = true;
-                              setLayoutMode(ForceDirectedLayoutType);
-                              setActiveToolbarMenu(null);
-                            }}
-                            className={cn('module4-toolbar-option', layoutMode === ForceDirectedLayoutType && 'module4-toolbar-option-active')}
-                          >
-                            <span className="inline-flex items-center gap-2">
-                              <Network size={14} />
-                              {UI_TEXT.forceLayout}
-                            </span>
-                            {layoutMode === ForceDirectedLayoutType && <Check size={14} />}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              fitPendingRef.current = true;
-                              setLayoutMode(HierarchicalLayoutType);
-                              setActiveToolbarMenu(null);
-                            }}
-                            className={cn('module4-toolbar-option', layoutMode === HierarchicalLayoutType && 'module4-toolbar-option-active')}
-                          >
-                            <span className="inline-flex items-center gap-2">
-                              <Orbit size={14} />
-                              {UI_TEXT.hierarchicalLayout}
-                            </span>
-                            {layoutMode === HierarchicalLayoutType && <Check size={14} />}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="module4-toolbar-toolstrip">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveToolbarMenu(null);
-                          fitGraph(undefined, true);
-                        }}
-                        className="module4-toolbar-tool-fit"
-                      >
-                        <Focus size={16} />
-                        {UI_TEXT.fitView}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveToolbarMenu(null);
-                          adjustZoom(0.1);
-                        }}
-                        className="module4-toolbar-tool-icon"
-                        aria-label={UI_TEXT.zoomIn}
-                      >
-                        <Plus size={16} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveToolbarMenu(null);
-                          adjustZoom(-0.1);
-                        }}
-                        className="module4-toolbar-tool-icon"
-                        aria-label={UI_TEXT.zoomOut}
-                      >
-                        <Minus size={16} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveToolbarMenu(null);
-                          void loadGraph();
-                        }}
-                        className="module4-toolbar-tool-icon"
-                        aria-label={UI_TEXT.refresh}
-                      >
-                        <RefreshCw size={16} className={cn(loading && 'animate-spin')} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
+              {/* 悬浮右下角缩放控件 */}
+              <div className="pointer-events-auto absolute bottom-8 right-8 z-20 flex items-center gap-1 rounded-2xl border border-blue-100/60 bg-[#fbfcfd]/90 px-2 py-1.5 shadow-lg backdrop-blur-xl">
+                <button
+                  type="button"
+                  data-testid="module4-fit-view"
+                  onClick={() => {
+                    setActiveToolbarMenu(null);
+                    fitGraph(undefined, true);
+                  }}
+                  className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-full transition-colors"
+                  title={UI_TEXT.fitView}
+                >
+                  <Focus size={18} />
+                </button>
+                <div className="w-px h-4 bg-slate-200 mx-1" />
+                <button
+                  type="button"
+                  data-testid="module4-zoom-in"
+                  onClick={() => {
+                    setActiveToolbarMenu(null);
+                    adjustZoom(0.1);
+                  }}
+                  className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-full transition-colors"
+                  aria-label={UI_TEXT.zoomIn}
+                >
+                  <Plus size={18} />
+                </button>
+                <button
+                  type="button"
+                  data-testid="module4-zoom-out"
+                  onClick={() => {
+                    setActiveToolbarMenu(null);
+                    adjustZoom(-0.1);
+                  }}
+                  className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-full transition-colors"
+                  aria-label={UI_TEXT.zoomOut}
+                >
+                  <Minus size={18} />
+                </button>
+                <div className="w-px h-4 bg-slate-200 mx-1" />
+                <button
+                  type="button"
+                  data-testid="module4-refresh-graph"
+                  onClick={() => {
+                    setActiveToolbarMenu(null);
+                    void loadGraph();
+                  }}
+                  className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-full transition-colors"
+                  aria-label={UI_TEXT.refresh}
+                >
+                  <RefreshCw size={18} className={cn(loading && 'animate-spin')} />
+                </button>
               </div>
 
               <div
                 ref={graphHostRef}
                 data-testid="module4-graph-host"
-                className="module4-graph-host relative min-h-[420px] flex-1 overflow-hidden bg-white lg:min-h-0"
+                className="pointer-events-auto module4-graph-host relative min-h-[420px] flex-1 overflow-hidden bg-white"
               >
                 {filteredGraph.nodes.length === 0 ? (
                   <div className="absolute inset-0 flex items-center justify-center px-6">
-                    <div className="module4-empty-state border border-dashed border-slate-300 bg-white px-8 py-10 text-center">
+                    <div className="module4-empty-state border border-dashed border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800/50 px-8 py-10 text-center">
                       <h3 className="text-xl font-semibold tracking-tight text-slate-900">{UI_TEXT.emptyGraphTitle}</h3>
                       <p className="mt-3 max-w-md text-sm leading-6 text-slate-600">{UI_TEXT.emptyGraphBody}</p>
                     </div>
@@ -4674,47 +5084,42 @@ export const KnowledgeNexus: React.FC = () => {
 
             <motion.aside
               layout
-              transition={{ layout: { duration: 0.26, ease: [0.22, 1, 0.36, 1] } }}
-              style={
-                {
-                  ['--module4-detail-x' as const]: `${inspector?.x ?? 24}px`,
-                  ['--module4-detail-y' as const]: `${inspector?.y ?? 24}px`,
-                } as React.CSSProperties
-              }
+              transition={{ layout: { duration: 0.3, ease: [0.22, 1, 0.36, 1] } }}
+              data-testid="module4-detail-aside"
               className={cn(
-                'module4-detail-float custom-scrollbar absolute flex flex-col overflow-y-auto border border-slate-200 bg-white transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]',
+                'module4-details-aside custom-scrollbar pointer-events-auto flex shrink-0 flex-col overflow-y-auto bg-white/95 backdrop-blur-md shadow-[-4px_0_12px_rgba(0,0,0,0.03)] transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] dark:bg-slate-900/95 border-l border-slate-200/80 dark:border-slate-800/80',
                 detailNode
-                  ? 'pointer-events-auto opacity-100 translate-y-0 scale-100'
-                  : 'pointer-events-none opacity-0 translate-y-3 scale-[0.985]'
+                  ? 'w-[360px] opacity-100'
+                  : 'w-0 opacity-0 overflow-hidden border-none'
               )}
             >
-              <div className="border-b border-slate-200 px-4 py-3">
+              <div className="sticky top-0 z-10 bg-white/90 backdrop-blur-sm border-b border-slate-100 dark:border-slate-800 dark:bg-slate-900/90 px-4 py-3">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                      {UI_TEXT.detailsPanel}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      {detailNode && (
+                        <span className="inline-flex items-center rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                          {presentTypeLabel(detailNode)}
+                        </span>
+                      )}
+                      {selectedPinned && (
+                        <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
+                          {UI_TEXT.pinned}
+                        </span>
+                      )}
                     </div>
                     {detailNode ? (
                       <>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <span className="border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-700">
-                            {presentTypeLabel(detailNode)}
-                          </span>
-                          {selectedPinned && (
-                            <span className="border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-700">
-                              {UI_TEXT.pinned}
-                            </span>
-                          )}
-                        </div>
-                        <h3 className="mt-3 text-lg font-semibold tracking-tight text-slate-950">
+                        <h3
+                          data-testid="module4-detail-title"
+                          className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate"
+                          title={displayNameOfNode(detailNode)}
+                        >
                           {displayNameOfNode(detailNode)}
                         </h3>
-                        {summaryOfNode(detailNode) && (
-                          <p className="mt-2 text-sm leading-6 text-slate-600">{summaryOfNode(detailNode)}</p>
-                        )}
                       </>
                     ) : (
-                      <p className="mt-3 text-sm leading-6 text-slate-600">{UI_TEXT.noNodeDetails}</p>
+                      <p className="text-xs text-slate-500">{UI_TEXT.noNodeDetails}</p>
                     )}
                   </div>
 
@@ -4722,403 +5127,566 @@ export const KnowledgeNexus: React.FC = () => {
                     <button
                       type="button"
                       onClick={closeInspector}
-                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
+                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 transition-colors"
                       aria-label={UI_TEXT.closeDetails}
                     >
-                      <X size={16} />
+                      <X size={14} strokeWidth={2} />
                     </button>
                   )}
                 </div>
+                {detailNode && summaryOfNode(detailNode) && (
+                  <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed" title={summaryOfNode(detailNode)}>
+                    {summaryOfNode(detailNode)}
+                  </p>
+                )}
               </div>
 
               <AnimatePresence mode="wait" initial={false}>
                 {detailNode ? (
                   <motion.div
                     key={detailNode.node_id}
-                    initial={{ opacity: 0, x: 18, y: 4 }}
-                    animate={{ opacity: 1, x: 0, y: 0 }}
-                    exit={{ opacity: 0, x: 12, y: 2 }}
-                    transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                    className="flex-1 px-4 py-4"
+                    initial={{ opacity: 0, x: 10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 10 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex-1 px-4 py-3 space-y-4"
                   >
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => togglePin(detailNode.node_id)}
-                          className="inline-flex items-center gap-2 border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
-                        >
-                          <Pin size={13} />
-                          {selectedPinned ? UI_TEXT.unpinNode : UI_TEXT.pinNode}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => focusNode(detailNode.node_id)}
-                          className="inline-flex items-center gap-2 border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
-                        >
-                          <Focus size={13} />
-                          {UI_TEXT.focusNode}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void expandNeighborhood(detailNode.node_id)}
-                          className="inline-flex items-center gap-2 border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
-                        >
-                          <Network size={13} />
-                          {expanding ? UI_TEXT.expanding : UI_TEXT.expandNeighborhood}
-                        </button>
-                      </div>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => togglePin(detailNode.node_id)}
+                        className={cn(
+                          "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors border shadow-sm",
+                          selectedPinned 
+                            ? "bg-amber-50 text-amber-700 border-amber-200/60 hover:bg-amber-100" 
+                            : "bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-700"
+                        )}
+                      >
+                        <Pin size={12} className={selectedPinned ? "fill-amber-700" : ""} />
+                        {selectedPinned ? UI_TEXT.unpinNode : UI_TEXT.pinNode}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => focusNode(detailNode.node_id)}
+                        className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-white px-2 py-1.5 text-[11px] font-medium text-slate-700 transition-colors border border-slate-200/60 shadow-sm hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-700"
+                      >
+                        <Focus size={12} />
+                        {UI_TEXT.focusNode}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void expandNeighborhood(detailNode.node_id)}
+                        className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-white px-2 py-1.5 text-[11px] font-medium text-blue-600 transition-colors border border-blue-200/60 shadow-sm hover:bg-blue-50 dark:bg-slate-800 dark:border-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-900/20"
+                      >
+                        <Network size={12} />
+                        {expanding ? UI_TEXT.expanding : UI_TEXT.expandNeighborhood}
+                      </button>
+                    </div>
 
-                      {detailFactsOfNode(detailNode).length > 0 && (
-                        <div className="grid grid-cols-2 gap-px border border-slate-200 bg-slate-200">
+                    {detailFactsOfNode(detailNode).length > 0 && (
+                      <div className="space-y-2" data-testid="module4-detail-core-info">
+                        <h4 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200">
+                          核心信息
+                        </h4>
+                        <div className="grid grid-cols-2 gap-y-2 gap-x-3 rounded-md border border-slate-100 dark:border-slate-800/60 bg-slate-50/30 dark:bg-slate-800/20 p-2.5">
                           {detailFactsOfNode(detailNode).map((fact) => (
-                            <div key={`${fact.label}-${fact.value}`} className="bg-white px-3 py-3">
-                              <div className="text-[11px] font-medium text-slate-500">{fact.label}</div>
-                              <div className="mt-1 text-sm font-medium text-slate-900">{fact.value}</div>
+                            <div key={`${fact.label}-${fact.value}`} className="min-w-0">
+                              <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400 mb-0.5">{fact.label}</div>
+                              <div className="text-[11px] text-slate-700 dark:text-slate-300 truncate" title={fact.value}>{fact.value}</div>
                             </div>
                           ))}
                         </div>
-                      )}
+                      </div>
+                    )}
 
-                      <section className="border border-slate-200 bg-white" data-testid="module4-analysis-panel">
-                        <div className="border-b border-slate-200 px-3 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    {detailAlerts.length > 0 && (
+                      <div className="space-y-2">
+                        <h4 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200">
                           {UI_TEXT.relatedAlerts}
-                        </div>
-                        {detailAlerts.length > 0 ? (
-                          <div className="divide-y divide-slate-200">
-                            {detailAlerts.map((alert) => (
-                              <div key={alert.alert_id} className="px-3 py-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                        {severityLabel(alert.severity)}
-                                      </span>
-                                      <span className="text-[11px] text-slate-400">{alertStatusLabel(alert.status)}</span>
-                                    </div>
-                                    <div className="mt-2 text-sm font-semibold text-slate-900">{alert.title}</div>
-                                    <p className="mt-1 text-xs leading-5 text-slate-500">{alert.summary}</p>
+                        </h4>
+                        <div className="space-y-2">
+                          {detailAlerts.map((alert) => (
+                            <div key={alert.alert_id} className="rounded-md bg-white dark:bg-slate-800/30 p-3 border border-slate-100 dark:border-slate-800/60 shadow-sm">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="bg-rose-50 dark:bg-rose-900/30 px-1.5 py-0.5 rounded text-[10px] font-medium text-rose-600 dark:text-rose-400">
+                                      {severityLabel(alert.severity)}
+                                    </span>
+                                    <span className="text-[10px] text-slate-500">{alertStatusLabel(alert.status)}</span>
                                   </div>
-                                  <span className="border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500">
-                                    {Math.round(alert.risk_score)}
-                                  </span>
+                                  <div className="mt-1.5 text-xs font-semibold text-slate-900 dark:text-slate-100 truncate" title={alert.title}>{alert.title}</div>
+                                  <p className="mt-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400 line-clamp-2" title={alert.summary}>{alert.summary}</p>
                                 </div>
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  {alert.status === 'open' && (
-                                    <button
-                                      type="button"
-                                      onClick={() => void handleAckAlert(alert.alert_id)}
-                                      disabled={ackingAlertId === alert.alert_id}
-                                      className="border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      {ackingAlertId === alert.alert_id ? UI_TEXT.acknowledging : UI_TEXT.acknowledge}
-                                    </button>
-                                  )}
-                                  {alert.status !== 'resolved' && (
-                                    <button
-                                      type="button"
-                                      onClick={() => void handleResolveAlert(alert.alert_id)}
-                                      disabled={resolvingAlertId === alert.alert_id}
-                                      className="border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      {resolvingAlertId === alert.alert_id ? UI_TEXT.resolving : UI_TEXT.resolve}
-                                    </button>
-                                  )}
-                                </div>
+                                <span className="bg-slate-50 dark:bg-slate-900 px-1.5 py-0.5 rounded shadow-sm border border-slate-100 dark:border-slate-700 text-[10px] font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                                  {Math.round(alert.risk_score)}分
+                                </span>
                               </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="px-3 py-4 text-sm text-slate-500">{UI_TEXT.noRelatedAlerts}</div>
-                        )}
-                      </section>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {alert.status === 'open' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleAckAlert(alert.alert_id)}
+                                    disabled={ackingAlertId === alert.alert_id}
+                                    className="rounded bg-white dark:bg-slate-800 px-2 py-1 text-[10px] font-medium text-slate-600 dark:text-slate-300 shadow-sm border border-slate-200 dark:border-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {ackingAlertId === alert.alert_id ? UI_TEXT.acknowledging : UI_TEXT.acknowledge}
+                                  </button>
+                                )}
+                                {alert.status !== 'resolved' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleResolveAlert(alert.alert_id)}
+                                    disabled={resolvingAlertId === alert.alert_id}
+                                    className="rounded bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 text-[10px] font-medium text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-800/30 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {resolvingAlertId === alert.alert_id ? UI_TEXT.resolving : UI_TEXT.resolve}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
-                      <section className="border border-slate-200 bg-white">
-                        <div className="border-b border-slate-200 px-3 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                          {UI_TEXT.analysisTitle}
+                    <div className="space-y-2" data-testid="module4-analysis-panel">
+                      <h4 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200">
+                        高级研判
+                      </h4>
+
+                      <div className="rounded-md bg-indigo-50/40 dark:bg-indigo-900/10 p-3 border border-indigo-100/50 dark:border-indigo-800/30">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800/30 rounded px-1.5 py-0.5 text-[10px] font-medium text-indigo-600 dark:text-indigo-400">
+                            {analysisTargetLabel
+                              ? `${UI_TEXT.currentAnalysisTarget} · ${shortText(analysisTargetLabel, 28)}`
+                              : UI_TEXT.currentAnalysisTarget}
+                          </span>
+                          {primaryDetailAlert && (
+                            <span className="bg-rose-50 dark:bg-rose-900/30 border border-rose-100 dark:border-rose-800/30 rounded px-1.5 py-0.5 text-[10px] font-medium text-rose-600 dark:text-rose-400">
+                              {severityLabel(primaryDetailAlert.severity)}
+                            </span>
+                          )}
                         </div>
 
-                        <div className="px-3 py-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
-                              {analysisTargetLabel
-                                ? `${UI_TEXT.currentAnalysisTarget} · ${shortText(analysisTargetLabel, 28)}`
-                                : UI_TEXT.currentAnalysisTarget}
-                            </span>
-                            {primaryDetailAlert && (
-                              <span className="border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
-                                {severityLabel(primaryDetailAlert.severity)}
-                              </span>
-                            )}
-                          </div>
+                        <p className="mt-2 text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
+                          只在需要时对当前节点或关联告警做解释与模拟，避免和下方证据区重复展示。
+                        </p>
 
-                          <p className="mt-3 text-xs leading-5 text-slate-500">{UI_TEXT.analysisSubtitle}</p>
+                        {!primaryDetailAlert && (
+                          <p className="mt-1 text-[10px] leading-relaxed text-amber-600">{UI_TEXT.simulationNeedsAlert}</p>
+                        )}
 
-                          {!primaryDetailAlert && (
-                            <p className="mt-2 text-xs leading-5 text-amber-700">{UI_TEXT.simulationNeedsAlert}</p>
-                          )}
-
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() => void handleExplainCurrent()}
-                              disabled={!canRunExplain || explaining}
-                              data-testid="module4-explain-btn"
-                              className="border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {explaining ? UI_TEXT.explaining : UI_TEXT.explainAction}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleSimulateCurrent()}
-                              disabled={!canRunSimulate || simulating}
-                              data-testid="module4-simulate-btn"
-                              className="border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 transition hover:border-sky-300 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
+                        <div className="mt-2.5 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleExplainCurrent()}
+                            disabled={!canRunExplain || explaining}
+                            data-testid="module4-explain-btn"
+                            className="flex-1 rounded-md bg-white dark:bg-slate-800 px-2 py-1.5 text-[11px] font-medium text-slate-700 dark:text-slate-200 shadow-sm border border-slate-200 dark:border-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {explaining ? UI_TEXT.explaining : UI_TEXT.explainAction}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleSimulateCurrent()}
+                            disabled={!canRunSimulate || simulating}
+                            data-testid="module4-simulate-btn"
+                            className="flex-1 rounded-md bg-indigo-500 px-2 py-1.5 text-[11px] font-medium text-white shadow-sm transition hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
                               {simulating ? UI_TEXT.simulating : UI_TEXT.simulateAction}
                             </button>
                           </div>
                         </div>
 
-                        <div className="divide-y divide-slate-200 border-t border-slate-200">
-                          <div className="px-3 py-3" data-testid="module4-explain-result">
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                              {UI_TEXT.explainSummary}
-                            </div>
-                            {explainResult ? (
-                              <>
-                                <div
-                                  className="mt-2 text-sm font-semibold text-slate-900"
-                                  data-testid="module4-explain-conclusion"
-                                >
-                                  {explainResult.conclusion}
+                        {(explainResult || simulateResult) && (
+                          <div className="mt-3 space-y-3 border-t border-slate-100 dark:border-slate-800/60 pt-3">
+                            {explainResult && (
+                              <div className="space-y-2" data-testid="module4-explain-result">
+                                <div className="rounded-md border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-slate-900/90 px-3 py-3 shadow-sm">
+                                  <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                                    最新解释
+                                  </div>
+                                  <div
+                                    className="mt-1.5 text-xs font-medium text-slate-900 dark:text-slate-100 leading-relaxed"
+                                    data-testid="module4-explain-conclusion"
+                                  >
+                                    {explainResult.conclusion}
+                                  </div>
                                 </div>
                                 {explainResult.reasoning_steps.length > 0 && (
-                                  <div className="mt-3 space-y-2">
-                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                      {UI_TEXT.reasoningSteps}
-                                    </div>
-                                    {explainResult.reasoning_steps.map((step, index) => (
-                                      <div
-                                        key={`${index + 1}-${step}`}
-                                        className="border border-slate-200 bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600"
-                                      >
-                                        {`${index + 1}. ${step}`}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {explainResult.evidence.length > 0 && (
-                                  <div className="mt-3 space-y-2">
-                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                      {UI_TEXT.explainEvidence}
-                                    </div>
-                                    {explainResult.evidence.map((item, index) => {
-                                      const payload = asRecord(item);
-                                      return (
+                                  <details className="rounded-md border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-slate-900/90 px-3 py-3 shadow-sm">
+                                    <summary className="cursor-pointer text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                      查看推理过程
+                                    </summary>
+                                    <div className="mt-2 space-y-1.5">
+                                      {explainResult.reasoning_steps.map((step, index) => (
                                         <div
-                                          key={`${explainEvidenceSummary(payload)}-${index}`}
-                                          className="border border-slate-200 bg-white px-3 py-3"
+                                          key={`${index + 1}-${step}`}
+                                          className="rounded bg-slate-50 dark:bg-slate-800/40 px-2.5 py-1.5 text-[11px] leading-relaxed text-slate-700 dark:text-slate-300 border border-slate-100 dark:border-slate-700/50"
                                         >
-                                          <div className="text-sm font-semibold text-slate-900">
-                                            {explainEvidenceSummary(payload)}
-                                          </div>
-                                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">
-                                            {metricValueText(payload)}
-                                          </pre>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              </>
-                            ) : (
-                              <div className="mt-2 text-sm text-slate-500">{UI_TEXT.noExplainResult}</div>
-                            )}
-                          </div>
-
-                          <div className="px-3 py-3" data-testid="module4-simulate-result">
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                              {UI_TEXT.simulationSummary}
-                            </div>
-                            {simulateResult ? (
-                              <>
-                                <div
-                                  className="mt-2 text-sm font-semibold text-slate-900"
-                                  data-testid="module4-simulate-summary-text"
-                                >
-                                  {simulateResult.summary}
-                                </div>
-                                {simulateResult.impacts.length > 0 && (
-                                  <div className="mt-3">
-                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                      {UI_TEXT.simulationImpacts}
-                                    </div>
-                                    <div className="mt-2 grid gap-px border border-slate-200 bg-slate-200">
-                                      {simulateResult.impacts.map((item) => (
-                                        <div
-                                          key={`${item.metric}-${metricValueText(item.value)}`}
-                                          className="grid grid-cols-[120px_minmax(0,1fr)] gap-3 bg-white px-3 py-3"
-                                        >
-                                          <div className="text-xs font-medium text-slate-500">
-                                            {simulationMetricLabel(item.metric)}
-                                          </div>
-                                          <div className="text-sm text-slate-700">
-                                            <pre className="overflow-x-auto whitespace-pre-wrap break-words">
-                                              {metricValueText(item.value)}
-                                            </pre>
-                                          </div>
+                                          {`${index + 1}. ${step}`}
                                         </div>
                                       ))}
                                     </div>
-                                  </div>
+                                  </details>
                                 )}
+                              </div>
+                            )}
 
-                                {simulateResult.changed_alerts.length > 0 && (
-                                  <div className="mt-3">
-                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                      {UI_TEXT.simulationAlerts}
-                                    </div>
-                                    <div className="mt-2 space-y-2">
-                                      {simulateResult.changed_alerts.map((item, index) => {
-                                        const payload = asRecord(item);
-                                        return (
-                                          <div
-                                            key={`${firstText(payload.alert_id, payload.rule_id, payload.title, index)}-${index}`}
-                                            className="border border-slate-200 bg-slate-50 px-3 py-3"
-                                          >
-                                            <div className="flex flex-wrap items-center gap-2">
-                                              <span className="border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">
-                                                {firstText(payload.rule_id, payload.alert_id, '模拟结果')}
-                                              </span>
-                                              {firstText(payload.severity) && (
-                                                <span className="border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">
-                                                  {severityLabel(firstText(payload.severity))}
-                                                </span>
-                                              )}
-                                            </div>
-                                            <div className="mt-2 text-sm font-semibold text-slate-900">
-                                              {firstText(payload.title, payload.context_label, payload.summary, '模拟结果')}
-                                            </div>
-                                            {firstText(payload.summary) && (
-                                              <p className="mt-1 text-xs leading-5 text-slate-500">
-                                                {firstText(payload.summary)}
-                                              </p>
-                                            )}
-                                            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">
-                                              {metricValueText(payload)}
-                                            </pre>
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
+                            {simulateResult && (
+                              <div className="space-y-2" data-testid="module4-simulate-result">
+                                <div className="rounded-md border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-slate-900/90 px-3 py-3 shadow-sm">
+                                  <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                                    模拟结果
                                   </div>
+                                  <div
+                                    className="mt-1.5 text-xs font-medium text-slate-900 dark:text-slate-100 leading-relaxed"
+                                    data-testid="module4-simulate-summary-text"
+                                  >
+                                    {simulateResult.summary}
+                                  </div>
+                                </div>
+                                {(simulateResult.impacts.length > 0 || simulateResult.changed_alerts.length > 0) && (
+                                  <details className="rounded-md border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-slate-900/90 px-3 py-3 shadow-sm">
+                                    <summary className="cursor-pointer text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                      查看模拟细节
+                                    </summary>
+                                    <div className="mt-2 space-y-3">
+                                      {simulateResult.impacts.length > 0 && (
+                                        <div className="space-y-1.5">
+                                          <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                            {UI_TEXT.simulationImpacts}
+                                          </div>
+                                          <div className="overflow-hidden rounded-md border border-slate-200 dark:border-slate-700 shadow-sm">
+                                            {simulateResult.impacts.map((item, index) => (
+                                              <div
+                                                key={`${item.metric}-${metricValueText(item.value)}`}
+                                                className={cn(
+                                                  "grid grid-cols-[90px_minmax(0,1fr)] gap-2 bg-white dark:bg-slate-900 px-2.5 py-2",
+                                                  index > 0 && "border-t border-slate-100 dark:border-slate-800"
+                                                )}
+                                              >
+                                                <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400 self-center">
+                                                  {simulationMetricLabel(item.metric)}
+                                                </div>
+                                                <div className="text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                                                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-sans">
+                                                    {metricValueText(item.value)}
+                                                  </pre>
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      {simulateResult.changed_alerts.length > 0 && (
+                                        <div className="space-y-1.5">
+                                          <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                            {UI_TEXT.simulationAlerts}
+                                          </div>
+                                          <div className="space-y-2">
+                                            {simulateResult.changed_alerts.map((item, index) => {
+                                              const payload = asRecord(item);
+                                              return (
+                                                <div
+                                                  key={`${firstText(payload.alert_id, payload.rule_id, payload.title, index)}-${index}`}
+                                                  className="rounded-md bg-slate-50 dark:bg-slate-800/40 px-3 py-2.5 border border-slate-100 dark:border-slate-700/50"
+                                                >
+                                                  <div className="flex flex-wrap items-center gap-1.5">
+                                                    <span className="rounded bg-white dark:bg-slate-900 px-1.5 py-0.5 text-[9px] font-medium text-slate-600 dark:text-slate-300 shadow-sm border border-slate-200 dark:border-slate-700">
+                                                      {firstText(payload.rule_id, payload.alert_id, '模拟结果')}
+                                                    </span>
+                                                    {firstText(payload.severity) && (
+                                                      <span className="rounded bg-rose-50 dark:bg-rose-900/30 px-1.5 py-0.5 text-[9px] font-medium text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-800/30">
+                                                        {severityLabel(firstText(payload.severity))}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  <div className="mt-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                                                    {firstText(payload.title, payload.context_label, payload.summary, '模拟结果')}
+                                                  </div>
+                                                  {firstText(payload.summary) && (
+                                                    <p className="mt-1 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+                                                      {firstText(payload.summary)}
+                                                    </p>
+                                                  )}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </details>
                                 )}
-                              </>
-                            ) : (
-                              <div className="mt-2 text-sm text-slate-500">{UI_TEXT.noSimulateResult}</div>
+                              </div>
                             )}
                           </div>
-                        </div>
-                      </section>
-
-                      <section className="border border-slate-200 bg-white">
-                        <div className="border-b border-slate-200 px-3 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                          {UI_TEXT.nodeEvidence}
-                        </div>
-                        {detailEvidence.length > 0 ? (
-                          <div className="divide-y divide-slate-200">
-                            {detailEvidence.map((item) => (
-                              <div key={item.evidence_id} className="px-3 py-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="text-sm font-semibold text-slate-900">{evidenceTitle(item)}</div>
-                                    <div className="mt-1 text-[11px] text-slate-500">{evidenceLocatorText(item)}</div>
-                                  </div>
-                                  <span className="border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500">
-                                    {Math.round(item.confidence * 100)}%
-                                  </span>
-                                </div>
-                                <p className="mt-3 text-sm leading-6 text-slate-600">{item.snippet || '未提供证据片段。'}</p>
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  <span className="border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600">
-                                    {UI_TEXT.evidenceLocator}：{evidenceLocatorText(item)}
-                                  </span>
-                                  {item.artifact_url && (
-                                    <a
-                                      href={item.artifact_url}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
-                                    >
-                                      {UI_TEXT.openArtifact}
-                                    </a>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="px-3 py-4 text-sm text-slate-500">{UI_TEXT.noEvidence}</div>
                         )}
-                      </section>
+                      </div>
 
-                      <section className="border border-slate-200 bg-white">
-                        <div className="border-b border-slate-200 px-3 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                          {UI_TEXT.edgeEvidence}
-                        </div>
-                        {detailEdgeEvidenceRows.length > 0 ? (
-                          <div className="divide-y divide-slate-200">
-                            {detailEdgeEvidenceRows.map(({ edge, evidence }) => (
-                              <div key={edge.edge_id} className="px-3 py-3">
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="text-sm font-semibold text-slate-900">{relationLabelOf(edge)}</div>
-                                  <span
-                                    className="border px-2 py-0.5 text-[10px] font-semibold text-slate-500"
-                                    style={{
-                                      borderColor: `${relationToneOf(edge)}40`,
-                                      backgroundColor: `${relationToneOf(edge)}14`,
-                                    }}
-                                  >
-                                    {Math.round(edge.confidence * 100)}%
-                                  </span>
+                      {isDocumentDetailNode ? (
+                        <>
+                          {showEdgeEvidenceSection && (
+                            <div className="space-y-3" data-testid="module4-detail-edge-evidence">
+                              <h4 className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 pb-1.5 border-b border-slate-100 dark:border-slate-800">
+                                {edgeEvidenceTitle}
+                              </h4>
+                              {detailEdgeEvidenceRows.length > 0 ? (
+                                <div className="space-y-3">
+                                  {detailEdgeEvidenceRows.map(({ edge, evidence }) => (
+                                    <div key={edge.edge_id} className="rounded-xl bg-slate-50/50 dark:bg-slate-800/30 p-3.5 border border-slate-100 dark:border-slate-700/50">
+                                      <div className="flex items-center justify-between gap-3 mb-3">
+                                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{relationLabelOf(edge)}</div>
+                                        <span
+                                          className="border px-2 py-0.5 rounded text-[10px] font-semibold text-slate-500 dark:text-slate-400"
+                                          style={{
+                                            borderColor: `${relationToneOf(edge)}40`,
+                                            backgroundColor: `${relationToneOf(edge)}14`,
+                                          }}
+                                        >
+                                          {Math.round(edge.confidence * 100)}%
+                                        </span>
+                                      </div>
+                                      <div className="space-y-3">
+                                        {evidence.map((item) => (
+                                          <div key={item.evidence_id} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 shadow-sm">
+                                            <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{evidenceLocatorText(item)}</div>
+                                            <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">{evidenceTitle(item)}</div>
+                                            {evidenceSnippetText(item) && (
+                                              <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                                                {evidenceSnippetText(item)}
+                                              </p>
+                                            )}
+                                            {evidenceInsightChips(item).length > 0 && (
+                                              <div className="mt-3 flex flex-wrap gap-2">
+                                                {evidenceInsightChips(item).map((chip, index) => (
+                                                  <span
+                                                    key={`${item.evidence_id}-edge-chip-${index}`}
+                                                    className="rounded-md border border-emerald-100/90 bg-emerald-50/70 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:border-emerald-900/80 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                                  >
+                                                    {shortText(chip, 38)}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            )}
+                                            {renderEvidenceDataframe(item)}
+                                            {item.artifact_url && (
+                                              <div className="mt-3">
+                                                <a
+                                                  href={item.artifact_url}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                  className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-700 shadow-sm transition hover:border-sky-300 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300 dark:hover:border-sky-700 dark:hover:bg-sky-900/50"
+                                                >
+                                                  {UI_TEXT.openArtifact}
+                                                </a>
+                                              </div>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
                                 </div>
-                                <div className="mt-3 space-y-3">
-                                  {evidence.map((item) => (
-                                    <div key={item.evidence_id} className="border border-slate-200 bg-slate-50 px-3 py-3">
-                                      <div className="text-[11px] font-medium text-slate-500">{evidenceLocatorText(item)}</div>
-                                      <p className="mt-2 text-sm leading-6 text-slate-600">
-                                        {item.snippet || '未提供证据片段。'}
-                                      </p>
+                              ) : (
+                                <div className="px-3 py-4 text-sm text-slate-500 dark:text-slate-400">
+                                  该文档的主要证据尚未挂到关系上。
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {detailEvidence.length > 0 && (
+                            <div className="space-y-2" data-testid="module4-detail-node-evidence">
+                              <h4 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200">
+                                {nodeEvidenceTitle}
+                              </h4>
+                              <div className="space-y-2">
+                                {detailEvidence.map((item) => (
+                                  <div key={item.evidence_id} className="rounded-md bg-white dark:bg-slate-800/30 p-3 border border-slate-100 dark:border-slate-800/60 shadow-sm">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate" title={evidenceTitle(item)}>{evidenceTitle(item)}</div>
+                                        <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400 truncate" title={evidenceLocatorText(item)}>{evidenceLocatorText(item)}</div>
+                                      </div>
+                                      <span className="shrink-0 rounded bg-slate-50 border border-slate-200 dark:border-slate-700 dark:bg-slate-900 px-1.5 py-0.5 text-[9px] font-medium text-slate-500 dark:text-slate-400 shadow-sm">
+                                        {Math.round(item.confidence * 100)}%
+                                      </span>
+                                    </div>
+                                    {evidenceSnippetText(item) && (
+                                      <p className="mt-2 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300 line-clamp-3" title={evidenceSnippetText(item)}>{evidenceSnippetText(item)}</p>
+                                    )}
+                                    {evidenceInsightChips(item).length > 0 && (
+                                      <div className="mt-2 flex flex-wrap gap-1.5">
+                                        {evidenceInsightChips(item).map((chip, index) => (
+                                          <span
+                                            key={`${item.evidence_id}-chip-${index}`}
+                                            className="rounded border border-emerald-100 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-900/20 dark:text-emerald-400"
+                                          >
+                                            {shortText(chip, 32)}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div className="mt-2 text-[10px]">
+                                      {renderEvidenceDataframe(item)}
+                                    </div>
+                                    <div className="mt-2.5 flex flex-wrap gap-1.5">
                                       {item.artifact_url && (
-                                        <div className="mt-3">
+                                        <a
+                                          href={item.artifact_url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-[10px] font-medium text-sky-700 shadow-sm transition hover:border-sky-300 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300 dark:hover:border-sky-700 dark:hover:bg-sky-900/50"
+                                        >
+                                          {UI_TEXT.openArtifact}
+                                        </a>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {showNodeEvidenceSection && (
+                            <div className="space-y-2" data-testid="module4-detail-node-evidence">
+                              <h4 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200">
+                                {nodeEvidenceTitle}
+                              </h4>
+                              {detailEvidence.length > 0 ? (
+                                <div className="space-y-2">
+                                  {detailEvidence.map((item) => (
+                                    <div key={item.evidence_id} className="rounded-md bg-white dark:bg-slate-800/30 p-3 border border-slate-100 dark:border-slate-800/60 shadow-sm">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="min-w-0">
+                                          <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate" title={evidenceTitle(item)}>{evidenceTitle(item)}</div>
+                                          <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400 truncate" title={evidenceLocatorText(item)}>{evidenceLocatorText(item)}</div>
+                                        </div>
+                                        <span className="shrink-0 rounded bg-slate-50 border border-slate-200 dark:border-slate-700 dark:bg-slate-900 px-1.5 py-0.5 text-[9px] font-medium text-slate-500 dark:text-slate-400 shadow-sm">
+                                          {Math.round(item.confidence * 100)}%
+                                        </span>
+                                      </div>
+                                      {evidenceSnippetText(item) && (
+                                        <p className="mt-2 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300 line-clamp-3" title={evidenceSnippetText(item)}>{evidenceSnippetText(item)}</p>
+                                      )}
+                                      {evidenceInsightChips(item).length > 0 && (
+                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                          {evidenceInsightChips(item).map((chip, index) => (
+                                            <span
+                                              key={`${item.evidence_id}-chip-${index}`}
+                                              className="rounded border border-emerald-100 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-900/20 dark:text-emerald-400"
+                                            >
+                                              {shortText(chip, 32)}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                      <div className="mt-2 text-[10px]">
+                                        {renderEvidenceDataframe(item)}
+                                      </div>
+                                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                                        {item.artifact_url && (
                                           <a
                                             href={item.artifact_url}
                                             target="_blank"
                                             rel="noreferrer"
-                                            className="border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-medium text-sky-700 transition hover:border-sky-300 hover:bg-sky-50"
+                                            className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-[10px] font-medium text-sky-700 shadow-sm transition hover:border-sky-300 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300 dark:hover:border-sky-700 dark:hover:bg-sky-900/50"
                                           >
                                             {UI_TEXT.openArtifact}
                                           </a>
-                                        </div>
-                                      )}
+                                        )}
+                                      </div>
                                     </div>
                                   ))}
                                 </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="px-3 py-4 text-sm text-slate-500">{UI_TEXT.noEdgeEvidence}</div>
-                        )}
-                      </section>
+                              ) : (
+                                <div className="px-3 py-4 text-sm text-slate-500 dark:text-slate-400">{UI_TEXT.noEvidence}</div>
+                              )}
+                            </div>
+                          )}
+
+                          {showEdgeEvidenceSection && (
+                            <div className="space-y-3" data-testid="module4-detail-edge-evidence">
+                              <h4 className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 pb-1.5 border-b border-slate-100 dark:border-slate-800">
+                                {edgeEvidenceTitle}
+                              </h4>
+                              {detailEdgeEvidenceRows.length > 0 ? (
+                                <div className="space-y-3">
+                                  {detailEdgeEvidenceRows.map(({ edge, evidence }) => (
+                                    <div key={edge.edge_id} className="rounded-xl bg-slate-50/50 dark:bg-slate-800/30 p-3.5 border border-slate-100 dark:border-slate-700/50">
+                                      <div className="flex items-center justify-between gap-3 mb-3">
+                                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{relationLabelOf(edge)}</div>
+                                        <span
+                                          className="border px-2 py-0.5 rounded text-[10px] font-semibold text-slate-500 dark:text-slate-400"
+                                          style={{
+                                            borderColor: `${relationToneOf(edge)}40`,
+                                            backgroundColor: `${relationToneOf(edge)}14`,
+                                          }}
+                                        >
+                                          {Math.round(edge.confidence * 100)}%
+                                        </span>
+                                      </div>
+                                      <div className="space-y-3">
+                                        {evidence.map((item) => (
+                                          <div key={item.evidence_id} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 shadow-sm">
+                                            <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{evidenceLocatorText(item)}</div>
+                                            <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">{evidenceTitle(item)}</div>
+                                            {evidenceSnippetText(item) && (
+                                              <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                                                {evidenceSnippetText(item)}
+                                              </p>
+                                            )}
+                                            {evidenceInsightChips(item).length > 0 && (
+                                              <div className="mt-3 flex flex-wrap gap-2">
+                                                {evidenceInsightChips(item).map((chip, index) => (
+                                                  <span
+                                                    key={`${item.evidence_id}-edge-chip-${index}`}
+                                                    className="rounded-md border border-emerald-100/90 bg-emerald-50/70 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:border-emerald-900/80 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                                  >
+                                                    {shortText(chip, 38)}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            )}
+                                            {renderEvidenceDataframe(item)}
+                                            {item.artifact_url && (
+                                              <div className="mt-3">
+                                                <a
+                                                  href={item.artifact_url}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                  className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-700 shadow-sm transition hover:border-sky-300 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300 dark:hover:border-sky-700 dark:hover:bg-sky-900/50"
+                                                >
+                                                  {UI_TEXT.openArtifact}
+                                                </a>
+                                              </div>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="px-3 py-4 text-sm text-slate-500 dark:text-slate-400">{UI_TEXT.noEdgeEvidence}</div>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )}
 
                       {detailNeighbors.length > 0 && (
-                        <section className="border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 px-3 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                        <div className="space-y-3" data-testid="module4-detail-related-nodes">
+                          <h4 className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 pb-1.5 border-b border-slate-100 dark:border-slate-800">
                             {UI_TEXT.relatedNodes}
-                          </div>
-                          <div className="flex flex-wrap gap-2 px-3 py-3">
+                          </h4>
+                          <div className="flex flex-wrap gap-2">
                             {detailNeighbors.map((neighbor) => (
                               <button
                                 key={neighbor.node_id}
@@ -5130,49 +5698,49 @@ export const KnowledgeNexus: React.FC = () => {
                                   openInspector(neighbor.node_id);
                                   window.setTimeout(() => focusNode(neighbor.node_id), 120);
                                 }}
-                                className="inline-flex items-center gap-2 border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                               >
                                 <span
-                                  className="h-2.5 w-2.5 rounded-full"
+                                  className="h-2 w-2 rounded-full"
                                   style={{ backgroundColor: visualSpecOf(neighbor).color }}
                                 />
                                 {shortText(displayNameOfNode(neighbor), 20)}
                               </button>
                             ))}
                           </div>
-                        </section>
+                        </div>
                       )}
 
                       {attributeRowsOfNode(detailNode).length > 0 && (
-                        <section className="border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 px-3 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                            {UI_TEXT.nodeAttributes}
-                          </div>
-                          <div className="divide-y divide-slate-200">
+                        <div className="space-y-3" data-testid="module4-detail-attributes">
+                          <h4 className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 pb-1.5 border-b border-slate-100 dark:border-slate-800">
+                            补充属性
+                          </h4>
+                          <div className="space-y-2">
                             {attributeRowsOfNode(detailNode).map((row) => (
                               <div
                                 key={`${row.label}-${row.value}`}
-                                className="flex items-start justify-between gap-3 px-3 py-3"
+                                className="flex items-start justify-between gap-3 rounded-lg bg-slate-50/50 dark:bg-slate-800/30 p-2.5 border border-slate-100 dark:border-slate-700/50"
                               >
-                                <div className="text-xs font-medium text-slate-500">{row.label}</div>
-                                <div className="max-w-[200px] text-right text-sm text-slate-700">{row.value}</div>
+                                <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{row.label}</div>
+                                <div className="max-w-[200px] text-right text-xs font-medium text-slate-700 dark:text-slate-200">{row.value}</div>
                               </div>
                             ))}
                           </div>
-                        </section>
+                        </div>
                       )}
 
                       {detailEdges.length > 0 && (
-                        <section className="border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 px-3 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                        <div className="space-y-3" data-testid="module4-detail-relations">
+                          <h4 className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 pb-1.5 border-b border-slate-100 dark:border-slate-800">
                             {UI_TEXT.edgeRelations}
-                          </div>
-                          <div className="divide-y divide-slate-200">
+                          </h4>
+                          <div className="space-y-2">
                             {detailEdges.slice(0, 6).map((edge) => (
-                              <div key={edge.edge_id} className="flex items-center justify-between gap-3 px-3 py-3 text-xs text-slate-600">
-                                <span>{relationLabelOf(edge)}</span>
+                              <div key={edge.edge_id} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50/50 dark:bg-slate-800/30 p-2.5 text-[11px] text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-700/50">
+                                <span className="font-medium">{relationLabelOf(edge)}</span>
                                 <span
-                                  className="border px-2 py-0.5 text-[10px] font-semibold text-slate-500"
+                                  className="border px-2 py-0.5 rounded text-[10px] font-semibold text-slate-500 dark:text-slate-400"
                                   style={{ borderColor: `${relationToneOf(edge)}40`, backgroundColor: `${relationToneOf(edge)}14` }}
                                 >
                                   {Math.round(edge.confidence * 100)}%
@@ -5180,9 +5748,8 @@ export const KnowledgeNexus: React.FC = () => {
                               </div>
                             ))}
                           </div>
-                        </section>
+                        </div>
                       )}
-                    </div>
                   </motion.div>
                 ) : (
                   <motion.div
@@ -5193,16 +5760,16 @@ export const KnowledgeNexus: React.FC = () => {
                     transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
                     className="flex flex-1 items-center justify-center px-6 py-8"
                   >
-                    <div className="module4-empty-state module4-detail-empty border border-dashed border-slate-300 bg-white px-6 py-8 text-center">
-                      <div className="text-sm font-medium text-slate-900">{UI_TEXT.detailsPanel}</div>
-                      <p className="mt-3 text-sm leading-6 text-slate-500">{UI_TEXT.noNodeDetails}</p>
+                    <div className="module4-empty-state module4-detail-empty border border-dashed border-slate-300 dark:border-slate-600 bg-white/90 dark:bg-slate-800/50 px-6 py-8 text-center">
+                      <div className="text-sm font-medium text-slate-900 dark:text-slate-100">{UI_TEXT.detailsPanel}</div>
+                      <p className="mt-3 text-sm leading-6 text-slate-500 dark:text-slate-400">{UI_TEXT.noNodeDetails}</p>
                     </div>
                   </motion.div>
                 )}
               </AnimatePresence>
             </motion.aside>
-          </div>
         </div>
+      </div>
       </div>
     </section>
   );

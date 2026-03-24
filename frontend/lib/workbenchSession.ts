@@ -43,6 +43,16 @@ export type PersistedExtractionJob = {
     current_file_name: string;
     current_stage: string;
     progress_ratio: number;
+    queued_files?: number;
+    running_files?: Array<{
+      file_index?: number;
+      file_name: string;
+      stage: string;
+      status?: string;
+      progress_ratio: number;
+    }>;
+    active_stages?: Record<string, number>;
+    parallel_workers?: number;
   };
   files: PersistedExtractionJobFile[];
   errors: string[];

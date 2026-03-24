@@ -103,8 +103,16 @@ export const Module2InlineAssistant: React.FC<Module2InlineAssistantProps> = ({ 
       </div>
 
       {/* Input */}
-      <div className="p-3 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800">
-        <div className="relative">
+      <div className="p-3 bg-slate-50/50 dark:bg-slate-900/50 border-t border-slate-100 dark:border-slate-800">
+        <div
+          className="relative flex flex-col rounded-[20px] border border-slate-200/80 bg-white shadow-sm transition-all focus-within:border-blue-400/50 focus-within:shadow-md hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:focus-within:border-blue-500/50 dark:hover:border-slate-600"
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Implement file drop handling here if needed
+          }}
+        >
           <textarea
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
@@ -114,16 +122,28 @@ export const Module2InlineAssistant: React.FC<Module2InlineAssistantProps> = ({ 
                 handleSend();
               }
             }}
-            placeholder="输入自然语言指令，例如：抽取第10-20页所有表格并先预览结果..."
-            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 pr-10 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none min-h-[80px]"
+            placeholder="输入自然语言指令..."
+            className="w-full bg-transparent px-4 pt-3 pb-2 text-[13px] text-slate-700 dark:text-slate-200 focus:outline-none resize-none min-h-[60px] custom-scrollbar"
           />
-          <button
-            onClick={handleSend}
-            disabled={!inputValue.trim()}
-            className="absolute right-2 bottom-2 p-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
-          >
-            <Send size={14} />
-          </button>
+          <div className="flex items-center justify-between px-2 pb-2 pt-1">
+            <div className="flex items-center gap-1">
+              {/* Optional actions placeholder */}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSend}
+                disabled={!inputValue.trim()}
+                className={cn(
+                  'inline-flex h-7 w-7 items-center justify-center rounded-full transition-all duration-300',
+                  !inputValue.trim()
+                    ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500'
+                    : 'bg-[#a3b8d7] text-white shadow-sm hover:bg-[#8ba3c7] hover:scale-105 active:scale-95 dark:bg-blue-600 dark:hover:bg-blue-700'
+                )}
+              >
+                <Send size={12} className="ml-0.5" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

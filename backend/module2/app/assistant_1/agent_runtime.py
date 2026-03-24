@@ -639,6 +639,31 @@ class Assistant1AgentRuntime:
                 "ok": False,
                 "error": "file_hash is required because there is no default document in the current session",
             }
+
+        warnings: List[str] = []
+        retrieval_stats: Dict[str, Any] = {}
+        auto_ingest_result: Dict[str, Any] | None = None
+        try:
+            retrieval_stats = self.retrieval.stats(target_file_hash)
+        except Exception as exc:
+            warnings.append(f"retrieval_stats_unavailable:{type(exc).__name__}")
+        if int(retrieval_stats.get("unit_count") or 0) <= 0:
+            auto_ingest_result = self._tool_ingest_document(
+                {
+                    "file_hash": target_file_hash,
+                    "persist": True,
+                },
+                context,
+            )
+            if auto_ingest_result.get("ok"):
+                retrieval_stats = {
+                    "document_count": 1,
+                    "unit_count": int(auto_ingest_result.get("knowledge_unit_count") or 0),
+                }
+                if int(retrieval_stats.get("unit_count") or 0) <= 0:
+                    warnings.append("auto_ingest_completed_but_no_units_built")
+            else:
+                warnings.append(str(auto_ingest_result.get("error") or "auto_ingest_failed"))
         try:
             result = self.retrieval.query(
                 query,
@@ -677,7 +702,6 @@ class Assistant1AgentRuntime:
                 }
             )
 
-        warnings: List[str] = []
         if len(aggregated_years) > 1:
             warnings.append(
                 "retrieved matches appear to span multiple years or versions: " + ", ".join(sorted(aggregated_years))
@@ -691,7 +715,10 @@ class Assistant1AgentRuntime:
             "matches": compact_matches,
             "warnings": warnings,
             "year_groups": self._group_matches_by_year(compact_matches),
+            "retrieval_stats": retrieval_stats,
         }
+        if auto_ingest_result is not None:
+            payload["auto_ingest"] = auto_ingest_result
         if grouped:
             payload["grouped_mode"] = True
         if len(payload["year_groups"]) > 1:

@@ -149,13 +149,12 @@ const App: React.FC = () => {
 
         <main
           data-active-tab={activeTab}
-          className={`flex-1 transition-all duration-300 relative z-10 ${
-          isFullPage
-            ? 'w-full p-0'
-            : isEdgeToEdgeWorkbench
-              ? `${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'} p-0 overflow-hidden`
-              : `p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`
-        }`}>
+          className={`flex-1 transition-all duration-300 relative z-10 ${isFullPage
+              ? 'w-full p-0'
+              : isEdgeToEdgeWorkbench
+                ? `${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'} p-0 overflow-hidden`
+                : `p-4 pt-4 ${isSidebarCollapsed ? 'ml-[72px]' : 'ml-72'}`
+            }`}>
           <Suspense fallback={loadingFallback}>{renderContent()}</Suspense>
         </main>
       </div>

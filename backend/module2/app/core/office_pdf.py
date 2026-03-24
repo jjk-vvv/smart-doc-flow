@@ -23,7 +23,7 @@ from urllib.parse import quote
 WORD_EXTENSIONS = {".doc", ".docx"}
 MODULE2_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = MODULE2_ROOT.parents[1]
-_OFFICE_PREVIEW_VERSION = "module2-office-preview-v2"
+_OFFICE_PREVIEW_VERSION = "module2-office-preview-v3"
 
 
 @dataclass
@@ -425,33 +425,37 @@ def _load_cached_pdf(file_hash: str) -> Optional[Tuple[bytes, Dict[str, Any]]]:
     if not _office_pdf_cache_enabled():
         return None
 
-    pdf_path, meta_path = _office_preview_storage_paths(file_hash)
-    if not pdf_path.exists() or not pdf_path.is_file():
-        return None
-    try:
-        pdf_bytes = pdf_path.read_bytes()
-    except Exception:
-        return None
-    if not _looks_like_pdf(pdf_bytes):
-        return None
+    for pdf_path, meta_path in (
+        _office_preview_storage_paths(file_hash),
+        _legacy_office_preview_storage_paths(file_hash),
+    ):
+        if not pdf_path.exists() or not pdf_path.is_file():
+            continue
+        try:
+            pdf_bytes = pdf_path.read_bytes()
+        except Exception:
+            continue
+        if not _looks_like_pdf(pdf_bytes):
+            continue
 
-    record: Dict[str, Any] = {}
-    if meta_path.exists() and meta_path.is_file():
-        try:
-            payload = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
-            if isinstance(payload, dict):
-                record = dict(payload)
-        except Exception:
-            record = {}
-    record["artifact_path"] = _artifact_fragment_from_path(pdf_path)
-    record["artifact_url"] = _artifact_url_from_fragment(str(record.get("artifact_path") or ""))
-    record["file_hash"] = _normalize_content_hash(file_hash)
-    if "elapsed_ms" in record:
-        try:
-            record["elapsed_ms"] = int(record.get("elapsed_ms", 0) or 0)
-        except Exception:
-            record["elapsed_ms"] = 0
-    return pdf_bytes, record
+        record: Dict[str, Any] = {}
+        if meta_path.exists() and meta_path.is_file():
+            try:
+                payload = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
+                if isinstance(payload, dict):
+                    record = dict(payload)
+            except Exception:
+                record = {}
+        record["artifact_path"] = _artifact_fragment_from_path(pdf_path)
+        record["artifact_url"] = _artifact_url_from_fragment(str(record.get("artifact_path") or ""))
+        record["file_hash"] = _normalize_content_hash(file_hash)
+        if "elapsed_ms" in record:
+            try:
+                record["elapsed_ms"] = int(record.get("elapsed_ms", 0) or 0)
+            except Exception:
+                record["elapsed_ms"] = 0
+        return pdf_bytes, record
+    return None
 
 
 def _persist_pdf_cache(
@@ -648,6 +652,13 @@ def _normalize_content_hash(value: Any) -> str:
 
 
 def _office_preview_storage_paths(file_hash: str) -> Tuple[Path, Path]:
+    normalized_hash = _normalize_content_hash(file_hash)
+    rel_dir = Path("preview") / "op" / normalized_hash[:2]
+    root = _artifact_root_dir()
+    return (root / rel_dir / f"{normalized_hash}.pdf").resolve(), (root / rel_dir / f"{normalized_hash}.json").resolve()
+
+
+def _legacy_office_preview_storage_paths(file_hash: str) -> Tuple[Path, Path]:
     normalized_hash = _normalize_content_hash(file_hash)
     rel_dir = Path("preview") / "office_pdf" / "by_source" / normalized_hash[:2] / normalized_hash
     root = _artifact_root_dir()

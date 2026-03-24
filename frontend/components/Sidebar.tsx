@@ -193,6 +193,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           const isParentActive = activeTab === item.id || (item.subItems && item.subItems.some(sub => sub.id === activeTab));
           const hasSubItems = item.subItems && item.subItems.length > 0;
           const isExpanded = expandedItems.includes(item.id);
+          
+          // 如果有子项且已展开，父项不需要显示强烈的选中背景，避免与子项的选中状态冲突
+          const isParentVisuallySelected = isParentActive && (!hasSubItems || !isExpanded || isCollapsed);
 
           return (
             <div 
@@ -215,6 +218,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               <button
                 type="button"
+                data-testid={`sidebar-menu-${item.id}`}
                 onClick={() => {
                   if (hasSubItems) {
                     // Click logic: 
@@ -255,23 +259,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   "w-full flex items-center rounded-xl border transition-all duration-300 relative overflow-hidden",
                   isCollapsed
                     ? "justify-center px-0 py-3"
-                    : "gap-4 px-4 py-4",
-                  isParentActive
-                    ? 'bg-gradient-to-r from-[#F4F7FB] to-transparent border-transparent text-black dark:bg-gradient-to-r dark:from-slate-800/60 dark:to-transparent dark:border-transparent dark:text-white'
-                    : 'bg-transparent border-transparent text-muted-foreground hover:text-foreground hover:bg-gradient-to-r hover:from-white/40 hover:to-transparent dark:hover:bg-none dark:hover:bg-slate-800/20 hover:border-transparent dark:hover:border-transparent'
+                    : "gap-4 px-4 py-3.5",
+                  isParentVisuallySelected
+                    ? 'bg-blue-50/80 shadow-soft-sm border-blue-100/60 text-blue-700 dark:bg-blue-900/20 dark:border-blue-800/40 dark:text-blue-400'
+                    : 'bg-transparent border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100/80 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800/60'
                 )}
               >
-                <div className={cn(
-                  "absolute inset-0 bg-gradient-to-r from-primary/10 to-transparent opacity-0 transition-opacity duration-300",
-                  isParentActive && "opacity-100"
-                )}></div>
-
                 <Icon 
                   size={20} 
                   strokeWidth={isParentActive ? 2.5 : 2}
                   className={cn(
                     "relative z-10 transition-colors duration-300 shrink-0",
-                    isParentActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 group-hover/nav:text-slate-900 dark:group-hover/nav:text-slate-200'
+                    isParentActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 group-hover/nav:text-slate-700 dark:group-hover/nav:text-slate-300'
                   )} 
                 />
 
@@ -280,19 +279,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   "text-left relative z-10 transition-all duration-300 flex items-center justify-between",
                   isCollapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100 flex-1"
                 )}>
-                  <div className={cn("text-sm tracking-tight transition-colors whitespace-nowrap font-sans", isParentActive ? "font-bold text-blue-900 dark:text-blue-100" : "font-medium text-slate-600 dark:text-slate-400 group-hover/nav:text-slate-900 dark:group-hover/nav:text-slate-200")}>
+                  <div className={cn("text-[15px] tracking-tight transition-colors whitespace-nowrap font-sans", isParentActive ? "font-bold text-blue-700 dark:text-blue-300" : "font-medium text-slate-600 dark:text-slate-400 group-hover/nav:text-slate-800 dark:group-hover/nav:text-slate-200")}>
                     {item.label}
                   </div>
                   {hasSubItems && (
                     <ChevronDown size={14} className={cn(
-                      "transition-transform duration-300 text-slate-400",
+                      "transition-transform duration-300",
+                      isParentActive ? "text-blue-500 dark:text-blue-400" : "text-slate-400",
                       isExpanded ? "rotate-180" : ""
                     )} />
                   )}
                 </div>
 
-                {isParentActive && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-1 bg-blue-600 dark:bg-blue-400 rounded-r-full shadow-[0_0_12px_rgba(37,99,235,0.3)] dark:shadow-[0_0_12px_rgba(96,165,250,0.3)]" />
+                {isParentVisuallySelected && (
+                  <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] bg-blue-600 dark:bg-blue-400 rounded-r-full shadow-none" />
                 )}
               </button>
 
@@ -306,6 +306,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <button
                           key={sub.id}
                           type="button"
+                          data-testid={`sidebar-submenu-${sub.id}`}
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -314,12 +315,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           className={cn(
                             "relative z-10 w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm transition-all font-sans border overflow-hidden group/sub",
                             isSubActive
-                              ? "bg-gradient-to-r from-blue-100/50 to-transparent dark:from-blue-500/20 dark:to-transparent text-blue-700 dark:text-blue-300 border-transparent font-bold"
-                              : "text-slate-500 dark:text-slate-400 border-transparent hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 font-medium"
+                              ? "bg-blue-50/60 shadow-soft-sm border-blue-100/40 text-blue-700 dark:bg-blue-900/20 dark:border-blue-800/30 dark:text-blue-400 font-bold"
+                              : "text-slate-500 dark:text-slate-400 border-transparent hover:bg-slate-100/60 dark:hover:bg-slate-800/40 hover:text-slate-800 dark:hover:text-slate-200 font-medium"
                           )}
                         >
+                          {isSubActive && (
+                            <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] bg-blue-600 dark:bg-blue-400 rounded-r-full shadow-none" />
+                          )}
                           <div className={cn(
-                            "w-1.5 h-1.5 rounded-full transition-all duration-300",
+                            "w-1.5 h-1.5 rounded-full transition-all duration-300 ml-1",
                             isSubActive ? "bg-blue-600 dark:bg-blue-400 shadow-[0_0_8px_rgba(37,99,235,0.4)] scale-125" : "bg-slate-300 dark:bg-slate-600 group-hover/sub:bg-blue-400/50"
                           )} />
                           <span className="truncate">{sub.label}</span>

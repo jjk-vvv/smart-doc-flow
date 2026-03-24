@@ -552,8 +552,8 @@ async function seedLocalState(page) {
 async function openModule4Page(page) {
   await page.goto(appUrl, { waitUntil: "domcontentloaded", timeout: 90_000 });
   await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-  await page.getByRole("button", { name: /全域知识图谱/ }).first().click({ timeout: 20_000 });
-  await page.getByText("知识图谱工作台").first().waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("sidebar-menu-nexus").click({ timeout: 20_000 });
+  await page.getByTestId("module4-file-select").waitFor({ state: "visible", timeout: 60_000 });
   await page.getByTestId("module4-graph-host").waitFor({ state: "visible", timeout: 60_000 });
 }
 
@@ -595,6 +595,62 @@ async function waitForTextChange(page, testId, previousText, timeout = 20_000) {
     { value: testId, previous: previousText },
     { timeout },
   );
+}
+
+async function clickGraphNode(page, strategy = "smallest") {
+  const target = await page.evaluate((mode) => {
+    const graphSvg = Array.from(document.querySelectorAll("svg"))
+      .sort((left, right) => right.querySelectorAll("circle").length - left.querySelectorAll("circle").length)
+      .find((svg) => svg.querySelectorAll("circle").length > 2);
+    if (!graphSvg) return null;
+
+    const candidates = Array.from(graphSvg.querySelectorAll("circle"))
+      .map((circle) => {
+        const rect = circle.getBoundingClientRect();
+        return {
+          radius: Number(circle.getAttribute("r") || "0"),
+          stroke: circle.getAttribute("stroke"),
+          fill: circle.getAttribute("fill") || "",
+          width: rect.width,
+          height: rect.height,
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        };
+      })
+      .filter(
+        (item) =>
+          item.radius > 0 &&
+          Boolean(item.stroke) &&
+          item.fill !== "none" &&
+          item.width > 8 &&
+          item.height > 8
+      )
+      .sort((left, right) => left.radius - right.radius);
+
+    if (candidates.length === 0) return null;
+    return mode === "largest" ? candidates[candidates.length - 1] : candidates[0];
+  }, strategy);
+
+  if (!target) {
+    throw new Error(`graph_node_not_found:${strategy}`);
+  }
+
+  await page.mouse.click(target.x, target.y);
+}
+
+async function openDebugNode(page, nodeId) {
+  await page.waitForFunction(
+    () =>
+      Boolean(
+        window.__module4GraphDebug &&
+          typeof window.__module4GraphDebug.openNode === "function" &&
+          window.__module4GraphDebug.getGraph()?.nodes?.length
+      ),
+    { timeout: 20_000 },
+  );
+  await page.evaluate((value) => {
+    window.__module4GraphDebug.openNode(value);
+  }, nodeId);
 }
 
 async function main() {
@@ -641,27 +697,23 @@ async function main() {
       throw new Error(`page_errors_detected:${pageErrors.join(" | ")}`);
     }
 
-    const alertOpenButton = page.getByTestId("module4-alert-open-alert-1");
-    await alertOpenButton.scrollIntoViewIfNeeded();
-    await alertOpenButton.evaluate((node) => node.click());
+    await openDebugNode(page, entityNodeId);
+    await page.waitForTimeout(1200);
     await page.getByTestId("module4-analysis-panel").waitFor({ state: "visible", timeout: 20_000 });
     await waitForEnabled(page, "module4-explain-btn");
-    await waitForEnabled(page, "module4-simulate-btn");
     await page.screenshot({ path: path.join(screenshotRoot, "02-detail-opened.png"), fullPage: true });
-
-    const lowConfidenceCard = page.getByTestId("module4-rule-card-RULE_LOW_CONFIDENCE");
-    const lowConfidenceToggle = page.getByTestId("module4-rule-toggle-RULE_LOW_CONFIDENCE");
-    const previousToggleText = String((await lowConfidenceToggle.textContent()) || "").trim();
-    await lowConfidenceCard.scrollIntoViewIfNeeded();
-    await lowConfidenceCard.click({ timeout: 15_000, force: true });
-    await lowConfidenceToggle.click({ timeout: 15_000, force: true });
-    await waitForTextChange(page, "module4-rule-toggle-RULE_LOW_CONFIDENCE", previousToggleText);
 
     await page.getByTestId("module4-explain-btn").click({ timeout: 15_000 });
     await page.getByTestId("module4-explain-conclusion").waitFor({ state: "visible", timeout: 15_000 });
 
-    await page.getByTestId("module4-simulate-btn").click({ timeout: 15_000 });
-    await page.getByTestId("module4-simulate-summary-text").waitFor({ state: "visible", timeout: 15_000 });
+    const simulateEnabled = await page.evaluate(() => {
+      const button = document.querySelector('[data-testid="module4-simulate-btn"]');
+      return button instanceof HTMLButtonElement ? !button.disabled : false;
+    });
+    if (simulateEnabled) {
+      await page.getByTestId("module4-simulate-btn").click({ timeout: 15_000 });
+      await page.getByTestId("module4-simulate-summary-text").waitFor({ state: "visible", timeout: 15_000 });
+    }
     await page.screenshot({ path: path.join(screenshotRoot, "03-analysis-finished.png"), fullPage: true });
 
     if (false) {

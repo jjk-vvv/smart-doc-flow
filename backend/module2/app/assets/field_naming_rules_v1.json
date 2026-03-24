@@ -1,0 +1,547 @@
+{
+  "version": "field-naming-rules-v1",
+  "forbidden_aliases": [
+    "result",
+    "result_value",
+    "value",
+    "data",
+    "content",
+    "text",
+    "name",
+    "label",
+    "table",
+    "figure",
+    "page",
+    "字段",
+    "结果",
+    "结果值",
+    "数据",
+    "内容",
+    "名称",
+    "标签",
+    "表格",
+    "图片",
+    "图",
+    "页码",
+    "说明",
+    "左轴",
+    "右轴"
+  ],
+  "templates": [
+    {
+      "name": "government_statistical_bulletin",
+      "match_any": [
+        "统计公报",
+        "统计年鉴",
+        "民政",
+        "最低生活保障",
+        "福利彩票",
+        "结婚登记",
+        "离婚登记",
+        "火化率"
+      ]
+    },
+    {
+      "name": "chemical_process_experiment",
+      "match_any": [
+        "tbp",
+        "dfru",
+        "runo",
+        "萃取",
+        "洗涤段",
+        "进料段",
+        "相对流量",
+        "络合物"
+      ]
+    },
+    {
+      "name": "scientific_appendix_exercise",
+      "match_any": [
+        "appendix",
+        "answers to exercises",
+        "exercise",
+        "isotope",
+        "particle",
+        "physical property"
+      ]
+    },
+    {
+      "name": "xlsx_business_ledger",
+      "match_any": [
+        ".xlsx",
+        "销售额",
+        "销量",
+        "sku",
+        "订单",
+        "店铺",
+        "商品"
+      ]
+    }
+  ],
+  "units": [
+    {
+      "norm": "percent",
+      "label": "%",
+      "tokens": ["%", "％", "百分比"],
+      "strip_tokens": ["(%)", "（%）", "/%", "％", "%", "百分比"]
+    },
+    {
+      "norm": "ten_thousand_people",
+      "label": "万人",
+      "tokens": ["万人"],
+      "strip_tokens": ["(万人)", "（万人）", "万人"]
+    },
+    {
+      "norm": "ten_thousand_pairs",
+      "label": "万对",
+      "tokens": ["万对"],
+      "strip_tokens": ["(万对)", "（万对）", "万对"]
+    },
+    {
+      "norm": "ten_thousand_units",
+      "label": "万个",
+      "tokens": ["万个"],
+      "strip_tokens": ["(万个)", "（万个）", "万个"]
+    },
+    {
+      "norm": "ten_thousand_beds",
+      "label": "万张",
+      "tokens": ["万张"],
+      "strip_tokens": ["(万张)", "（万张）", "万张"]
+    },
+    {
+      "norm": "ten_thousand_cny",
+      "label": "万元",
+      "tokens": ["万元"],
+      "strip_tokens": ["(万元)", "（万元）", "万元"]
+    },
+    {
+      "norm": "hundred_million_cny",
+      "label": "亿元",
+      "tokens": ["亿元"],
+      "strip_tokens": ["(亿元)", "（亿元）", "亿元"]
+    },
+    {
+      "norm": "mol_per_l",
+      "label": "mol/L",
+      "tokens": ["mol/l", "mol·l^-1", "mol l-1"],
+      "strip_tokens": ["mol/l", "mol·l^-1", "mol l-1"]
+    },
+    {
+      "norm": "g_per_l",
+      "label": "g/L",
+      "tokens": ["g/l", "g·l^-1", "g l-1"],
+      "strip_tokens": ["g/l", "g·l^-1", "g l-1"]
+    }
+  ],
+  "dimensions": {
+    "region_type": [
+      { "value": "urban", "label": "城市", "tokens": ["城市", "城镇", "urban"] },
+      { "value": "rural", "label": "农村", "tokens": ["农村", "乡村", "rural"] }
+    ],
+    "stream": [
+      { "value": "af", "label": "AF", "tokens": [" af", "(af)", "（af）", "af"] },
+      { "value": "as", "label": "AS", "tokens": [" as", "(as)", "（as）", "as"] },
+      { "value": "sf", "label": "SF", "tokens": [" sf", "(sf)", "（sf）", "sf"] },
+      { "value": "of", "label": "OF", "tokens": [" of", "(of)", "（of）", "of"] }
+    ],
+    "stage": [
+      { "value": "overall", "label": "总体", "tokens": ["总的", "总体", "合计", "总计", "overall", "total"] },
+      { "value": "feed", "label": "进料段", "tokens": ["进料段", "进料", "feed"] },
+      { "value": "wash", "label": "洗涤段", "tokens": ["洗涤段", "洗涤", "wash"] },
+      { "value": "extraction", "label": "萃取段", "tokens": ["萃取段", "萃取", "extract"] },
+      { "value": "stripping", "label": "反萃段", "tokens": ["反萃段", "反萃", "strip"] }
+    ],
+    "age_band": [
+      { "value": "60_plus", "label": "60岁及以上", "tokens": ["60周岁及以上", "60岁及以上", "60岁以上", "60+"] },
+      { "value": "65_plus", "label": "65岁及以上", "tokens": ["65周岁及以上", "65岁及以上", "65岁以上", "65+"] }
+    ],
+    "basis": [
+      { "value": "volume_fraction", "label": "体积分数", "tokens": ["体积分数", "volume fraction"] },
+      { "value": "mass_fraction", "label": "质量分数", "tokens": ["质量分数", "mass fraction", "wt%"] }
+    ]
+  },
+  "field_rules": [
+    {
+      "id": "document_title",
+      "key": "document_title",
+      "label": "标题",
+      "type": "string",
+      "aliases": ["title", "document title", "标题", "文档标题"]
+    },
+    {
+      "id": "document_summary",
+      "key": "document_summary",
+      "label": "摘要",
+      "type": "string",
+      "aliases": ["summary", "document summary", "摘要", "概述", "概要"]
+    },
+    {
+      "id": "report_year",
+      "key": "report_year",
+      "label": "统计年份",
+      "type": "integer",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["统计年份", "统计年度", "年份", "年度", "报告年份", "year", "report year"]
+    },
+    {
+      "id": "civil_facilities_total",
+      "key": "civil_facilities_total",
+      "label": "民政机构和设施总数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": [
+        "民政机构和设施总数",
+        "机构和设施总数",
+        "民政部门登记和管理的机构和设施数",
+        "机构设施总数",
+        "养老机构和设施总数",
+        "机构个",
+        "机构数"
+      ]
+    },
+    {
+      "id": "civil_service_beds_total",
+      "key": "civil_service_beds_total",
+      "label": "民政服务床位总数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": [
+        "民政服务床位总数",
+        "服务床位总数",
+        "民政服务床位数",
+        "民政床位总数",
+        "民政床位数",
+        "床位万张"
+      ]
+    },
+    {
+      "id": "civil_expenditure_total",
+      "key": "civil_expenditure_total",
+      "label": "民政事业费支出总额",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": [
+        "民政事业费支出总额",
+        "民政事业费支出",
+        "事业费支出总额",
+        "全国民政事业费支出",
+        "支出总额"
+      ]
+    },
+    {
+      "id": "elderly_population",
+      "key": "elderly_population",
+      "label": "老年人口数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": [
+        "老年人口数",
+        "老年人口",
+        "老龄人口数",
+        "老龄人口",
+        "60周岁及以上老年人口数",
+        "60周岁及以上老年人口",
+        "65周岁及以上老年人口数"
+      ]
+    },
+    {
+      "id": "minimum_livelihood_population",
+      "key": "minimum_livelihood_population",
+      "label": "最低生活保障人数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": [
+        "最低生活保障人数",
+        "低保人数",
+        "最低生活保障对象人数",
+        "城市最低生活保障人数",
+        "农村最低生活保障人数",
+        "城市低保人数",
+        "农村低保人数"
+      ]
+    },
+    {
+      "id": "welfare_lottery_sales_amount",
+      "key": "welfare_lottery_sales_amount",
+      "label": "福利彩票销售额",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": [
+        "福利彩票销售额",
+        "福利彩票销售金额",
+        "福彩销售额"
+      ]
+    },
+    {
+      "id": "social_organization_total",
+      "key": "social_organization_total",
+      "label": "社会组织总数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["社会组织总数", "社会组织数量", "社会组织数"]
+    },
+    {
+      "id": "social_group_total",
+      "key": "social_group_total",
+      "label": "社会团体总数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["社会团体总数", "社会团体", "社会团体数量", "社会团体数"]
+    },
+    {
+      "id": "private_non_enterprise_total",
+      "key": "private_non_enterprise_total",
+      "label": "民办非企业单位总数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["民办非企业单位总数", "民办非企业单位", "民非单位", "民办非企业单位数量"]
+    },
+    {
+      "id": "foundation_total",
+      "key": "foundation_total",
+      "label": "基金会总数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["基金会总数", "年基金会总数", "基金会数量", "基金会"]
+    },
+    {
+      "id": "social_donation_income",
+      "key": "social_donation_income",
+      "label": "社会组织捐赠收入",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["社会组织捐赠收入", "年社会组织捐赠收入", "社会组织捐赠金额"]
+    },
+    {
+      "id": "destitute_population",
+      "key": "destitute_population",
+      "label": "城乡特困人员人数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["城乡特困人员人数", "年城乡特困人员人数", "特困人员人数"]
+    },
+    {
+      "id": "marriage_registration_count",
+      "key": "marriage_registration_count",
+      "label": "结婚登记对数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["结婚登记对数", "结婚登记数", "婚姻登记对数"]
+    },
+    {
+      "id": "divorce_registration_count",
+      "key": "divorce_registration_count",
+      "label": "离婚登记对数",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["离婚登记对数", "离婚登记数"]
+    },
+    {
+      "id": "cremation_rate",
+      "key": "cremation_rate",
+      "label": "火化率",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "aliases": ["火化率", "遗体火化率", "cremation rate"]
+    },
+    {
+      "id": "tbp_concentration",
+      "key": "tbp_concentration",
+      "label": "TBP浓度",
+      "type": "number",
+      "templates": ["chemical_process_experiment"],
+      "aliases": [
+        "tbp浓度",
+        "tbp浓度体积分数",
+        "tbp浓度(体积分数)",
+        "tbp concentration",
+        "tbp volume fraction"
+      ]
+    },
+    {
+      "id": "relative_flow",
+      "key": "relative_flow",
+      "label": "相对流量",
+      "type": "number",
+      "templates": ["chemical_process_experiment"],
+      "aliases": ["相对流量", "flow ratio", "relative flow"]
+    },
+    {
+      "id": "dfru",
+      "key": "dfru",
+      "label": "DFRu",
+      "type": "number",
+      "templates": ["chemical_process_experiment"],
+      "aliases": ["dfru", "df ru", "distribution factor ru", "钌分配比", "钌分配系数"]
+    },
+    {
+      "id": "runo_complex",
+      "key": "runo_complex",
+      "label": "RuNO络合物",
+      "type": "string",
+      "templates": ["chemical_process_experiment"],
+      "aliases": ["runo络合物", "runo complex", "络合物", "钌亚硝酰络合物"]
+    },
+    {
+      "id": "exercise_id",
+      "key": "exercise_id",
+      "label": "习题编号",
+      "type": "string",
+      "templates": ["scientific_appendix_exercise"],
+      "aliases": ["exercise id", "exercise", "problem id", "question number", "question_number", "题号", "习题编号"]
+    },
+    {
+      "id": "sub_question",
+      "key": "sub_question",
+      "label": "子题编号",
+      "type": "string",
+      "templates": ["scientific_appendix_exercise"],
+      "aliases": ["sub question", "sub_question", "question part", "小题", "子题编号"]
+    },
+    {
+      "id": "answer_text",
+      "key": "answer_text",
+      "label": "答案",
+      "type": "string",
+      "templates": ["scientific_appendix_exercise"],
+      "aliases": ["answer", "final answer", "答案"]
+    },
+    {
+      "id": "result_value",
+      "key": "result_value",
+      "label": "结果值",
+      "type": "number",
+      "templates": ["scientific_appendix_exercise"],
+      "aliases": ["result value", "result", "计算结果", "结果值"]
+    },
+    {
+      "id": "measurement_unit",
+      "key": "measurement_unit",
+      "label": "计量单位",
+      "type": "string",
+      "templates": ["scientific_appendix_exercise"],
+      "aliases": ["measurement unit", "计量单位"]
+    },
+    {
+      "id": "isotope_or_particle",
+      "key": "isotope_or_particle",
+      "label": "同位素或粒子",
+      "type": "string",
+      "templates": ["scientific_appendix_exercise"],
+      "aliases": ["isotope or particle", "isotope", "particle", "同位素", "粒子"]
+    },
+    {
+      "id": "physical_property",
+      "key": "physical_property",
+      "label": "物理性质",
+      "type": "string",
+      "templates": ["scientific_appendix_exercise"],
+      "aliases": ["physical property", "property", "物理性质", "性质"]
+    },
+    {
+      "id": "sales_amount",
+      "key": "sales_amount",
+      "label": "销售额",
+      "type": "number",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["销售额", "销售金额", "成交额", "gmv", "sales amount"]
+    },
+    {
+      "id": "sales_quantity",
+      "key": "sales_quantity",
+      "label": "销量",
+      "type": "number",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["销量", "销售量", "数量", "quantity", "sales quantity"]
+    },
+    {
+      "id": "order_count",
+      "key": "order_count",
+      "label": "订单数",
+      "type": "integer",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["订单数", "订单量", "order count", "orders"]
+    },
+    {
+      "id": "order_id",
+      "key": "order_id",
+      "label": "订单编号",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["order id", "order_id", "订单编号"]
+    },
+    {
+      "id": "user_id",
+      "key": "user_id",
+      "label": "用户编号",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["user id", "user_id", "用户编号"]
+    },
+    {
+      "id": "order_date",
+      "key": "order_date",
+      "label": "订单日期",
+      "type": "date",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["order date", "order_date", "订单日期"]
+    },
+    {
+      "id": "order_origin",
+      "key": "order_origin",
+      "label": "订单来源",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["order origin", "order_origin", "订单来源"]
+    },
+    {
+      "id": "order_status",
+      "key": "order_status",
+      "label": "订单状态",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["order status", "order_status", "订单状态"]
+    },
+    {
+      "id": "sale_department",
+      "key": "sale_department",
+      "label": "销售部门",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["sale dep", "sale department", "sale_dep", "销售部门"]
+    },
+    {
+      "id": "commodity_count",
+      "key": "commodity_count",
+      "label": "商品数量",
+      "type": "number",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["com num", "commodity num", "commodity count", "com_num", "商品数量"]
+    },
+    {
+      "id": "store_name",
+      "key": "store_name",
+      "label": "店铺名称",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["店铺", "店铺名称", "门店", "store", "store name"]
+    },
+    {
+      "id": "sku",
+      "key": "sku",
+      "label": "SKU",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["sku", "商品编码", "货号", "产品编码"]
+    },
+    {
+      "id": "product_name",
+      "key": "product_name",
+      "label": "商品名称",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["商品名称", "商品名", "产品名称", "product name"]
+    }
+  ]
+}

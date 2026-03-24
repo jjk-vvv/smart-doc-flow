@@ -1387,50 +1387,67 @@ export const DocInteractionWorkbench: React.FC = () => {
           </div>
 
           {/* 输入区域 */}
-          <div className="p-3 border-t border-blue-200/30 dark:border-blue-800/30">
-            <div className="flex gap-2">
-              <button
-                onClick={triggerFileInput}
-                className="p-2 bg-white/50 dark:bg-slate-800/50 backdrop-blur-xl rounded-lg hover:bg-white/70 dark:hover:bg-slate-700/70 transition-all duration-200 text-slate-600 dark:text-slate-400 border border-blue-200/30 dark:border-blue-800/30"
-              >
-                <Paperclip size={18} />
-              </button>
+          <div className="p-3 border-t border-slate-100/80 dark:border-slate-800/50 bg-slate-50/50 dark:bg-slate-900/50">
+            <div
+              className="relative flex flex-col rounded-[24px] border border-slate-200/80 bg-white shadow-sm transition-all focus-within:border-blue-400/50 focus-within:shadow-md hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:focus-within:border-blue-500/50 dark:hover:border-slate-600"
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  handleFileUpload({ target: { files: e.dataTransfer.files } } as any);
+                }
+              }}
+            >
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyPress={handleKeyPress}
-                placeholder={fileList.length > 0 ? "输入指令..." : "请先上传文档"}
-                className="flex-1 px-3 py-2 bg-white/50 dark:bg-slate-800/50 backdrop-blur-xl rounded-lg text-sm resize-none border border-blue-200/30 dark:border-blue-800/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-slate-400 dark:placeholder-slate-500 text-slate-700 dark:text-slate-300"
-                rows={1}
+                placeholder={fileList.length > 0 ? "有什么我可以帮您的？" : "请先上传文档进行分析..."}
+                className="max-h-[160px] min-h-[56px] w-full resize-none bg-transparent px-5 pt-4 pb-2 text-[14px] leading-relaxed text-slate-800 placeholder:text-slate-400 outline-none dark:text-slate-200 custom-scrollbar disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={isLoading || fileList.length === 0}
               />
-              {isLoading ? (
-                <button
-                  onClick={() => {
-                    if (abortControllerRef.current) {
-                      abortControllerRef.current.abort();
-                      abortControllerRef.current = null;
-                      setIsLoading(false);
-                    }
-                  }}
-                  className="p-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-all duration-200 border border-white/30"
-                  title="停止生成"
-                >
-                  <X size={18} />
-                </button>
-              ) : (
-                <button
-                  onClick={sendMessage}
-                  disabled={!inputText.trim() || fileList.length === 0}
-                  className="p-2 bg-gradient-to-r from-blue-500 to-indigo-500 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-blue-500/30 transition-all duration-200 border border-white/30"
-                >
-                  <Send size={18} />
-                </button>
-              )}
+              <div className="flex items-center justify-between px-3 pb-2.5 pt-1">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={triggerFileInput}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-100/80 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+                    title="上传附加文件"
+                  >
+                    <Plus size={16} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-3">
+                  {isLoading ? (
+                    <button
+                      onClick={() => {
+                        if (abortControllerRef.current) {
+                          abortControllerRef.current.abort();
+                          abortControllerRef.current = null;
+                          setIsLoading(false);
+                        }
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full transition-all duration-300 bg-amber-500 text-white shadow-sm shadow-amber-500/20 hover:bg-amber-600 hover:scale-105 active:scale-95"
+                      title="停止生成"
+                    >
+                      <X size={14} />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={sendMessage}
+                      disabled={!inputText.trim() || fileList.length === 0}
+                      className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-all duration-300 ${
+                        !inputText.trim() || fileList.length === 0
+                          ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500'
+                          : 'bg-[#a3b8d7] text-white shadow-sm hover:bg-[#8ba3c7] hover:scale-105 active:scale-95 dark:bg-blue-600 dark:hover:bg-blue-700'
+                      }`}
+                    >
+                      <Send size={14} className="ml-0.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-            <p className="text-[10px] text-slate-400 mt-2">
-              Enter 发送 · Shift + Enter 换行 {isLoading && '· 点击红色按钮停止'}
-            </p>
           </div>
         </div>
 

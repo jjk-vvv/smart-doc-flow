@@ -19,8 +19,10 @@ import urllib.request
 import uuid
 import time
 import zipfile
+from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,7 +35,9 @@ MODULE2_ROOT = Path(__file__).resolve().parents[1]
 
 # Always load Module 2's own env file so uvicorn startup from repo root
 # does not silently miss the module-specific LLM/timeout settings.
-load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=False)
+# Use override=True so updates to backend/module2/.env take effect even when
+# the parent shell still carries stale environment variables from older runs.
+load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=True)
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,18 +45,28 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from app.assistant_1.api_models import Assistant1ChatStreamRequest
 from app.assistant_1.stream_runtime import Assistant1StreamingRuntime
-from app.assistant.provider import build_module2_llm_provider
-from app.assistant.service import AssistantService
 from app.agent.graph import AgentState, ExtractionGraph
+from app.core.field_naming import (
+    FIELD_NAMING_VERSION,
+    canonicalize_schema_fields,
+    detect_domain_template,
+    infer_rule_backed_schema_fields,
+    normalize_field_name,
+    normalize_schema_contracts,
+)
+from app.core.layout_mineru import clear_mineru_process_runtime_cache
 from app.core.office_pdf import convert_doc_bytes_to_docx, convert_word_bytes_to_pdf, is_word_file
+from app.core.llm_provider import build_module2_llm_provider
 from app.core.parser import parse_document_in_subprocess
+from app.core.schema_rule_assets import (
+    load_field_type_rules,
+    load_schema_noise_rules,
+    load_schema_semantic_rules,
+    load_schema_selection_rules,
+    schema_rule_versions,
+)
 from app.db.storage import ExtractionStorage
 from app.schemas import (
-    AssistantChatStreamRequest,
-    AssistantSessionRequest,
-    AssistantSessionResponse,
-    AssistantQueryRequest,
-    AssistantQueryResponse,
     BatchExtractionResponse,
     BridgeJobCreateRequest,
     BridgeJobStatusRequest,
@@ -67,6 +81,12 @@ from app.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+_SCHEMA_NOISE_RULES = load_schema_noise_rules()
+_FIELD_TYPE_RULES = load_field_type_rules()
+_SCHEMA_SELECTION_RULES = load_schema_selection_rules()
+_SCHEMA_SEMANTIC_RULES = load_schema_semantic_rules()
+_SCHEMA_RULE_VERSIONS = schema_rule_versions()
+AUTO_SCHEMA_LOGIC_REVISION = "20260323-figure-aware-schema-v4"
 module4_sync_tasks: Set[asyncio.Task[Any]] = set()
 module4_sync_task_index: Dict[str, asyncio.Task[Any]] = {}
 module4_sync_metrics: Dict[str, Any] = {
@@ -86,6 +106,19 @@ provider_preflight_state: Dict[str, Any] = {
     "checked_at": 0.0,
     "base_url": "",
     "model": "",
+    "error": "",
+}
+startup_background_tasks: Set[asyncio.Task[Any]] = set()
+mineru_warmup_lock = Lock()
+mineru_warmup_state: Dict[str, Any] = {
+    "enabled": False,
+    "status": "idle",
+    "ok": False,
+    "started_at": 0.0,
+    "finished_at": 0.0,
+    "elapsed_sec": 0.0,
+    "worker_count": 0,
+    "detail": "",
     "error": "",
 }
 
@@ -313,7 +346,7 @@ class StreamRouter:
     async def triage(self, file_name: str, file_bytes: bytes, schema_hash: str) -> RouteDecision:
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         cache_key = hashlib.sha256(
-            f"{EXTRACTION_CACHE_VERSION}:{file_hash}:{schema_hash}".encode("utf-8")
+            f"{_current_extraction_cache_version()}:{file_hash}:{schema_hash}".encode("utf-8")
         ).hexdigest()
         cached = await self.storage.check_cache(cache_key)
         if cached:
@@ -357,6 +390,21 @@ def _cors_origins() -> tuple[List[str], bool]:
 def _max_workers() -> int:
     cpu = os.cpu_count() or 4
     return min(max(cpu - 1, 2), 8)
+
+
+def _bounded_env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int = 1,
+    maximum: int = 8,
+) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
 
 
 def _build_process_pool() -> ProcessPoolExecutor:
@@ -450,7 +498,6 @@ app.add_middleware(
 
 storage = ExtractionStorage(os.getenv("MODULE2_DATABASE_DSN", "postgresql://postgres@127.0.0.1:5432/a23"))
 graph = ExtractionGraph()
-assistant_service = AssistantService(storage)
 assistant1_runtime = Assistant1StreamingRuntime()
 bridge_jobs: Dict[str, BridgeJobState] = {}
 bridge_request_index: Dict[str, str] = {}
@@ -462,6 +509,51 @@ extraction_lock = asyncio.Lock()
 extraction_job_runtime_specs: Dict[str, Dict[str, Any]] = {}
 extraction_job_tasks: Dict[str, asyncio.Task[Any]] = {}
 extraction_job_persist_markers: Dict[str, float] = {}
+extraction_job_file_semaphore = asyncio.Semaphore(
+    _bounded_env_int("MODULE2_JOB_FILE_CONCURRENCY", 3, maximum=8)
+)
+extraction_word_pdf_semaphore = asyncio.Semaphore(
+    _bounded_env_int("MODULE2_WORD_PDF_CONCURRENCY", 1, maximum=3)
+)
+extraction_parse_semaphore = asyncio.Semaphore(
+    _bounded_env_int("MODULE2_PARSE_CONCURRENCY", 2, maximum=6)
+)
+extraction_visual_parse_semaphore = asyncio.Semaphore(
+    _bounded_env_int("MODULE2_VISION_CONCURRENCY", 2, maximum=6)
+)
+extraction_llm_semaphore = asyncio.Semaphore(
+    _bounded_env_int("MODULE2_LLM_EXTRACT_CONCURRENCY", 2, maximum=6)
+)
+
+
+def _current_extraction_logic_components() -> Dict[str, Any]:
+    graph_diagnostics: Dict[str, Any] = {}
+    try:
+        graph_diagnostics = dict(graph.diagnostics() or {})
+    except Exception:
+        graph_diagnostics = {}
+    return {
+        "cache_version": EXTRACTION_CACHE_VERSION,
+        "auto_schema_logic_revision": AUTO_SCHEMA_LOGIC_REVISION,
+        "prompt_version": str(graph_diagnostics.get("prompt_version") or ""),
+        "prompt_versions": dict(graph_diagnostics.get("prompt_versions") or {}),
+        "schema_rule_versions": dict(_SCHEMA_RULE_VERSIONS),
+        "field_naming_version": FIELD_NAMING_VERSION,
+    }
+
+
+def _current_extraction_logic_version() -> str:
+    payload = json.dumps(
+        _current_extraction_logic_components(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+
+
+def _current_extraction_cache_version() -> str:
+    return f"{EXTRACTION_CACHE_VERSION}:{_current_extraction_logic_version()}"
 
 
 def _schema_hash(schema: Dict[str, Any]) -> str:
@@ -487,8 +579,43 @@ def _schema_auto_infer_requested(schema: Dict[str, Any]) -> bool:
     return len(_schema_target_fields(schema)) == 0
 
 
+def _schema_field_type_hint(type_hint: Any) -> Any:
+    if isinstance(type_hint, dict):
+        nested = type_hint.get("type")
+        if nested is not None:
+            return nested
+    return type_hint
+
+
+def _schema_required_from_field_specs(schema: Dict[str, Any]) -> List[str]:
+    required: List[str] = []
+    fields = schema.get("fields")
+    if not isinstance(fields, dict):
+        return required
+    for field_name, field_spec in fields.items():
+        if isinstance(field_spec, dict) and bool(field_spec.get("required")):
+            name = str(field_name or "").strip()
+            if name:
+                required.append(name)
+    return required
+
+
+def _merge_required_field_names(existing: Any, extra: List[str]) -> List[str]:
+    merged: List[str] = []
+    seen: Set[str] = set()
+    iterable = existing if isinstance(existing, list) else []
+    for item in list(iterable) + list(extra):
+        name = str(item or "").strip()
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        merged.append(name)
+    return merged
+
+
 def _coerce_field_type(type_hint: Any) -> str:
-    text = str(type_hint or "").strip().lower()
+    text = str(_schema_field_type_hint(type_hint) or "").strip().lower()
     if text in {"int", "integer"}:
         return "integer"
     if text in {"number", "float", "double", "numeric", "decimal", "ratio", "percent"}:
@@ -601,12 +728,15 @@ _AUTO_SCHEMA_GENERIC_ZH_EXACT = {
     "\u5206\u7c7b",
     "\u6ce8\u91ca",
     "\u57ce\u5e02",
+    "\u5b9e\u9a8c",
+    "\u5de6\u8f74",
     "\u5355\u4f4d",
     "\u5e8a\u4f4d",
     "\u540d\u79f0",
     "\u56fe\u4f8b",
     "\u673a\u6784",
     "\u519c\u6751",
+    "\u53f3\u8f74",
     "\u5750\u6807\u8f74",
     "\u603b\u8ba1",
     "\u6307\u6807",
@@ -650,6 +780,14 @@ _AUTO_SCHEMA_GENERIC_JA_EXACT = {
     "実績値",
     "設計値",
 }
+
+# Asset-backed overrides for schema noise filtering and low-value name suppression.
+_AUTO_SCHEMA_STOPWORDS_EN = _SCHEMA_NOISE_RULES["auto_schema_stopwords_en"]
+_AUTO_SCHEMA_GENERIC_EN = _SCHEMA_NOISE_RULES["auto_schema_generic_en"]
+_AUTO_SCHEMA_GENERIC_ZH = _SCHEMA_NOISE_RULES["auto_schema_generic_zh"]
+_AUTO_SCHEMA_GENERIC_ZH_EXACT = _SCHEMA_NOISE_RULES["auto_schema_generic_zh_exact"]
+_AUTO_SCHEMA_GENERIC_ZH_UNIT_TOKENS = _SCHEMA_NOISE_RULES["auto_schema_generic_zh_unit_tokens"]
+_AUTO_SCHEMA_GENERIC_JA_EXACT = _SCHEMA_NOISE_RULES["auto_schema_generic_ja_exact"]
 
 
 def _field_name_word_tokens(text: Any) -> List[str]:
@@ -892,6 +1030,10 @@ _LOW_VALUE_RESULT_GENERIC_ZH = _AUTO_SCHEMA_GENERIC_ZH | _AUTO_SCHEMA_GENERIC_ZH
     "鎽樿",
 }
 
+# Asset-backed overrides for low-value result filtering.
+_LOW_VALUE_RESULT_GENERIC_EN = _SCHEMA_NOISE_RULES["low_value_result_generic_en"]
+_LOW_VALUE_RESULT_GENERIC_ZH = _SCHEMA_NOISE_RULES["low_value_result_generic_zh"]
+
 
 def _normalize_semantic_text(value: Any) -> str:
     text = str(value or "").strip().lower()
@@ -961,7 +1103,7 @@ def _filter_low_value_auto_results(
         if _is_low_value_result_value(key, entity.get("value")):
             removed[key] = "low_value_result_value"
             continue
-        filtered[key] = entity
+        filtered[str(field_name)] = entity
     pruned, shadowed_removed = _prune_shadowed_auto_results(filtered)
     removed.update(shadowed_removed)
     return pruned, removed
@@ -1023,10 +1165,405 @@ def _prune_shadowed_auto_results(
 def _normalize_schema_fields(fields: Dict[str, Any], max_fields: int) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for name, type_hint in fields.items():
-        _upsert_schema_field_candidate(out, name, type_hint, skip_low_value=False)
+        _upsert_schema_field_candidate(
+            out,
+            name,
+            _schema_field_type_hint(type_hint),
+            skip_low_value=False,
+        )
         if len(out) >= max_fields:
             break
     return out
+
+
+def _semantic_contains_exact_token(
+    label: str,
+    *,
+    en_tokens: Set[str],
+    zh_tokens: Set[str],
+) -> bool:
+    key = _sanitize_field_name(label)
+    if not key:
+        return False
+    return key.lower() in en_tokens or key in zh_tokens
+
+
+def _semantic_contains_fragment(
+    label: str,
+    *,
+    en_tokens: Tuple[str, ...],
+    zh_tokens: Tuple[str, ...],
+) -> bool:
+    key = _sanitize_field_name(label)
+    if not key:
+        return False
+    lowered = key.lower()
+    return any(token in lowered for token in en_tokens) or any(token in key for token in zh_tokens)
+
+
+def _semantic_signal_flags(label: str) -> Dict[str, bool]:
+    key = _sanitize_field_name(label)
+    if not key:
+        return {
+            "metric": False,
+            "identifier": False,
+            "time": False,
+            "category": False,
+            "visual": False,
+        }
+    lowered = key.lower()
+    rules = _SCHEMA_SEMANTIC_RULES
+    return {
+        "metric": any(token in lowered for token in rules["metric_tokens_en"])
+        or any(token in key for token in rules["metric_tokens_zh"]),
+        "identifier": any(token in lowered for token in rules["identifier_tokens_en"])
+        or any(token in key for token in rules["identifier_tokens_zh"]),
+        "time": any(token in lowered for token in rules["time_tokens_en"])
+        or any(token in key for token in rules["time_tokens_zh"]),
+        "category": any(token in lowered for token in rules["category_tokens_en"])
+        or any(token in key for token in rules["category_tokens_zh"]),
+        "visual": _semantic_contains_fragment(
+            key,
+            en_tokens=rules["weak_contains_en"],
+            zh_tokens=rules["weak_contains_zh"],
+        ),
+    }
+
+
+def _is_semantically_weak_field_label(label: str) -> bool:
+    key = _sanitize_field_name(label)
+    if not key:
+        return True
+    rules = _SCHEMA_SEMANTIC_RULES
+    if _semantic_contains_exact_token(
+        key,
+        en_tokens=rules["weak_exact_en"],
+        zh_tokens=rules["weak_exact_zh"],
+    ):
+        return True
+    if _semantic_contains_fragment(
+        key,
+        en_tokens=rules["weak_contains_en"],
+        zh_tokens=rules["weak_contains_zh"],
+    ):
+        return True
+
+    tokens = _field_name_word_tokens(key)
+    if len(tokens) != 1:
+        return False
+
+    token = tokens[0]
+    token_lower = token.lower()
+    return (
+        token_lower in rules["metric_tokens_en"]
+        or token in rules["metric_tokens_zh"]
+        or token_lower in rules["time_tokens_en"]
+        or token in rules["time_tokens_zh"]
+        or token_lower in rules["category_tokens_en"]
+        or token in rules["category_tokens_zh"]
+    )
+
+
+def _schema_semantic_label_strength(
+    field_name: str,
+    field_type: Any,
+    field_meta: Dict[str, Any],
+) -> int:
+    key = _sanitize_field_name(field_name)
+    if not key:
+        return -40
+
+    score = 0
+    tokens = _field_name_word_tokens(key)
+    token_count = len(tokens)
+    flags = _semantic_signal_flags(key)
+
+    score += min(12, token_count * 3)
+    score += min(10, max(0, len(key) // 4))
+
+    if _coerce_field_type(field_type) != "string":
+        score += 3
+    if field_meta.get("unit_norm"):
+        score += 4
+    if field_meta.get("dimensions"):
+        score += 5
+    if field_meta.get("normalization_rule_id"):
+        score += 6
+
+    if flags["metric"]:
+        score += 6
+    if flags["identifier"]:
+        score += 8 if token_count >= 2 else 2
+    if flags["time"]:
+        score += 4 if token_count >= 2 else -3
+    if flags["category"]:
+        score += 3 if token_count >= 2 else -4
+
+    if _is_semantically_weak_field_label(key):
+        score -= 18
+    if flags["visual"]:
+        score -= 16
+    if _looks_like_schema_figure_title(key):
+        score -= 26
+    if _looks_like_schema_sentence_fragment(key):
+        score -= 24
+    if token_count == 1 and flags["metric"]:
+        score -= 10
+    if len(key) <= 2:
+        score -= 8
+
+    return score
+
+
+def _semantic_closure_fragment_alias_keys(field_meta: Dict[str, Any]) -> set[str]:
+    blocked: set[str] = set()
+    dimensions = field_meta.get("dimensions")
+    if isinstance(dimensions, dict):
+        for payload in dimensions.values():
+            if not isinstance(payload, dict):
+                continue
+            for key in ("label", "raw", "value"):
+                normalized = _sanitize_field_name(payload.get(key))
+                if normalized:
+                    blocked.add(normalized)
+    for key in ("unit_raw", "unit_norm", "unit_label"):
+        normalized = _sanitize_field_name(field_meta.get(key))
+        if normalized:
+            blocked.add(normalized)
+    return blocked
+
+
+def _pick_semantic_closure_candidate(
+    field_name: str,
+    field_type: Any,
+    field_meta: Dict[str, Any],
+    *,
+    template_hint: str,
+) -> Optional[Dict[str, Any]]:
+    current_strength = _schema_semantic_label_strength(field_name, field_type, field_meta)
+    rules = _SCHEMA_SEMANTIC_RULES
+    raw_names = [str(item).strip() for item in field_meta.get("raw_names", []) if str(item).strip()]
+    aliases = [str(item).strip() for item in field_meta.get("aliases", []) if str(item).strip()]
+    blocked_alias_keys = _semantic_closure_fragment_alias_keys(field_meta)
+    best_by_label: Dict[str, Dict[str, Any]] = {}
+
+    for source_kind, source_text in [("raw", item) for item in raw_names] + [("alias", item) for item in aliases]:
+        if not source_text:
+            continue
+        source_key = _sanitize_field_name(source_text)
+        if source_kind == "alias" and source_key and source_key in blocked_alias_keys:
+            continue
+        normalized = normalize_field_name(
+            source_text,
+            type_hint=field_type,
+            template_hint=template_hint,
+        )
+        candidate_label = _sanitize_field_name(
+            normalized.get("canonical_label")
+            or normalized.get("canonical_base_label")
+            or source_text
+        )
+        if not candidate_label or candidate_label == field_name:
+            continue
+        if _is_low_value_auto_schema_field_name(candidate_label):
+            continue
+
+        candidate_meta = dict(field_meta)
+        candidate_meta.update(
+            {
+                "canonical_label": candidate_label,
+                "canonical_base_label": str(
+                    normalized.get("canonical_base_label")
+                    or field_meta.get("canonical_base_label")
+                    or candidate_label
+                ).strip(),
+                "unit_norm": str(normalized.get("unit_norm") or field_meta.get("unit_norm") or "").strip(),
+                "unit_raw": str(normalized.get("unit_raw") or field_meta.get("unit_raw") or "").strip(),
+                "dimensions": normalized.get("dimensions") or field_meta.get("dimensions") or {},
+                "normalization_rule_id": str(
+                    normalized.get("normalization_rule_id")
+                    or field_meta.get("normalization_rule_id")
+                    or ""
+                ).strip(),
+                "normalization_confidence": max(
+                    float(field_meta.get("normalization_confidence", 0.0) or 0.0),
+                    float(normalized.get("normalization_confidence", 0.0) or 0.0),
+                ),
+            }
+        )
+        candidate_strength = _schema_semantic_label_strength(candidate_label, field_type, candidate_meta)
+        if source_kind == "raw":
+            candidate_strength += 4
+        if len(candidate_label) > len(field_name):
+            candidate_strength += 2
+
+        existing = best_by_label.get(candidate_label)
+        if existing is None or candidate_strength > int(existing.get("strength", -999)):
+            best_by_label[candidate_label] = {
+                "label": candidate_label,
+                "meta": candidate_meta,
+                "strength": candidate_strength,
+                "source_kind": source_kind,
+                "source_text": source_text,
+                "gain": candidate_strength - current_strength,
+            }
+
+    if not best_by_label:
+        return None
+
+    ranked = sorted(
+        best_by_label.values(),
+        key=lambda item: (
+            -int(item.get("strength", -999)),
+            -len(str(item.get("label") or "")),
+            str(item.get("label") or ""),
+        ),
+    )
+    best = ranked[0]
+    second_strength = int(ranked[1].get("strength", -999)) if len(ranked) > 1 else -999
+    best_strength = int(best.get("strength", -999))
+    best_gain = int(best.get("gain", -999))
+
+    if best_strength < int(rules.get("closure_min_score", 8) or 8):
+        return None
+    if best_gain < int(rules.get("closure_min_gain", 8) or 8):
+        return None
+    if len(ranked) > 1 and best_strength - second_strength < int(rules.get("closure_min_unique_gap", 3) or 3):
+        return None
+    if not _is_semantically_weak_field_label(field_name) and best_gain < int(rules.get("closure_min_gain", 8) or 8) + 4:
+        return None
+
+    return best
+
+
+def _apply_conservative_semantic_closure(
+    canonical_fields: Dict[str, str],
+    field_meta: Dict[str, Dict[str, Any]],
+    raw_to_canonical: Dict[str, str],
+    canonical_to_raw: Dict[str, str],
+    *,
+    template_hint: str,
+) -> Tuple[Dict[str, str], Dict[str, Dict[str, Any]], Dict[str, str], Dict[str, str], Dict[str, Any]]:
+    if not canonical_fields:
+        return dict(canonical_fields), dict(field_meta), dict(raw_to_canonical), dict(canonical_to_raw), {
+            "semantic_closure_renamed_count": 0,
+            "semantic_closure_fields": {},
+        }
+
+    renamed_fields: Dict[str, str] = {}
+    next_fields: Dict[str, str] = {}
+    next_meta: Dict[str, Dict[str, Any]] = {}
+    label_remap: Dict[str, str] = {}
+    original_labels = set(canonical_fields.keys())
+
+    for field_name, field_type in canonical_fields.items():
+        meta = dict(field_meta.get(field_name, {}))
+        target_label = field_name
+        target_meta = dict(meta)
+        candidate = _pick_semantic_closure_candidate(
+            field_name,
+            field_type,
+            meta,
+            template_hint=template_hint,
+        )
+        if candidate:
+            candidate_label = str(candidate.get("label") or "").strip()
+            if candidate_label and candidate_label not in original_labels and candidate_label not in next_fields:
+                target_label = candidate_label
+                target_meta.update(dict(candidate.get("meta") or {}))
+                target_meta["canonical_label"] = candidate_label
+                target_meta["semantic_closure_source"] = str(candidate.get("source_kind") or "").strip()
+                target_meta["semantic_closure_gain"] = int(candidate.get("gain", 0) or 0)
+                renamed_fields[field_name] = candidate_label
+
+        label_remap[field_name] = target_label
+        next_fields[target_label] = field_type
+        next_meta[target_label] = target_meta
+
+    next_raw_to_canonical = {
+        raw_name: label_remap.get(canonical_name, canonical_name)
+        for raw_name, canonical_name in raw_to_canonical.items()
+    }
+    next_canonical_to_raw: Dict[str, str] = {}
+    for raw_name, canonical_name in next_raw_to_canonical.items():
+        next_canonical_to_raw.setdefault(canonical_name, raw_name)
+    for canonical_name, raw_name in canonical_to_raw.items():
+        next_canonical_to_raw.setdefault(label_remap.get(canonical_name, canonical_name), raw_name)
+
+    return next_fields, next_meta, next_raw_to_canonical, next_canonical_to_raw, {
+        "semantic_closure_renamed_count": len(renamed_fields),
+        "semantic_closure_fields": renamed_fields,
+    }
+
+
+def _schema_field_selection_score(
+    field_name: str,
+    field_type: Any,
+    field_meta: Dict[str, Any],
+    *,
+    template_hint: str,
+) -> int:
+    label = str(field_name or "").strip()
+    score = 0
+    semantic_strength = _schema_semantic_label_strength(label, field_type, field_meta)
+    if _is_low_value_auto_schema_field_name(label):
+        score -= 200
+    score += semantic_strength * 10
+    if field_meta.get("normalization_rule_id"):
+        score += 400
+    score += int(round(float(field_meta.get("normalization_confidence", 0.0) or 0.0) * 100))
+    if field_meta.get("dimensions"):
+        score += 40
+    if field_meta.get("unit_norm"):
+        score += 20
+    if _coerce_field_type(field_type) != "string":
+        score += 12
+
+    lowered = label.lower()
+    if template_hint == "government_statistical_bulletin":
+        if any(token in label for token in ("统计", "保障", "床位", "人口", "销售额", "社会组织", "登记", "火化", "机构", "基金会")):
+            score += 18
+    elif template_hint == "chemical_process_experiment":
+        if any(token in lowered for token in ("tbp", "dfru", "runo")):
+            score += 30
+        if any(token in label for token in ("相对流量", "洗涤段", "进料段", "反萃段", "总体")):
+            score += 24
+    elif template_hint == "scientific_appendix_exercise":
+        if any(token in label for token in ("习题", "答案", "同位素", "粒子", "物理性质")):
+            score += 20
+    elif template_hint == "xlsx_business_ledger":
+        if any(token in label for token in ("订单", "销售", "商品", "店铺", "SKU", "用户")):
+            score += 18
+    return score
+
+
+def _select_best_canonical_schema_fields(
+    canonical_fields: Dict[str, str],
+    field_meta: Dict[str, Dict[str, Any]],
+    *,
+    max_fields: int,
+    template_hint: str,
+) -> Tuple[Dict[str, str], Dict[str, Dict[str, Any]]]:
+    if len(canonical_fields) <= max_fields:
+        return dict(canonical_fields), dict(field_meta)
+
+    ranked: List[Tuple[int, str]] = []
+    for field_name, field_type in canonical_fields.items():
+        meta = field_meta.get(field_name, {})
+        score = _schema_field_selection_score(
+            field_name,
+            field_type,
+            meta,
+            template_hint=template_hint,
+        )
+        ranked.append((score, field_name))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    selected_names = [field_name for _, field_name in ranked[:max_fields]]
+    selected_name_set = set(selected_names)
+    selected_fields = {field_name: canonical_fields[field_name] for field_name in selected_names if field_name in canonical_fields}
+    selected_meta = {field_name: dict(field_meta.get(field_name, {})) for field_name in selected_name_set}
+    return selected_fields, selected_meta
 
 
 def _repair_latin1_utf8_mojibake(text: str) -> str:
@@ -1096,22 +1633,160 @@ def _parse_schema_form_json(raw_schema: str) -> Dict[str, Any]:
     raise HTTPException(status_code=400, detail="Invalid schema JSON")
 
 
-def _extract_text_for_schema(markdown: str, table_blocks: List[Dict[str, Any]], max_chars: int = 16000) -> str:
-    compact_md = _TAG_RE.sub(" ", str(markdown or ""))
-    compact_md = re.sub(r"\s+", " ", compact_md).strip()
-    table_headers: List[str] = []
+def _schema_context_clean_text(value: Any) -> str:
+    text = _TAG_RE.sub(" ", str(value or ""))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _schema_context_texts_from_figures(
+    figure_blocks: List[Dict[str, Any]],
+    *,
+    max_figures: int = 10,
+) -> List[str]:
+    out: List[str] = []
+    for figure in figure_blocks[:max_figures]:
+        if not isinstance(figure, dict):
+            continue
+        caption = _schema_context_clean_text(figure.get("caption"))
+        if caption:
+            out.append(caption)
+        for key in ("key_points", "text_blocks", "insights"):
+            values = figure.get(key)
+            if not isinstance(values, list):
+                continue
+            for item in values[:6]:
+                text = _schema_context_clean_text(item)
+                if text:
+                    out.append(text)
+        dataframe = figure.get("dataframe")
+        if not isinstance(dataframe, dict):
+            continue
+        headers = dataframe.get("headers")
+        if isinstance(headers, list):
+            header_text = " | ".join(
+                _schema_context_clean_text(item)
+                for item in headers[:10]
+                if _schema_context_clean_text(item)
+            )
+            if header_text:
+                out.append(header_text)
+        rows = dataframe.get("rows")
+        if isinstance(rows, list):
+            row_labels: List[str] = []
+            for row in rows[:8]:
+                if not isinstance(row, list):
+                    continue
+                first_cell = _schema_context_clean_text(row[0] if row else "")
+                if not first_cell or re.fullmatch(r"[-+]?\d[\d\s,.;:%/]*", first_cell):
+                    continue
+                row_labels.append(first_cell)
+            if row_labels:
+                out.append(" | ".join(row_labels[:8]))
+    return out
+
+
+def _extract_text_for_schema(
+    markdown: str,
+    table_blocks: List[Dict[str, Any]],
+    figure_blocks: Optional[List[Dict[str, Any]]] = None,
+    max_chars: int = 16000,
+) -> str:
+    compact_md = _schema_context_clean_text(markdown)
+    table_context_bits: List[str] = []
     for table in table_blocks[:10]:
+        if not isinstance(table, dict):
+            continue
+        caption = _schema_context_clean_text(table.get("caption"))
+        if caption:
+            table_context_bits.append(caption)
         headers = table.get("headers")
         if not isinstance(headers, list):
             continue
-        for item in headers[:10]:
-            head = str(item or "").strip()
-            if head:
-                table_headers.append(head)
-    merged = f"{compact_md}\n表头：{' | '.join(table_headers)}".strip()
+        header_text = " | ".join(
+            _schema_context_clean_text(item)
+            for item in headers[:10]
+            if _schema_context_clean_text(item)
+        )
+        if header_text:
+            table_context_bits.append(header_text)
+    figure_context_bits = _schema_context_texts_from_figures(figure_blocks or [], max_figures=10)
+    merged_parts = [compact_md]
+    if table_context_bits:
+        merged_parts.append(f"表格语义: {' | '.join(table_context_bits)}")
+    if figure_context_bits:
+        merged_parts.append(f"图表语义: {' | '.join(figure_context_bits)}")
+    merged = "\n".join(part for part in merged_parts if part).strip()
     if len(merged) > max_chars:
         merged = merged[:max_chars]
     return merged
+
+
+_SCHEMA_FIGURE_TITLE_TOKENS = (
+    "示意图",
+    "分布图",
+    "趋势图",
+    "柱状图",
+    "折线图",
+    "饼图",
+    "散点图",
+    "流程图",
+    "结构图",
+    "对比图",
+    "雷达图",
+    "热力图",
+)
+
+
+def _looks_like_schema_figure_title(candidate: str) -> bool:
+    text = str(candidate or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered.startswith("figure") or lowered.startswith("chart"):
+        return True
+    return any(token in text for token in _SCHEMA_FIGURE_TITLE_TOKENS)
+
+
+_SCHEMA_SENTENCE_CUE_TOKENS_ZH = (
+    "均为",
+    "分别",
+    "表现",
+    "高于",
+    "低于",
+    "达到",
+    "显著",
+    "其中",
+    "均在",
+    "位于",
+    "最多",
+    "最少",
+    "最高",
+    "最低",
+    "相对较",
+    "说明",
+    "显示",
+)
+_SCHEMA_SENTENCE_CUE_TOKENS_EN = (
+    "shows",
+    "showing",
+    "indicates",
+    "indicating",
+    "higher",
+    "lower",
+    "reaches",
+)
+
+
+def _looks_like_schema_sentence_fragment(candidate: str) -> bool:
+    text = _sanitize_field_name(candidate)
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(token in lowered for token in _SCHEMA_SENTENCE_CUE_TOKENS_EN):
+        return True
+    if any(token in text for token in _SCHEMA_SENTENCE_CUE_TOKENS_ZH):
+        return True
+    return len(text) >= 12 and any(token in text for token in ("的", "在", "为"))
 
 
 _DATE_FIELD_TOKENS = (
@@ -1182,6 +1857,11 @@ _NUMBER_FIELD_TOKENS = (
     "average",
 )
 
+# Asset-backed overrides for type inference token hints.
+_DATE_FIELD_TOKENS = _FIELD_TYPE_RULES["date_tokens"]
+_INTEGER_FIELD_TOKENS = _FIELD_TYPE_RULES["integer_tokens"]
+_NUMBER_FIELD_TOKENS = _FIELD_TYPE_RULES["number_tokens"]
+
 
 def _schema_field_type_priority(field_type: str) -> int:
     normalized = _coerce_field_type(field_type)
@@ -1229,7 +1909,12 @@ def _infer_field_type_from_name(field_name: str) -> str:
     return "string"
 
 
-def _infer_schema_fields_heuristic(markdown: str, table_blocks: List[Dict[str, Any]], max_fields: int) -> Dict[str, str]:
+def _infer_schema_fields_heuristic(
+    markdown: str,
+    table_blocks: List[Dict[str, Any]],
+    figure_blocks: Optional[List[Dict[str, Any]]],
+    max_fields: int,
+) -> Dict[str, str]:
     stop_tokens = {
         "ref",
         "page",
@@ -1245,6 +1930,7 @@ def _infer_schema_fields_heuristic(markdown: str, table_blocks: List[Dict[str, A
         "备注",
         "说明",
     }
+    stop_tokens = _SCHEMA_NOISE_RULES["schema_heuristic_stop_tokens"]
     score_map: Dict[str, int] = {}
     type_map: Dict[str, str] = {}
 
@@ -1267,6 +1953,26 @@ def _infer_schema_fields_heuristic(markdown: str, table_blocks: List[Dict[str, A
         if prev_type is None or _schema_field_type_priority(inferred) > _schema_field_type_priority(prev_type):
             type_map[key] = inferred
 
+    def push_text_fragments(raw_text: Any, score: int) -> None:
+        text = _schema_context_clean_text(raw_text)
+        if not text:
+            return
+        text = re.sub(r"^(?:图|表|figure|chart)\s*[\dA-Za-z\-_.（）()]*\s*[:：]?\s*", "", text, flags=re.IGNORECASE)
+        for fragment in re.split(r"[|,，;；。:：/()\[\]（）]", text):
+            candidate = _sanitize_field_name(fragment)
+            if not candidate or len(candidate) > 24:
+                continue
+            if re.fullmatch(r"[-+]?\d[\d\s,.;:%/]*", candidate):
+                continue
+            if _looks_like_schema_figure_title(candidate):
+                continue
+            if _looks_like_schema_sentence_fragment(candidate):
+                continue
+            digit_count = len(re.findall(r"\d", candidate))
+            if digit_count and (digit_count / max(len(candidate), 1)) >= 0.3 and not re.search(r"[A-Za-z]{2,}", candidate):
+                continue
+            push_candidate(candidate, score)
+
     for table_idx, table in enumerate(table_blocks[:12], start=1):
         base_score = max(20, 140 - table_idx * 8)
         headers = table.get("headers")
@@ -1283,6 +1989,25 @@ def _infer_schema_fields_heuristic(markdown: str, table_blocks: List[Dict[str, A
                 unit = str(item.get("unit", "") or "").strip()
                 if unit:
                     push_candidate(f"{item.get('name')}_{unit}", base_score)
+
+    for figure_idx, figure in enumerate((figure_blocks or [])[:12], start=1):
+        if not isinstance(figure, dict):
+            continue
+        base_score = max(24, 128 - figure_idx * 6)
+        push_text_fragments(figure.get("caption"), base_score + 6)
+        for key in ("key_points", "text_blocks", "insights"):
+            values = figure.get(key)
+            if not isinstance(values, list):
+                continue
+            for item_idx, item in enumerate(values[:6], start=1):
+                push_text_fragments(item, base_score - item_idx)
+        dataframe = figure.get("dataframe")
+        if not isinstance(dataframe, dict):
+            continue
+        headers = dataframe.get("headers")
+        if isinstance(headers, list):
+            for col_idx, header in enumerate(headers[:16], start=1):
+                push_candidate(header, base_score + 8 - col_idx)
 
     plain = _TAG_RE.sub(" ", str(markdown or ""))
     plain = re.sub(r"\s+", " ", plain)
@@ -1346,6 +2071,7 @@ async def _infer_schema_fields_llm(
     file_name: str,
     markdown: str,
     table_blocks: List[Dict[str, Any]],
+    figure_blocks: Optional[List[Dict[str, Any]]],
     max_fields: int,
 ) -> Dict[str, str]:
     provider = getattr(graph, "_provider", None)
@@ -1354,7 +2080,12 @@ async def _infer_schema_fields_llm(
         return {}
 
     is_xlsx = file_name.lower().endswith(".xlsx")
-    context = _extract_text_for_schema(markdown, table_blocks, max_chars=4200 if is_xlsx else 9000)
+    context = _extract_text_for_schema(
+        markdown,
+        table_blocks,
+        figure_blocks,
+        max_chars=4200 if is_xlsx else 10000,
+    )
     if not context:
         return {}
 
@@ -1362,6 +2093,7 @@ async def _infer_schema_fields_llm(
         "You are a document schema planner. Select only the most valuable, stable, and extractable fields from the file. "
         "Prefer identifiers, dates, organizations, people, regions, totals, counts, rates, units, and the core business metrics. "
         "For spreadsheets or table-heavy documents, prioritize main dimensions and key metrics instead of generic helper columns. "
+        "If charts or figures expose dataframe-like metrics, headers, or category labels, treat them as valid schema evidence too. "
         "Avoid low-value generic fields such as ref, page, text, 序号, 备注, 说明, name, or sheet unless they are true business fields. "
         f"Return 4 to {max(4, min(max_fields, 12))} fields, JSON only, with no explanation."
     )
@@ -1442,28 +2174,75 @@ async def _resolve_effective_schema(
     file_name: str,
     markdown: str,
     table_blocks: List[Dict[str, Any]],
+    figure_blocks: Optional[List[Dict[str, Any]]] = None,
     profile_hint: str = "",
+    naming_template: str = "",
     allow_llm: bool = True,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     req_fields = _schema_target_fields(requested_schema)
+    schema_for_contracts = dict(requested_schema)
+    required_from_specs = _schema_required_from_field_specs(requested_schema)
+    if required_from_specs:
+        schema_for_contracts["required"] = _merge_required_field_names(
+            schema_for_contracts.get("required"),
+            required_from_specs,
+        )
     max_fields = max(4, min(int(requested_schema.get("max_auto_fields", 12) or 12), 20))
+    template_hint = str(naming_template or "common_document").strip() or "common_document"
+    selection_rules = _SCHEMA_SELECTION_RULES
     if file_name.lower().endswith(".xlsx") or str(profile_hint).lower() == "table_heavy":
-        max_fields = min(max_fields, 6)
+        max_fields = min(max_fields, max(4, int(selection_rules.get("xlsx_or_table_heavy_max_fields", 6) or 6)))
+    elif figure_blocks:
+        max_fields = min(max_fields, max(4, int(selection_rules.get("figure_rich_max_fields", 8) or 8)))
     elif file_name.lower().endswith(".pdf"):
+        pdf_max_fields_env = str(selection_rules.get("pdf_max_fields_env") or "MODULE2_AUTO_SCHEMA_PDF_MAX_FIELDS")
+        pdf_max_fields_default = max(4, int(selection_rules.get("pdf_max_fields_default", 8) or 8))
         max_fields = min(
             max_fields,
-            max(4, int(os.getenv("MODULE2_AUTO_SCHEMA_PDF_MAX_FIELDS", "8"))),
+            max(4, int(os.getenv(pdf_max_fields_env, str(pdf_max_fields_default)))),
         )
+    candidate_multiplier = max(2, int(selection_rules.get("candidate_pool_multiplier", 3) or 3))
+    candidate_extra_cap = max(4, int(selection_rules.get("candidate_pool_extra_cap", 10) or 10))
+    candidate_pool_max = max(max_fields, int(selection_rules.get("candidate_pool_max", 36) or 36))
+    candidate_limit = max(max_fields * candidate_multiplier, min(candidate_pool_max, max_fields + candidate_extra_cap))
     auto_infer = _schema_auto_infer_requested(requested_schema)
     if not auto_infer:
         normalized = _normalize_schema_fields(req_fields, max_fields=max_fields)
-        effective = dict(requested_schema)
-        effective["fields"] = normalized
+        canonical_fields, field_meta, raw_to_canonical, canonical_to_raw, naming_stats = canonicalize_schema_fields(
+            normalized,
+            template_hint=template_hint,
+        )
+        canonical_fields, field_meta = _select_best_canonical_schema_fields(
+            canonical_fields,
+            field_meta,
+            max_fields=max_fields,
+            template_hint=template_hint,
+        )
+        selected_labels = set(canonical_fields.keys())
+        raw_to_canonical = {
+            raw_name: canonical_name
+            for raw_name, canonical_name in raw_to_canonical.items()
+            if canonical_name in selected_labels
+        }
+        canonical_to_raw = {
+            canonical_name: raw_name
+            for canonical_name, raw_name in canonical_to_raw.items()
+            if canonical_name in selected_labels
+        }
+        effective = normalize_schema_contracts(schema_for_contracts, raw_to_canonical, template_hint=template_hint)
+        effective["fields"] = canonical_fields
+        effective["field_meta"] = field_meta
         return effective, {
             "mode": "manual",
             "source": "request",
-            "field_count": len(normalized),
-            "fields": list(normalized.keys()),
+            "field_count": len(canonical_fields),
+            "fields": list(canonical_fields.keys()),
+            "raw_fields": list(normalized.keys()),
+            "field_name_mappings": raw_to_canonical,
+            "canonical_to_raw": canonical_to_raw,
+            "naming_template": template_hint,
+            "naming_stats": naming_stats,
+            "field_meta": field_meta,
         }
 
     llm_enabled = bool(requested_schema.get("prefer_llm", True)) and bool(allow_llm)
@@ -1473,12 +2252,31 @@ async def _resolve_effective_schema(
             file_name=file_name,
             markdown=markdown,
             table_blocks=table_blocks,
+            figure_blocks=figure_blocks,
             max_fields=max_fields,
         )
-    heuristic_fields = _infer_schema_fields_heuristic(markdown=markdown, table_blocks=table_blocks, max_fields=max_fields)
+    enable_rule_candidates = template_hint in set(selection_rules.get("rule_candidate_templates", ()))
+    rule_fields = (
+        infer_rule_backed_schema_fields(
+            file_name=file_name,
+            markdown=markdown,
+            table_blocks=table_blocks,
+            figure_blocks=figure_blocks,
+            template_hint=template_hint,
+            max_fields=candidate_limit,
+        )
+        if enable_rule_candidates
+        else {}
+    )
+    heuristic_fields = _infer_schema_fields_heuristic(
+        markdown=markdown,
+        table_blocks=table_blocks,
+        figure_blocks=figure_blocks,
+        max_fields=max_fields,
+    )
 
     merged: Dict[str, str] = {}
-    for source in (llm_fields, heuristic_fields):
+    for source in (rule_fields, llm_fields, heuristic_fields):
         for name, type_hint in source.items():
             _upsert_schema_field_candidate(
                 merged,
@@ -1486,29 +2284,75 @@ async def _resolve_effective_schema(
                 type_hint,
                 skip_low_value=True,
             )
-            if len(merged) >= max_fields:
+            if len(merged) >= candidate_limit:
                 break
-        if len(merged) >= max_fields:
+        if len(merged) >= candidate_limit:
             break
-    merged = _filter_auto_schema_fields(merged, max_fields=max_fields)
+    merged = _filter_auto_schema_fields(merged, max_fields=candidate_limit)
 
     if not merged and req_fields:
         merged = _normalize_schema_fields(req_fields, max_fields=max_fields)
 
-    effective: Dict[str, Any] = {"fields": merged}
-    if isinstance(requested_schema.get("dependencies"), dict):
-        effective["dependencies"] = requested_schema.get("dependencies")
-    if isinstance(requested_schema.get("validations"), list):
-        effective["validations"] = requested_schema.get("validations")
-    if isinstance(requested_schema.get("required"), list):
-        effective["required"] = requested_schema.get("required")
+    canonical_fields, field_meta, raw_to_canonical, canonical_to_raw, naming_stats = canonicalize_schema_fields(
+        merged,
+        template_hint=template_hint,
+    )
+    (
+        canonical_fields,
+        field_meta,
+        raw_to_canonical,
+        canonical_to_raw,
+        closure_stats,
+    ) = _apply_conservative_semantic_closure(
+        canonical_fields,
+        field_meta,
+        raw_to_canonical,
+        canonical_to_raw,
+        template_hint=template_hint,
+    )
+    naming_stats = {
+        **dict(naming_stats),
+        **dict(closure_stats),
+    }
+    canonical_fields, field_meta = _select_best_canonical_schema_fields(
+        canonical_fields,
+        field_meta,
+        max_fields=max_fields,
+        template_hint=template_hint,
+    )
+    selected_labels = set(canonical_fields.keys())
+    raw_to_canonical = {
+        raw_name: canonical_name
+        for raw_name, canonical_name in raw_to_canonical.items()
+        if canonical_name in selected_labels
+    }
+    canonical_to_raw = {
+        canonical_name: raw_name
+        for canonical_name, raw_name in canonical_to_raw.items()
+        if canonical_name in selected_labels
+    }
+    effective = normalize_schema_contracts(
+        {"fields": canonical_fields, **schema_for_contracts},
+        raw_to_canonical,
+        template_hint=template_hint,
+    )
+    effective["fields"] = canonical_fields
+    effective["field_meta"] = field_meta
 
     source = "llm+heuristic" if llm_fields else ("heuristic" if heuristic_fields else "empty")
     return effective, {
         "mode": "auto",
-        "source": source,
-        "field_count": len(merged),
-        "fields": list(merged.keys()),
+        "source": "rules+llm+heuristic" if rule_fields and llm_fields else (
+            "rules+heuristic" if rule_fields else source
+        ),
+        "field_count": len(canonical_fields),
+        "fields": list(canonical_fields.keys()),
+        "raw_fields": list(merged.keys()),
+        "field_name_mappings": raw_to_canonical,
+        "canonical_to_raw": canonical_to_raw,
+        "naming_template": template_hint,
+        "naming_stats": naming_stats,
+        "field_meta": field_meta,
     }
 
 
@@ -1518,6 +2362,90 @@ def _count_table_cells(table_blocks: List[Dict[str, Any]]) -> int:
         for row in table.get("rows", []):
             count += len(row.get("cells", []))
     return count
+
+
+def _count_figure_dataframe_cells(figure_blocks: List[Dict[str, Any]]) -> int:
+    count = 0
+    for figure in figure_blocks:
+        dataframe = figure.get("dataframe") if isinstance(figure, dict) else {}
+        if not isinstance(dataframe, dict):
+            continue
+        headers = dataframe.get("headers")
+        if isinstance(headers, list):
+            count += len(headers)
+        rows = dataframe.get("rows")
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, list):
+                    count += len(row)
+    return count
+
+
+def _resolve_dynamic_extract_timeout_sec(
+    *,
+    file_name: str,
+    extract_timeout_sec: float,
+    markdown: str,
+    schema_fields: Dict[str, Any],
+    table_blocks: List[Dict[str, Any]],
+    figure_blocks: List[Dict[str, Any]],
+) -> Tuple[float, Dict[str, Any]]:
+    base_timeout = max(8.0, float(extract_timeout_sec or 0.0))
+    if not is_word_file(file_name):
+        return base_timeout, {
+            "applied": False,
+            "reason": "not_word_file",
+            "resolved_timeout_sec": round(base_timeout, 3),
+        }
+
+    text_len = len(_schema_context_clean_text(markdown))
+    table_cells = _count_table_cells(table_blocks)
+    figure_dataframe_cells = _count_figure_dataframe_cells(figure_blocks)
+    field_count = len(schema_fields)
+    complexity_score = (
+        min(text_len / 3600.0, 18.0)
+        + min(float(field_count) * 1.35, 18.0)
+        + min(float(len(table_blocks)) * 1.15, 14.0)
+        + min(float(len(figure_blocks)) * 1.05, 14.0)
+        + min(table_cells / 85.0, 16.0)
+        + min(figure_dataframe_cells / 48.0, 16.0)
+    )
+    trigger_score = max(8.0, float(os.getenv("MODULE2_WORD_DYNAMIC_EXTRACT_TRIGGER_SCORE", "10.0")))
+    max_timeout_sec = max(
+        base_timeout,
+        float(os.getenv("MODULE2_WORD_DYNAMIC_EXTRACT_TIMEOUT_MAX_SEC", "420")),
+    )
+    bonus_per_score = max(2.0, float(os.getenv("MODULE2_WORD_DYNAMIC_EXTRACT_BONUS_PER_SCORE", "6.0")))
+
+    if complexity_score < trigger_score:
+        return base_timeout, {
+            "applied": False,
+            "reason": "below_trigger",
+            "complexity_score": round(complexity_score, 3),
+            "resolved_timeout_sec": round(base_timeout, 3),
+            "text_len": text_len,
+            "field_count": field_count,
+            "table_count": len(table_blocks),
+            "figure_count": len(figure_blocks),
+            "table_cells": table_cells,
+            "figure_dataframe_cells": figure_dataframe_cells,
+        }
+
+    recommended_timeout = base_timeout + max(0.0, complexity_score - trigger_score) * bonus_per_score
+    resolved_timeout = min(max_timeout_sec, max(base_timeout, recommended_timeout))
+    return resolved_timeout, {
+        "applied": resolved_timeout > base_timeout + 0.5,
+        "reason": "word_complexity_scale",
+        "complexity_score": round(complexity_score, 3),
+        "resolved_timeout_sec": round(resolved_timeout, 3),
+        "base_timeout_sec": round(base_timeout, 3),
+        "text_len": text_len,
+        "field_count": field_count,
+        "table_count": len(table_blocks),
+        "figure_count": len(figure_blocks),
+        "table_cells": table_cells,
+        "figure_dataframe_cells": figure_dataframe_cells,
+    }
 
 
 def _tokenize_field_hint(field_name: str) -> Set[str]:
@@ -1913,6 +2841,14 @@ def _normalize_content_hash(value: Any) -> str:
 
 def _office_preview_storage_fragments(file_hash: str) -> Tuple[str, str]:
     normalized_hash = _normalize_content_hash(file_hash)
+    rel_dir = Path("preview") / "op" / normalized_hash[:2]
+    pdf_fragment = str((rel_dir / f"{normalized_hash}.pdf").as_posix())
+    meta_fragment = str((rel_dir / f"{normalized_hash}.json").as_posix())
+    return pdf_fragment, meta_fragment
+
+
+def _legacy_office_preview_storage_fragments(file_hash: str) -> Tuple[str, str]:
+    normalized_hash = _normalize_content_hash(file_hash)
     rel_dir = Path("preview") / "office_pdf" / "by_source" / normalized_hash[:2] / normalized_hash
     pdf_fragment = str((rel_dir / "source.pdf").as_posix())
     meta_fragment = str((rel_dir / "meta.json").as_posix())
@@ -1949,27 +2885,31 @@ def _write_office_preview_artifact(
 
 def _load_office_preview_record(file_hash: str) -> Dict[str, Any]:
     normalized_hash = _normalize_content_hash(file_hash)
-    pdf_fragment, meta_fragment = _office_preview_storage_fragments(normalized_hash)
-    pdf_path = _safe_artifact_path(pdf_fragment)
-    if not pdf_path.exists() or not pdf_path.is_file():
-        return {}
-    meta_path = _safe_artifact_path(meta_fragment)
-    payload: Dict[str, Any] = {}
-    if meta_path.exists() and meta_path.is_file():
-        try:
-            raw = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
-            if isinstance(raw, dict):
-                payload = dict(raw)
-        except Exception:
-            payload = {}
-    payload["file_hash"] = normalized_hash
-    payload["artifact_path"] = pdf_fragment
-    payload["artifact_url"] = _artifact_url_from_fragment(pdf_fragment)
-    payload["updated_at"] = float(payload.get("updated_at", pdf_path.stat().st_mtime) or pdf_path.stat().st_mtime)
-    payload["file_name"] = str(payload.get("file_name", "") or "")
-    payload["converter"] = str(payload.get("converter", "") or "")
-    payload["elapsed_ms"] = int(payload.get("elapsed_ms", 0) or 0)
-    return payload
+    for pdf_fragment, meta_fragment in (
+        _office_preview_storage_fragments(normalized_hash),
+        _legacy_office_preview_storage_fragments(normalized_hash),
+    ):
+        pdf_path = _safe_artifact_path(pdf_fragment)
+        if not pdf_path.exists() or not pdf_path.is_file():
+            continue
+        meta_path = _safe_artifact_path(meta_fragment)
+        payload: Dict[str, Any] = {}
+        if meta_path.exists() and meta_path.is_file():
+            try:
+                raw = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
+                if isinstance(raw, dict):
+                    payload = dict(raw)
+            except Exception:
+                payload = {}
+        payload["file_hash"] = normalized_hash
+        payload["artifact_path"] = pdf_fragment
+        payload["artifact_url"] = _artifact_url_from_fragment(pdf_fragment)
+        payload["updated_at"] = float(payload.get("updated_at", pdf_path.stat().st_mtime) or pdf_path.stat().st_mtime)
+        payload["file_name"] = str(payload.get("file_name", "") or "")
+        payload["converter"] = str(payload.get("converter", "") or "")
+        payload["elapsed_ms"] = int(payload.get("elapsed_ms", 0) or 0)
+        return payload
+    return {}
 
 
 def _recover_office_preview_job_from_disk_locked(*, file_hash: str, file_name: str = "") -> Optional[OfficePreviewJob]:
@@ -2040,6 +2980,41 @@ def _persist_assistant_payload_artifact(
     except Exception as exc:
         logger.warning("failed to persist assistant payload artifact for %s: %s", file_name, exc)
         return "", ""
+
+
+def _persist_assistant1_source_markdown_artifact(
+    *,
+    file_name: str,
+    file_hash: str,
+    markdown_text: str,
+    track: str,
+) -> Tuple[str, str, str, str]:
+    clean_markdown = str(markdown_text or "").strip()
+    if not clean_markdown:
+        return "", "", "", ""
+    try:
+        markdown_fragment, markdown_url = _write_artifact_bytes(
+            data=clean_markdown.encode("utf-8"),
+            file_name=f"{Path(file_name).stem}_assistant1_source",
+            sub_dir=f"assistant_1_source/{file_hash[:12]}",
+            ext=".md",
+        )
+        manifest_fragment, manifest_url = _write_json_artifact(
+            payload={
+                "version": "module2-assistant1-source-v1",
+                "file_name": file_name,
+                "file_hash": file_hash,
+                "track": track,
+                "markdown_artifact_path": markdown_fragment,
+                "markdown_artifact_url": markdown_url,
+            },
+            file_name=f"{Path(file_name).stem}_assistant1_source_meta",
+            sub_dir=f"assistant_1_source/{file_hash[:12]}",
+        )
+        return markdown_fragment, markdown_url, manifest_fragment, manifest_url
+    except Exception as exc:
+        logger.warning("failed to persist assistant_1 source markdown for %s: %s", file_name, exc)
+        return "", "", "", ""
 
 
 def _office_preview_timeout_sec() -> float:
@@ -2114,6 +3089,33 @@ def _provider_preflight_snapshot() -> Dict[str, Any]:
         return dict(provider_preflight_state)
 
 
+def _provider_config_snapshot() -> Dict[str, Any]:
+    try:
+        provider = build_module2_llm_provider(
+            temperature=0.0,
+            max_tokens=8,
+            timeout_sec=_provider_healthcheck_timeout_sec(),
+        )
+    except Exception as exc:
+        return {
+            "configured": False,
+            "provider_type": "",
+            "base_url": "",
+            "model": "",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    resolved_base_url = str(
+        getattr(provider, "native_api_url", "") or getattr(provider, "base_url", "") or ""
+    )
+    return {
+        "configured": bool(getattr(provider, "configured", False)),
+        "provider_type": str(type(provider).__name__ or ""),
+        "base_url": resolved_base_url,
+        "model": str(getattr(provider, "model", "") or ""),
+        "error": "",
+    }
+
+
 def _run_provider_preflight(force: bool = False) -> Dict[str, Any]:
     ttl_sec = _provider_healthcheck_ttl_sec()
     now_ts = time.time()
@@ -2186,6 +3188,181 @@ async def _ensure_provider_ready_for_job_create() -> None:
                     f"{type(exc).__name__}: {exc}"
                 ),
             ) from exc
+
+
+def _provider_preflight_on_startup() -> bool:
+    return (os.getenv("MODULE2_PROVIDER_PREFLIGHT_ON_STARTUP", "true") or "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _mineru_warmup_enabled() -> bool:
+    return (os.getenv("MODULE2_MINERU_WARMUP_ENABLE", "false") or "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _mineru_warmup_delay_sec() -> float:
+    return max(0.0, float(os.getenv("MODULE2_MINERU_WARMUP_DELAY_SEC", "1.5")))
+
+
+def _mineru_warmup_timeout_sec() -> float:
+    return max(30.0, float(os.getenv("MODULE2_MINERU_WARMUP_TIMEOUT_SEC", "240")))
+
+
+def _mineru_warmup_worker_count() -> int:
+    return _bounded_env_int(
+        "MODULE2_MINERU_WARMUP_WORKERS",
+        1,
+        minimum=1,
+        maximum=max(1, min(4, _max_workers())),
+    )
+
+
+def _track_startup_background_task(task: asyncio.Task[Any]) -> None:
+    startup_background_tasks.add(task)
+    task.add_done_callback(lambda finished: startup_background_tasks.discard(finished))
+
+
+def _mineru_warmup_snapshot() -> Dict[str, Any]:
+    with mineru_warmup_lock:
+        return dict(mineru_warmup_state)
+
+
+def _build_mineru_warmup_pdf_bytes() -> bytes:
+    import fitz  # pymupdf
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 96), "Module2 MinerU warmup")
+        page.insert_text((72, 124), "This document preloads MinerU runtime for the first PDF job.")
+        page.insert_text((72, 152), "0123456789 alpha beta gamma")
+        return bytes(doc.tobytes(garbage=4, deflate=True))
+    finally:
+        doc.close()
+
+
+async def _startup_provider_preflight_task() -> None:
+    try:
+        await asyncio.to_thread(_run_provider_preflight, True)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "module2 startup provider preflight failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+
+
+async def _startup_mineru_warmup_task() -> None:
+    enabled = _mineru_warmup_enabled()
+    worker_count = _mineru_warmup_worker_count() if enabled else 0
+    with mineru_warmup_lock:
+        mineru_warmup_state.update(
+            {
+                "enabled": enabled,
+                "worker_count": worker_count,
+            }
+        )
+    if not enabled:
+        with mineru_warmup_lock:
+            mineru_warmup_state.update(
+                {
+                    "status": "disabled",
+                    "detail": "warmup_disabled_by_env",
+                    "error": "",
+                }
+            )
+        return
+
+    delay_sec = _mineru_warmup_delay_sec()
+    if delay_sec > 0:
+        await asyncio.sleep(delay_sec)
+
+    started_at = time.time()
+    with mineru_warmup_lock:
+        mineru_warmup_state.update(
+            {
+                "status": "running",
+                "ok": False,
+                "started_at": started_at,
+                "finished_at": 0.0,
+                "elapsed_sec": 0.0,
+                "detail": "warming_process_pool",
+                "error": "",
+                "worker_count": worker_count,
+            }
+        )
+
+    try:
+        warmup_pdf_bytes = await asyncio.to_thread(_build_mineru_warmup_pdf_bytes)
+        loop = asyncio.get_running_loop()
+        elapsed_samples: List[float] = []
+        for worker_index in range(worker_count):
+            warm_t0 = time.perf_counter()
+            await _run_parse_in_process_pool(
+                loop=loop,
+                file_bytes=warmup_pdf_bytes,
+                file_name=f"module2_mineru_warmup_{worker_index + 1}.pdf",
+                track="VisualTrack",
+                timeout_sec=_mineru_warmup_timeout_sec(),
+                context_label=f"startup_mineru_warmup_{worker_index + 1}",
+            )
+            elapsed_samples.append(time.perf_counter() - warm_t0)
+        finished_at = time.time()
+        with mineru_warmup_lock:
+            mineru_warmup_state.update(
+                {
+                    "status": "completed",
+                    "ok": True,
+                    "finished_at": finished_at,
+                    "elapsed_sec": round(finished_at - started_at, 3),
+                    "detail": (
+                        f"warmed_workers={worker_count}; "
+                        f"last_worker_sec={round(elapsed_samples[-1], 3) if elapsed_samples else 0.0}"
+                    ),
+                    "error": "",
+                }
+            )
+        logger.info(
+            "module2 MinerU warmup completed workers=%s elapsed=%.3fs",
+            worker_count,
+            finished_at - started_at,
+        )
+    except asyncio.CancelledError:
+        finished_at = time.time()
+        with mineru_warmup_lock:
+            mineru_warmup_state.update(
+                {
+                    "status": "cancelled",
+                    "ok": False,
+                    "finished_at": finished_at,
+                    "elapsed_sec": round(max(0.0, finished_at - started_at), 3),
+                    "detail": "warmup_cancelled",
+                }
+            )
+        raise
+    except Exception as exc:
+        finished_at = time.time()
+        message = f"{type(exc).__name__}: {exc}"
+        with mineru_warmup_lock:
+            mineru_warmup_state.update(
+                {
+                    "status": "failed",
+                    "ok": False,
+                    "finished_at": finished_at,
+                    "elapsed_sec": round(max(0.0, finished_at - started_at), 3),
+                    "detail": "warmup_failed",
+                    "error": message,
+                }
+            )
+        logger.warning("module2 MinerU warmup failed: %s", message)
 
 
 def _docx_native_recovery_enabled() -> bool:
@@ -2429,10 +3606,28 @@ def _serialize_extraction_job(job: ExtractionJobState, *, include_documents: boo
     total_files = max(1, int(job.total_files or 0))
     serialized_files: List[Dict[str, Any]] = []
     file_progress_values: List[float] = []
+    queued_files = 0
+    running_files: List[Dict[str, Any]] = []
+    active_stages: Dict[str, int] = {}
 
     for idx, item in enumerate(job.files):
         raw_ratio = max(0.0, min(1.0, float(item.progress_ratio or 0.0)))
         file_progress_values.append(raw_ratio)
+        status = str(item.status or "").strip().lower() or "queued"
+        stage = str(item.stage or "").strip() or "queued"
+        if status == "queued":
+            queued_files += 1
+        elif status not in {"completed", "failed"}:
+            running_files.append(
+                {
+                    "file_index": idx + 1,
+                    "file_name": item.file_name,
+                    "stage": stage,
+                    "status": status,
+                    "progress_ratio": round(raw_ratio, 4),
+                }
+            )
+            active_stages[stage] = int(active_stages.get(stage, 0)) + 1
         serialized_files.append(
             {
                 "file_name": item.file_name,
@@ -2450,6 +3645,23 @@ def _serialize_extraction_job(job: ExtractionJobState, *, include_documents: boo
         )
 
     progress_ratio = (sum(file_progress_values) / float(total_files)) if file_progress_values else 0.0
+    current_file_index = int(job.current_file_index or 0)
+    current_file_name = job.current_file_name
+    current_stage = job.current_stage
+    if running_files:
+        preferred_running = next(
+            (
+                item
+                for item in running_files
+                if int(item.get("file_index", 0) or 0) == current_file_index
+                and str(item.get("file_name", "")).strip() == str(current_file_name or "").strip()
+            ),
+            None,
+        )
+        active_item = preferred_running or running_files[0]
+        current_file_index = int(active_item.get("file_index", 0) or current_file_index)
+        current_file_name = str(active_item.get("file_name", current_file_name) or "")
+        current_stage = str(active_item.get("stage", current_stage) or "")
     payload: Dict[str, Any] = {
         "ok": True,
         "job_id": job.job_id,
@@ -2461,16 +3673,32 @@ def _serialize_extraction_job(job: ExtractionJobState, *, include_documents: boo
             "total_files": int(job.total_files),
             "completed_files": int(job.completed_files),
             "failed_files": int(job.failed_files),
-            "current_file_index": int(job.current_file_index),
-            "current_file_name": job.current_file_name,
-            "current_stage": job.current_stage,
+            "current_file_index": current_file_index,
+            "current_file_name": current_file_name,
+            "current_stage": current_stage,
             "progress_ratio": round(progress_ratio, 4),
+            "queued_files": int(queued_files),
+            "running_files": running_files,
+            "active_stages": active_stages,
+            "parallel_workers": len(running_files),
         },
         "files": serialized_files,
         "errors": list(job.errors),
     }
     if include_documents or job.terminal():
-        payload["documents"] = [doc.model_dump(mode="json") for doc in job.documents]
+        ordered_documents: List[DocumentExtractionResponse] = []
+        bucketed_documents: Dict[Tuple[str, str], List[DocumentExtractionResponse]] = defaultdict(list)
+        for doc in job.documents:
+            key = (str(getattr(doc, "file_hash", "") or ""), str(getattr(doc, "file_name", "") or "").strip().lower())
+            bucketed_documents[key].append(doc)
+        for item in job.files:
+            key = (str(item.file_hash or ""), str(item.file_name or "").strip().lower())
+            bucket = bucketed_documents.get(key) or []
+            if bucket:
+                ordered_documents.append(bucket.pop(0))
+        for bucket in bucketed_documents.values():
+            ordered_documents.extend(bucket)
+        payload["documents"] = [doc.model_dump(mode="json") for doc in ordered_documents]
     return payload
 
 
@@ -2997,6 +4225,255 @@ def _nonpdf_locator_from_ref(ref_id: Optional[str], file_name: str) -> Dict[str,
     return locator
 
 
+def _trace_clean_text(value: Any, max_len: int = 0) -> str:
+    text = _TAG_RE.sub(" ", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip(" |:;,\u3002\uff0c\uff1a\uff1b")
+    if max_len > 0:
+        text = text[:max_len].strip()
+    return text
+
+
+def _trace_unique_texts(values: List[Any], limit: int = 4, max_len: int = 80) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    for value in values:
+        cleaned = _trace_clean_text(value, max_len=max_len)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _trace_looks_placeholder_text(value: Any) -> bool:
+    text = _trace_clean_text(value)
+    if not text:
+        return True
+    meaningful = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", text)
+    if not meaningful:
+        return True
+    placeholder_count = text.count("?") + text.count("\uff1f") + text.count("\ufffd")
+    return placeholder_count >= max(2, len(text) // 3)
+
+
+def _trace_strip_artifact_noise(
+    value: Any,
+    *,
+    object_type: str = "",
+    object_id: str = "",
+    max_len: int = 0,
+) -> str:
+    text = _trace_clean_text(value)
+    if not text:
+        return ""
+    text = re.sub(r"^(chart|table|figure|image)\s*:\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[\(\uff08](?:pdf|mineru|gemini|vision|roi)[^\)\uff09]*[\)\uff09]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:pdf_mineru|gemini_vision_[a-z_]+|pdf_roi_crop|mineru_out)\b", "", text, flags=re.IGNORECASE)
+    if object_id:
+        text = re.sub(rf"\b{re.escape(object_id)}\b", "", text, flags=re.IGNORECASE)
+    if object_type == "table":
+        text = re.sub(r"^\s*\u8868\u683c\s*", "", text)
+    elif object_type in {"figure", "image"}:
+        text = re.sub(r"^\s*(?:\u56fe\u50cf|\u56fe\u7247|\u63d2\u56fe)\s*", "", text)
+    text = re.sub(r"\b(?:table|figure|image|fig)[\s_-]*\d+\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\s*(?:title|\u6807\u9898)[:\uff1a]\s*", "", text, flags=re.IGNORECASE)
+    text = _trace_clean_text(text)
+    if max_len > 0:
+        text = text[:max_len].strip()
+    return text
+
+
+def _trace_is_low_signal_artifact_text(value: Any, *, object_type: str = "", object_id: str = "") -> bool:
+    cleaned = _trace_strip_artifact_noise(value, object_type=object_type, object_id=object_id, max_len=120)
+    if not cleaned or _trace_looks_placeholder_text(cleaned):
+        return True
+    lowered = cleaned.lower()
+    object_id_lower = _trace_clean_text(object_id).lower()
+    if object_id_lower and lowered == object_id_lower:
+        return True
+    if object_id_lower and object_id_lower in lowered and len(cleaned) <= len(object_id_lower) + 6:
+        return True
+    if re.fullmatch(r"(?:table|figure|image|fig)[\s_-]*\d+", lowered):
+        return True
+    if re.fullmatch(r"col[_\s-]*\d+", lowered):
+        return True
+    if re.fullmatch(r"(?:单位|unit)\s*[:：]\s*[A-Za-z0-9\u4e00-\u9fff%％‰/°℃μ\- ]{1,24}", cleaned, flags=re.IGNORECASE):
+        return True
+    if lowered.startswith("the unit of measurement is"):
+        return True
+    if lowered.startswith("the image contains the text"):
+        return True
+    if object_type == "table" and lowered in {"table", "\u8868\u683c"}:
+        return True
+    if object_type in {"figure", "image"} and lowered in {"image", "figure", "fig", "\u56fe\u50cf", "\u56fe\u7247", "\u63d2\u56fe"}:
+        return True
+    return False
+
+
+def _trace_table_header_labels(table: Dict[str, Any], *, max_items: int = 4) -> List[str]:
+    object_id = str(table.get("table_id") or "").strip()
+    candidates: List[str] = []
+    for item in table.get("headers", []) if isinstance(table.get("headers"), list) else []:
+        text = _trace_strip_artifact_noise(item, object_type="table", object_id=object_id, max_len=32)
+        if text and not _trace_is_low_signal_artifact_text(text, object_type="table", object_id=object_id):
+            candidates.append(text)
+    for meta in table.get("header_meta", []) if isinstance(table.get("header_meta"), list) else []:
+        if not isinstance(meta, dict):
+            continue
+        name = _trace_clean_text(meta.get("name"), max_len=24)
+        unit = _trace_clean_text(meta.get("unit"), max_len=16)
+        label = name
+        if name and unit and unit not in name:
+            label = f"{name} ({unit})"
+        elif unit and not name:
+            label = unit
+        label = _trace_strip_artifact_noise(label, object_type="table", object_id=object_id, max_len=32)
+        if label and not _trace_is_low_signal_artifact_text(label, object_type="table", object_id=object_id):
+            candidates.append(label)
+    return _trace_unique_texts(candidates, limit=max_items, max_len=32)
+
+
+def _trace_table_row_samples(table: Dict[str, Any], *, max_items: int = 3) -> List[str]:
+    samples: List[str] = []
+    for row in table.get("rows", []) if isinstance(table.get("rows"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        pieces: List[str] = []
+        for cell in row.get("cells", []) if isinstance(row.get("cells"), list) else []:
+            if not isinstance(cell, dict):
+                continue
+            text = _trace_clean_text(cell.get("text"), max_len=24)
+            if text:
+                pieces.append(text)
+            if len(pieces) >= 2:
+                break
+        if not pieces:
+            continue
+        sample = " / ".join(pieces[:2])
+        if _trace_looks_placeholder_text(sample):
+            continue
+        if sample not in samples:
+            samples.append(sample)
+        if len(samples) >= max_items:
+            break
+    return samples
+
+
+def _trace_table_locator_texts(table: Dict[str, Any]) -> Dict[str, Any]:
+    object_id = str(table.get("table_id") or "").strip()
+    caption = _trace_strip_artifact_noise(table.get("caption"), object_type="table", object_id=object_id, max_len=120)
+    if _trace_is_low_signal_artifact_text(caption, object_type="table", object_id=object_id):
+        caption = ""
+    header_labels = _trace_table_header_labels(table, max_items=4)
+    header_text = " | ".join(header_labels)
+    row_samples = _trace_table_row_samples(table, max_items=3)
+
+    title_candidates = [caption, header_text]
+    title = ""
+    for candidate in title_candidates:
+        if candidate and not _trace_is_low_signal_artifact_text(candidate, object_type="table", object_id=object_id):
+            title = candidate
+            break
+
+    summary_candidates: List[str] = []
+    if title and header_text and header_text != title:
+        summary_candidates.append(f"{title}\uff1b\u8868\u5934\uff1a{header_text}")
+    if title and row_samples:
+        summary_candidates.append(f"{title}\uff1b\u6837\u4f8b\uff1a{' / '.join(row_samples)}")
+    elif header_text and row_samples:
+        summary_candidates.append(f"\u8868\u5934\uff1a{header_text}\uff1b\u6837\u4f8b\uff1a{' / '.join(row_samples)}")
+    elif header_text:
+        summary_candidates.append(f"\u8868\u5934\uff1a{header_text}")
+    elif caption:
+        summary_candidates.append(caption)
+
+    summary = ""
+    for candidate in summary_candidates:
+        if candidate and not _trace_is_low_signal_artifact_text(candidate, object_type="table", object_id=object_id):
+            summary = _trace_clean_text(candidate, max_len=200)
+            break
+
+    return {
+        "title": title,
+        "caption": caption,
+        "summary": summary,
+        "header_labels": header_labels,
+    }
+
+
+def _trace_figure_locator_texts(figure: Dict[str, Any]) -> Dict[str, Any]:
+    object_id = str(figure.get("figure_id") or "").strip()
+    title_raw = _trace_strip_artifact_noise(figure.get("title"), object_type="figure", object_id=object_id, max_len=120)
+    caption = _trace_strip_artifact_noise(figure.get("caption"), object_type="figure", object_id=object_id, max_len=120)
+    if _trace_is_low_signal_artifact_text(title_raw, object_type="figure", object_id=object_id):
+        title_raw = ""
+    if _trace_is_low_signal_artifact_text(caption, object_type="figure", object_id=object_id):
+        caption = ""
+
+    key_points = _trace_unique_texts(figure.get("key_points") if isinstance(figure.get("key_points"), list) else [], limit=2, max_len=72)
+    text_blocks = _trace_unique_texts(figure.get("text_blocks") if isinstance(figure.get("text_blocks"), list) else [], limit=2, max_len=96)
+    legend = _trace_unique_texts(figure.get("legend") if isinstance(figure.get("legend"), list) else [], limit=2, max_len=40)
+    axes = figure.get("axes") if isinstance(figure.get("axes"), dict) else {}
+    axis_labels = _trace_unique_texts([axes.get("x"), axes.get("y")], limit=2, max_len=32)
+    key_values_raw = figure.get("key_values") if isinstance(figure.get("key_values"), list) else []
+    key_value_texts: List[str] = []
+    for item in key_values_raw[:2]:
+        if not isinstance(item, dict):
+            continue
+        name = _trace_clean_text(item.get("name"), max_len=36)
+        value = _trace_clean_text(item.get("value"), max_len=36)
+        unit = _trace_clean_text(item.get("unit"), max_len=16)
+        if not name and not value:
+            continue
+        key_value_text = f"{name}:{value}".strip(":")
+        if unit:
+            key_value_text = f"{key_value_text} {unit}".strip()
+        key_value_texts.append(key_value_text)
+    dataframe = figure.get("dataframe") if isinstance(figure.get("dataframe"), dict) else {}
+    dataframe_headers = _trace_unique_texts(dataframe.get("headers") if isinstance(dataframe.get("headers"), list) else [], limit=4, max_len=32)
+    dataframe_header_text = " | ".join(
+        header for header in dataframe_headers if not _trace_is_low_signal_artifact_text(header, object_type="figure", object_id=object_id)
+    )
+
+    title = ""
+    for candidate in [
+        title_raw,
+        caption,
+        key_points[0] if key_points else "",
+        dataframe_header_text,
+        " / ".join(legend[:2]) if legend else "",
+        " / ".join(axis_labels[:2]) if axis_labels else "",
+    ]:
+        if candidate and not _trace_is_low_signal_artifact_text(candidate, object_type="figure", object_id=object_id):
+            title = candidate
+            break
+
+    summary = ""
+    for candidate in [
+        caption if caption and caption != title else "",
+        "\uff1b".join(key_points[:2]) if key_points else "",
+        text_blocks[0] if text_blocks else "",
+        f"\u6570\u636e\u5b57\u6bb5\uff1a{dataframe_header_text}" if dataframe_header_text else "",
+        f"\u56fe\u4f8b\uff1a{' / '.join(legend[:2])}" if legend else "",
+        f"\u8f74\uff1a{' / '.join(axis_labels[:2])}" if axis_labels else "",
+        f"\u6570\u503c\uff1a{' / '.join(key_value_texts[:2])}" if key_value_texts else "",
+    ]:
+        if candidate and not _trace_is_low_signal_artifact_text(candidate, object_type="figure", object_id=object_id):
+            summary = _trace_clean_text(candidate, max_len=200)
+            break
+
+    return {
+        "title": title,
+        "caption": caption,
+        "summary": summary,
+    }
+
+
 def _table_locator_hint(table: Dict[str, Any], file_name: str) -> Dict[str, Any]:
     ext = Path(file_name or "").suffix.lower()
     if ext == ".xlsx":
@@ -3197,6 +4674,13 @@ def _build_document_trace_hits(
         snippet = f"表格 {table_id}（{source}，{row_count}x{col_count}）"
         if header_text:
             snippet = f"{snippet} 标题：{header_text}"
+        locator_texts = _trace_table_locator_texts(table)
+        header_labels = locator_texts.get("header_labels") if isinstance(locator_texts.get("header_labels"), list) else []
+        snippet = (
+            str(locator_texts.get("summary") or "").strip()
+            or str(locator_texts.get("title") or "").strip()
+            or snippet
+        )
         if table_ref_id and table_ref_id in ref_snippets:
             snippet = f"{snippet} | {ref_snippets[table_ref_id]}"
         try:
@@ -3206,6 +4690,10 @@ def _build_document_trace_hits(
         table_locator = {
             "page": page,
             "ref_id": table_ref_id,
+            "title": locator_texts.get("title"),
+            "caption": locator_texts.get("caption"),
+            "summary": locator_texts.get("summary"),
+            "header_labels": header_labels,
             "table_preview": _table_preview_payload(table),
             "dataframe": _table_dataframe_payload(table),
             "artifact_source": _artifact_source_key(table),
@@ -3214,6 +4702,7 @@ def _build_document_trace_hits(
         }
         table_locator.update(_table_locator_hint(table, file_name))
         table_locator.update(_nonpdf_locator_from_ref(table_ref_id, file_name))
+        table_locator = {k: v for k, v in table_locator.items() if v not in ("", None, [], {})}
         hits.append(
             {
                 "file_name": file_name,
@@ -3265,6 +4754,7 @@ def _build_document_trace_hits(
             for x in (figure.get("content_modes") if isinstance(figure.get("content_modes"), list) else [])
             if str(x).strip()
         ][:4]
+        locator_texts = _trace_figure_locator_texts(figure)
         dataframe_payload = _figure_dataframe_payload(figure)
         topology_raw = figure.get("topology") if isinstance(figure.get("topology"), dict) else {}
         topology_nodes = topology_raw.get("nodes") if isinstance(topology_raw.get("nodes"), list) else []
@@ -3278,7 +4768,9 @@ def _build_document_trace_hits(
             "page": page,
             "ref_id": figure_ref,
             "figure_type": fig_type,
-            "caption": caption,
+            "title": locator_texts.get("title"),
+            "caption": locator_texts.get("caption") or caption,
+            "summary": locator_texts.get("summary"),
             "key_points": key_points,
             "content_modes": content_modes,
             "dataframe": dataframe_payload,
@@ -3292,6 +4784,14 @@ def _build_document_trace_hits(
         }
         figure_locator.update(_figure_locator_hint(figure, file_name))
         figure_locator.update(_nonpdf_locator_from_ref(figure_ref, file_name))
+        figure_locator = {k: v for k, v in figure_locator.items() if v not in ("", None, [], {})}
+        figure_snippet = (
+            str(locator_texts.get("summary") or "").strip()
+            or str(locator_texts.get("title") or "").strip()
+            or caption
+            or snippet
+            or f"\u56fe\u50cf {figure_id}"
+        )
         hits.append(
             {
                 "file_name": file_name,
@@ -3300,7 +4800,7 @@ def _build_document_trace_hits(
                 "object_id": figure_id,
                 "ref_id": figure_ref,
                 "page": page,
-                "snippet": f"{fig_type}:{snippet} ({source})"[:260],
+                "snippet": f"{fig_type}:{figure_snippet} ({source})"[:260],
                 "confidence": max(0.0, min(1.0, confidence)),
                 "locator": figure_locator,
                 "bbox": bbox,
@@ -3745,6 +5245,14 @@ def _module4_sync_enabled() -> bool:
 
 def _module4_document_sync_enabled() -> bool:
     return (os.getenv("MODULE2_MODULE4_DOCUMENT_SYNC_ENABLED", "false") or "false").lower() in {"1", "true", "yes"}
+
+
+def _module4_document_sync_per_file_enabled() -> bool:
+    return (os.getenv("MODULE2_MODULE4_SYNC_PER_FILE_ENABLE", "true") or "true").lower() in {"1", "true", "yes"}
+
+
+def _module4_document_sync_final_batch_enabled() -> bool:
+    return (os.getenv("MODULE2_MODULE4_SYNC_FINAL_BATCH_ENABLE", "false") or "false").lower() in {"1", "true", "yes"}
 
 
 def _module4_base_url() -> str:
@@ -4905,14 +6413,42 @@ def _assistant_build_answer(
     return " ".join(parts)
 
 
-def _clear_directory_contents(root: Path) -> int:
+def _path_is_under(child: Path, root: Path) -> bool:
+    try:
+        child.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _clear_directory_contents(root: Path, *, preserve: Optional[Set[Path]] = None) -> int:
     root.mkdir(parents=True, exist_ok=True)
+    preserved_paths: Set[Path] = set()
+    for item in preserve or set():
+        try:
+            preserved_paths.add(item.resolve())
+        except Exception:
+            preserved_paths.add(item)
     removed = 0
     for child in root.iterdir():
         try:
+            try:
+                child_resolved = child.resolve()
+            except Exception:
+                child_resolved = child
+            if child_resolved in preserved_paths:
+                continue
             if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
-                removed += 1
+                nested_preserve = {
+                    path
+                    for path in preserved_paths
+                    if path != child_resolved and _path_is_under(path, child_resolved)
+                }
+                if nested_preserve:
+                    removed += _clear_directory_contents(child_resolved, preserve=nested_preserve)
+                else:
+                    shutil.rmtree(child, ignore_errors=True)
+                    removed += 1
             elif child.is_file():
                 child.unlink(missing_ok=True)
                 removed += 1
@@ -4921,25 +6457,38 @@ def _clear_directory_contents(root: Path) -> int:
     return removed
 
 
-def _clear_module2_materialized_dirs() -> int:
-    removed = 0
-    seen: Set[str] = set()
-    candidates = [
-        _artifact_root_dir(),
-        MODULE2_ROOT / ".mcache",
-        _extraction_job_state_root_dir(),
-    ]
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except Exception:
-            resolved = candidate
-        key = str(resolved).lower() if os.name == "nt" else str(resolved)
-        if key in seen:
-            continue
-        seen.add(key)
-        removed += _clear_directory_contents(resolved)
-    return removed
+def _mineru_runtime_models_dir() -> Path:
+    configured = str(os.getenv("MODULE2_MINERU_RUNTIME_MODELS_DIR", "") or "").strip()
+    default_root = (_artifact_root_dir() / "pdf_parse" / "mineru_runtime_models").resolve()
+    root = _resolve_module2_path(configured, default_root) if configured else default_root
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _clear_module2_materialized_dirs(*, scope: str) -> Dict[str, int]:
+    normalized_scope = str(scope or "results").strip().lower() or "results"
+    counts = {
+        "removed_artifacts": 0,
+        "removed_workdirs": 0,
+        "removed_job_state": 0,
+        "removed_runtime_models": 0,
+    }
+
+    artifact_root = _artifact_root_dir()
+    runtime_models_dir = _mineru_runtime_models_dir()
+    preserve_dirs: Set[Path] = set()
+    if _path_is_under(runtime_models_dir, artifact_root):
+        preserve_dirs.add(runtime_models_dir)
+
+    if normalized_scope in {"results", "all"}:
+        counts["removed_artifacts"] = _clear_directory_contents(artifact_root, preserve=preserve_dirs)
+        counts["removed_workdirs"] = _clear_directory_contents(MODULE2_ROOT / ".mcache")
+        counts["removed_job_state"] = _clear_directory_contents(_extraction_job_state_root_dir())
+
+    if normalized_scope in {"runtime", "all"}:
+        counts["removed_runtime_models"] = _clear_directory_contents(runtime_models_dir)
+
+    return counts
 
 
 async def _clear_extraction_runtime_state() -> None:
@@ -4972,10 +6521,29 @@ async def startup_event() -> None:
     await storage.connect()
     await _recover_module4_sync_outbox()
     await _recover_extraction_jobs()
+    if _provider_preflight_on_startup():
+        _track_startup_background_task(
+            asyncio.create_task(
+                _startup_provider_preflight_task(),
+                name="module2-startup-provider-preflight",
+            )
+        )
+    _track_startup_background_task(
+        asyncio.create_task(
+            _startup_mineru_warmup_task(),
+            name="module2-startup-mineru-warmup",
+        )
+    )
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    if startup_background_tasks:
+        pending_startup_tasks = list(startup_background_tasks)
+        for task in pending_startup_tasks:
+            task.cancel()
+        await asyncio.gather(*pending_startup_tasks, return_exceptions=True)
+        startup_background_tasks.clear()
     for job_id in list(extraction_jobs.keys()):
         await _persist_extraction_job_snapshot(job_id, force=True)
     running_extraction_tasks = [task for task in extraction_job_tasks.values() if not task.done()]
@@ -5100,6 +6668,21 @@ async def _run_office_preview_job(job_id: str, file_name: str, file_bytes: bytes
             job.error = f"{type(exc).__name__}: {exc}"
             job.converter = ""
             job.elapsed_ms = 0
+
+
+def _parse_track_uses_visual_budget(track: Any) -> bool:
+    normalized = str(track or "").strip().lower()
+    return "visualtrack" in normalized or "gemini_vision" in normalized or "mineru" in normalized
+
+
+@asynccontextmanager
+async def _acquire_parse_execution_slots(track: Any):
+    async with extraction_parse_semaphore:
+        if _parse_track_uses_visual_budget(track):
+            async with extraction_visual_parse_semaphore:
+                yield
+            return
+        yield
 
 
 async def _process_single_doc_bytes(
@@ -5320,30 +6903,31 @@ async def _process_single_doc_bytes(
         convert_t0 = time.perf_counter()
         try:
             await _emit_progress("converting", 0.14, "正在将文档转换为 PDF 解析链路")
-            preview_job = await _ensure_office_preview_job_started(
-                file_name=file_name,
-                file_bytes=file_bytes,
-                file_hash=decision.file_hash,
-            )
-            try:
-                pdf_bytes, preview_meta = await _run_with_progress_heartbeat(
-                    _await_or_reuse_office_preview_pdf(
-                        file_name=file_name,
-                        file_hash=decision.file_hash,
-                        timeout_sec=convert_timeout_sec,
-                    ),
-                    emit_progress=_emit_progress,
-                    stage="converting",
-                    base_ratio=0.14,
-                    ceiling_ratio=0.23,
-                    ramp_sec=min(max(6.0, convert_timeout_sec * 0.7), 18.0),
-                    message="正在抽取字段、表格、图片与溯源信息",
-        )
-            except TimeoutError as exc:
-                raise HTTPException(
-                    status_code=504,
-                    detail=f"Word 预览转 PDF 长时间未完成，无法继续处理 {file_name}: {exc}",
-                ) from exc
+            async with extraction_word_pdf_semaphore:
+                preview_job = await _ensure_office_preview_job_started(
+                    file_name=file_name,
+                    file_bytes=file_bytes,
+                    file_hash=decision.file_hash,
+                )
+                try:
+                    pdf_bytes, preview_meta = await _run_with_progress_heartbeat(
+                        _await_or_reuse_office_preview_pdf(
+                            file_name=file_name,
+                            file_hash=decision.file_hash,
+                            timeout_sec=convert_timeout_sec,
+                        ),
+                        emit_progress=_emit_progress,
+                        stage="converting",
+                        base_ratio=0.14,
+                        ceiling_ratio=0.23,
+                        ramp_sec=min(max(6.0, convert_timeout_sec * 0.7), 18.0),
+                        message="正在抽取字段、表格、图片与溯源信息",
+                    )
+                except TimeoutError as exc:
+                    raise HTTPException(
+                        status_code=504,
+                        detail=f"Word 预览转 PDF 长时间未完成，无法继续处理 {file_name}: {exc}",
+                    ) from exc
 
             if pdf_bytes is None:
                 preview_error = str(preview_meta.get("office_pdf_preview_error", "") or "").strip() or str(
@@ -5497,6 +7081,46 @@ async def _process_single_doc_bytes(
                 return markdown, refs, tables, [], {}
         raise ValueError("Unexpected parse output shape")
 
+    async def _run_parse_attempt(
+        *,
+        attempt_file_bytes: bytes,
+        attempt_file_name: str,
+        attempt_track: str,
+        attempt_timeout_sec: float,
+        context_label: str,
+        attempt_source_file_name: Optional[str] = None,
+        attempt_source_file_bytes: Optional[bytes] = None,
+        heartbeat_stage: str = "",
+        heartbeat_base_ratio: float = 0.0,
+        heartbeat_message: str = "",
+        heartbeat_extra: Optional[Dict[str, Any]] = None,
+        heartbeat_ceiling_ratio: Optional[float] = None,
+        heartbeat_ramp_sec: Optional[float] = None,
+    ) -> Any:
+        async with _acquire_parse_execution_slots(attempt_track):
+            awaitable = _run_parse_in_process_pool(
+                loop=loop,
+                file_bytes=attempt_file_bytes,
+                file_name=attempt_file_name,
+                track=attempt_track,
+                timeout_sec=attempt_timeout_sec,
+                context_label=context_label,
+                source_file_name=attempt_source_file_name,
+                source_file_bytes=attempt_source_file_bytes,
+            )
+            if heartbeat_stage:
+                return await _run_with_progress_heartbeat(
+                    awaitable,
+                    emit_progress=_emit_progress,
+                    stage=heartbeat_stage,
+                    base_ratio=heartbeat_base_ratio,
+                    ceiling_ratio=heartbeat_ceiling_ratio,
+                    ramp_sec=heartbeat_ramp_sec,
+                    message=heartbeat_message,
+                    extra=heartbeat_extra,
+                )
+            return await awaitable
+
     async def _try_docx_native_recovery(
         *,
         reason: str,
@@ -5520,12 +7144,11 @@ async def _process_single_doc_bytes(
                 return None
             recovery_timeout_sec = min(recovery_timeout_sec, max(8.0, remaining_budget))
 
-        parsed_output = await _run_parse_in_process_pool(
-            loop=loop,
-            file_bytes=file_bytes,
-            file_name=file_name,
-            track="NativeDocx",
-            timeout_sec=recovery_timeout_sec,
+        parsed_output = await _run_parse_attempt(
+            attempt_file_bytes=file_bytes,
+            attempt_file_name=file_name,
+            attempt_track="NativeDocx",
+            attempt_timeout_sec=recovery_timeout_sec,
             context_label=f"{file_name}:NativeDocx",
         )
         markdown, refs, tables, figures, stats = _unpack_parse_output(parsed_output)
@@ -5560,27 +7183,23 @@ async def _process_single_doc_bytes(
         },
     )
     try:
-        parsed_output = await _run_with_progress_heartbeat(
-            _run_parse_in_process_pool(
-                loop=loop,
-                file_bytes=parse_input_bytes,
-                file_name=parse_input_name,
-                track=parse_track,
-                timeout_sec=parse_timeout_sec,
-                context_label=f"{file_name}:{parse_track}",
-                source_file_name=parse_source_file_name,
-                source_file_bytes=parse_source_file_bytes,
-            ),
-            emit_progress=_emit_progress,
-            stage="parsing",
-            base_ratio=0.32,
-            ceiling_ratio=0.74,
-            ramp_sec=_resolve_parse_progress_ramp_sec(
+        parsed_output = await _run_parse_attempt(
+            attempt_file_bytes=parse_input_bytes,
+            attempt_file_name=parse_input_name,
+            attempt_track=parse_track,
+            attempt_timeout_sec=parse_timeout_sec,
+            context_label=f"{file_name}:{parse_track}",
+            attempt_source_file_name=parse_source_file_name,
+            attempt_source_file_bytes=parse_source_file_bytes,
+            heartbeat_stage="parsing",
+            heartbeat_base_ratio=0.32,
+            heartbeat_ceiling_ratio=0.74,
+            heartbeat_ramp_sec=_resolve_parse_progress_ramp_sec(
                 parse_input_bytes_len=len(parse_input_bytes),
                 timeout_sec=parse_timeout_sec,
             ),
-            message=f"正在执行视觉解析：{parse_input_name}（MinerU 版面定位 -> ROI 裁剪 -> Gemini 图表理解）",
-            extra={
+            heartbeat_message=f"正在执行视觉解析：{parse_input_name}（MinerU 版面定位 -> ROI 裁剪 -> Gemini 图表理解）",
+            heartbeat_extra={
                 "parse_input_name": parse_input_name,
                 "source_file_name": parse_source_file_name or "",
                 "parse_track": parse_track,
@@ -5640,15 +7259,14 @@ async def _process_single_doc_bytes(
                     raise HTTPException(status_code=504, detail=f"Native parsing timed out for {file_name}") from exc
                 fallback_timeout = min(fallback_timeout, max(6.0, remaining_budget))
             try:
-                parsed_output = await _run_parse_in_process_pool(
-                    loop=loop,
-                    file_bytes=fallback_input_bytes,
-                    file_name=fallback_input_name,
-                    track="FastTrack",
-                    timeout_sec=fallback_timeout,
+                parsed_output = await _run_parse_attempt(
+                    attempt_file_bytes=fallback_input_bytes,
+                    attempt_file_name=fallback_input_name,
+                    attempt_track="FastTrack",
+                    attempt_timeout_sec=fallback_timeout,
                     context_label=f"{file_name}:FastTrackTimeoutFallback",
-                    source_file_name=parse_source_file_name,
-                    source_file_bytes=parse_source_file_bytes,
+                    attempt_source_file_name=parse_source_file_name,
+                    attempt_source_file_bytes=parse_source_file_bytes,
                 )
                 marked_markdown, bbox_map, table_blocks, figure_blocks, parse_stats = _unpack_parse_output(parsed_output)
                 parse_track = fallback_track
@@ -5749,15 +7367,14 @@ async def _process_single_doc_bytes(
                 parse_track = "VisualTrack->FastTrackFallback"
                 parse_warning = f"{parse_warning}|{fallback_warning}" if parse_warning else fallback_warning
                 try:
-                    parsed_output = await _run_parse_in_process_pool(
-                        loop=loop,
-                        file_bytes=parse_input_bytes,
-                        file_name=parse_input_name,
-                        track="FastTrack",
-                        timeout_sec=parse_timeout_sec,
+                    parsed_output = await _run_parse_attempt(
+                        attempt_file_bytes=parse_input_bytes,
+                        attempt_file_name=parse_input_name,
+                        attempt_track="FastTrack",
+                        attempt_timeout_sec=parse_timeout_sec,
                         context_label=f"{file_name}:FastTrackFallback",
-                        source_file_name=parse_source_file_name,
-                        source_file_bytes=parse_source_file_bytes,
+                        attempt_source_file_name=parse_source_file_name,
+                        attempt_source_file_bytes=parse_source_file_bytes,
                     )
                     marked_markdown, bbox_map, table_blocks, figure_blocks, parse_stats = _unpack_parse_output(parsed_output)
                 except TimeoutError as fallback_exc:
@@ -5822,26 +7439,59 @@ async def _process_single_doc_bytes(
         )
     await _emit_progress("parsed", 0.76, "版面解析完成，正在抽取字段与图表")
 
-    auto_schema_llm_max_mb = max(0.2, float(os.getenv("MODULE2_AUTO_SCHEMA_LLM_MAX_FILE_MB", "1.2")))
-    allow_schema_llm = (len(file_bytes) / (1024.0 * 1024.0) <= auto_schema_llm_max_mb) and len(table_blocks) <= 12
-    effective_schema, schema_meta = await _resolve_effective_schema(
-        requested_schema=schema,
+    naming_template = detect_domain_template(
         file_name=file_name,
         markdown=marked_markdown,
         table_blocks=table_blocks,
-        profile_hint=str((nonpdf_preflight or {}).get("profile", "")),
-        allow_llm=allow_schema_llm,
+        figure_blocks=figure_blocks,
     )
+    auto_schema_llm_max_mb = max(0.2, float(os.getenv("MODULE2_AUTO_SCHEMA_LLM_MAX_FILE_MB", "1.2")))
+    auto_schema_llm_max_context_chars = max(
+        2400,
+        int(os.getenv("MODULE2_AUTO_SCHEMA_LLM_MAX_CONTEXT_CHARS", "10000")),
+    )
+    schema_context_preview = _extract_text_for_schema(
+        marked_markdown,
+        table_blocks,
+        figure_blocks,
+        max_chars=auto_schema_llm_max_context_chars,
+    )
+    file_size_mb = len(file_bytes) / (1024.0 * 1024.0)
+    allow_schema_llm = bool(schema_context_preview) and len(table_blocks) <= 14 and len(figure_blocks) <= 16 and (
+        file_size_mb <= auto_schema_llm_max_mb or bool(figure_blocks)
+    )
+    async with extraction_llm_semaphore:
+        effective_schema, schema_meta = await _resolve_effective_schema(
+            requested_schema=schema,
+            file_name=file_name,
+            markdown=marked_markdown,
+            table_blocks=table_blocks,
+            figure_blocks=figure_blocks,
+            profile_hint=str((nonpdf_preflight or {}).get("profile", "")),
+            naming_template=naming_template,
+            allow_llm=allow_schema_llm,
+        )
     effective_schema_fields = (
         effective_schema.get("fields")
         if isinstance(effective_schema.get("fields"), dict)
         else {}
     )
+    dynamic_extract_timeout_meta: Dict[str, Any] = {}
+    if is_word_file(file_name):
+        extract_timeout_sec, dynamic_extract_timeout_meta = _resolve_dynamic_extract_timeout_sec(
+            file_name=file_name,
+            extract_timeout_sec=extract_timeout_sec,
+            markdown=marked_markdown,
+            schema_fields=effective_schema_fields,
+            table_blocks=table_blocks,
+            figure_blocks=figure_blocks,
+        )
     logger.info(
-        "module2 schema resolved file=%s source=%s field_count=%s",
+        "module2 schema resolved file=%s source=%s field_count=%s template=%s",
         file_name,
         schema_meta.get("source", "unknown"),
         len(effective_schema_fields),
+        schema_meta.get("naming_template", naming_template),
     )
 
     init_state: AgentState = {
@@ -5862,20 +7512,21 @@ async def _process_single_doc_bytes(
     used_quick_fallback = False
     await _emit_progress("extracting", 0.80, "正在抽取字段、表格、图片与溯源信息")
     try:
-        final_state = await _run_with_progress_heartbeat(
-            asyncio.wait_for(graph.run(init_state), timeout=extract_timeout_sec),
-            emit_progress=_emit_progress,
-            stage="extracting",
-            base_ratio=0.80,
-            ceiling_ratio=0.93,
-            ramp_sec=_resolve_extract_progress_ramp_sec(
-                timeout_sec=extract_timeout_sec,
-                schema_field_count=len(effective_schema_fields),
-                table_count=len(table_blocks),
-                figure_count=len(figure_blocks),
-            ),
-            message="正在抽取字段、表格、图片与溯源信息",
-        )
+        async with extraction_llm_semaphore:
+            final_state = await _run_with_progress_heartbeat(
+                asyncio.wait_for(graph.run(init_state), timeout=extract_timeout_sec),
+                emit_progress=_emit_progress,
+                stage="extracting",
+                base_ratio=0.80,
+                ceiling_ratio=0.93,
+                ramp_sec=_resolve_extract_progress_ramp_sec(
+                    timeout_sec=extract_timeout_sec,
+                    schema_field_count=len(effective_schema_fields),
+                    table_count=len(table_blocks),
+                    figure_count=len(figure_blocks),
+                ),
+                message="正在抽取字段、表格、图片与溯源信息",
+            )
     except TimeoutError as exc:
         fallback_results = _quick_extract_from_tables(
             table_blocks=table_blocks,
@@ -6031,6 +7682,28 @@ async def _process_single_doc_bytes(
     else:
         business_extraction_status = "empty_valid"
 
+    parse_contract = {
+        "status": "success" if chain_contract.get("satisfied") else "failed",
+        "required": bool(chain_contract.get("required")),
+        "satisfied": bool(chain_contract.get("satisfied")),
+        "artifact_status": str(chain_contract.get("artifact_status") or "").strip(),
+        "vision_status": str(chain_contract.get("vision_status") or "").strip(),
+        "mineru_status": str(chain_contract.get("mineru_status") or "").strip(),
+        "parse_track": str(chain_contract.get("parse_track") or "").strip(),
+        "pipeline": str(chain_contract.get("pipeline") or "").strip(),
+        "reasons": list(chain_contract.get("reasons") or [])[:12],
+    }
+    business_extraction_contract = {
+        "status": business_extraction_status,
+        "quality_status": "degraded" if degraded_reasons else "ok",
+        "quality_reasons": degraded_reasons[:12],
+        "filled_fields": int(quality_snapshot.get("filled_fields", 0) or 0),
+        "target_fields": int(quality_snapshot.get("target_fields", 0) or 0),
+        "coverage_ratio": float(quality_snapshot.get("coverage_ratio", 0.0) or 0.0),
+        "avg_confidence": float(quality_snapshot.get("avg_confidence", 0.0) or 0.0),
+    }
+
+    graph_diagnostics = graph.diagnostics() if hasattr(graph, "diagnostics") else {}
     diagnostics = {
         "parse_ms": parse_ms,
         "extract_ms": extract_ms,
@@ -6044,6 +7717,7 @@ async def _process_single_doc_bytes(
         "table_quality_avg": _table_quality_avg(table_blocks),
         "table_sources": _table_source_counts(table_blocks),
         "figure_count": len(figure_blocks),
+        "figure_dataframe_cells": _count_figure_dataframe_cells(figure_blocks),
         "figure_pages": _figure_pages(figure_blocks),
         "figure_sources": _figure_source_counts(figure_blocks),
         "soft_warning_count": len(soft_warnings),
@@ -6054,11 +7728,28 @@ async def _process_single_doc_bytes(
         "word_parse_via_pdf": bool(word_parse_via_pdf) if is_word_file(file_name) else False,
         "word_parse_extract_budget_sec": word_parse_extract_budget_sec,
         "word_convert_budget_sec": word_convert_budget_sec,
+        "dynamic_extract_timeout": dynamic_extract_timeout_meta,
         "schema_mode": schema_meta.get("mode", "manual"),
         "schema_source": schema_meta.get("source", "request"),
         "schema_field_count": int(schema_meta.get("field_count", 0) or 0),
         "schema_fields": list(schema_meta.get("fields", []))[:24],
+        "schema_raw_fields": list(schema_meta.get("raw_fields", []))[:24],
         "schema_llm_planner_enabled": bool(allow_schema_llm),
+        "schema_llm_context_chars": len(schema_context_preview),
+        "schema_llm_file_size_mb": round(file_size_mb, 4),
+        "prompt_version": str(graph_diagnostics.get("prompt_version") or ""),
+        "prompt_names": list(graph_diagnostics.get("prompt_names") or []),
+        "prompt_versions": dict(graph_diagnostics.get("prompt_versions") or {}),
+        "extraction_logic_version": _current_extraction_logic_version(),
+        "extraction_logic_components": _current_extraction_logic_components(),
+        "field_naming_version": FIELD_NAMING_VERSION,
+        "field_naming_template": str(schema_meta.get("naming_template") or naming_template or "common_document"),
+        "field_naming_stats": dict(schema_meta.get("naming_stats") or {}),
+        "field_name_mappings_preview": {
+            str(raw): str(mapped)
+            for raw, mapped in list((schema_meta.get("field_name_mappings") or {}).items())[:24]
+        },
+        "schema_rule_versions": dict(_SCHEMA_RULE_VERSIONS),
         "quick_fallback_used": bool(used_quick_fallback),
         "quality_target_field_count": len(quality_schema_fields),
         "quality_target_fields": list(quality_schema_fields.keys())[:24],
@@ -6071,6 +7762,8 @@ async def _process_single_doc_bytes(
         "polymorphic_links": polymorphic_links[:40],
         "business_extraction_status": business_extraction_status,
         "chain_contract": chain_contract,
+        "parse_contract": parse_contract,
+        "business_extraction_contract": business_extraction_contract,
     }
     if conversion_diag:
         diagnostics.update(conversion_diag)
@@ -6083,6 +7776,9 @@ async def _process_single_doc_bytes(
             "chain_status",
             "artifact_status",
             "vision_status",
+            "visual_pdf_profile",
+            "visual_pdf_cue_hits",
+            "visual_probe_chars_per_page",
             "visual_baseline_artifact_ready",
             "mineru_item_count",
             "mineru_image_asset_count",
@@ -6093,6 +7789,7 @@ async def _process_single_doc_bytes(
             "visual_vision_attempted_count",
             "visual_vision_success_count",
             "visual_vision_empty_count",
+            "visual_text_only_short_circuit_enabled",
         ):
             if key in parse_stats:
                 diagnostics[key] = parse_stats.get(key)
@@ -6100,6 +7797,18 @@ async def _process_single_doc_bytes(
         mineru_status = str(mineru_run.get("status", "") or "").strip()
         if mineru_status:
             diagnostics["mineru_status"] = mineru_status
+        if "text_only_short_circuit" in mineru_run:
+            diagnostics["text_only_short_circuit"] = bool(mineru_run.get("text_only_short_circuit"))
+            parse_contract["text_only_short_circuit"] = bool(mineru_run.get("text_only_short_circuit"))
+            parse_contract["text_only_short_circuit_method"] = str(
+                mineru_run.get("text_only_short_circuit_method") or ""
+            ).strip()
+        if "visual_mode" in parse_stats:
+            parse_contract["visual_mode"] = str(parse_stats.get("visual_mode") or "").strip()
+        if "visual_text_only_recovery" in parse_stats:
+            parse_contract["text_only_recovery"] = str(parse_stats.get("visual_text_only_recovery") or "").strip()
+        if "visual_pdf_profile" in parse_stats:
+            parse_contract["visual_pdf_profile"] = str(parse_stats.get("visual_pdf_profile") or "").strip()
         for key in (
             "plain_ext",
             "docx_chart_xml_seen",
@@ -6122,6 +7831,24 @@ async def _process_single_doc_bytes(
     if nonpdf_budget is not None:
         diagnostics["nonpdf_budget"] = nonpdf_budget
         diagnostics["nonpdf_elapsed_ms"] = total_ms
+
+    (
+        assistant1_markdown_path,
+        assistant1_markdown_url,
+        assistant1_source_manifest_path,
+        assistant1_source_manifest_url,
+    ) = _persist_assistant1_source_markdown_artifact(
+        file_name=file_name,
+        file_hash=decision.file_hash,
+        markdown_text=marked_markdown,
+        track=parse_track,
+    )
+    if assistant1_markdown_path:
+        diagnostics["assistant1_source_markdown_artifact_path"] = assistant1_markdown_path
+        diagnostics["assistant1_source_markdown_artifact_url"] = assistant1_markdown_url
+    if assistant1_source_manifest_path:
+        diagnostics["assistant1_source_manifest_path"] = assistant1_source_manifest_path
+        diagnostics["assistant1_source_manifest_url"] = assistant1_source_manifest_url
 
     if table_blocks or figure_blocks:
         artifact_path, artifact_url = _persist_assistant_payload_artifact(
@@ -6214,27 +7941,19 @@ async def _read_upload_file_bytes(file: UploadFile) -> Tuple[str, bytes]:
     return file_name, file_bytes
 
 
-async def _run_extraction_job(
+async def _run_extraction_job_file_task(
     *,
     job_id: str,
-    loaded_files: List[Tuple[str, bytes, str, str, str, str]],
+    file_index: int,
+    file_name: str,
+    file_bytes: bytes,
+    file_hash: str,
     schema_obj: Dict[str, Any],
     schema_digest: str,
     max_retries: int,
     tenant_id: str,
 ) -> None:
-    async with extraction_lock:
-        job = extraction_jobs.get(job_id)
-        if not job:
-            return
-        job.status = "running"
-        job.updated_at = time.time()
-    await _persist_extraction_job_snapshot(job_id, force=True)
-
-    for file_index, (file_name, file_bytes, file_hash, artifact_path, artifact_url, _mime_type) in enumerate(
-        loaded_files,
-        start=1,
-    ):
+    async with extraction_job_file_semaphore:
         doc_for_sync: Optional[DocumentExtractionResponse] = None
         async with extraction_lock:
             job_before_run = extraction_jobs.get(job_id)
@@ -6243,7 +7962,8 @@ async def _run_extraction_job(
             if 0 <= (file_index - 1) < len(job_before_run.files):
                 prior_state = job_before_run.files[file_index - 1]
                 if prior_state.status in {"completed", "failed"}:
-                    continue
+                    return
+
         async def _update_progress(stage: str, ratio: float, message: str, extra: Dict[str, Any]) -> None:
             async with extraction_lock:
                 job_state = extraction_jobs.get(job_id)
@@ -6252,9 +7972,6 @@ async def _run_extraction_job(
                 job_state.updated_at = time.time()
                 if 0 <= (file_index - 1) < len(job_state.files):
                     file_state = job_state.files[file_index - 1]
-                    # Do not mark a file as completed from progress callbacks alone.
-                    # The final completion state is only trustworthy after the document
-                    # has been appended and the job counters have been updated.
                     next_status = "running"
                     if stage == "queued":
                         next_status = "queued"
@@ -6270,7 +7987,6 @@ async def _run_extraction_job(
                         file_state.message = message or file_state.message
             await _persist_extraction_job_snapshot(job_id, force=False)
 
-        await _update_progress("queued", 0.0, "已进入解析队列", {})
         try:
             doc = await _process_single_doc_bytes(
                 file_name=file_name,
@@ -6306,7 +8022,11 @@ async def _run_extraction_job(
                 job_state.current_stage = "completed"
                 job_state.updated_at = time.time()
             await _persist_extraction_job_snapshot(job_id, force=True)
-            if doc_for_sync is not None and _module4_document_sync_enabled():
+            if (
+                doc_for_sync is not None
+                and _module4_document_sync_enabled()
+                and _module4_document_sync_per_file_enabled()
+            ):
                 source_batch_key = _module4_source_batch_key(
                     source="module2",
                     tenant_id=tenant_id,
@@ -6357,6 +8077,75 @@ async def _run_extraction_job(
                 job_state.updated_at = time.time()
             await _persist_extraction_job_snapshot(job_id, force=True)
 
+
+async def _run_extraction_job(
+    *,
+    job_id: str,
+    loaded_files: List[Tuple[str, bytes, str, str, str, str]],
+    schema_obj: Dict[str, Any],
+    schema_digest: str,
+    max_retries: int,
+    tenant_id: str,
+) -> None:
+    async with extraction_lock:
+        job = extraction_jobs.get(job_id)
+        if not job:
+            return
+        job.status = "running"
+        job.updated_at = time.time()
+    await _persist_extraction_job_snapshot(job_id, force=True)
+
+    file_tasks = [
+        asyncio.create_task(
+            _run_extraction_job_file_task(
+                job_id=job_id,
+                file_index=file_index,
+                file_name=file_name,
+                file_bytes=file_bytes,
+                file_hash=file_hash,
+                schema_obj=schema_obj,
+                schema_digest=schema_digest,
+                max_retries=max_retries,
+                tenant_id=tenant_id,
+            )
+        )
+        for file_index, (file_name, file_bytes, file_hash, _artifact_path, _artifact_url, _mime_type) in enumerate(
+            loaded_files,
+            start=1,
+        )
+    ]
+    task_results = await asyncio.gather(*file_tasks, return_exceptions=True)
+
+    for file_index, task_result in enumerate(task_results, start=1):
+        if not isinstance(task_result, Exception):
+            continue
+        logger.exception(
+            "module2 extraction job task crashed job=%s file_index=%s: %s",
+            job_id,
+            file_index,
+            task_result,
+        )
+        file_name = loaded_files[file_index - 1][0]
+        async with extraction_lock:
+            job_state = extraction_jobs.get(job_id)
+            if not job_state:
+                continue
+            if 0 <= (file_index - 1) < len(job_state.files):
+                file_state = job_state.files[file_index - 1]
+                if file_state.status not in {"completed", "failed"}:
+                    file_state.progress_ratio = 1.0
+                    file_state.status = "failed"
+                    file_state.stage = "failed"
+                    file_state.error = f"{type(task_result).__name__}: {task_result}"
+                    file_state.message = "抽取失败"
+                    job_state.failed_files += 1
+            job_state.errors.append(f"{file_name}: {type(task_result).__name__}: {task_result}")
+            job_state.current_file_index = file_index
+            job_state.current_file_name = file_name
+            job_state.current_stage = "failed"
+            job_state.updated_at = time.time()
+        await _persist_extraction_job_snapshot(job_id, force=True)
+
     final_documents: List[DocumentExtractionResponse] = []
     async with extraction_lock:
         job = extraction_jobs.get(job_id)
@@ -6373,7 +8162,11 @@ async def _run_extraction_job(
         job.updated_at = time.time()
         final_documents = list(job.documents)
     await _persist_extraction_job_snapshot(job_id, force=True)
-    if final_documents and _module4_document_sync_enabled():
+    if (
+        final_documents
+        and _module4_document_sync_enabled()
+        and _module4_document_sync_final_batch_enabled()
+    ):
         source_batch_key = _module4_source_batch_key(
             source="module2",
             tenant_id=tenant_id,
@@ -6435,7 +8228,6 @@ async def extract_jobs_create(
         raise HTTPException(status_code=400, detail="At most 5 files are allowed per batch")
 
     schema_obj = _parse_schema_form_json(schema_form)
-    await _ensure_provider_ready_for_job_create()
 
     loaded_files: List[Tuple[str, bytes, str, str, str, str]] = []
     for file in files:
@@ -6452,6 +8244,13 @@ async def extract_jobs_create(
         loaded_files.append((file_name, file_bytes, file_hash, artifact_path, artifact_url, mime_type))
 
     schema_digest = _schema_hash(schema_obj)
+    router = StreamRouter(storage)
+    route_decisions = [
+        await router.triage(file_name, file_bytes, schema_digest)
+        for file_name, file_bytes, _file_hash, _artifact_path, _artifact_url, _mime_type in loaded_files
+    ]
+    if any(decision.cached_payload is None for decision in route_decisions):
+        await _ensure_provider_ready_for_job_create()
     max_retries = max(0, min(int(os.getenv("MODULE2_MAX_RETRIES", "2")), 6))
     job_id = f"extract_job_{uuid.uuid4().hex[:16]}"
     resolved_tenant = _module4_tenant(request, tenant_id)
@@ -6846,29 +8645,6 @@ async def extract_trace_locate(payload: TraceLocateRequest) -> TraceLocateRespon
     )
 
 
-@app.post("/extract/assistant/query", response_model=AssistantQueryResponse)
-async def extract_assistant_query(payload: AssistantQueryRequest) -> AssistantQueryResponse:
-    return await assistant_service.query_once(payload)
-
-
-@app.post("/extract/assistant/session", response_model=AssistantSessionResponse)
-async def extract_assistant_session(payload: AssistantSessionRequest) -> AssistantSessionResponse:
-    return await assistant_service.ensure_session(payload)
-
-
-@app.post("/extract/assistant/chat/stream")
-async def extract_assistant_chat_stream(payload: AssistantChatStreamRequest) -> StreamingResponse:
-    return StreamingResponse(
-        assistant_service.stream_chat(payload),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
 @app.post("/extract/assistant1/chat/stream")
 async def extract_assistant1_chat_stream(payload: Assistant1ChatStreamRequest) -> StreamingResponse:
     history = [item.model_dump(mode="json") for item in payload.history]
@@ -6893,16 +8669,28 @@ async def extract_assistant1_chat_stream(payload: Assistant1ChatStreamRequest) -
 
 
 @app.post("/extract/cache/clear", response_model=CacheClearResponse)
-async def extract_cache_clear() -> CacheClearResponse:
+async def extract_cache_clear(
+    scope: str = Query(default="results", pattern="^(results|runtime|all)$")
+) -> CacheClearResponse:
+    normalized_scope = str(scope or "results").strip().lower() or "results"
     await _clear_extraction_runtime_state()
     await _clear_module4_sync_runtime_state()
-    cache_counts = await storage.clear_runtime_cache()
-    removed_artifacts = _clear_module2_materialized_dirs()
+    cache_counts = await storage.clear_runtime_cache() if normalized_scope in {"results", "all"} else {}
+    if normalized_scope in {"runtime", "all"}:
+        clear_mineru_process_runtime_cache()
+    removed_materialized = _clear_module2_materialized_dirs(scope=normalized_scope)
+    reset_generation = 0
+    if normalized_scope in {"runtime", "all"}:
+        reset_generation = _reset_process_pool(f"cache_clear:{normalized_scope}")
     return CacheClearResponse(
         ok=True,
-        message="模块二缓存已清理",
+        message=f"模块二缓存已清理，scope={normalized_scope}",
+        scope=normalized_scope,
         cache_counts=cache_counts,
-        removed_artifacts=removed_artifacts,
+        removed_artifacts=int(removed_materialized.get("removed_artifacts", 0) or 0),
+        removed_runtime_models=int(removed_materialized.get("removed_runtime_models", 0) or 0),
+        removed_materialized=removed_materialized,
+        process_pool_reset_generation=reset_generation,
     )
 
 
@@ -6942,6 +8730,8 @@ async def extract_artifact(artifact_path: str, request: Request) -> Response:
 async def healthz() -> Dict[str, str]:
     storage_diag = storage.diagnostics()
     provider_diag = _provider_preflight_snapshot()
+    provider_config = _provider_config_snapshot()
+    mineru_warmup = _mineru_warmup_snapshot()
     return {
         "status": "ok",
         "python_executable": sys.executable,
@@ -6950,9 +8740,26 @@ async def healthz() -> Dict[str, str]:
         "python_venv_active": str(sys.prefix != sys.base_prefix).lower(),
         "llm_provider_preflight_ok": str(bool(provider_diag.get("ok"))).lower(),
         "llm_provider_last_checked_at": str(provider_diag.get("checked_at", 0.0) or 0.0),
-        "llm_provider_base_url": str(provider_diag.get("base_url", "") or ""),
-        "llm_provider_model": str(provider_diag.get("model", "") or ""),
-        "llm_provider_last_error": str(provider_diag.get("error", "") or ""),
+        "llm_provider_configured": str(bool(provider_config.get("configured"))).lower(),
+        "llm_provider_type": str(provider_config.get("provider_type", "") or ""),
+        "llm_provider_base_url": str(
+            provider_diag.get("base_url", "") or provider_config.get("base_url", "") or ""
+        ),
+        "llm_provider_model": str(
+            provider_diag.get("model", "") or provider_config.get("model", "") or ""
+        ),
+        "llm_provider_last_error": str(
+            provider_diag.get("error", "") or provider_config.get("error", "") or ""
+        ),
+        "mineru_warmup_enabled": str(bool(mineru_warmup.get("enabled"))).lower(),
+        "mineru_warmup_status": str(mineru_warmup.get("status", "") or ""),
+        "mineru_warmup_ok": str(bool(mineru_warmup.get("ok"))).lower(),
+        "mineru_warmup_started_at": str(mineru_warmup.get("started_at", 0.0) or 0.0),
+        "mineru_warmup_finished_at": str(mineru_warmup.get("finished_at", 0.0) or 0.0),
+        "mineru_warmup_elapsed_sec": str(mineru_warmup.get("elapsed_sec", 0.0) or 0.0),
+        "mineru_warmup_worker_count": str(mineru_warmup.get("worker_count", 0) or 0),
+        "mineru_warmup_detail": str(mineru_warmup.get("detail", "") or ""),
+        "mineru_warmup_error": str(mineru_warmup.get("error", "") or ""),
         "bridge_jobs_in_memory": str(len(bridge_jobs)),
         "bridge_request_index_size": str(len(bridge_request_index)),
         "office_preview_jobs_in_memory": str(len(office_preview_jobs)),
