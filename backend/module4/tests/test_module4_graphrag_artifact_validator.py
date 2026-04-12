@@ -11,7 +11,7 @@ MODULE4_DIR = Path(__file__).resolve().parents[1]
 if str(MODULE4_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE4_DIR))
 
-from app.services.graphrag_artifact_validator import GraphRAGArtifactValidator
+from app.services.graphrag.validator import GraphRAGArtifactValidator
 
 
 def _write_pylist(path: Path, rows: list[dict], schema: pa.Schema | None = None) -> None:

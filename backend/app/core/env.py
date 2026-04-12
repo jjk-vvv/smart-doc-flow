@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+from pathlib import Path
+
+from app.core.paths import resolve_config_root_dir, resolve_data_root_dir, resolve_runtime_root_dir
+
+
+def _parse_env_file(file_path: Path, allowed_keys: tuple[str, ...] | None = None) -> dict[str, str]:
+    if not file_path.exists() or not file_path.is_file():
+        return {}
+
+    allow_set = {item.strip() for item in allowed_keys or () if str(item or "").strip()} or None
+    values: dict[str, str] = {}
+    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
+        line = str(raw_line or "").strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if allow_set is not None and key not in allow_set:
+            continue
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def _ensure_env_value(name: str, value: str) -> None:
+    if str(os.getenv(name, "") or "").strip():
+        return
+    os.environ[name] = value
+
+
+def _assign_env_value(name: str, value: str, *, force: bool = False) -> None:
+    if force:
+        os.environ[name] = value
+        return
+    _ensure_env_value(name, value)
+
+
+@lru_cache(maxsize=1)
+def load_managed_env_files(scopes: tuple[str, ...] | None = None) -> None:
+    runtime_root = resolve_runtime_root_dir()
+    config_root = resolve_config_root_dir(runtime_root)
+    data_root = resolve_data_root_dir(runtime_root)
+    scope_specs: dict[str, tuple[Path, tuple[str, ...] | None]] = {
+        "backend": (Path("backend/.env"), None),
+        "module2": (Path("backend/module2/.env"), None),
+        "module4": (Path("backend/module4/.env"), None),
+    }
+    normalized_scopes = scopes or ("backend", "module2", "module4")
+
+    env_file_specs: list[tuple[Path, tuple[str, ...] | None]] = []
+    seen_specs: set[tuple[Path, tuple[str, ...] | None]] = set()
+    for base_dir in (runtime_root, config_root):
+        for scope in normalized_scopes:
+            spec = scope_specs.get(scope)
+            if spec is None:
+                continue
+            rel_path, allowed_keys = spec
+            full_path = (base_dir / rel_path).resolve()
+            dedupe_key = (full_path, allowed_keys)
+            if dedupe_key in seen_specs:
+                continue
+            seen_specs.add(dedupe_key)
+            env_file_specs.append((full_path, allowed_keys))
+
+    env_file_values: dict[str, str] = {}
+    for env_file_path, allowed_keys in env_file_specs:
+        env_file_values.update(_parse_env_file(env_file_path, allowed_keys=allowed_keys))
+
+    for key, value in env_file_values.items():
+        _ensure_env_value(key, value)
+
+    os.environ["SMART_DOC_FLOW_RUNTIME_ROOT"] = str(runtime_root)
+    os.environ["SMART_DOC_FLOW_CONFIG_ROOT"] = str(config_root)
+    os.environ["SMART_DOC_FLOW_DATA_ROOT"] = str(data_root)
+    os.environ["SMART_DOC_FLOW_GATEWAY_ENV_FILE"] = str((config_root / "backend" / ".env").resolve())
+    os.environ["MODULE2_ENV_FILE"] = str((config_root / "backend" / "module2" / ".env").resolve())
+    os.environ["SMART_DOC_FLOW_MODULE4_ENV_FILE"] = str((config_root / "backend" / "module4" / ".env").resolve())
+
+    force_managed_data_paths = data_root.resolve() != runtime_root.resolve()
+
+    _ensure_env_value("GATEWAY_FRONTEND_DIST_DIR", str((runtime_root / "frontend" / "dist").resolve()))
+    _assign_env_value(
+        "AUTH_USERS_FILE",
+        str((data_root / "auth" / "users.json").resolve()),
+        force=force_managed_data_paths,
+    )
+    _assign_env_value(
+        "MODULE2_ARTIFACT_ROOT_DIR",
+        str((data_root / "module2" / "artifacts").resolve()),
+        force=force_managed_data_paths,
+    )
+    _assign_env_value(
+        "MODULE2_MINERU_CACHE_DIR",
+        str((data_root / "module2" / "cache" / "mineru").resolve()),
+        force=force_managed_data_paths,
+    )
+    _assign_env_value(
+        "MODULE2_GEMINI_CACHE_DIR",
+        str((data_root / "module2" / "cache" / "gemini").resolve()),
+        force=force_managed_data_paths,
+    )
+    _assign_env_value(
+        "MODULE2_MINERU_WORK_ROOT_DIR",
+        str((data_root / "module2" / "work" / "mineru").resolve()),
+        force=force_managed_data_paths,
+    )
+    _assign_env_value(
+        "MODULE2_EXTRACT_JOB_STATE_DIR",
+        str((data_root / "module2" / "runlogs" / "extraction_jobs").resolve()),
+        force=force_managed_data_paths,
+    )
+    _assign_env_value(
+        "MODULE2_LLM_DEBUG_DIR",
+        str((data_root / "module2" / "runlogs" / "module2-llm-debug").resolve()),
+        force=force_managed_data_paths,
+    )
+
+    bundled_mineru_runtime_models_dir = (runtime_root / "backend" / "module2" / ".cache" / "mineru_runtime_models").resolve()
+    _assign_env_value(
+        "MODULE2_MINERU_RUNTIME_MODELS_DIR",
+        str(
+            bundled_mineru_runtime_models_dir
+            if bundled_mineru_runtime_models_dir.exists()
+            else (data_root / "module2" / "cache" / "mineru_runtime_models").resolve()
+        ),
+        force=force_managed_data_paths,
+    )
+    _assign_env_value(
+        "MODULE4_GRAPHRAG_WORKSPACES_ROOT",
+        str((data_root / "module4" / "workspaces").resolve()),
+        force=force_managed_data_paths,
+    )
+    _ensure_env_value(
+        "MODULE4_GRAPHRAG_PROMPTS_ROOT",
+        str((runtime_root / "backend" / "module4" / "assets" / "prompts").resolve()),
+    )

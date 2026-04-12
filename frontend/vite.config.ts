@@ -18,10 +18,23 @@ const MOTION_RUNTIME_PACKAGES = [
   '/node_modules/motion-utils/',
 ];
 
-const KNOWLEDGE_NEXUS_SCREEN_MODULE = '/frontend/components/knowledge-nexus/KnowledgeNexusNeo4j.tsx';
+const KNOWLEDGE_NEXUS_SCREEN_MODULE = '/frontend/pages/knowledge-nexus/KnowledgeNexusGraphRAGG6.tsx';
+const PREBUNDLED_DYNAMIC_PREVIEW_DEPS = [
+  'pdfjs-dist',
+  'xlsx',
+  'jquery',
+  'luckyexcel',
+  'luckysheet/dist/plugins/js/plugin.js',
+  'luckysheet/dist/luckysheet.umd.js',
+];
 
 export default defineConfig(({ mode }) => {
   loadEnv(mode, '.', '');
+  const backendEntryUrl = process.env.VITE_BACKEND_ENTRY_URL || 'http://localhost:3001';
+  const devProxyTimeoutMs = Math.max(
+    180_000,
+    Number.parseInt(process.env.VITE_DEV_PROXY_TIMEOUT_MS || '600000', 10) || 600_000,
+  );
   return {
     server: {
       port: 3000,
@@ -29,21 +42,32 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       proxy: {
         '/api': {
-          target: 'http://localhost:3001',
+          target: backendEntryUrl,
           changeOrigin: true,
           secure: false,
-          timeout: 180000,
-          proxyTimeout: 180000,
+          timeout: devProxyTimeoutMs,
+          proxyTimeout: devProxyTimeoutMs,
         },
         '/extract': {
-          target: 'http://localhost:8000',
+          target: backendEntryUrl,
           changeOrigin: true,
           secure: false,
+          timeout: devProxyTimeoutMs,
+          proxyTimeout: devProxyTimeoutMs,
         },
         '/module4': {
-          target: 'http://localhost:8100',
+          target: backendEntryUrl,
           changeOrigin: true,
           secure: false,
+          timeout: devProxyTimeoutMs,
+          proxyTimeout: devProxyTimeoutMs,
+        },
+        '/gateway': {
+          target: backendEntryUrl,
+          changeOrigin: true,
+          secure: false,
+          timeout: devProxyTimeoutMs,
+          proxyTimeout: devProxyTimeoutMs,
         },
       },
     },
@@ -57,6 +81,9 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
+    },
+    optimizeDeps: {
+      include: PREBUNDLED_DYNAMIC_PREVIEW_DEPS,
     },
     build: {
       rollupOptions: {

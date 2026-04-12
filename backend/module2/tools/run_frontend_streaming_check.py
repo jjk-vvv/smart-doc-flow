@@ -36,7 +36,7 @@ def main() -> int:
     os.chdir(MODULE2_ROOT)
     sys.path.insert(0, str(MODULE2_ROOT))
 
-    from app.main import app
+    from app.composition.application import app
 
     config = uvicorn.Config(app=app, host=HOST, port=PORT, log_level="warning")
     server = uvicorn.Server(config)

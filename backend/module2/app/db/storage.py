@@ -138,6 +138,48 @@ class ExtractionStorage:
                 return json.loads(payload)
             return payload
 
+    async def find_recent_document_caches(self, file_hash: str, *, limit: int = 8) -> List[Dict[str, Any]]:
+        normalized_file_hash = str(file_hash or "").strip()
+        safe_limit = max(1, min(int(limit or 8), 24))
+        if not normalized_file_hash:
+            return []
+
+        if not self._pool:
+            matched: List[Dict[str, Any]] = []
+            for payload in self._memory_cache.values():
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("file_hash", "") or "").strip() != normalized_file_hash:
+                    continue
+                matched.append(dict(payload))
+            matched.sort(key=lambda p: str(p.get("updated_at") or ""), reverse=True)
+            return matched[:safe_limit]
+
+        sql = """
+            SELECT extraction_json
+            FROM document_extractions
+            WHERE extraction_json->>'file_hash' = $1
+            ORDER BY updated_at DESC
+            LIMIT $2
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, normalized_file_hash, safe_limit)
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = row["extraction_json"]
+            if isinstance(payload, str):
+                try:
+                    loaded = json.loads(payload)
+                except Exception:
+                    continue
+                if isinstance(loaded, dict):
+                    out.append(loaded)
+                continue
+            if isinstance(payload, dict):
+                out.append(dict(payload))
+        return out
+
     async def save_extraction_result(self, cache_key: str, payload: Dict[str, Any]) -> None:
         if not self._pool:
             self._memory_cache[cache_key] = dict(payload)
@@ -395,6 +437,15 @@ class ExtractionStorage:
             raise ValueError("session_id and message_id are required")
 
         if not self._pool:
+            for index, item in enumerate(self._assistant_messages):
+                if str(item.get("message_id") or "") != record["message_id"]:
+                    continue
+                created_at = str(item.get("created_at") or "")
+                self._assistant_messages[index] = {
+                    **record,
+                    "created_at": created_at,
+                }
+                return
             self._assistant_messages.append(record)
             return
 
@@ -403,6 +454,12 @@ class ExtractionStorage:
                 message_id, session_id, role, message_type, content_text, payload_json
             )
             VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            ON CONFLICT (message_id)
+            DO UPDATE SET
+                role = EXCLUDED.role,
+                message_type = EXCLUDED.message_type,
+                content_text = EXCLUDED.content_text,
+                payload_json = EXCLUDED.payload_json
         """
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -1147,6 +1204,15 @@ class ExtractionStorage:
 
             CREATE INDEX IF NOT EXISTS idx_document_extractions_updated_at
                 ON document_extractions (updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_document_extractions_payload_file_hash
+                ON document_extractions ((extraction_json->>'file_hash'));
+
+            CREATE INDEX IF NOT EXISTS idx_document_extractions_payload_file_hash_schema_hash
+                ON document_extractions (
+                    (extraction_json->>'file_hash'),
+                    (extraction_json->>'schema_hash')
+                );
 
             CREATE {staging_mode} TABLE IF NOT EXISTS extraction_field_staging (
                 cache_key TEXT NOT NULL,

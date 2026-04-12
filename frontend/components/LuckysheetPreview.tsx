@@ -88,6 +88,63 @@ const workbookPayloadCache = new Map<string, WorkbookPayload>();
 const workbookPayloadPromiseCache = new Map<string, Promise<WorkbookPayload>>();
 const MAX_WORKBOOK_CACHE_ITEMS = 6;
 
+function isKnownLuckysheetNoise(args: unknown[]): boolean {
+  if (!Array.isArray(args) || args.length === 0) return false;
+  if (args.some((item) => String(item ?? "").includes("缓存操作失败"))) return true;
+  if (args.some((item) => String(item ?? "").includes("Merge info is null"))) return true;
+  if (args.length === 2) {
+    const isEmptyArrayMarker = (value: unknown) =>
+      (Array.isArray(value) && value.length === 0) || String(value ?? "").trim() === "[]";
+    if (isEmptyArrayMarker(args[0]) && isEmptyArrayMarker(args[1])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function installLuckysheetNoiseFilter(): void {
+  const target = console as unknown as {
+    __luckysheetNoiseFilterInstalled?: boolean;
+    log: (...args: unknown[]) => void;
+    warn: (...args: unknown[]) => void;
+  };
+  if (target.__luckysheetNoiseFilterInstalled) return;
+
+  const originalLog = target.log.bind(console);
+  const originalWarn = target.warn.bind(console);
+  target.log = (...args: unknown[]) => {
+    if (isKnownLuckysheetNoise(args)) return;
+    originalLog(...args);
+  };
+  target.warn = (...args: unknown[]) => {
+    if (isKnownLuckysheetNoise(args)) return;
+    originalWarn(...args);
+  };
+  target.__luckysheetNoiseFilterInstalled = true;
+}
+
+async function withLuckysheetConsoleSilenced<T>(task: () => Promise<T>): Promise<T> {
+  installLuckysheetNoiseFilter();
+  const originalLog = console.log.bind(console);
+  const originalWarn = console.warn.bind(console);
+  console.log = (...args: unknown[]) => {
+    if (isKnownLuckysheetNoise(args)) return;
+    originalLog(...args);
+  };
+  console.warn = (...args: unknown[]) => {
+    if (isKnownLuckysheetNoise(args)) return;
+    originalWarn(...args);
+  };
+  try {
+    return await task();
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+}
+
+installLuckysheetNoiseFilter();
+
 function workbookCacheKey(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}`;
 }
@@ -555,7 +612,7 @@ async function ensureRuntime(): Promise<RuntimeRef> {
   const cached = readRuntimeFromWindow();
   if (cached) return cached;
   if (runtimePromise) return runtimePromise;
-  runtimePromise = (async () => {
+  runtimePromise = withLuckysheetConsoleSilenced(async () => {
     const jqMod = await import("jquery");
     const jqValue = (jqMod as { default?: unknown }).default ?? jqMod;
     installJQueryCompat(jqValue);
@@ -588,7 +645,7 @@ async function ensureRuntime(): Promise<RuntimeRef> {
       throw new Error("表格预览运行时加载失败");
     }
     return runtime;
-  })().catch((error) => {
+  }).catch((error) => {
     runtimePromise = null;
     throw error;
   });
@@ -596,7 +653,9 @@ async function ensureRuntime(): Promise<RuntimeRef> {
 }
 
 async function convertXlsx(runtime: RuntimeRef, file: File): Promise<WorkbookPayload> {
-  return new Promise((resolve, reject) => {
+  return withLuckysheetConsoleSilenced(
+    async () =>
+      new Promise((resolve, reject) => {
     let settled = false;
     const timer = window.setTimeout(() => {
       if (settled) return;
@@ -625,7 +684,8 @@ async function convertXlsx(runtime: RuntimeRef, file: File): Promise<WorkbookPay
       settled = true;
       reject(error);
     }
-  });
+      }),
+  );
 }
 
 async function getWorkbookPayload(file: File, runtime?: RuntimeRef): Promise<WorkbookPayload> {
@@ -889,7 +949,7 @@ function buildTableWorkbookSheets(payload?: WorkbookPayload | null): TableWorkbo
         1,
       );
       return {
-        name: String(normalized.name ?? `工作表 ${index + 1}`),
+        name: String(normalized.name ?? `工作表${index + 1}`),
         rows,
         rowCount,
         colCount,
@@ -985,9 +1045,9 @@ const SheetTableFallback: React.FC<{
   const totalHeight = activeSheet ? activeSheet.rowCount * TABLE_ROW_HEIGHT : 0;
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white dark:bg-slate-900">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white dark:bg-transparent">
       {sheets.length > 1 && (
-        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-slate-200 bg-slate-50/90 px-2 py-1.5 text-[11px] dark:border-slate-700 dark:bg-slate-900/90">
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-slate-200 bg-slate-50/90 px-2 py-1.5 text-[11px] dark:border-white/[0.05] dark:bg-slate-900/90">
           {sheets.map((sheet, index) => (
             <button
               key={`${sheet.name}-${index}`}
@@ -1007,7 +1067,7 @@ const SheetTableFallback: React.FC<{
       <div className="min-h-0 flex-1 overflow-hidden">
         <div
           ref={scrollRef}
-          className="h-full overflow-auto bg-slate-50/60 text-[11px] text-slate-700 dark:bg-slate-950/40 dark:text-slate-200"
+          className="h-full overflow-auto bg-slate-50/60 text-[11px] text-slate-700 dark:bg-white/[0.01] dark:text-slate-200"
           onScroll={(event) => {
             const target = event.currentTarget;
             setScrollTop(target.scrollTop);
@@ -1015,9 +1075,9 @@ const SheetTableFallback: React.FC<{
           }}
         >
           <div className="relative" style={{ width: `${totalWidth}px`, minHeight: `${TABLE_HEADER_HEIGHT + totalHeight}px` }}>
-            <div className="sticky top-0 z-20 flex border-b border-slate-200 bg-slate-100/95 text-[11px] font-semibold text-slate-600 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-300">
+            <div className="sticky top-0 z-20 flex border-b border-slate-200 bg-slate-100/95 text-[11px] font-semibold text-slate-600 backdrop-blur dark:border-white/[0.05] dark:bg-slate-900/95 dark:text-slate-300">
               <div
-                className="sticky left-0 z-30 flex shrink-0 items-center justify-center border-r border-slate-200 bg-slate-100/95 dark:border-slate-700 dark:bg-slate-900/95"
+                className="sticky left-0 z-30 flex shrink-0 items-center justify-center border-r border-slate-200 bg-slate-100/95 dark:border-white/[0.05] dark:bg-slate-900/95"
                 style={{ width: `${TABLE_ROW_HEADER_WIDTH}px`, height: `${TABLE_HEADER_HEIGHT}px` }}
               >
                 #
@@ -1025,7 +1085,7 @@ const SheetTableFallback: React.FC<{
               {activeSheet && Array.from({ length: activeSheet.colCount }, (_, colIndex) => (
                 <div
                   key={`header-${colIndex}`}
-                  className="flex shrink-0 items-center border-r border-slate-200 px-3 dark:border-slate-700"
+                  className="flex shrink-0 items-center border-r border-slate-200 px-3 dark:border-white/[0.05]"
                   style={{ width: `${TABLE_COL_WIDTH}px`, height: `${TABLE_HEADER_HEIGHT}px` }}
                 >
                   {columnLabelFromIndex(colIndex)}
@@ -1051,8 +1111,8 @@ const SheetTableFallback: React.FC<{
                     <div
                       className={`sticky left-0 z-10 flex shrink-0 items-center justify-center border-b border-r border-slate-200 px-2 font-medium ${
                         isHighlightedRow
-                          ? "bg-amber-100 text-amber-800 dark:border-slate-700 dark:bg-amber-500/20 dark:text-amber-200"
-                          : "bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+                          ? "bg-amber-100 text-amber-800 dark:border-white/[0.05] dark:bg-amber-500/20 dark:text-amber-200"
+                          : "bg-slate-50 text-slate-500 dark:border-white/[0.05] dark:bg-white/[0.02] dark:text-slate-400"
                       }`}
                       style={{ width: `${TABLE_ROW_HEADER_WIDTH}px`, height: `${TABLE_ROW_HEIGHT}px` }}
                     >
@@ -1066,8 +1126,8 @@ const SheetTableFallback: React.FC<{
                           key={`cell-${rowIndex}-${colIndex}`}
                           className={`flex shrink-0 items-center border-b border-r px-3 ${
                             isHighlightedCell
-                              ? "bg-amber-100/80 font-medium text-amber-900 ring-1 ring-inset ring-amber-300 dark:border-slate-700 dark:bg-amber-500/20 dark:text-amber-100 dark:ring-amber-500/60"
-                              : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
+                              ? "bg-amber-100/80 font-medium text-amber-900 ring-1 ring-inset ring-amber-300 dark:border-white/[0.05] dark:bg-amber-500/20 dark:text-amber-100 dark:ring-amber-500/60"
+                              : "border-slate-200 bg-white dark:border-white/[0.05] dark:bg-transparent"
                           }`}
                           style={{ width: `${TABLE_COL_WIDTH}px`, height: `${TABLE_ROW_HEIGHT}px` }}
                           title={text}
@@ -1404,3 +1464,4 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
     </div>
   );
 };
+

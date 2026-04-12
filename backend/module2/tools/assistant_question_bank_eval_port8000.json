@@ -1,0 +1,285 @@
+{
+  "base_url": "http://127.0.0.1:8000",
+  "generated_at": "2026-04-10 15:35:06",
+  "question_count": 4,
+  "results": [
+    {
+      "id": "H1",
+      "priority": "high",
+      "question": "当前文档的统计年份是什么？只回答数字。",
+      "intent": "快速拿字段值",
+      "expected_shape": "仅返回 2021",
+      "result": {
+        "first_delta_sec": 0.23,
+        "first_delta_text": "2021",
+        "warnings": [],
+        "statuses": [
+          {
+            "t": 0.23,
+            "code": "preparing",
+            "label": "正在准备上下文",
+            "detail": "我先把这轮问题和当前上下文整理一下。"
+          },
+          {
+            "t": 0.23,
+            "code": "planning",
+            "label": "正在理解你的问题",
+            "detail": "我先判断这轮更适合直接回答、检索文档、联网补充，还是走数据库工具。"
+          },
+          {
+            "t": 0.23,
+            "code": "answering",
+            "label": "正在组织回答",
+            "detail": "我会把已经确认的内容直接流式输出给你。"
+          },
+          {
+            "t": 0.23,
+            "code": "finalizing",
+            "label": "正在收尾",
+            "detail": "我再把这轮结果对齐一下，确保主回答更顺畅。"
+          }
+        ],
+        "done": {
+          "final_text": "2021",
+          "finish_reason": "frontend_snapshot_short_circuit",
+          "requires_followup": false
+        },
+        "event_types": [
+          "stream.open",
+          "assistant.start",
+          "status",
+          "status",
+          "status",
+          "assistant.delta",
+          "status",
+          "assistant.done"
+        ],
+        "error": null
+      }
+    },
+    {
+      "id": "H2",
+      "priority": "high",
+      "question": "请用中文概括当前选中文档的核心内容，并列出你当前最确定的 3 个字段。",
+      "intent": "先建全局理解，再抓关键字段",
+      "expected_shape": "先总结文档主题，再列出统计年份、基金会总数、民政服务床位总数",
+      "result": {
+        "first_delta_sec": 14.19,
+        "first_delta_text": "这份文档主要介绍了2021年民政事业的发展情况，涵盖了机构设施、老年人口",
+        "warnings": [
+          "系统已自动补做文档索引，但暂时还没有形成稳定的可检索片段，我先基于当前可见内容继续回答。",
+          "第一次检索没有命中最相关内容，我已自动扩大检索范围继续查找。"
+        ],
+        "statuses": [
+          {
+            "t": 0.02,
+            "code": "preparing",
+            "label": "正在准备上下文",
+            "detail": "我先把这轮问题和当前上下文整理一下。"
+          },
+          {
+            "t": 0.02,
+            "code": "planning",
+            "label": "正在理解你的问题",
+            "detail": "我先判断这轮更适合直接回答、检索文档、联网补充，还是走数据库工具。"
+          },
+          {
+            "t": 4.26,
+            "code": "retrieving",
+            "label": "正在检索相关内容",
+            "detail": "我在当前文档里找和你问题最相关的内容。"
+          },
+          {
+            "t": 13.58,
+            "code": "answering",
+            "label": "正在组织回答",
+            "detail": "我会把已经确认的内容直接流式输出给你。"
+          },
+          {
+            "t": 14.24,
+            "code": "finalizing",
+            "label": "正在收尾",
+            "detail": "我再把这轮结果对齐一下，确保主回答更顺畅。"
+          }
+        ],
+        "done": {
+          "final_text": "这份文档主要介绍了2021年民政事业的发展情况,涵盖了机构设施、老年人口、基金会等多个方面的统计数据,反映了该年度民政服务资源的总体规模和变化趋势。\n\n目前最确定的三个字段是:\n1. 统计年份:2021年\n2. 基金会总数:8877个\n3. 民政服务床位总数:530.5万张\n\n这些数据体现了文档对民政事业发展规模和资源配置的重点关注。",
+          "finish_reason": "completed",
+          "requires_followup": false,
+          "warnings": [
+            "auto_ingest_completed_but_no_units_built",
+            "initial_unit_type_filter_returned_no_matches; broadened_to_all_unit_types"
+          ],
+          "user_visible_warnings": [
+            "系统已自动补做文档索引，但暂时还没有形成稳定的可检索片段，我先基于当前可见内容继续回答。",
+            "第一次检索没有命中最相关内容，我已自动扩大检索范围继续查找。"
+          ]
+        },
+        "event_types": [
+          "stream.open",
+          "assistant.start",
+          "status",
+          "status",
+          "status",
+          "warning",
+          "warning",
+          "status",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.replace",
+          "status",
+          "assistant.done"
+        ],
+        "error": null
+      }
+    },
+    {
+      "id": "H3",
+      "priority": "high",
+      "question": "这个数值是多少？",
+      "intent": "模糊提问，期待助手引导澄清",
+      "expected_shape": "不能乱猜，应该进入 clarification_required / requires_followup",
+      "result": {
+        "first_delta_sec": 0.11,
+        "first_delta_text": "这个问题可能对应多条记录。当前问题还缺少能唯一锁定记录的限定条件,比如时间点、记录范围或统计口径。 告诉我时间点、记录范围或统计口径,我马上帮你定位。",
+        "warnings": [],
+        "statuses": [
+          {
+            "t": 0.11,
+            "code": "preparing",
+            "label": "正在准备上下文",
+            "detail": "我先把这轮问题和当前上下文整理一下。"
+          },
+          {
+            "t": 0.11,
+            "code": "planning",
+            "label": "正在理解你的问题",
+            "detail": "我先判断这轮更适合直接回答、检索文档、联网补充，还是走数据库工具。"
+          },
+          {
+            "t": 0.11,
+            "code": "answering",
+            "label": "正在组织回答",
+            "detail": "我会把已经确认的内容直接流式输出给你。"
+          },
+          {
+            "t": 0.11,
+            "code": "finalizing",
+            "label": "正在收尾",
+            "detail": "我再把这轮结果对齐一下，确保主回答更顺畅。"
+          }
+        ],
+        "done": {
+          "final_text": "这个问题可能对应多条记录。当前问题还缺少能唯一锁定记录的限定条件,比如时间点、记录范围或统计口径。 告诉我时间点、记录范围或统计口径,我马上帮你定位。",
+          "finish_reason": "clarification_required",
+          "requires_followup": true
+        },
+        "event_types": [
+          "stream.open",
+          "assistant.start",
+          "status",
+          "status",
+          "status",
+          "assistant.delta",
+          "status",
+          "assistant.done"
+        ],
+        "error": null
+      }
+    },
+    {
+      "id": "H4",
+      "priority": "high",
+      "question": "如果我是第一次核对这份文档，最应该先核对哪 3 类信息？",
+      "intent": "文档质检建议",
+      "expected_shape": "建议先看统计年份、核心总量字段、同比或变化口径",
+      "result": {
+        "first_delta_sec": 12.4,
+        "first_delta_text": "这份文档是关于2021年民政事业发展的统计公报，首次核对时最应该关注的三",
+        "warnings": [
+          "系统已自动补做文档索引，但暂时还没有形成稳定的可检索片段，我先基于当前可见内容继续回答。"
+        ],
+        "statuses": [
+          {
+            "t": 0.01,
+            "code": "preparing",
+            "label": "正在准备上下文",
+            "detail": "我先把这轮问题和当前上下文整理一下。"
+          },
+          {
+            "t": 0.01,
+            "code": "planning",
+            "label": "正在理解你的问题",
+            "detail": "我先判断这轮更适合直接回答、检索文档、联网补充，还是走数据库工具。"
+          },
+          {
+            "t": 5.96,
+            "code": "retrieving",
+            "label": "正在检索相关内容",
+            "detail": "我在当前文档里找和你问题最相关的内容。"
+          },
+          {
+            "t": 12.38,
+            "code": "answering",
+            "label": "正在组织回答",
+            "detail": "我会把已经确认的内容直接流式输出给你。"
+          },
+          {
+            "t": 13.39,
+            "code": "finalizing",
+            "label": "正在收尾",
+            "detail": "我再把这轮结果对齐一下，确保主回答更顺畅。"
+          }
+        ],
+        "done": {
+          "final_text": "这份文档是关于2021年民政事业发展的统计公报,首次核对时最应该关注的三类信息一般是:\n\n1. 统计年份和总体发展情况:确认统计的时间范围和总体概况,确保数据对应正确的时间点。\n2. 关键指标数据:比如基金会总数、民政服务床位总数等核心数量指标,这些是反映民政事业规模和资源的重要数据。\n3. 同比增长或变化趋势:了解各项指标的同比增长情况,判断发展态势是否合理和符合预期。\n\n这三类信息是核对文档真实性和完整性的基础,确认无误后再深入核查细节和分项数据。",
+          "finish_reason": "completed",
+          "requires_followup": false,
+          "warnings": [
+            "auto_ingest_completed_but_no_units_built"
+          ],
+          "user_visible_warnings": [
+            "系统已自动补做文档索引，但暂时还没有形成稳定的可检索片段，我先基于当前可见内容继续回答。"
+          ]
+        },
+        "event_types": [
+          "stream.open",
+          "assistant.start",
+          "status",
+          "status",
+          "status",
+          "warning",
+          "status",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.delta",
+          "assistant.replace",
+          "status",
+          "assistant.done"
+        ],
+        "error": null
+      }
+    }
+  ]
+}

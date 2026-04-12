@@ -4,10 +4,11 @@ Global knowledge graph and risk intelligence service.
 
 ## Quick Start
 
-1. Install dependencies:
+1. Create the preferred repo-root virtual environment and install dependencies:
 
 ```powershell
-pip install -r requirements.txt
+python -m venv D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311
+D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311\Scripts\python.exe -m pip install -r backend/module4/requirements.txt
 ```
 
 Module 4 GraphRAG execution is aligned to the project `ragtest` baseline and now expects:
@@ -27,13 +28,40 @@ Module 4 now starts in strict database mode. If PostgreSQL is unavailable, start
 `MODULE4_DB_CONNECT_TIMEOUT_SEC` controls how quickly startup reports the connection failure.
 `MODULE4_ALERT_LOW_CONF_THRESHOLD` controls the built-in low-confidence rule threshold when default rules are seeded.
 Leave `MODULE4_GRAPHRAG_PYTHON_BIN=python` unless you deliberately need a custom runtime.
-When the value is generic, Module 4 now auto-prefers `backend/module4/.venv` so the GraphRAG runtime stays local to this repo instead of silently borrowing `D:\ragtest`.
+When the value is generic, Module 4 now resolves to the repo-root `D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311`.
+The historical `backend/module4/.venv` runtime has been removed from the project layout.
+Legacy refactor indexing mode has been physically removed; Module 4 now runs GraphRAG pipeline only.
 
 Module 4 no longer accepts direct file uploads. The only supported ingest path is:
 
 - Module 2 upload and parse
-- Module 2 auto-sync parsed `documents`
+- Module 2 auto-sync parsed `documents` (legacy-compatible)
 - Module 4 ingest `documents` and build file-scoped graph state
+
+Module 4 now also supports a GraphRAG-style text input mode in the same `/module4/ingest` payload:
+
+- `text_corpus`: direct merged text corpus
+- `source_texts[]`: optional source text entries with inline text and/or artifact paths
+- `settings_overrides`: per-document chunk and embedding overrides (`chunk_size`, `chunk_overlap`, `embedding_model_name`)
+- `metadata`: optional file-level metadata
+
+When `documents[]` is empty but `text_corpus` or `source_texts[]` is provided, Module 4 synthesizes a single normalized document and proceeds with the same indexing pipeline.
+If module2 diagnostics include `assistant1_source_markdown_artifact_path` and `assistant_payload_artifact_path`, Module 4 will read and merge those artifacts as high-quality text input.
+You can now optionally control workflow behavior with:
+- `MODULE4_GRAPHRAG_INDEXING_METHOD`
+- `MODULE4_GRAPHRAG_EXECUTION_MODE` (`graphrag` by default; `deterministic_local` for offline deterministic indexing)
+- `MODULE4_GRAPHRAG_WORKFLOWS`
+- `MODULE4_GRAPHRAG_SKIP_WORKFLOWS`
+- `MODULE4_GRAPHRAG_RETRY_SKIP_COMMUNITY_REPORTS` (`0` by default for strict GraphRAG behavior)
+- `MODULE4_GRAPHRAG_ALLOW_PARTIAL_IMPORT` (`0` by default for strict GraphRAG-first failure semantics)
+- `MODULE4_INGEST_ALLOW_DOCUMENT_FALLBACK` (`0` by default to avoid implicit fallback graph writes)
+- `MODULE4_GRAPHRAG_EXTRACT_GRAPH_PROMPT_FILE`
+- `MODULE4_GRAPHRAG_SUMMARIZE_DESCRIPTIONS_PROMPT_FILE`
+- `MODULE4_GRAPHRAG_EXTRACT_CLAIMS_PROMPT_FILE`
+- `MODULE4_GRAPHRAG_COMMUNITY_REPORT_GRAPH_PROMPT_FILE`
+- `MODULE4_GRAPHRAG_COMMUNITY_REPORT_TEXT_PROMPT_FILE`
+
+Graph query runtime is now artifact-only (GraphRAG `create_final_*` outputs) with no storage projection fallback.
 
 3. Run API:
 
@@ -41,12 +69,12 @@ Module 4 no longer accepts direct file uploads. The only supported ingest path i
 npm run dev:module4
 ```
 
-`npm run dev:module4` now fixed-prefers `backend/module4/.venv` for the Module 4 runtime.
+`npm run dev:module4` now fixed-prefers `D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311` for the Module 4 runtime.
 
 If you want to override the interpreter explicitly:
 
 ```powershell
-$env:MODULE4_PYTHON="D:\smart_doc_flow\smart-doc-flow\backend\module4\.venv\Scripts\python.exe"
+$env:MODULE4_PYTHON="D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311\Scripts\python.exe"
 npm run dev:module4
 ```
 
@@ -77,7 +105,7 @@ The health payload now also includes runtime version details for the active Grap
 
 `probe=deep` additionally attempts to reach:
 
-- OneAPI status endpoint derived from `MODULE4_GRAPHRAG_API_BASE`
+- Provider API status endpoint derived from `MODULE4_GRAPHRAG_API_BASE`
 - Neo4j using the configured credentials
 
 ## Neo4j Projection
@@ -128,3 +156,21 @@ Rules are stored in `module4.rules` and are applied during `ingest`.
 - In-flight ingest / rebuild jobs are re-queued on graceful shutdown so they can be recovered on the next startup when PostgreSQL is available.
 - `GET /module4/healthz` also reports GraphRAG runtime readiness. Use `probe=deep` when you want live OneAPI and Neo4j reachability checks.
 - Tenant-scoped APIs can resolve tenant from request body/query or the `X-Tenant-Id` header.
+
+## Non-PDF Alignment Eval
+
+You can run a file-level alignment report against non-PDF files under the repository `datasets` folder:
+
+```powershell
+python backend/module4/tools/nonpdf_alignment_eval.py --dataset-root D:\smart_doc_flow\smart-doc-flow\datasets
+```
+
+Optional arguments:
+
+- `--limit <N>`: only evaluate the first N matched non-PDF files.
+- `--tenant-id <id>`: logical tenant namespace used by the in-memory evaluation run.
+- `--output <path>`: JSON report output path.
+
+Default report path:
+
+- `backend/module4/runtime-data/nonpdf-alignment-report.json`

@@ -8,7 +8,11 @@ from dotenv import load_dotenv
 
 
 MODULE2_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=True)
+REPO_ROOT = MODULE2_ROOT.parents[1]
+CUSTOM_MODULE2_ENV_FILE = str(os.getenv("MODULE2_ENV_FILE", "") or "").strip()
+load_dotenv(dotenv_path=MODULE2_ROOT / ".env", override=False)
+if CUSTOM_MODULE2_ENV_FILE:
+    load_dotenv(dotenv_path=CUSTOM_MODULE2_ENV_FILE, override=True)
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -19,9 +23,45 @@ def _env(*names: str, default: str = "") -> str:
     return default
 
 
+def _runtime_root_dir() -> Path:
+    configured = str(os.getenv("SMART_DOC_FLOW_RUNTIME_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return REPO_ROOT
+
+
+def _data_root_dir() -> Path:
+    configured = str(os.getenv("SMART_DOC_FLOW_DATA_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    runtime_root = _runtime_root_dir()
+    runtime_data_dir = (runtime_root / "runtime-data").resolve()
+    if runtime_data_dir.exists():
+        return runtime_data_dir
+    return runtime_root
+
+
+def _resolve_module2_path(raw_value: str, default_path: Path) -> Path:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return default_path.resolve()
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    candidate_module2 = (MODULE2_ROOT / path).resolve()
+    candidate_repo = (REPO_ROOT / path).resolve()
+    normalized = raw.replace("\\", "/").lower()
+    if normalized.startswith("backend/module2/"):
+        return candidate_repo
+    if candidate_repo.exists() and not candidate_module2.exists():
+        return candidate_repo
+    return candidate_module2
+
+
 @dataclass(frozen=True)
 class Assistant1Settings:
     module2_root: Path
+    module2_artifact_root_dir: Path
     artifact_root_dir: Path
     database_dsn: str
     embedding_api_key: str
@@ -52,12 +92,16 @@ class Assistant1Settings:
 
     @classmethod
     def from_env(cls) -> "Assistant1Settings":
-        artifact_root = Path(
-            _env(
-                "ASSISTANT1_ARTIFACT_ROOT_DIR",
-                default=str(MODULE2_ROOT / "artifacts" / "assistant_1"),
-            )
-        ).resolve()
+        module2_artifact_root = _resolve_module2_path(
+            _env("MODULE2_ARTIFACT_ROOT_DIR", default=""),
+            _data_root_dir() / "module2" / "artifacts",
+        )
+        module2_artifact_root.mkdir(parents=True, exist_ok=True)
+
+        artifact_root = _resolve_module2_path(
+            _env("ASSISTANT1_ARTIFACT_ROOT_DIR", default=""),
+            module2_artifact_root / "assistant_1",
+        )
         artifact_root.mkdir(parents=True, exist_ok=True)
 
         endpoint_style = _env(
@@ -78,7 +122,7 @@ class Assistant1Settings:
             "ASSISTANT1_CHAT_ENDPOINT_STYLE",
             default="openai_responses",
         ).lower()
-        if chat_endpoint_style not in {"openai_responses"}:
+        if chat_endpoint_style not in {"openai_responses", "openai_chat_completions"}:
             chat_endpoint_style = "openai_responses"
 
         chat_endpoint_path = _env(
@@ -102,6 +146,7 @@ class Assistant1Settings:
 
         return cls(
             module2_root=MODULE2_ROOT,
+            module2_artifact_root_dir=module2_artifact_root,
             artifact_root_dir=artifact_root,
             database_dsn=_env(
                 "ASSISTANT1_DATABASE_DSN",

@@ -14,7 +14,7 @@ if str(MODULE2_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE2_ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
-from app.core.parser import NativeDocumentParser  # noqa: E402
+from app.core.parsers.native_document_parser import NativeDocumentParser  # noqa: E402
 
 load_dotenv(dotenv_path=MODULE2_ROOT / ".env")
 

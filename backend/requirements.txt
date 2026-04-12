@@ -1,0 +1,11 @@
+# Unified FastAPI backend baseline dependencies.
+# This covers the local gateway/auth/assistant/extraction runtime.
+fastapi>=0.116.0
+uvicorn[standard]>=0.35.0
+pydantic>=2.11.0
+python-multipart>=0.0.20
+python-dotenv>=1.0.0
+PyJWT>=2.8.0
+bcrypt>=5.0.0
+asyncpg>=0.30.0
+requests>=2.32.0

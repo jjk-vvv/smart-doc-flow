@@ -1,5 +1,5 @@
 {
-  "version": "field-naming-rules-v1",
+  "version": "field-naming-rules-v1.7",
   "forbidden_aliases": [
     "result",
     "result_value",
@@ -33,6 +33,9 @@
       "match_any": [
         "统计公报",
         "统计年鉴",
+        "国民经济",
+        "经济和社会发展",
+        "国内生产总值",
         "民政",
         "最低生活保障",
         "福利彩票",
@@ -66,6 +69,116 @@
       ]
     },
     {
+      "name": "healthcare_statistical_bulletin",
+      "match_any": [
+        "卫生健康事业发展统计公报",
+        "卫生健康",
+        "医疗卫生机构",
+        "卫生人员",
+        "卫生总费用",
+        "总诊疗人次"
+      ]
+    },
+    {
+      "name": "culture_tourism_statistical_bulletin",
+      "match_any": [
+        "文化和旅游发展统计公报",
+        "文化和旅游部",
+        "艺术表演团体",
+        "演出收入",
+        "国内观众",
+        "公共美术馆",
+        "艺术表演场馆"
+      ]
+    },
+    {
+      "name": "industrial_census_bulletin",
+      "match_any": [
+        "工业普查主要数据公报",
+        "第三次全国工业普查",
+        "工业经济总量",
+        "工业企业和工业生产单位",
+        "工业产品销售收入",
+        "工业增加值",
+        "工业总产值"
+      ]
+    },
+    {
+      "name": "pharmaceutical_distribution_report",
+      "match_any": [
+        "药品流通行业运行统计分析报告",
+        "药品流通",
+        "七大类医药商品销售总额",
+        "药品零售市场销售额",
+        "药品批发市场销售额",
+        "执业药师",
+        "平均毛利率",
+        "回款天数"
+      ]
+    },
+    {
+      "name": "human_resources_social_security_report",
+      "match_any": [
+        "人力资源和社会保障",
+        "基本养老保险",
+        "失业保险",
+        "工伤保险",
+        "社会保障卡",
+        "社会保障卡持卡人数"
+      ]
+    },
+    {
+      "name": "environment_monitoring_report",
+      "match_any": [
+        "生态环境状况公报",
+        "生态环境",
+        "空气质量",
+        "aqi",
+        "pm2.5",
+        "pm10",
+        "优良天数",
+        "优良率",
+        "环境监测"
+      ]
+    },
+    {
+      "name": "recruitment_hr_table",
+      "match_any": [
+        "\u56fd\u8003",
+        "\u62db\u8003\u804c\u4f4d",
+        "\u804c\u4f4d\u4ee3\u7801",
+        "\u90e8\u95e8\u4ee3\u7801",
+        "\u62db\u8003\u4eba\u6570",
+        "\u9762\u8bd5\u4eba\u5458\u6bd4\u4f8b",
+        "\u5b66\u5386",
+        "\u5b66\u4f4d"
+      ]
+    },
+    {
+      "name": "clinical_patient_dataset",
+      "match_any": [
+        "\u7cd6\u5c3f\u75c5",
+        "\u60a3\u8005\u7f16\u53f7",
+        "\u5c31\u8bcaID",
+        "\u4f4f\u9662\u5929\u6570",
+        "\u8bca\u65ad\u6570\u91cf",
+        "\u8840\u6e05\u8461\u8404\u7cd6",
+        "\u7cd6\u5316\u8840\u7ea2\u86cb\u767d"
+      ]
+    },
+    {
+      "name": "epidemic_surveillance_dataset",
+      "match_any": [
+        "covid-19",
+        "\u56fd\u5bb6/\u5730\u533a",
+        "\u6bcf\u65e5\u68c0\u6d4b\u6570",
+        "\u75c5\u4f8b\u6570",
+        "\u6b7b\u4ea1\u6570",
+        "\u6bcf\u5343\u4eba\u533b\u9662\u5e8a\u4f4d\u6570",
+        "\u6bcf\u5343\u4eba\u533b\u751f\u6570"
+      ]
+    },
+    {
       "name": "xlsx_business_ledger",
       "match_any": [
         ".xlsx",
@@ -78,6 +191,251 @@
       ]
     }
   ],
+  "field_packs": [
+    {
+      "name": "common_document_core",
+      "templates": [
+        "government_statistical_bulletin",
+        "healthcare_statistical_bulletin",
+        "environment_monitoring_report",
+        "culture_tourism_statistical_bulletin",
+        "industrial_census_bulletin",
+        "pharmaceutical_distribution_report",
+        "human_resources_social_security_report"
+      ],
+      "match_any": ["发布机构", "发布单位", "发布日期", "报告年份", "统计年份", "年度", "year"]
+    },
+    {
+      "name": "statistical_metrics",
+      "templates": [
+        "government_statistical_bulletin",
+        "healthcare_statistical_bulletin",
+        "environment_monitoring_report",
+        "culture_tourism_statistical_bulletin",
+        "industrial_census_bulletin",
+        "pharmaceutical_distribution_report",
+        "human_resources_social_security_report"
+      ],
+      "match_any": ["总数", "总量", "总额", "人数", "床位", "优良天数", "优良率", "监测点", "比例", "比率"]
+    },
+    {
+      "name": "healthcare_report",
+      "templates": ["healthcare_statistical_bulletin"],
+      "match_any": ["医疗卫生机构", "卫生人员", "卫生总费用", "政府卫生支出", "个人卫生支出", "总诊疗人次"]
+    },
+    {
+      "name": "culture_tourism_report",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "match_any": ["文化和旅游单位", "艺术表演团体", "演出收入", "国内观众", "公共美术馆", "艺术表演场馆"]
+    },
+    {
+      "name": "industrial_census_report",
+      "templates": ["industrial_census_bulletin"],
+      "match_any": ["工业企业和工业生产单位", "工业产品销售收入", "工业增加值", "工业总产值", "资产总额", "上交税金"]
+    },
+    {
+      "name": "pharmaceutical_distribution",
+      "templates": ["pharmaceutical_distribution_report"],
+      "match_any": ["七大类医药商品销售总额", "药品零售市场销售额", "药品批发市场销售额", "执业药师", "平均毛利率", "回款天数"]
+    },
+    {
+      "name": "human_resources_social_security",
+      "templates": ["human_resources_social_security_report"],
+      "match_any": ["城镇新增就业", "基本养老保险", "失业保险", "工伤保险", "社会保障卡"]
+    },
+    {
+      "name": "environment_monitoring",
+      "templates": ["environment_monitoring_report"],
+      "match_any": ["空气质量", "aqi", "pm2.5", "pm10", "优良天数", "优良率", "监测点", "污染物"]
+    },
+    {
+      "name": "business_ledger",
+      "templates": ["xlsx_business_ledger"],
+      "match_any": ["销售额", "销量", "订单", "sku", "店铺", "商品"]
+    },
+    {
+      "name": "recruitment_hr",
+      "templates": ["recruitment_hr_table"],
+      "match_any": [
+        "\u90e8\u95e8\u4ee3\u7801",
+        "\u804c\u4f4d\u4ee3\u7801",
+        "\u62db\u8003\u4eba\u6570",
+        "\u62db\u8003\u804c\u4f4d",
+        "\u9762\u8bd5\u4eba\u5458\u6bd4\u4f8b",
+        "\u5b66\u5386",
+        "\u5b66\u4f4d",
+        "\u4e13\u4e1a"
+      ]
+    },
+    {
+      "name": "clinical_patient",
+      "templates": ["clinical_patient_dataset"],
+      "match_any": [
+        "\u5c31\u8bcaID",
+        "\u60a3\u8005\u7f16\u53f7",
+        "\u4f4f\u9662\u5929\u6570",
+        "\u8bca\u65ad\u6570\u91cf",
+        "\u8840\u6e05\u8461\u8404\u7cd6\u6700\u5927\u503c",
+        "\u7cd6\u5316\u8840\u7ea2\u86cb\u767d\u7ed3\u679c",
+        "\u836f\u7269\u6570\u91cf"
+      ]
+    },
+    {
+      "name": "epidemic_surveillance",
+      "templates": ["epidemic_surveillance_dataset"],
+      "match_any": [
+        "\u56fd\u5bb6/\u5730\u533a",
+        "\u5927\u6d32",
+        "\u65e5\u671f",
+        "\u6bcf\u65e5\u68c0\u6d4b\u6570",
+        "\u75c5\u4f8b\u6570",
+        "\u6b7b\u4ea1\u6570",
+        "\u6bcf\u5343\u4eba\u533b\u9662\u5e8a\u4f4d\u6570",
+        "\u6bcf\u5343\u4eba\u533b\u751f\u6570"
+      ]
+    }
+  ],
+  "template_fallbacks": {
+    "government_statistical_bulletin": {
+      "macro_title_tokens": [
+        "国民经济",
+        "经济和社会发展"
+      ],
+      "macro_only_labels": [
+        "生产总值",
+        "年末人口",
+        "新增就业（城市）",
+        "全部工业增加值",
+        "社会消费品零售总额",
+        "固定资产投资",
+        "货物进出口总额",
+        "一般公共预算收入",
+        "居民人均可支配收入",
+        "广义货币供应量余额",
+        "居民消费价格涨幅"
+      ],
+      "field_rules": [
+        {
+          "label": "统计年份",
+          "type": "integer",
+          "aliases": ["统计年份", "统计年度", "报告年份"]
+        },
+        {
+          "label": "发布机构",
+          "type": "string",
+          "aliases": ["发布机构", "发布单位", "国家统计局"]
+        },
+        {
+          "label": "发布日期",
+          "type": "date",
+          "aliases": ["发布日期", "发布时间", "发布日"]
+        },
+        {
+          "label": "生产总值",
+          "type": "number",
+          "aliases": ["国内生产总值", "全年国内生产总值", "地区生产总值", "生产总值", "全年生产总值", "生产总值（GDP）", "GDP"]
+        },
+        {
+          "label": "人均生产总值",
+          "type": "number",
+          "aliases": ["人均国内生产总值", "人均生产总值", "人均GDP"]
+        },
+        {
+          "label": "年末人口",
+          "type": "number",
+          "aliases": ["年末全国人口", "全国人口", "年末总人口"]
+        },
+        {
+          "label": "常住人口",
+          "type": "number",
+          "aliases": ["常住人口", "年末常住人口", "常住人口数量"]
+        },
+        {
+          "label": "户籍人口",
+          "type": "number",
+          "aliases": ["户籍人口", "年末户籍人口", "全市户籍人口"]
+        },
+        {
+          "label": "新增就业（城市）",
+          "type": "number",
+          "aliases": ["城镇新增就业", "全国城镇新增就业", "新增就业（城市）"]
+        },
+        {
+          "label": "城镇调查失业率",
+          "type": "number",
+          "aliases": ["城镇调查失业率", "全国城镇调查失业率", "年末全国城镇调查失业率"]
+        },
+        {
+          "label": "常住人口城镇化率",
+          "type": "number",
+          "aliases": ["常住人口城镇化率", "城镇化率", "常住人口城镇化水平"]
+        },
+        {
+          "label": "全部工业增加值",
+          "type": "number",
+          "aliases": ["全部工业增加值", "全年全部工业增加值", "工业增加值"]
+        },
+        {
+          "label": "社会消费品零售总额",
+          "type": "number",
+          "aliases": ["社会消费品零售总额", "全年社会消费品零售总额"]
+        },
+        {
+          "label": "固定资产投资",
+          "type": "number",
+          "aliases": ["固定资产投资", "全社会固定资产投资"]
+        },
+        {
+          "label": "货物进出口总额",
+          "type": "number",
+          "aliases": ["货物进出口总额", "全年货物进出口总额", "进出口总额"]
+        },
+        {
+          "label": "一般公共预算收入",
+          "type": "number",
+          "aliases": ["全国一般公共预算收入", "一般公共预算收入"]
+        },
+        {
+          "label": "居民人均可支配收入",
+          "type": "number",
+          "aliases": ["全国居民人均可支配收入", "居民人均可支配收入"]
+        },
+        {
+          "label": "广义货币供应量余额",
+          "type": "number",
+          "aliases": ["广义货币供应量余额", "广义货币供应量", "M2余额"]
+        },
+        {
+          "label": "居民消费价格涨幅",
+          "type": "number",
+          "aliases": ["居民消费价格涨幅", "居民消费价格指数", "居民消费价格"]
+        }
+      ],
+      "auto_candidates": [
+        {
+          "label": "统计年份",
+          "type": "integer",
+          "match_scope": "title_context",
+          "pattern": "(19|20)\\d{2}年",
+          "support_score": 10
+        },
+        {
+          "label": "发布机构",
+          "type": "string",
+          "match_scope": "intro_text",
+          "contains": "国家统计局",
+          "support_score": 10
+        },
+        {
+          "label": "发布日期",
+          "type": "date",
+          "match_scope": "intro_text",
+          "pattern": "(19|20)\\d{2}年\\d{1,2}月\\d{1,2}日",
+          "support_score": 10
+        }
+      ]
+    }
+  },
   "units": [
     {
       "norm": "percent",
@@ -177,12 +535,469 @@
       "aliases": ["summary", "document summary", "摘要", "概述", "概要"]
     },
     {
+      "id": "publish_organization",
+      "key": "publish_organization",
+      "label": "发布机构",
+      "type": "string",
+      "templates": [
+        "government_statistical_bulletin",
+        "healthcare_statistical_bulletin",
+        "environment_monitoring_report",
+        "culture_tourism_statistical_bulletin",
+        "industrial_census_bulletin",
+        "pharmaceutical_distribution_report",
+        "human_resources_social_security_report"
+      ],
+      "packs": ["common_document_core"],
+      "aliases": ["发布机构", "发布单位", "发布部门", "编制单位", "发布机关"]
+    },
+    {
+      "id": "publish_date",
+      "key": "publish_date",
+      "label": "发布日期",
+      "type": "date",
+      "templates": [
+        "government_statistical_bulletin",
+        "healthcare_statistical_bulletin",
+        "environment_monitoring_report",
+        "culture_tourism_statistical_bulletin",
+        "industrial_census_bulletin",
+        "pharmaceutical_distribution_report",
+        "human_resources_social_security_report"
+      ],
+      "packs": ["common_document_core"],
+      "aliases": ["发布日期", "发布时间", "发布日", "date of issue", "publish date"]
+    },
+    {
       "id": "report_year",
       "key": "report_year",
       "label": "统计年份",
       "type": "integer",
-      "templates": ["government_statistical_bulletin"],
+      "templates": [
+        "government_statistical_bulletin",
+        "healthcare_statistical_bulletin",
+        "environment_monitoring_report",
+        "culture_tourism_statistical_bulletin",
+        "industrial_census_bulletin",
+        "pharmaceutical_distribution_report",
+        "human_resources_social_security_report"
+      ],
+      "packs": ["common_document_core"],
       "aliases": ["统计年份", "统计年度", "年份", "年度", "报告年份", "year", "report year"]
+    },
+    {
+      "id": "gdp_per_capita",
+      "key": "gdp_per_capita",
+      "label": "人均生产总值",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "packs": ["statistical_metrics"],
+      "aliases": ["人均国内生产总值", "人均生产总值", "人均GDP"]
+    },
+    {
+      "id": "resident_population",
+      "key": "resident_population",
+      "label": "常住人口",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "packs": ["statistical_metrics"],
+      "aliases": ["常住人口", "年末常住人口", "常住人口数量"]
+    },
+    {
+      "id": "registered_population",
+      "key": "registered_population",
+      "label": "户籍人口",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "packs": ["statistical_metrics"],
+      "aliases": ["户籍人口", "年末户籍人口", "全市户籍人口"]
+    },
+    {
+      "id": "resident_urbanization_rate",
+      "key": "resident_urbanization_rate",
+      "label": "常住人口城镇化率",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "packs": ["statistical_metrics"],
+      "aliases": ["常住人口城镇化率", "城镇化率", "常住人口城镇化水平"]
+    },
+    {
+      "id": "surveyed_urban_unemployment_rate",
+      "key": "surveyed_urban_unemployment_rate",
+      "label": "城镇调查失业率",
+      "type": "number",
+      "templates": ["government_statistical_bulletin"],
+      "packs": ["statistical_metrics"],
+      "aliases": ["城镇调查失业率", "全国城镇调查失业率", "年末全国城镇调查失业率"]
+    },
+    {
+      "id": "cultural_tourism_units_total",
+      "key": "cultural_tourism_units_total",
+      "label": "文化和旅游单位数量",
+      "type": "number",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["文化和旅游单位数量", "全国各类文化和旅游单位", "文化和旅游单位", "文化和旅游单位总数"]
+    },
+    {
+      "id": "cultural_tourism_personnel_total",
+      "key": "cultural_tourism_personnel_total",
+      "label": "文化和旅游单位从业人员",
+      "type": "number",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["文化和旅游单位从业人员", "从业人员", "文化和旅游系统从业人员"]
+    },
+    {
+      "id": "art_performance_groups_total",
+      "key": "art_performance_groups_total",
+      "label": "艺术表演团体数量",
+      "type": "number",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["艺术表演团体数量", "艺术表演团体", "全国共有艺术表演团体"]
+    },
+    {
+      "id": "annual_performance_sessions",
+      "key": "annual_performance_sessions",
+      "label": "演出场次",
+      "type": "number",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["演出场次", "全年共演出", "全年演出场次"]
+    },
+    {
+      "id": "domestic_audience_visits",
+      "key": "domestic_audience_visits",
+      "label": "国内观众人次",
+      "type": "number",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["国内观众人次", "国内观众", "观众人次"]
+    },
+    {
+      "id": "performance_revenue",
+      "key": "performance_revenue",
+      "label": "演出收入",
+      "type": "number",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["演出收入", "全年演出收入", "收入"]
+    },
+    {
+      "id": "public_library_count",
+      "key": "public_library_count",
+      "label": "公共图书馆数量",
+      "type": "integer",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["公共图书馆数量", "公共图书馆", "全国共有公共图书馆"]
+    },
+    {
+      "id": "public_art_gallery_count",
+      "key": "public_art_gallery_count",
+      "label": "公共美术馆数量",
+      "type": "integer",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["公共美术馆数量", "公共美术馆", "全国共有公共美术馆"]
+    },
+    {
+      "id": "mass_cultural_institutions_count",
+      "key": "mass_cultural_institutions_count",
+      "label": "群众文化机构数量",
+      "type": "integer",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["群众文化机构数量", "群众文化机构", "全国共有群众文化机构"]
+    },
+    {
+      "id": "travel_agency_count",
+      "key": "travel_agency_count",
+      "label": "旅行社数量",
+      "type": "integer",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["旅行社数量", "旅行社", "旅行社总数"]
+    },
+    {
+      "id": "star_hotel_count",
+      "key": "star_hotel_count",
+      "label": "星级饭店数量",
+      "type": "integer",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["星级饭店数量", "星级饭店", "星级酒店数量"]
+    },
+    {
+      "id": "domestic_trip_count",
+      "key": "domestic_trip_count",
+      "label": "国内出游人次",
+      "type": "number",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["国内出游人次", "国内游客出游人次", "国内旅游人次"]
+    },
+    {
+      "id": "domestic_trip_spending_total",
+      "key": "domestic_trip_spending_total",
+      "label": "国内游客出游总花费",
+      "type": "number",
+      "templates": ["culture_tourism_statistical_bulletin"],
+      "packs": ["culture_tourism_report", "statistical_metrics"],
+      "aliases": ["国内游客出游总花费", "国内游客总花费", "国内旅游总花费"]
+    },
+    {
+      "id": "industrial_units_total",
+      "key": "industrial_units_total",
+      "label": "工业企业和工业生产单位数量",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["工业企业和工业生产单位", "工业企业和工业生产单位数量", "工业企业数量", "工业生产单位"]
+    },
+    {
+      "id": "industrial_employees_total",
+      "key": "industrial_employees_total",
+      "label": "工业从业人员",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["从业人员", "工业从业人员", "工业企业从业人员"]
+    },
+    {
+      "id": "industrial_assets_total",
+      "key": "industrial_assets_total",
+      "label": "资产总额",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["资产总额", "工业资产总额"]
+    },
+    {
+      "id": "industrial_sales_revenue",
+      "key": "industrial_sales_revenue",
+      "label": "工业产品销售收入",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["工业产品销售收入", "产品销售收入", "工业产品销售收入总额"]
+    },
+    {
+      "id": "industrial_value_added",
+      "key": "industrial_value_added",
+      "label": "工业增加值",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["工业增加值", "增加值"]
+    },
+    {
+      "id": "industrial_gross_output",
+      "key": "industrial_gross_output",
+      "label": "工业总产值",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["工业总产值", "总产值"]
+    },
+    {
+      "id": "industrial_tax_paid",
+      "key": "industrial_tax_paid",
+      "label": "上交税金",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["上交税金", "工业上交税金", "税金总额"]
+    },
+    {
+      "id": "industrial_export_delivery_value",
+      "key": "industrial_export_delivery_value",
+      "label": "出口交货值",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["出口交货值", "工业出口交货值"]
+    },
+    {
+      "id": "industrial_new_product_sales_revenue",
+      "key": "industrial_new_product_sales_revenue",
+      "label": "新产品销售收入",
+      "type": "number",
+      "templates": ["industrial_census_bulletin"],
+      "packs": ["industrial_census_report", "statistical_metrics"],
+      "aliases": ["新产品销售收入", "工业新产品销售收入", "新产品销售额"]
+    },
+    {
+      "id": "pharma_sales_total",
+      "key": "pharma_sales_total",
+      "label": "七大类医药商品销售总额",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["七大类医药商品销售总额", "医药商品销售总额", "全国七大类医药商品销售总额"]
+    },
+    {
+      "id": "pharma_retail_sales",
+      "key": "pharma_retail_sales",
+      "label": "药品零售市场销售额",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["药品零售市场销售额", "零售市场销售额", "药品零售销售额"]
+    },
+    {
+      "id": "pharma_wholesale_sales",
+      "key": "pharma_wholesale_sales",
+      "label": "药品批发市场销售额",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["药品批发市场销售额", "批发市场销售额", "药品批发销售额"]
+    },
+    {
+      "id": "licensed_pharmacists_total",
+      "key": "licensed_pharmacists_total",
+      "label": "执业药师人数",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["执业药师人数", "执业药师", "全国拥有执业药师"]
+    },
+    {
+      "id": "pharma_main_business_revenue",
+      "key": "pharma_main_business_revenue",
+      "label": "主营业务收入",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["主营业务收入", "直报企业主营业务收入"]
+    },
+    {
+      "id": "pharma_profit_total",
+      "key": "pharma_profit_total",
+      "label": "利润总额",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["利润总额", "企业利润总额"]
+    },
+    {
+      "id": "average_gross_margin",
+      "key": "average_gross_margin",
+      "label": "平均毛利率",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["平均毛利率", "毛利率"]
+    },
+    {
+      "id": "accounts_receivable_collection_days",
+      "key": "accounts_receivable_collection_days",
+      "label": "应收账款回款天数",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["应收账款回款天数", "回款天数", "应收账款平均回款天数"]
+    },
+    {
+      "id": "average_expense_ratio",
+      "key": "average_expense_ratio",
+      "label": "平均费用率",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["平均费用率", "费用率"]
+    },
+    {
+      "id": "average_profit_ratio",
+      "key": "average_profit_ratio",
+      "label": "平均利润率",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["平均利润率", "利润率"]
+    },
+    {
+      "id": "net_profit_ratio",
+      "key": "net_profit_ratio",
+      "label": "净利润率",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["净利润率", "净利润比率"]
+    },
+    {
+      "id": "order_total_count",
+      "key": "order_total_count",
+      "label": "订单总数",
+      "type": "integer",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["订单总数", "订单数量总计", "订单笔数"]
+    },
+    {
+      "id": "logistics_center_count",
+      "key": "logistics_center_count",
+      "label": "物流中心数量",
+      "type": "integer",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["物流中心数量", "物流中心", "医药物流中心数量"]
+    },
+    {
+      "id": "pharma_ecommerce_sales_total",
+      "key": "pharma_ecommerce_sales_total",
+      "label": "医药电商销售总额",
+      "type": "number",
+      "templates": ["pharmaceutical_distribution_report"],
+      "packs": ["pharmaceutical_distribution", "statistical_metrics"],
+      "aliases": ["医药电商销售总额", "医药电商销售额", "电商销售总额"]
+    },
+    {
+      "id": "urban_new_jobs",
+      "key": "urban_new_jobs",
+      "label": "城镇新增就业",
+      "type": "number",
+      "templates": ["human_resources_social_security_report"],
+      "packs": ["human_resources_social_security", "statistical_metrics"],
+      "aliases": ["城镇新增就业", "新增就业", "全年城镇新增就业"]
+    },
+    {
+      "id": "basic_pension_participants",
+      "key": "basic_pension_participants",
+      "label": "基本养老保险参保人数",
+      "type": "number",
+      "templates": ["human_resources_social_security_report"],
+      "packs": ["human_resources_social_security", "statistical_metrics"],
+      "aliases": ["基本养老保险参保人数", "养老保险参保人数", "基本养老保险"]
+    },
+    {
+      "id": "unemployment_insurance_participants",
+      "key": "unemployment_insurance_participants",
+      "label": "失业保险参保人数",
+      "type": "number",
+      "templates": ["human_resources_social_security_report"],
+      "packs": ["human_resources_social_security", "statistical_metrics"],
+      "aliases": ["失业保险参保人数", "失业保险"]
+    },
+    {
+      "id": "work_injury_insurance_participants",
+      "key": "work_injury_insurance_participants",
+      "label": "工伤保险参保人数",
+      "type": "number",
+      "templates": ["human_resources_social_security_report"],
+      "packs": ["human_resources_social_security", "statistical_metrics"],
+      "aliases": ["工伤保险参保人数", "工伤保险"]
+    },
+    {
+      "id": "social_security_card_holders",
+      "key": "social_security_card_holders",
+      "label": "社会保障卡持卡人数",
+      "type": "number",
+      "templates": ["human_resources_social_security_report"],
+      "packs": ["human_resources_social_security", "statistical_metrics"],
+      "aliases": ["社会保障卡持卡人数", "社会保障卡持卡", "社会保障卡"]
     },
     {
       "id": "civil_facilities_total",
@@ -461,7 +1276,7 @@
       "label": "订单数",
       "type": "integer",
       "templates": ["xlsx_business_ledger"],
-      "aliases": ["订单数", "订单量", "order count", "orders"]
+      "aliases": ["订单数", "订单量", "order count"]
     },
     {
       "id": "order_id",
@@ -488,6 +1303,14 @@
       "aliases": ["order date", "order_date", "订单日期"]
     },
     {
+      "id": "order_time",
+      "key": "order_time",
+      "label": "订单时间",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["order time", "order_time", "订单时间", "下单时间"]
+    },
+    {
       "id": "order_origin",
       "key": "order_origin",
       "label": "订单来源",
@@ -504,12 +1327,84 @@
       "aliases": ["order status", "order_status", "订单状态"]
     },
     {
+      "id": "special_discount",
+      "key": "special_discount",
+      "label": "优惠折扣",
+      "type": "number",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["spe discount", "spec discount", "special discount", "special_discount", "优惠折扣", "折扣"]
+    },
+    {
       "id": "sale_department",
       "key": "sale_department",
       "label": "销售部门",
       "type": "string",
       "templates": ["xlsx_business_ledger"],
       "aliases": ["sale dep", "sale department", "sale_dep", "销售部门"]
+    },
+    {
+      "id": "return_policy",
+      "key": "return_policy",
+      "label": "退换政策",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["ret policy", "return policy", "ret_policy", "退换政策", "退换货政策"]
+    },
+    {
+      "id": "after_sales_policy",
+      "key": "after_sales_policy",
+      "label": "售后政策",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["aft sale", "aft_sale", "after sale", "after-sales policy", "售后政策", "售后服务"]
+    },
+    {
+      "id": "customer_evaluation",
+      "key": "customer_evaluation",
+      "label": "客户评价",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["cus evalu", "cus_evalu", "customer evaluation", "customer review", "客户评价", "用户评价"]
+    },
+    {
+      "id": "special_requirement",
+      "key": "special_requirement",
+      "label": "特殊需求",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["spe need", "spe_need", "special need", "special requirement", "特殊需求"]
+    },
+    {
+      "id": "payment_method",
+      "key": "payment_method",
+      "label": "支付方式",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["pay type", "pay_type", "payment type", "payment method", "支付方式", "支付渠道"]
+    },
+    {
+      "id": "delivery_method",
+      "key": "delivery_method",
+      "label": "配送方式",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["del type", "del_type", "delivery type", "delivery method", "配送方式", "配送类型"]
+    },
+    {
+      "id": "promotion_activity",
+      "key": "promotion_activity",
+      "label": "促销活动",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["promition", "promotion", "promotion activity", "促销活动", "促销"]
+    },
+    {
+      "id": "order_handler",
+      "key": "order_handler",
+      "label": "订单处理人",
+      "type": "string",
+      "templates": ["xlsx_business_ledger"],
+      "aliases": ["order hand", "order_hand", "order handler", "订单处理人", "处理人"]
     },
     {
       "id": "commodity_count",
@@ -533,7 +1428,474 @@
       "label": "SKU",
       "type": "string",
       "templates": ["xlsx_business_ledger"],
-      "aliases": ["sku", "商品编码", "货号", "产品编码"]
+      "packs": ["business_ledger"],
+      "aliases": ["sku", "商品编码", "货号", "产品编码", "com id", "com_id", "commodity id", "commodity_id"]
+    },
+    {
+      "id": "medical_institutions_total",
+      "key": "medical_institutions_total",
+      "label": "医疗卫生机构总数",
+      "type": "integer",
+      "templates": ["healthcare_statistical_bulletin"],
+      "packs": ["healthcare_report", "statistical_metrics"],
+      "aliases": ["医疗卫生机构总数", "医疗卫生机构数", "卫生机构总数", "卫生机构数", "医疗卫生机构"]
+    },
+    {
+      "id": "hospital_beds_total",
+      "key": "hospital_beds_total",
+      "label": "医疗卫生机构床位",
+      "type": "number",
+      "templates": ["healthcare_statistical_bulletin"],
+      "packs": ["healthcare_report", "statistical_metrics"],
+      "aliases": ["医疗卫生机构床位", "床位数", "医疗机构床位", "医院床位数", "卫生机构床位"]
+    },
+    {
+      "id": "health_personnel_total",
+      "key": "health_personnel_total",
+      "label": "卫生人员总数",
+      "type": "number",
+      "templates": ["healthcare_statistical_bulletin"],
+      "packs": ["healthcare_report", "statistical_metrics"],
+      "aliases": ["卫生人员总数", "卫生人员数", "卫生人员", "卫生技术人员数"]
+    },
+    {
+      "id": "health_total_expenditure",
+      "key": "health_total_expenditure",
+      "label": "卫生总费用",
+      "type": "number",
+      "templates": ["healthcare_statistical_bulletin"],
+      "packs": ["healthcare_report", "statistical_metrics"],
+      "aliases": ["卫生总费用", "卫生总费用初步核算", "卫生费用总额", "卫生费用"]
+    },
+    {
+      "id": "government_health_expenditure",
+      "key": "government_health_expenditure",
+      "label": "政府卫生支出",
+      "type": "number",
+      "templates": ["healthcare_statistical_bulletin"],
+      "packs": ["healthcare_report", "statistical_metrics"],
+      "aliases": ["政府卫生支出", "政府卫生费用", "财政卫生支出"]
+    },
+    {
+      "id": "personal_health_expenditure",
+      "key": "personal_health_expenditure",
+      "label": "个人卫生支出",
+      "type": "number",
+      "templates": ["healthcare_statistical_bulletin"],
+      "packs": ["healthcare_report", "statistical_metrics"],
+      "aliases": ["个人卫生支出", "个人卫生费用", "居民个人卫生支出"]
+    },
+    {
+      "id": "total_diagnosis_visits",
+      "key": "total_diagnosis_visits",
+      "label": "总诊疗人次",
+      "type": "number",
+      "templates": ["healthcare_statistical_bulletin"],
+      "packs": ["healthcare_report", "statistical_metrics"],
+      "aliases": ["总诊疗人次", "诊疗人次", "门诊和住院量", "总诊疗量"]
+    },
+    {
+      "id": "excellent_air_days",
+      "key": "excellent_air_days",
+      "label": "优良天数",
+      "type": "integer",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring", "statistical_metrics"],
+      "aliases": ["优良天数", "空气质量优良天数", "优良天数数"]
+    },
+    {
+      "id": "excellent_air_rate",
+      "key": "excellent_air_rate",
+      "label": "优良率",
+      "type": "number",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring", "statistical_metrics"],
+      "aliases": ["优良率", "空气质量优良率", "优良天数比例", "优良天数率"]
+    },
+    {
+      "id": "pm25_concentration",
+      "key": "pm25_concentration",
+      "label": "PM2.5浓度",
+      "type": "number",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["pm2.5浓度", "pm2.5", "细颗粒物浓度", "细颗粒物（pm2.5）"]
+    },
+    {
+      "id": "pm10_concentration",
+      "key": "pm10_concentration",
+      "label": "PM10浓度",
+      "type": "number",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["pm10浓度", "pm10", "可吸入颗粒物浓度", "可吸入颗粒物（pm10）"]
+    },
+    {
+      "id": "monitor_station_count",
+      "key": "monitor_station_count",
+      "label": "监测点数量",
+      "type": "integer",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring", "statistical_metrics"],
+      "aliases": ["监测点数量", "监测点数", "监测点位数", "监测站点数", "监测点位"]
+    },
+    {
+      "id": "monitor_time",
+      "key": "monitor_time",
+      "label": "监测时间",
+      "type": "date",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["监测时间", "监测日期", "监测时刻", "采样时间"]
+    },
+    {
+      "id": "monitor_city",
+      "key": "monitor_city",
+      "label": "城市",
+      "type": "string",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["城市", "监测城市", "城市名称"]
+    },
+    {
+      "id": "monitor_district",
+      "key": "monitor_district",
+      "label": "区县",
+      "type": "string",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["区", "区域", "区县", "行政区"]
+    },
+    {
+      "id": "monitor_station_code",
+      "key": "monitor_station_code",
+      "label": "站点编码",
+      "type": "string",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["站点编码", "站点代码", "监测点编码", "监测站编码"]
+    },
+    {
+      "id": "monitor_station_name",
+      "key": "monitor_station_name",
+      "label": "站点名称",
+      "type": "string",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["站点名称", "站点名", "监测点名称", "监测站名称"]
+    },
+    {
+      "id": "air_quality_index",
+      "key": "air_quality_index",
+      "label": "空气质量指数",
+      "type": "number",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring", "statistical_metrics"],
+      "aliases": ["空气质量指数", "AQI", "aqi"]
+    },
+    {
+      "id": "sulfur_dioxide_value",
+      "key": "sulfur_dioxide_value",
+      "label": "二氧化硫监测值",
+      "type": "number",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["二氧化硫监测值", "二氧化硫", "SO2监测值", "SO2"]
+    },
+    {
+      "id": "nitrogen_dioxide_value",
+      "key": "nitrogen_dioxide_value",
+      "label": "二氧化氮监测值",
+      "type": "number",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["二氧化氮监测值", "二氧化氮", "NO2监测值", "NO2"]
+    },
+    {
+      "id": "carbon_monoxide_value",
+      "key": "carbon_monoxide_value",
+      "label": "一氧化碳监测值",
+      "type": "number",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["一氧化碳监测值", "一氧化碳", "CO监测值", "CO"]
+    },
+    {
+      "id": "ozone_value",
+      "key": "ozone_value",
+      "label": "臭氧监测值",
+      "type": "number",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["臭氧监测值", "臭氧", "O3监测值", "O3"]
+    },
+    {
+      "id": "primary_pollutant",
+      "key": "primary_pollutant",
+      "label": "首要污染物",
+      "type": "string",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["首要污染物", "主要污染物"]
+    },
+    {
+      "id": "pollution_type",
+      "key": "pollution_type",
+      "label": "污染类型",
+      "type": "string",
+      "templates": ["environment_monitoring_report"],
+      "packs": ["environment_monitoring"],
+      "aliases": ["污染类型", "污染类别"]
+    },
+    {
+      "id": "department_code",
+      "key": "department_code",
+      "label": "\u90e8\u95e8\u4ee3\u7801",
+      "type": "string",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr"],
+      "aliases": ["\u90e8\u95e8\u4ee3\u7801", "\u90e8\u95e8\u4ee3\u53f7"]
+    },
+    {
+      "id": "department_name",
+      "key": "department_name",
+      "label": "\u90e8\u95e8\u540d\u79f0",
+      "type": "string",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr"],
+      "aliases": ["\u90e8\u95e8\u540d\u79f0", "\u7528\u4eba\u53f8\u5c40", "\u90e8\u95e8"]
+    },
+    {
+      "id": "recruitment_position",
+      "key": "recruitment_position",
+      "label": "\u62db\u8003\u804c\u4f4d",
+      "type": "string",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr"],
+      "aliases": ["\u62db\u8003\u804c\u4f4d", "\u804c\u4f4d\u7b80\u4ecb", "\u62db\u5f55\u804c\u4f4d"]
+    },
+    {
+      "id": "position_code",
+      "key": "position_code",
+      "label": "\u804c\u4f4d\u4ee3\u7801",
+      "type": "string",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr"],
+      "aliases": ["\u804c\u4f4d\u4ee3\u7801", "\u804c\u4f4d\u4ee3\u53f7"]
+    },
+    {
+      "id": "recruitment_count",
+      "key": "recruitment_count",
+      "label": "\u62db\u8003\u4eba\u6570",
+      "type": "integer",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr", "statistical_metrics"],
+      "aliases": ["\u62db\u8003\u4eba\u6570", "\u62db\u5f55\u4eba\u6570", "\u62db\u8058\u4eba\u6570"]
+    },
+    {
+      "id": "major_requirement",
+      "key": "major_requirement",
+      "label": "\u4e13\u4e1a",
+      "type": "string",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr"],
+      "aliases": ["\u4e13\u4e1a", "\u4e13\u4e1a\u8981\u6c42", "\u62a5\u8003\u4e13\u4e1a"]
+    },
+    {
+      "id": "education_requirement",
+      "key": "education_requirement",
+      "label": "\u5b66\u5386",
+      "type": "string",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr"],
+      "aliases": ["\u5b66\u5386", "\u6700\u9ad8\u5b66\u5386", "\u5b66\u5386\u8981\u6c42"]
+    },
+    {
+      "id": "degree_requirement",
+      "key": "degree_requirement",
+      "label": "\u5b66\u4f4d",
+      "type": "string",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr"],
+      "aliases": ["\u5b66\u4f4d", "\u5b66\u4f4d\u8981\u6c42"]
+    },
+    {
+      "id": "interview_ratio",
+      "key": "interview_ratio",
+      "label": "\u9762\u8bd5\u4eba\u5458\u6bd4\u4f8b",
+      "type": "string",
+      "templates": ["recruitment_hr_table"],
+      "packs": ["recruitment_hr"],
+      "aliases": ["\u9762\u8bd5\u4eba\u5458\u6bd4\u4f8b", "\u9762\u8bd5\u6bd4\u4f8b"]
+    },
+    {
+      "id": "visit_id",
+      "key": "visit_id",
+      "label": "\u5c31\u8bcaID",
+      "type": "string",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient"],
+      "aliases": ["\u5c31\u8bcaID", "\u5c31\u8bca\u7f16\u53f7", "\u75c5\u5386ID"]
+    },
+    {
+      "id": "patient_id",
+      "key": "patient_id",
+      "label": "\u60a3\u8005\u7f16\u53f7",
+      "type": "string",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient"],
+      "aliases": ["\u60a3\u8005\u7f16\u53f7", "\u60a3\u8005ID", "\u75c5\u4eba\u7f16\u53f7"]
+    },
+    {
+      "id": "patient_gender",
+      "key": "patient_gender",
+      "label": "\u6027\u522b",
+      "type": "string",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient"],
+      "aliases": ["\u6027\u522b"]
+    },
+    {
+      "id": "patient_age",
+      "key": "patient_age",
+      "label": "\u5e74\u9f84",
+      "type": "string",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient", "statistical_metrics"],
+      "aliases": ["\u5e74\u9f84"]
+    },
+    {
+      "id": "patient_weight",
+      "key": "patient_weight",
+      "label": "\u4f53\u91cd",
+      "type": "number",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient", "statistical_metrics"],
+      "aliases": ["\u4f53\u91cd"]
+    },
+    {
+      "id": "hospital_stay_days",
+      "key": "hospital_stay_days",
+      "label": "\u4f4f\u9662\u5929\u6570",
+      "type": "integer",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient", "statistical_metrics"],
+      "aliases": ["\u4f4f\u9662\u5929\u6570", "\u4f4f\u9662\u65f6\u957f"]
+    },
+    {
+      "id": "diagnosis_count",
+      "key": "diagnosis_count",
+      "label": "\u8bca\u65ad\u6570\u91cf",
+      "type": "integer",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient", "statistical_metrics"],
+      "aliases": ["\u8bca\u65ad\u6570\u91cf", "\u8bca\u65ad\u6b21\u6570"]
+    },
+    {
+      "id": "serum_glucose_max",
+      "key": "serum_glucose_max",
+      "label": "\u8840\u6e05\u8461\u8404\u7cd6\u6700\u5927\u503c",
+      "type": "number",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient", "statistical_metrics"],
+      "aliases": ["\u8840\u6e05\u8461\u8404\u7cd6\u6700\u5927\u503c", "\u8840\u7cd6\u6700\u5927\u503c", "\u8461\u8404\u7cd6\u6700\u5927\u503c"]
+    },
+    {
+      "id": "glycated_hemoglobin_result",
+      "key": "glycated_hemoglobin_result",
+      "label": "\u7cd6\u5316\u8840\u7ea2\u86cb\u767d\u7ed3\u679c",
+      "type": "number",
+      "templates": ["clinical_patient_dataset"],
+      "packs": ["clinical_patient", "statistical_metrics"],
+      "aliases": ["\u7cd6\u5316\u8840\u7ea2\u86cb\u767d\u7ed3\u679c", "\u7cd6\u5316\u8840\u7ea2\u86cb\u767d", "HbA1c"]
+    },
+    {
+      "id": "country_or_region",
+      "key": "country_or_region",
+      "label": "\u56fd\u5bb6/\u5730\u533a",
+      "type": "string",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance"],
+      "aliases": ["\u56fd\u5bb6/\u5730\u533a", "\u56fd\u5bb6", "\u5730\u533a"]
+    },
+    {
+      "id": "continent",
+      "key": "continent",
+      "label": "\u5927\u6d32",
+      "type": "string",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance"],
+      "aliases": ["\u5927\u6d32"]
+    },
+    {
+      "id": "hospital_beds_per_thousand",
+      "key": "hospital_beds_per_thousand",
+      "label": "\u6bcf\u5343\u4eba\u533b\u9662\u5e8a\u4f4d\u6570",
+      "type": "number",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance", "statistical_metrics"],
+      "aliases": ["\u6bcf\u5343\u4eba\u533b\u9662\u5e8a\u4f4d\u6570", "\u6bcf\u5343\u4eba\u5e8a\u4f4d\u6570"]
+    },
+    {
+      "id": "physicians_per_thousand",
+      "key": "physicians_per_thousand",
+      "label": "\u6bcf\u5343\u4eba\u533b\u751f\u6570",
+      "type": "number",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance", "statistical_metrics"],
+      "aliases": ["\u6bcf\u5343\u4eba\u533b\u751f\u6570", "\u6bcf\u5343\u4eba\u533b\u5e08\u6570"]
+    },
+    {
+      "id": "age_65_plus_ratio",
+      "key": "age_65_plus_ratio",
+      "label": "65\u5c81\u53ca\u4ee5\u4e0a\u4eba\u53e3\u5360\u6bd4",
+      "type": "number",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance", "statistical_metrics"],
+      "aliases": ["65\u5c81\u53ca\u4ee5\u4e0a\u4eba\u53e3\u5360\u6bd4", "65\u5c81\u53ca\u4ee5\u4e0a\u5360\u6bd4"]
+    },
+    {
+      "id": "report_date",
+      "key": "report_date",
+      "label": "\u65e5\u671f",
+      "type": "date",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance"],
+      "aliases": ["\u65e5\u671f", "\u62a5\u544a\u65e5\u671f"]
+    },
+    {
+      "id": "daily_tests",
+      "key": "daily_tests",
+      "label": "\u6bcf\u65e5\u68c0\u6d4b\u6570",
+      "type": "integer",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance", "statistical_metrics"],
+      "aliases": ["\u6bcf\u65e5\u68c0\u6d4b\u6570", "\u68c0\u6d4b\u6570", "\u65e5\u68c0\u6d4b\u6570"]
+    },
+    {
+      "id": "case_count",
+      "key": "case_count",
+      "label": "\u75c5\u4f8b\u6570",
+      "type": "integer",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance", "statistical_metrics"],
+      "aliases": ["\u75c5\u4f8b\u6570", "\u786e\u8bca\u75c5\u4f8b\u6570", "\u7d2f\u8ba1\u75c5\u4f8b\u6570"]
+    },
+    {
+      "id": "death_count",
+      "key": "death_count",
+      "label": "\u6b7b\u4ea1\u6570",
+      "type": "integer",
+      "templates": ["epidemic_surveillance_dataset"],
+      "packs": ["epidemic_surveillance", "statistical_metrics"],
+      "aliases": ["\u6b7b\u4ea1\u6570", "\u7d2f\u8ba1\u6b7b\u4ea1\u6570"]
+    },
+    {
+      "id": "class_standard_ratio",
+      "key": "class_standard_ratio",
+      "label": "类标准比例",
+      "type": "number",
+      "aliases": ["类标准比例", "类标准的比例"]
     },
     {
       "id": "product_name",
@@ -545,3 +1907,4 @@
     }
   ]
 }
+

@@ -1,6 +1,7 @@
 const path = require('path');
 const { spawn } = require('child_process');
 const {
+  buildManagedRuntimeEnv,
   buildPythonRuntimeEnv,
   buildReloadArgs,
   formatCommand,
@@ -46,7 +47,10 @@ const child = spawn(module2PythonExec, args, {
   stdio: 'inherit',
   shell: false,
   env: buildPythonRuntimeEnv({
-    baseEnv: process.env,
+    baseEnv: buildManagedRuntimeEnv({
+      baseEnv: process.env,
+      scopes: ['backend', 'module2'],
+    }),
     pythonExec: module2PythonExec,
   }),
 });

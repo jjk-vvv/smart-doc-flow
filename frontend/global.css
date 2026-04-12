@@ -105,14 +105,16 @@
 }
 
 .dark .module2-workbench {
-  --module2-bg: 222.2 84% 4.9%; /* dark slate-900 / #0B0F19 */
+  /* Impeccable Dark Mode - B2B SaaS Style */
+  --module2-bg: 222 47% 5%; /* slate-950 #020617 */
   --module2-surface: 217.2 32.6% 17.5%; /* slate-800 */
   --module2-surface-hover: 215 27.9% 16.9%; /* slate-700 */
-  --module2-border: 217.2 32.6% 17.5%; /* slate-700 / slate-800 */
+  --module2-border: 0 0% 100%; /* white for transparency use */
   --module2-text-primary: 210 40% 98%; /* slate-100 */
   --module2-text-secondary: 215 20.2% 65.1%; /* slate-400 */
   --module2-primary: 217.2 91.2% 59.8%; /* blue-500 */
-  --module2-primary-bg: 222.2 84% 4.9%; /* deep blue/slate */
+  --module2-primary-bg: 222 47% 5%; /* slate-950 #020617 */
+  --module2-panel-bg: 222 47% 8%; /* #0B1120 */
 }
 
 .module2-workbench,
@@ -2024,8 +2026,16 @@
   border-radius: 3px;
 }
 
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground));
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .module2-luckysheet-preview,
@@ -2039,4 +2049,13 @@
   inset: 0;
   width: 100% !important;
   height: 100% !important;
+}
+@layer utilities {
+  @keyframes text-shimmer {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 200% 50%; }
+  }
+  .animate-text-shimmer {
+    animation: text-shimmer 3s linear infinite;
+  }
 }

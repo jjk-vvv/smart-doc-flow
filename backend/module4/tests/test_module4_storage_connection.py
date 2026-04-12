@@ -17,13 +17,20 @@ from app.db.storage import Module4Storage, _dsn_connection_candidates
 def test_dsn_candidates_add_ipv4_fallback_for_localhost() -> None:
     dsn = "postgresql://postgres:postgres@localhost:5433/Knowledge_Graph"
     assert _dsn_connection_candidates(dsn) == [
+        "postgresql://postgres:postgres@localhost:5433/Knowledge_Graph?sslmode=disable",
         "postgresql://postgres:postgres@localhost:5433/Knowledge_Graph",
+        "postgresql://postgres:postgres@127.0.0.1:5433/Knowledge_Graph?sslmode=disable",
         "postgresql://postgres:postgres@127.0.0.1:5433/Knowledge_Graph",
     ]
 
 
 def test_dsn_candidates_keep_remote_hosts_unchanged() -> None:
     dsn = "postgresql://postgres:postgres@db.internal:5433/Knowledge_Graph"
+    assert _dsn_connection_candidates(dsn) == [dsn]
+
+
+def test_dsn_candidates_keep_explicit_sslmode_unchanged() -> None:
+    dsn = "postgresql://postgres:postgres@127.0.0.1:5433/Knowledge_Graph?sslmode=require"
     assert _dsn_connection_candidates(dsn) == [dsn]
 
 
@@ -54,8 +61,41 @@ def test_connect_retries_ipv4_when_localhost_candidate_fails(monkeypatch) -> Non
     storage = asyncio.run(_exercise())
 
     assert attempts == [
+        "postgresql://postgres:postgres@localhost:5433/Knowledge_Graph?sslmode=disable",
         "postgresql://postgres:postgres@localhost:5433/Knowledge_Graph",
-        "postgresql://postgres:postgres@127.0.0.1:5433/Knowledge_Graph",
+        "postgresql://postgres:postgres@127.0.0.1:5433/Knowledge_Graph?sslmode=disable",
+    ]
+    assert storage.diagnostics()["db_connected"] is True
+
+
+def test_connect_retries_sslmode_disable_for_local_candidates(monkeypatch) -> None:
+    monkeypatch.setenv("MODULE4_FORCE_MEMORY_MODE", "0")
+    attempts: list[str] = []
+
+    async def fake_create_pool(dsn: str, **_: object) -> object:
+        attempts.append(dsn)
+        if "sslmode=disable" not in dsn:
+            raise ConnectionError("ssl negotiation timeout")
+        return object()
+
+    fake_asyncpg = SimpleNamespace(create_pool=fake_create_pool)
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+
+    async def _noop(self: Module4Storage) -> None:
+        return None
+
+    monkeypatch.setattr(Module4Storage, "_init_schema", _noop)
+    monkeypatch.setattr(Module4Storage, "ensure_default_rules", _noop)
+
+    async def _exercise() -> Module4Storage:
+        storage = Module4Storage("postgresql://postgres:postgres@localhost:5433/Knowledge_Graph")
+        await storage.connect()
+        return storage
+
+    storage = asyncio.run(_exercise())
+
+    assert attempts == [
+        "postgresql://postgres:postgres@localhost:5433/Knowledge_Graph?sslmode=disable",
     ]
     assert storage.diagnostics()["db_connected"] is True
 

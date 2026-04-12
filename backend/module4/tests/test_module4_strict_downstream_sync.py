@@ -12,7 +12,7 @@ MODULE4_DIR = Path(__file__).resolve().parents[1]
 if str(MODULE4_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE4_DIR))
 
-import app.main as module4_main  # noqa: E402
+import app.composition.application as module4_main  # noqa: E402
 from app.schemas import IngestRequest  # noqa: E402
 
 
@@ -91,9 +91,9 @@ def test_run_document_ingest_job_marks_processing_then_ready(monkeypatch: pytest
         assert kwargs["doc"]["file_name"] == "report.pdf"
         return {"nodes": 5, "edges": 4, "alerts": 2, "evidence": 3}
 
-    monkeypatch.setattr(module4_main, "storage", fake_storage)
+    module4_main._set_runtime_ref("storage", fake_storage)
     monkeypatch.setattr(module4_main, "_update_job_stage", fake_update_job_stage)
-    monkeypatch.setattr(module4_main, "_process_document", fake_process_document)
+    monkeypatch.setattr(module4_main.module4_app_runtime, "_process_document_fn", fake_process_document)
 
     payload = IngestRequest(
         tenant_id="tenant-a",
@@ -110,6 +110,7 @@ def test_run_document_ingest_job_marks_processing_then_ready(monkeypatch: pytest
         "alerts": 2,
         "evidence": 3,
         "documents": 1,
+        "skipped_documents": 0,
         "uploads": 0,
     }
     assert [row["status"] for row in fake_storage.graph_file_rows] == ["processing_documents", "ready"]
@@ -132,9 +133,9 @@ def test_run_document_ingest_job_marks_failed_graph_file_on_document_error(
     async def fake_process_document(**kwargs):
         raise ValueError("document exploded")
 
-    monkeypatch.setattr(module4_main, "storage", fake_storage)
+    module4_main._set_runtime_ref("storage", fake_storage)
     monkeypatch.setattr(module4_main, "_update_job_stage", fake_update_job_stage)
-    monkeypatch.setattr(module4_main, "_process_document", fake_process_document)
+    monkeypatch.setattr(module4_main.module4_app_runtime, "_process_document_fn", fake_process_document)
 
     payload = IngestRequest(
         tenant_id="tenant-b",
@@ -184,7 +185,7 @@ def test_submit_ingest_job_rejects_empty_documents() -> None:
         asyncio.run(module4_main._submit_ingest_job(payload, _request()))
 
     assert exc_info.value.status_code == 400
-    assert "documents payload is required" in str(exc_info.value.detail)
+    assert "graph-eligible documents found" in str(exc_info.value.detail)
 
 
 def test_submit_ingest_job_creates_documents_only_batch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -194,7 +195,7 @@ def test_submit_ingest_job_creates_documents_only_batch(monkeypatch: pytest.Monk
     def fake_schedule_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> None:
         scheduled.append((job_id, batch_id, payload.tenant_id))
 
-    monkeypatch.setattr(module4_main, "storage", fake_storage)
+    module4_main._set_runtime_ref("storage", fake_storage)
     monkeypatch.setattr(module4_main, "_schedule_ingest_job", fake_schedule_ingest_job)
 
     payload = IngestRequest(
@@ -218,3 +219,39 @@ def test_submit_ingest_job_creates_documents_only_batch(monkeypatch: pytest.Monk
     assert fake_storage.created_batch is not None
     assert fake_storage.created_batch["raw_payload"]["documents"][0]["file_name"] == "a.pdf"
     assert scheduled == [("job-1", "batch-1", "tenant-e")]
+
+
+def test_submit_ingest_job_accepts_text_corpus_and_synthesizes_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_storage = FakeSubmitStorage()
+    scheduled: list[tuple[str, str, str]] = []
+
+    def fake_schedule_ingest_job(job_id: str, batch_id: str, payload: IngestRequest) -> None:
+        scheduled.append((job_id, batch_id, payload.tenant_id))
+
+    module4_main._set_runtime_ref("storage", fake_storage)
+    monkeypatch.setattr(module4_main, "_schedule_ingest_job", fake_schedule_ingest_job)
+
+    payload = IngestRequest(
+        tenant_id="tenant-f",
+        source="module2",
+        text_corpus="这是来自文本语料的直接输入。",
+        settings_overrides={"chunk_size": 900, "chunk_overlap": 80},
+        metadata={"file_name": "direct-text.md", "track": "direct-ingest"},
+    )
+
+    response = asyncio.run(module4_main._submit_ingest_job(payload, _request()))
+
+    assert response.job_id == "job-1"
+    assert response.batch_id == "batch-1"
+    assert response.status == "queued"
+    assert fake_storage.created_job is not None
+    assert fake_storage.created_job["payload"]["documents"] == 1
+    assert fake_storage.created_batch is not None
+    created_doc = fake_storage.created_batch["raw_payload"]["documents"][0]
+    assert created_doc["file_name"] == "direct-text.md"
+    assert created_doc["track"] == "direct-ingest"
+    assert created_doc["text_corpus"] == "这是来自文本语料的直接输入。"
+    assert created_doc["settings_overrides"]["chunk_size"] == 900
+    assert scheduled == [("job-1", "batch-1", "tenant-f")]

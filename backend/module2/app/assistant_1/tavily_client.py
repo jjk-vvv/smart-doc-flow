@@ -3,9 +3,29 @@ from __future__ import annotations
 from typing import Any
 
 import requests
+from requests import HTTPError
 
 from .config import Assistant1Settings
 from .text_utils import normalize_text
+
+
+def _normalize_time_range(value: Any) -> str:
+    normalized = normalize_text(value).lower()
+    if normalized in {"day", "week", "month", "year", "d", "w", "m", "y"}:
+        return normalized
+    return ""
+
+
+def _time_range_from_days(days: int | None) -> str:
+    if not isinstance(days, int) or days <= 0:
+        return ""
+    if days <= 1:
+        return "day"
+    if days <= 7:
+        return "week"
+    if days <= 31:
+        return "month"
+    return "year"
 
 
 class TavilySearchClient:
@@ -28,6 +48,7 @@ class TavilySearchClient:
         search_depth: str = "basic",
         max_results: int | None = None,
         include_domains: list[str] | None = None,
+        time_range: str = "",
         days: int | None = None,
     ) -> dict[str, Any]:
         text = normalize_text(query)
@@ -43,9 +64,9 @@ class TavilySearchClient:
         if safe_depth not in {"basic", "advanced"}:
             safe_depth = "basic"
         safe_max_results = max(1, min(10, int(max_results or self.max_results)))
+        safe_time_range = _normalize_time_range(time_range) or _time_range_from_days(days)
 
         payload: dict[str, Any] = {
-            "api_key": self.api_key,
             "query": text,
             "topic": safe_topic,
             "search_depth": safe_depth,
@@ -56,17 +77,26 @@ class TavilySearchClient:
         domains = [normalize_text(item) for item in (include_domains or []) if normalize_text(item)]
         if domains:
             payload["include_domains"] = domains
-        if isinstance(days, int) and days > 0:
-            payload["days"] = min(days, 365)
+        if safe_time_range:
+            payload["time_range"] = safe_time_range
 
-        response = requests.post(
-            self.search_url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout_sec,
-        )
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = requests.post(
+                self.search_url,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                timeout=self.timeout_sec,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except HTTPError as exc:
+            detail = ""
+            if exc.response is not None:
+                detail = normalize_text(exc.response.text)
+            raise RuntimeError(detail or str(exc)) from exc
         results = []
         for item in data.get("results", []) if isinstance(data.get("results"), list) else []:
             if not isinstance(item, dict):
@@ -85,6 +115,7 @@ class TavilySearchClient:
             "topic": safe_topic,
             "search_depth": safe_depth,
             "max_results": safe_max_results,
+            "time_range": safe_time_range,
             "answer": normalize_text(data.get("answer")),
             "results": results,
             "response_time": data.get("response_time"),

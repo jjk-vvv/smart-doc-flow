@@ -1,6 +1,6 @@
 param(
   [string]$Session = "module4-ui-check",
-  [string]$Url = "http://127.0.0.1:3000",
+  [string]$Url = "http://127.0.0.1:3001",
   [switch]$Open,
   [switch]$Wait,
   [switch]$Snapshot

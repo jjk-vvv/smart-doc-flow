@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, Send, Bot, Sparkles, RotateCcw, Plus } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { readExtractionDocuments, readExtractionUpdatedAt, type ExtractionDocument } from '../lib/extractionStore';
-import { createParser } from 'eventsource-parser';
+import { readExtractionDocuments, readExtractionUpdatedAt, type ExtractionDocument } from '../shared/state/extractionDocuments';
+import { requestAssistantChatStream } from '../shared/api/assistant';
 
 type ChatRole = 'user' | 'assistant';
 type ChatMessage = { id: string; role: ChatRole; content: string };
@@ -19,6 +19,39 @@ const MIN_DIALOG_HEIGHT = 420;
 const VIEWPORT_MARGIN = 16;
 const DEFAULT_DIALOG_SIZE = { width: 360, height: 560 };
 const DEFAULT_DIALOG_OFFSET = { left: 56, bottom: 192 };
+
+const UI_TEXT = {
+  emptyValue: '空值',
+  confidencePrefix: '，置信度',
+  documentSummary: {
+    document: '文档',
+    track: '轨道',
+    cache: '缓存',
+    yes: '是',
+    no: '否',
+    keyFields: '关键字段',
+    unknown: '未知',
+    updatedAt: '最近一次抽取更新时间',
+    documentCount: '最近抽取文档总数',
+    omittedDocs: '份文档已省略。',
+  },
+  offlineReply: [
+    '当前智能助手服务暂时不可用，本轮未拿到有效回复。',
+    '请稍后重试；如果持续失败，请确认统一入口和后端服务都已经启动。',
+  ],
+  requestFailed: '请求失败，请稍后重试。',
+  title: '智能文档助手',
+  clearChat: '清空对话',
+  emptyStateTitle: '您好，我是您的专属 AI 助理。',
+  emptyStateBody: '您可以咨询平台功能、系统操作、文档解析与辅助决策相关问题。',
+  fileReceived: '已接收文件：',
+  fileAnalysisPending: '，文件解析功能开发中。',
+  dropToUpload: '松开以上传文件',
+  inputPlaceholder: '在这里输入您的问题或指令...',
+  uploadTitle: '上传文档进行分析 (当前仅用于展示)',
+  sending: '正在回答...',
+  send: '发送',
+} as const;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -76,43 +109,80 @@ const summarizeDocument = (doc: ExtractionDocument): string => {
   const fieldSummaries = Object.entries(doc.result || {})
     .slice(0, MAX_CONTEXT_FIELDS)
     .map(([field, entity]) => {
-      const valueText = toSingleLine(entity?.value).slice(0, 80) || '空值';
+      const valueText = toSingleLine(entity?.value).slice(0, 80) || UI_TEXT.emptyValue;
       const confidenceRaw = Number(entity?.confidence);
-      const confidenceText = Number.isFinite(confidenceRaw) ? `，置信度${Math.round(confidenceRaw * 100)}%` : '';
+      const confidenceText = Number.isFinite(confidenceRaw)
+        ? UI_TEXT.confidencePrefix + Math.round(confidenceRaw * 100) + '%'
+        : '';
       return `${field}=${valueText}${confidenceText}`;
     });
 
-  const base = `文档:${doc.file_name}（轨道:${doc.track}，缓存:${doc.cached ? '是' : '否'}）`;
+  const base =
+    UI_TEXT.documentSummary.document +
+    ':' +
+    doc.file_name +
+    '（' +
+    UI_TEXT.documentSummary.track +
+    ':' +
+    doc.track +
+    '，' +
+    UI_TEXT.documentSummary.cache +
+    ':' +
+    (doc.cached ? UI_TEXT.documentSummary.yes : UI_TEXT.documentSummary.no) +
+    '）';
   if (fieldSummaries.length === 0) return base;
-  return `${base}；关键字段:${fieldSummaries.join('；')}`;
+  return `${base}；${UI_TEXT.documentSummary.keyFields}:${fieldSummaries.join('；')}`;
 };
 
 const buildPlatformContext = (): string => {
   const docs = readExtractionDocuments();
   if (!docs.length) return '';
 
-  const updatedAt = readExtractionUpdatedAt() || '未知';
+  const updatedAt = readExtractionUpdatedAt() || UI_TEXT.documentSummary.unknown;
   const lines: string[] = [
-    `最近一次抽取更新时间:${updatedAt}`,
-    `最近抽取文档总数:${docs.length}`,
+    `${UI_TEXT.documentSummary.updatedAt}:${updatedAt}`,
+    `${UI_TEXT.documentSummary.documentCount}:${docs.length}`,
   ];
 
   for (const doc of docs.slice(0, MAX_CONTEXT_DOCUMENTS)) {
     lines.push(summarizeDocument(doc));
   }
   if (docs.length > MAX_CONTEXT_DOCUMENTS) {
-    lines.push(`其余 ${docs.length - MAX_CONTEXT_DOCUMENTS} 份文档已省略。`);
+    lines.push(`其余 ${docs.length - MAX_CONTEXT_DOCUMENTS} ${UI_TEXT.documentSummary.omittedDocs}`);
   }
 
   return lines.join('\n').slice(0, MAX_CONTEXT_LENGTH);
 };
 
-const buildOfflineReply = (_question: string, _platformContext: string): string => (
-  [
-    '当前模型服务连接不稳定，本轮未获取到有效结果。',
-    '请稍后重试；如果连续失败，请确认前端 3000 与后端 3001 服务均已启动。',
-  ].join('\n')
+const buildOfflineReply = (): string => (
+  UI_TEXT.offlineReply.join('\n')
 );
+
+const extractAssistantDeltaFromSse = (rawData: string): string => {
+  const normalized = String(rawData || '').trim();
+  if (!normalized || normalized === '[DONE]') return '';
+
+  try {
+    const data = JSON.parse(normalized);
+    const content = data?.choices?.[0]?.delta?.content;
+    return typeof content === 'string' ? content : '';
+  } catch {
+    return '';
+  }
+};
+
+const extractAssistantDeltaFromDataStream = (rawLine: string): string => {
+  const normalized = String(rawLine || '').trim();
+  if (!normalized.startsWith('0:')) return '';
+
+  try {
+    const decoded = JSON.parse(normalized.slice(2));
+    if (decoded === '[DONE]') return '';
+    return typeof decoded === 'string' ? decoded : '';
+  } catch {
+    return '';
+  }
+};
 
 export const AIAssistant: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -187,7 +257,7 @@ export const AIAssistant: React.FC = () => {
   const assistantMsg: ChatMessage = { id: aiMsgId, role: 'assistant', content: '' };
   const requestMessages = normalizeOutgoingMessages([...messagesRef.current, userMsg]);
   const platformContext = buildPlatformContext();
-  const offlineReply = buildOfflineReply(userContent, platformContext);
+  const offlineReply = buildOfflineReply();
   let receivedAnyText = false;
   const isActiveRequest = () => activeRequestIdRef.current === requestId;
   const requestController = new AbortController();
@@ -204,12 +274,13 @@ export const AIAssistant: React.FC = () => {
       requestController.abort();
     }, CHAT_CONNECT_TIMEOUT_MS);
 
-    const res = await fetch('http://localhost:3001/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: requestMessages, platformContext }),
-      signal: requestController.signal,
-    }).catch((error) => {
+    const res = await requestAssistantChatStream(
+      {
+        messages: requestMessages,
+        platformContext,
+      },
+      requestController.signal,
+    ).catch((error) => {
       if (didConnectTimeout || requestController.signal.aborted) {
         if (isActiveRequest()) {
           setMessages(prev => {
@@ -261,29 +332,26 @@ export const AIAssistant: React.FC = () => {
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
-    // 不要在这里重新声明 receivedAnyText！直接使用外部的
+    let sseDataLines: string[] = [];
 
-    const parser = createParser({
-      onEvent: (event) => {
-        if (event.data === '[DONE]') return;
-        try {
-          const data = JSON.parse(event.data);
-          const content = data.choices?.[0]?.delta?.content;
-          if (content) {
-            receivedAnyText = true;  // 使用外层的变量
-            setMessages(prev => {
-              const last = prev[prev.length - 1];
-              if (last.id === aiMsgId) {
-                return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText(`${last.content}${content}`) }];
-              }
-              return prev;
-            });
-          }
-        } catch (e) {
-          console.warn('解析 SSE 消息失败:', e, event.data);
+    const appendAssistantText = (chunk: string) => {
+      if (!chunk) return;
+      receivedAnyText = true;
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last.id === aiMsgId) {
+          return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText(`${last.content}${chunk}`) }];
         }
-      }
-    });
+        return prev;
+      });
+    };
+
+    const commitSseEvent = () => {
+      if (sseDataLines.length === 0) return;
+      const chunk = extractAssistantDeltaFromSse(sseDataLines.join('\n'));
+      sseDataLines = [];
+      appendAssistantText(chunk);
+    };
 
     try {
       while (true) {
@@ -296,20 +364,31 @@ export const AIAssistant: React.FC = () => {
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (line.trim() === '') continue;
-          if (line.startsWith('data: ')) {
-            parser.feed(line.slice(6) + '\n');
+          const normalizedLine = line.replace(/\r$/, '');
+          if (!normalizedLine.trim()) {
+            commitSseEvent();
+            continue;
           }
+          if (normalizedLine.startsWith(':')) continue;
+          if (normalizedLine.startsWith('data:')) {
+            sseDataLines.push(normalizedLine.slice(5).trimStart());
+            continue;
+          }
+          appendAssistantText(extractAssistantDeltaFromDataStream(normalizedLine));
         }
       }
-      if (buffer.trim() && buffer.startsWith('data: ')) {
-        parser.feed(buffer.slice(6) + '\n');
+
+      const tailLine = buffer.replace(/\r$/, '');
+      if (tailLine.startsWith('data:')) {
+        sseDataLines.push(tailLine.slice(5).trimStart());
+      } else if (tailLine.trim()) {
+        appendAssistantText(extractAssistantDeltaFromDataStream(tailLine));
       }
+      commitSseEvent();
     } finally {
       reader.releaseLock();
     }
 
-    // 如果没有收到任何内容，显示离线回复
     if (!receivedAnyText) {
       setMessages(prev => {
         const last = prev[prev.length - 1];
@@ -338,7 +417,7 @@ export const AIAssistant: React.FC = () => {
       setMessages(prev => {
         const last = prev[prev.length - 1];
         if (last.id === aiMsgId) {
-          return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText('请求失败，请稍后重试。') }];
+          return [...prev.slice(0, -1), { ...last, content: normalizeAssistantText(UI_TEXT.requestFailed) }];
         }
         return prev;
       });
@@ -535,14 +614,14 @@ export const AIAssistant: React.FC = () => {
                     <Sparkles size={18} />
                   </div>
                   <h3 className="flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-100">
-                    智能文档助手
+                    {UI_TEXT.title}
                   </h3>
                 </div>
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => setMessages([])}
                     className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-                    title="清空对话"
+                    title={UI_TEXT.clearChat}
                   >
                     <RotateCcw size={16} />
                   </button>
@@ -563,9 +642,9 @@ export const AIAssistant: React.FC = () => {
                       <Bot size={32} />
                     </div>
                     <div>
-                      <p className="font-medium text-slate-700 dark:text-slate-300">您好，我是您的专属 AI 助理。</p>
+                      <p className="font-medium text-slate-700 dark:text-slate-300">{UI_TEXT.emptyStateTitle}</p>
                       <p className="mt-2 max-w-[240px] text-sm text-slate-500 dark:text-slate-400">
-                        您可以咨询平台功能、系统操作、文档解析与辅助决策相关问题。
+                        {UI_TEXT.emptyStateBody}
                       </p>
                     </div>
                   </div>
@@ -601,7 +680,7 @@ export const AIAssistant: React.FC = () => {
                 <div ref={messagesEndRef} className="h-1" />
               </div>
 
-              <div className="border-t border-slate-100/80 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-900/50">
+              <div className="border-t border-slate-100/80 bg-slate-50/50 p-3 dark:border-white/[0.05] dark:bg-white/[0.02]">
                 <form
                   onSubmit={handleFormSubmit}
                   className={`relative flex flex-col rounded-[24px] border ${isDraggingFile ? 'border-blue-400 bg-blue-50/50 shadow-md ring-2 ring-blue-100' : 'border-slate-200/80 bg-white shadow-sm hover:border-slate-300'} transition-all focus-within:border-blue-400/50 focus-within:shadow-md dark:border-slate-700 dark:bg-slate-800 dark:focus-within:border-blue-500/50 dark:hover:border-slate-600`}
@@ -619,11 +698,9 @@ export const AIAssistant: React.FC = () => {
                     e.preventDefault();
                     e.stopPropagation();
                     setIsDraggingFile(false);
-                    // Implement file drop handling here if needed
                     const files = e.dataTransfer.files;
                     if (files && files.length > 0) {
-                       // Temporary alert for demo purposes
-                       alert(`已接收文件：${files[0].name}，文件解析功能开发中。`);
+                       alert(UI_TEXT.fileReceived + files[0].name + UI_TEXT.fileAnalysisPending);
                     }
                   }}
                 >
@@ -631,14 +708,14 @@ export const AIAssistant: React.FC = () => {
                     <div className="absolute inset-0 z-10 flex items-center justify-center rounded-[24px] bg-blue-50/80 backdrop-blur-sm">
                       <div className="flex items-center gap-2 text-blue-600 font-medium">
                         <Plus size={18} />
-                        <span>松开以上传文件</span>
+                        <span>{UI_TEXT.dropToUpload}</span>
                       </div>
                     </div>
                   )}
                   <textarea
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    placeholder="有什么我可以帮您的？"
+                    placeholder={UI_TEXT.inputPlaceholder}
                     className="min-h-[56px] max-h-[160px] w-full resize-none bg-transparent px-5 pt-4 pb-2 text-[14px] leading-relaxed text-slate-800 placeholder:text-slate-400 outline-none dark:text-slate-200 custom-scrollbar"
                     rows={1}
                     onKeyDown={(e) => {
@@ -655,7 +732,7 @@ export const AIAssistant: React.FC = () => {
                         <button
                             type="button"
                             className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-100/80 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
-                            title="上传文档进行分析 (当前仅用于展示)"
+                            title={UI_TEXT.uploadTitle}
                         >
                             <Plus size={16} />
                         </button>
@@ -669,7 +746,7 @@ export const AIAssistant: React.FC = () => {
                                 ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500'
                                 : 'bg-[#a3b8d7] text-white shadow-sm hover:bg-[#8ba3c7] hover:scale-105 active:scale-95 dark:bg-blue-600 dark:hover:bg-blue-700'
                           }`}
-                          title={isLoading ? "正在回答..." : "发送"}
+                          title={isLoading ? UI_TEXT.sending : UI_TEXT.send}
                         >
                           {isLoading ? <X size={14} /> : <Send size={14} className="ml-0.5" />}
                         </button>

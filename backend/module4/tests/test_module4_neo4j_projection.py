@@ -9,7 +9,7 @@ MODULE4_DIR = Path(__file__).resolve().parents[1]
 if str(MODULE4_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE4_DIR))
 
-from app.services.neo4j_graph import Neo4jGraphProjector, Neo4jSettings
+from app.services.query.neo4j import Neo4jGraphProjector, Neo4jSettings
 
 
 def test_neo4j_projector_projects_graph_payload_when_configured(monkeypatch) -> None:

@@ -47,7 +47,7 @@ def main() -> int:
     module2_root = repo_root / "backend" / "module2"
     sys.path.insert(0, str(module2_root))
 
-    from app.main import app  # noqa: WPS433
+    from app.composition.application import app  # noqa: WPS433
 
     if args.disable_provider_preflight:
         os.environ["MODULE2_PROVIDER_HEALTHCHECK_ON_JOB_CREATE"] = "false"

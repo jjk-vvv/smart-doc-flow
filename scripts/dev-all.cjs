@@ -1,17 +1,42 @@
 const path = require('path');
 const { spawn } = require('child_process');
-const { nodeExec, rootDir } = require('./python-service-utils.cjs');
+const {
+  buildManagedRuntimeEnv,
+  buildNodeRuntimeEnv,
+  buildPythonRuntimeEnv,
+  nodeExec,
+  resolvePythonExec,
+  rootDir,
+} = require('./python-service-utils.cjs');
 
-const enableModule2 = process.env.MODULE2_ENABLED !== '0';
-const enableModule4 = process.env.MODULE4_ENABLED !== '0';
+const backendPythonExec = resolvePythonExec({
+  overrideExec: process.env.GATEWAY_PYTHON || process.env.PYTHON,
+  preferredVenvDirs: [
+    path.join(rootDir, '.venv-module2-py311'),
+    path.join(rootDir, '.venv'),
+  ],
+});
 
 const services = [
   {
     name: 'backend',
-    command: nodeExec,
-    args: ['server.cjs'],
-    cwd: path.join(rootDir, 'backend', 'auth'),
+    command: backendPythonExec,
+    args: [path.join(rootDir, 'backend', 'run_service.py'), 'backend', '--reload'],
+    cwd: rootDir,
     required: true,
+    env: buildPythonRuntimeEnv({
+      baseEnv: buildManagedRuntimeEnv({
+        baseEnv: {
+          ...process.env,
+          UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE:
+            process.env.UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE || 'auto',
+          UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE:
+            process.env.UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE || 'auto',
+        },
+        scopes: ['backend', 'module2'],
+      }),
+      pythonExec: backendPythonExec,
+    }),
   },
   {
     name: 'frontend',
@@ -27,26 +52,6 @@ const services = [
     required: true,
   },
 ];
-
-if (enableModule2) {
-  services.push({
-    name: 'module2',
-    command: nodeExec,
-    args: [path.join(rootDir, 'scripts', 'dev-module2.cjs')],
-    cwd: rootDir,
-    required: true,
-  });
-}
-
-if (enableModule4) {
-  services.push({
-    name: 'module4',
-    command: nodeExec,
-    args: [path.join(rootDir, 'scripts', 'dev-module4.cjs')],
-    cwd: rootDir,
-    required: true,
-  });
-}
 
 const children = [];
 let shuttingDown = false;
@@ -69,7 +74,7 @@ for (const service of services) {
     cwd: service.cwd,
     stdio: 'inherit',
     shell: false,
-    env: process.env,
+    env: service.env || buildNodeRuntimeEnv({ baseEnv: process.env }),
   });
 
   children.push(child);

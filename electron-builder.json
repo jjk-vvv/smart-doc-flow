@@ -1,0 +1,93 @@
+{
+  "appId": "com.smartdocflow.desktop",
+  "productName": "Smart Doc Flow",
+  "asar": true,
+  "icon": "icon.png",
+  "directories": {
+    "output": "dist-electron",
+    "buildResources": "electron"
+  },
+  "files": [
+    "electron/**/*",
+    "package.json",
+    "node_modules/**/*"
+  ],
+  "extraResources": [
+    {
+      "from": "backend",
+      "to": "app-runtime/backend",
+      "filter": [
+        "**/*",
+        "!**/__pycache__/**",
+        "!**/*.pyc",
+        "!**/*.pyo",
+        "!**/.pytest_cache/**",
+        "!**/.pytest_tmp/**",
+        "!**/.mcache/**",
+        "!**/.runlogs/**",
+        "!**/.runtime/**",
+        "!**/runlogs/**",
+        "!**/artifacts/**",
+        "!**/workspaces/**",
+        "!**/trace_rois/**",
+        "!**/tests/**",
+        "!**/.codex-temp/**",
+        "!.env.example",
+        "!README.md",
+        "!ai-assistant/**",
+        "!auth/.env.example",
+        "!auth/package-lock.json",
+        "!auth/README.md",
+        "!auth/auth.runtime.log",
+        "!module2/.env.example",
+        "!module2/README.md",
+        "!module2/check_db.py",
+        "!module2/tools/**",
+        "!module2/backend/**",
+        "!module4/.env.example",
+        "!module4/README.md",
+        "!backend/**",
+        "!tests/**",
+        "!requirements-dev.txt",
+        "!auth/users.json"
+      ]
+    },
+    {
+      "from": "frontend/dist",
+      "to": "app-runtime/frontend/dist",
+      "filter": [
+        "**/*"
+      ]
+    },
+    {
+      "from": "scripts",
+      "to": "app-runtime/scripts",
+      "filter": [
+        "**/*.cjs"
+      ]
+    },
+    {
+      "from": ".venv-module2-py311",
+      "to": "app-runtime/.venv-module2-py311",
+      "filter": [
+        "**/*",
+        "!**/__pycache__/**",
+        "!**/*.pyc",
+        "!**/*.pyo"
+      ]
+    }
+  ],
+  "win": {
+    "icon": "icon.ico",
+    "signAndEditExecutable": false,
+    "target": [
+      "dir",
+      "nsis"
+    ],
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true
+  }
+}

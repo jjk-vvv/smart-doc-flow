@@ -1,0 +1,60 @@
+const path = require('path');
+const { spawn } = require('child_process');
+const {
+  buildManagedRuntimeEnv,
+  buildPythonRuntimeEnv,
+  formatCommand,
+  resolvePythonExec,
+  rootDir,
+} = require('./python-service-utils.cjs');
+
+const module4Dir = path.join(rootDir, 'backend', 'module4');
+const module4PythonExec = resolvePythonExec({
+  overrideExec: process.env.MODULE4_PYTHON,
+  preferredVenvDirs: [
+    path.join(rootDir, '.venv-module4-py311'),
+    path.join(rootDir, '.venv'),
+  ],
+});
+
+const host = process.env.MODULE4_HOST || '0.0.0.0';
+const port = process.env.MODULE4_PORT || '8100';
+const args = ['-m', 'uvicorn', 'app.main:app', '--host', host, '--port', port];
+
+console.log(`[start:module4] python=${module4PythonExec}`);
+console.log(`[start:module4] cwd=${module4Dir}`);
+console.log(`[start:module4] command=${formatCommand(module4PythonExec, args)}`);
+
+const child = spawn(module4PythonExec, args, {
+  cwd: module4Dir,
+  stdio: 'inherit',
+  shell: false,
+  env: buildPythonRuntimeEnv({
+    baseEnv: buildManagedRuntimeEnv({
+      baseEnv: process.env,
+      scopes: ['backend', 'module4'],
+    }),
+    pythonExec: module4PythonExec,
+  }),
+});
+
+let shuttingDown = false;
+
+const stop = (exitCode = 0) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (!child.killed) {
+    child.kill('SIGTERM');
+  }
+  setTimeout(() => process.exit(exitCode), 300);
+};
+
+child.on('exit', (code, signal) => {
+  if (shuttingDown) return;
+  const exitInfo = typeof code === 'number' ? `code ${code}` : `signal ${signal}`;
+  console.error(`[start:module4] exited with ${exitInfo}`);
+  stop(typeof code === 'number' ? code : 1);
+});
+
+process.on('SIGINT', () => stop(0));
+process.on('SIGTERM', () => stop(0));

@@ -1,0 +1,2 @@
+"""Cross-service API contracts."""
+

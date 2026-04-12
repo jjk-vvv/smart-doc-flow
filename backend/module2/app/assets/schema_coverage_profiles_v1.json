@@ -1,0 +1,228 @@
+{
+  "version": "schema-coverage-profiles-v1",
+  "templates": {
+    "government_statistical_bulletin": {
+      "critical_fields": [
+        "统计年份",
+        "发布机构",
+        "发布日期",
+        "生产总值",
+        "人均生产总值",
+        "常住人口",
+        "年末人口",
+        "户籍人口",
+        "新增就业（城市）",
+        "城镇调查失业率",
+        "常住人口城镇化率",
+        "全部工业增加值",
+        "固定资产投资",
+        "社会消费品零售总额",
+        "货物进出口总额",
+        "一般公共预算收入",
+        "居民人均可支配收入",
+        "居民消费价格涨幅"
+      ],
+      "preferred_fields": [
+        "广义货币供应量余额",
+        "最低生活保障人数",
+        "福利彩票销售额",
+        "民政机构和设施总数",
+        "社会团体总数",
+        "民办非企业单位总数"
+      ],
+      "text_target_fields": 18,
+      "freeze_rule_field_count": 12
+    },
+    "healthcare_statistical_bulletin": {
+      "critical_fields": [
+        "统计年份",
+        "发布机构",
+        "发布日期",
+        "医疗卫生机构总数",
+        "医疗卫生机构床位",
+        "卫生人员总数",
+        "卫生总费用",
+        "政府卫生支出",
+        "个人卫生支出",
+        "总诊疗人次"
+      ],
+      "text_target_fields": 10,
+      "freeze_rule_field_count": 7
+    },
+    "culture_tourism_statistical_bulletin": {
+      "critical_fields": [
+        "发布日期",
+        "文化和旅游单位数量",
+        "文化和旅游单位从业人员",
+        "艺术表演团体数量",
+        "演出场次",
+        "国内观众人次",
+        "演出收入",
+        "公共图书馆数量",
+        "公共美术馆数量",
+        "群众文化机构数量"
+      ],
+      "preferred_fields": [
+        "旅行社数量",
+        "星级饭店数量",
+        "国内出游人次",
+        "国内游客出游总花费"
+      ],
+      "text_target_fields": 12,
+      "freeze_rule_field_count": 7
+    },
+    "industrial_census_bulletin": {
+      "critical_fields": [
+        "工业企业和工业生产单位数量",
+        "工业从业人员",
+        "资产总额",
+        "工业产品销售收入",
+        "上交税金",
+        "工业增加值",
+        "工业总产值",
+        "出口交货值",
+        "新产品销售收入"
+      ],
+      "text_target_fields": 10,
+      "freeze_rule_field_count": 6
+    },
+    "pharmaceutical_distribution_report": {
+      "critical_fields": [
+        "七大类医药商品销售总额",
+        "药品零售市场销售额",
+        "药品批发市场销售额",
+        "主营业务收入",
+        "利润总额",
+        "平均毛利率",
+        "平均费用率",
+        "平均利润率",
+        "净利润率",
+        "执业药师人数",
+        "应收账款回款天数",
+        "订单总数"
+      ],
+      "preferred_fields": [
+        "物流中心数量",
+        "医药电商销售总额"
+      ],
+      "text_target_fields": 12,
+      "freeze_rule_field_count": 8
+    },
+    "human_resources_social_security_report": {
+      "critical_fields": [
+        "城镇新增就业",
+        "基本养老保险参保人数",
+        "失业保险参保人数",
+        "工伤保险参保人数",
+        "社会保障卡持卡人数"
+      ],
+      "preferred_fields": [
+        "实际领取待遇人数",
+        "基金支出"
+      ],
+      "text_target_fields": 10,
+      "freeze_rule_field_count": 5
+    },
+    "environment_monitoring_report": {
+      "critical_fields": [
+        "监测时间",
+        "城市",
+        "区县",
+        "站点编码",
+        "站点名称",
+        "空气质量指数",
+        "PM2.5浓度",
+        "PM10浓度",
+        "二氧化硫监测值",
+        "二氧化氮监测值",
+        "一氧化碳监测值",
+        "臭氧监测值",
+        "首要污染物",
+        "污染类型",
+        "优良天数",
+        "优良率",
+        "监测点数量"
+      ],
+      "text_target_fields": 14,
+      "table_target_fields": 14,
+      "freeze_rule_field_count": 10
+    },
+    "recruitment_hr_table": {
+      "critical_fields": [
+        "职位代码",
+        "部门代码",
+        "招考人数",
+        "面试人员比例",
+        "招考职位",
+        "部门名称",
+        "专业",
+        "学历",
+        "学位",
+        "工作地点",
+        "政治面貌",
+        "机构层级"
+      ],
+      "table_target_fields": 12,
+      "freeze_rule_field_count": 8
+    },
+    "clinical_patient_dataset": {
+      "critical_fields": [
+        "就诊ID",
+        "患者编号",
+        "性别",
+        "年龄",
+        "体重",
+        "住院天数",
+        "诊断数量",
+        "血清葡萄糖最大值",
+        "糖化血红蛋白结果"
+      ],
+      "table_target_fields": 9,
+      "freeze_rule_field_count": 6
+    },
+    "epidemic_surveillance_dataset": {
+      "critical_fields": [
+        "国家/地区",
+        "大洲",
+        "日期",
+        "每日检测数",
+        "病例数",
+        "死亡数",
+        "每千人医院床位数",
+        "每千人医生数",
+        "65岁及以上人口占比",
+        "人均GDP",
+        "年平均温度",
+        "纬度"
+      ],
+      "table_target_fields": 12,
+      "freeze_rule_field_count": 8
+    },
+    "xlsx_business_ledger": {
+      "critical_fields": [
+        "订单编号",
+        "SKU",
+        "用户编号",
+        "订单日期",
+        "订单时间",
+        "商品数量",
+        "优惠折扣",
+        "订单状态",
+        "退换政策",
+        "售后政策",
+        "支付方式",
+        "配送方式"
+      ],
+      "preferred_fields": [
+        "订单来源",
+        "促销活动",
+        "客户评价",
+        "特殊需求",
+        "订单处理人",
+        "销售部门"
+      ],
+      "table_target_fields": 12,
+      "freeze_rule_field_count": 8
+    }
+  }
+}

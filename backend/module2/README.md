@@ -9,7 +9,6 @@
 - 文档摘要生成
 - 助手式查询与可选落库
 - Office 文档预览转换
-- Dify / 工作流桥接调用
 
 ## 启动方式
 
@@ -38,7 +37,7 @@ npm run dev
 npm run dev:module2
 ```
 
-`npm run dev:module2` 浼氬浐瀹氫紭鍏堜娇鐢ㄤ粨搴撴牴鐩殑 `.venv-module2-py311`銆?
+`npm run dev:module2` 会固定优先使用仓库根目录下的 `.venv-module2-py311`。
 
 ```powershell
 $env:MODULE2_PYTHON="D:\smart_doc_flow\smart-doc-flow\.venv-module2-py311\Scripts\python.exe"
@@ -370,28 +369,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - artifact 缓存
 - Office 预览任务缓存
 
-### 8. Dify / 工作流桥接接口
-
-创建任务：
-
-- `POST /dify/module2/jobs/create`
-
-查询任务：
-
-- `POST /dify/module2/jobs/status`
-
-桥接溯源：
-
-- `POST /dify/module2/trace/locate`
-
-这组接口支持通过：
-
-- `file_url`
-- `file_base64`
-
-方式提交远端文件或内联文件。
-
-### 9. 健康检查
+### 8. 健康检查
 
 `GET /healthz`
 
@@ -399,7 +377,6 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 
 - `storage_db_connected`
 - `storage_degraded_memory_mode`
-- `bridge_jobs_in_memory`
 - `office_preview_jobs_in_memory`
 
 ## 常见联调端口

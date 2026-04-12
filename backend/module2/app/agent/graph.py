@@ -5,14 +5,15 @@ import json
 import os
 import re
 from datetime import datetime
+from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple, TypedDict
 
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
-from app.core.field_naming import build_field_aliases
-from app.core.llm_provider import (
+from ..core.schema.field_naming import build_field_aliases
+from ..integrations.llm.provider import (
     build_module2_llm_provider,
     OpenAICompatibleChatProvider,
     extract_json_object,
@@ -20,44 +21,33 @@ from app.core.llm_provider import (
     resolve_llm_base_url,
     resolve_llm_model,
 )
-from app.core.prompt_assets import load_prompt_assets, prompt_asset_names, prompt_asset_versions
+from ..core.schema.prompt_assets import load_prompt_assets, prompt_asset_names, prompt_asset_versions
+from ..core.format.xlsx_artifact_io import load_xlsx_sheet_rows_for_table
 
 if TYPE_CHECKING:
     from langchain_google_genai import ChatGoogleGenerativeAI
 
 
-SYSTEM_PROMPT = """You are an expert document data extraction agent.
-You extract structured fields from markdown that uses <ref id="..."> blocks.
-Every extracted value must be grounded to an exact ref_id that already exists in the provided document context.
+MODULE2_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = MODULE2_ROOT.parents[1]
 
-Core rules:
-1. Prefer exact evidence, but also recognize aliases, synonymous labels, abbreviations, bilingual labels, nearby label-value pairs, and repeated header variants.
-2. For table-heavy or spreadsheet-like documents, use row headers, column headers, merged headers, units, neighboring cells, and same-row context to resolve the best value.
-3. Join multi-line fragments when they clearly form one entity. Keep the meaning faithful to the source text.
-4. For dates, amounts, tax rates, IDs, invoice numbers, organization names, people, regions, and contract fields, prefer the most specific explicit value supported by the source.
-5. If multiple candidates exist, choose the candidate whose wording is closest to the target field and whose ref_id most directly grounds the value.
-6. Never fabricate values or ref_id. If evidence is weak or missing, return null.
-Return JSON only.
-"""
 
-TABLE_SYSTEM_PROMPT = """You are an expert table extraction agent.
-You receive structured table JSON and must extract target fields from table cells first.
-Every returned field must be grounded to an existing table cell ref_id.
+def _runtime_root_dir() -> Path:
+    configured = str(os.getenv("SMART_DOC_FLOW_RUNTIME_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return REPO_ROOT
 
-Core rules:
-1. Match target fields using table headers, header aliases, units, merged headers, row labels, summary rows, and nearby cells.
-2. Prefer values directly supported by the same row/column context rather than guessing from distant content.
-3. When a value spans multiple cells or lines but clearly belongs together, combine it faithfully.
-4. Normalize only trivial formatting differences when the source is explicit, but do not invent missing parts.
-5. In repetitive tables without an explicit row filter, if the first visible cell under a matched column is a placeholder such as "-", "—", blank, "N/A", or "null", continue scanning downward and prefer the earliest explicit grounded value in that same matched column.
-6. If a field cannot be reliably grounded to one of the allowed ref_id candidates, return null for that field.
-Return JSON only.
-"""
 
-JSON_REPAIR_SYSTEM_PROMPT = """You repair assistant output into one valid JSON object.
-Return JSON only.
-Do not add markdown fences, explanations, or any extra text outside the JSON object.
-"""
+def _data_root_dir() -> Path:
+    configured = str(os.getenv("SMART_DOC_FLOW_DATA_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    runtime_root = _runtime_root_dir()
+    runtime_data_dir = (runtime_root / "runtime-data").resolve()
+    if runtime_data_dir.exists():
+        return runtime_data_dir
+    return runtime_root
 
 
 class LLMField(BaseModel):
@@ -121,7 +111,8 @@ class ExtractionGraph:
                 )
             ),
         )
-        debug_dir_raw = str(os.getenv("MODULE2_LLM_DEBUG_DIR", ".runlogs/module2-llm-debug") or "").strip()
+        default_debug_dir = (_data_root_dir() / "module2" / "runlogs" / "module2-llm-debug").resolve()
+        debug_dir_raw = str(os.getenv("MODULE2_LLM_DEBUG_DIR", str(default_debug_dir)) or "").strip()
         self._debug_dir = Path(debug_dir_raw).resolve() if debug_dir_raw else None
         self._llm_disabled_reason: Optional[str] = None
         self._provider: Optional[OpenAICompatibleChatProvider] = None
@@ -178,13 +169,15 @@ class ExtractionGraph:
 
         builder.add_node("table_profile", self.table_profile_node)
         builder.add_node("table_extract", self.table_extract_node)
+        builder.add_node("text_rule_extract", self.text_rule_extract_node)
         builder.add_node("extract", self.extraction_node)
         builder.add_node("validate", self.validation_node)
         builder.add_node("resolve_dependencies", self.resolve_dependencies_node)
 
         builder.set_entry_point("table_profile")
         builder.add_edge("table_profile", "table_extract")
-        builder.add_edge("table_extract", "extract")
+        builder.add_edge("table_extract", "text_rule_extract")
+        builder.add_edge("text_rule_extract", "extract")
         builder.add_edge("extract", "validate")
 
         builder.add_conditional_edges(
@@ -302,6 +295,34 @@ class ExtractionGraph:
             existing = extracted.get(field_name, {})
             if existing.get("value") is None or field_name in error_fields:
                 focus_fields[field_name] = field_type
+        if focus_fields and self._all_table_blocks_are_spreadsheet_sources(tables):
+            extracted = self._backfill_missing_table_fields(
+                table_blocks=tables,
+                target_fields=focus_fields,
+                extracted=extracted,
+                bbox_map=state["bbox_map"],
+            )
+            state["results"] = extracted
+            resolved_error_fields: Set[str] = set()
+            for field_name in error_fields:
+                entity = extracted.get(field_name, {})
+                source_ref_id = entity.get("source_ref_id")
+                bbox = entity.get("bbox")
+                if (
+                    self._has_meaningful_result_value(entity)
+                    and source_ref_id in state["bbox_map"]
+                    and isinstance(bbox, list)
+                    and len(bbox) == 5
+                    and self._validate_type(entity.get("value"), target_fields.get(field_name))
+                ):
+                    resolved_error_fields.add(field_name)
+            if resolved_error_fields:
+                error_fields -= resolved_error_fields
+            focus_fields = {}
+            for field_name, field_type in target_fields.items():
+                existing = extracted.get(field_name, {})
+                if existing.get("value") is None or field_name in error_fields:
+                    focus_fields[field_name] = field_type
         if not focus_fields:
             return state
 
@@ -420,6 +441,32 @@ class ExtractionGraph:
         state["results"] = extracted
         return state
 
+    async def text_rule_extract_node(self, state: AgentState) -> AgentState:
+        target_fields = self._target_fields(state["schema"])
+        if not target_fields:
+            return state
+
+        extracted = dict(state.get("results", {}))
+        error_fields = self._fields_from_errors(state.get("errors", []), target_fields)
+        if state.get("errors") and not error_fields:
+            error_fields = set(target_fields.keys())
+
+        focus_fields: Dict[str, Any] = {}
+        for field_name, field_type in target_fields.items():
+            existing = extracted.get(field_name, {})
+            if existing.get("value") is None or field_name in error_fields:
+                focus_fields[field_name] = field_type
+        if not focus_fields:
+            return state
+
+        state["results"] = self._apply_text_rule_extraction(
+            markdown=state.get("markdown", ""),
+            target_fields=focus_fields,
+            extracted=extracted,
+            bbox_map=state.get("bbox_map", {}),
+        )
+        return state
+
     async def extraction_node(self, state: AgentState) -> AgentState:
         target_fields = self._target_fields(state["schema"])
         existing = dict(state.get("results", {}))
@@ -443,13 +490,17 @@ class ExtractionGraph:
 
         field_timeout_sec = max(8.0, float(os.getenv("MODULE2_FIELD_EXTRACT_TIMEOUT_SEC", "90")))
         max_field_chars = max(80, int(os.getenv("MODULE2_MAX_FIELD_CHARS", "300")))
-        field_batches = self._chunk_target_fields(
+        fallback_batch_size = max(
+            1,
+            int(os.getenv("MODULE2_FIELD_EXTRACT_BATCH_SIZE", "4") or "4"),
+        )
+        batch_queue = self._build_field_extract_batches(
             pending_fields,
-            env_name="MODULE2_FIELD_EXTRACT_BATCH_SIZE",
-            default_size=4,
+            table_blocks=state.get("table_blocks", []),
         )
 
-        for batch_fields in field_batches:
+        while batch_queue:
+            batch_fields = batch_queue.pop(0)
             compact_markdown = self._build_context(state["markdown"], batch_fields)
             allowed_refs = self._extract_ref_ids_from_text(compact_markdown, max_refs=max_allowed_refs)
             if len(allowed_refs) < max(12, min(48, max_allowed_refs // 4)):
@@ -500,9 +551,35 @@ class ExtractionGraph:
                     timeout=field_timeout_sec,
                 )
             except asyncio.TimeoutError:
+                if not state.get("table_blocks") and len(batch_fields) > fallback_batch_size:
+                    split_batches = self._chunk_target_fields(
+                        batch_fields,
+                        env_name="MODULE2_FIELD_EXTRACT_BATCH_SIZE",
+                        default_size=4,
+                    )
+                    if len(split_batches) > 1:
+                        self._push_soft_warning(
+                            state,
+                            f"plain_text_large_batch_timeout_split:{len(batch_fields)}",
+                        )
+                        batch_queue = split_batches + batch_queue
+                        continue
                 self._push_soft_warning(state, f"field_extract_timeout: exceeded {field_timeout_sec:.1f}s")
                 continue
             except Exception as exc:
+                if not state.get("table_blocks") and len(batch_fields) > fallback_batch_size:
+                    split_batches = self._chunk_target_fields(
+                        batch_fields,
+                        env_name="MODULE2_FIELD_EXTRACT_BATCH_SIZE",
+                        default_size=4,
+                    )
+                    if len(split_batches) > 1:
+                        self._push_soft_warning(
+                            state,
+                            f"plain_text_large_batch_error_split:{len(batch_fields)}",
+                        )
+                        batch_queue = split_batches + batch_queue
+                        continue
                 self._push_soft_warning(state, f"field_extract_error: {type(exc).__name__}: {exc}")
                 continue
 
@@ -695,8 +772,8 @@ class ExtractionGraph:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
         if isinstance(value, str):
-            cleaned = re.sub(r"[,\s$\u00a5\uffe5\uff0c]", "", value).strip()
-            cleaned = cleaned[:-1] if cleaned.endswith(("%", "\uff05")) else cleaned
+            cleaned = re.sub(r"[,\s$\u00a5￥，]", "", value).strip()
+            cleaned = cleaned[:-1] if cleaned.endswith(("%", "％")) else cleaned
             if not cleaned:
                 return None
             try:
@@ -933,6 +1010,311 @@ class ExtractionGraph:
                 break
         return refs
 
+    @classmethod
+    def _apply_text_rule_extraction(
+        cls,
+        *,
+        markdown: str,
+        target_fields: Dict[str, Any],
+        extracted: Dict[str, Dict[str, Any]],
+        bbox_map: Dict[str, List[float]],
+    ) -> Dict[str, Dict[str, Any]]:
+        if not markdown or not target_fields:
+            return extracted
+
+        ref_blocks = cls._markdown_ref_blocks(markdown)
+        if not ref_blocks:
+            return extracted
+
+        next_results = dict(extracted)
+        for field_name, expected_type in target_fields.items():
+            existing_value = next_results.get(field_name, {}).get("value")
+            if existing_value is not None:
+                continue
+            candidate = cls._resolve_text_rule_candidate(
+                field_name=field_name,
+                expected_type=expected_type,
+                ref_blocks=ref_blocks,
+            )
+            if candidate is None:
+                continue
+            value, ref_id, confidence = candidate
+            if not ref_id or ref_id not in bbox_map:
+                continue
+            normalized_value = value
+            expected_str = str(expected_type or "").strip().lower()
+            if expected_str in {"date", "datetime", "timestamp"}:
+                normalized_value = cls._normalize_date_text(normalized_value) or normalized_value
+            coerced_value, coerced = cls._coerce_value(normalized_value, expected_type)
+            if coerced_value is None:
+                continue
+            next_results[field_name] = {
+                "value": coerced_value,
+                "confidence": min(0.98, float(confidence) + (0.02 if not coerced else 0.0)),
+                "source_ref_id": ref_id,
+                "bbox": bbox_map.get(ref_id, [0.0, 0.0, 0.0, 0.0, 0.0]),
+            }
+        return next_results
+
+    @staticmethod
+    def _markdown_ref_blocks(markdown: str) -> List[Tuple[str, str]]:
+        blocks: List[Tuple[str, str]] = []
+        for ref_id, text in re.findall(r'<ref id="([^"]+)">(.*?)</ref>', str(markdown or ""), flags=re.DOTALL):
+            cleaned = ExtractionGraph._clean_text_rule_value(text)
+            if cleaned:
+                blocks.append((str(ref_id).strip(), cleaned))
+        return blocks
+
+    @classmethod
+    def _resolve_text_rule_candidate(
+        cls,
+        *,
+        field_name: str,
+        expected_type: Any,
+        ref_blocks: List[Tuple[str, str]],
+    ) -> Optional[Tuple[str, str, float]]:
+        if not ref_blocks:
+            return None
+
+        search_terms = cls._field_search_terms(field_name)
+        if not search_terms:
+            return None
+
+        intro_blocks = ref_blocks[: min(len(ref_blocks), 8)]
+        best: Optional[Tuple[str, str, float, int]] = None
+
+        def consider(value: str, ref_id: str, confidence: float, score: int) -> None:
+            nonlocal best
+            cleaned = cls._clean_text_rule_value(value)
+            if not cleaned:
+                return
+            candidate = (cleaned, ref_id, confidence, score)
+            if best is None or score > best[3]:
+                best = candidate
+
+        for ref_id, text in ref_blocks:
+            kv_value = cls._extract_key_value_text(text, search_terms)
+            if kv_value:
+                consider(kv_value, ref_id, 0.95, 120)
+
+            inline_value = cls._extract_inline_text_value(
+                text=text,
+                search_terms=search_terms,
+                expected_type=expected_type,
+                field_name=field_name,
+            )
+            if inline_value:
+                consider(inline_value, ref_id, 0.9, 96)
+
+        intro_candidate = cls._extract_intro_text_value(
+            field_name=field_name,
+            expected_type=expected_type,
+            intro_blocks=intro_blocks,
+        )
+        if intro_candidate is not None:
+            consider(intro_candidate[0], intro_candidate[1], intro_candidate[2], 102)
+
+        if best is None:
+            return None
+        return best[0], best[1], best[2]
+
+    @classmethod
+    def _field_search_terms(cls, field_name: str) -> List[str]:
+        raw_name = str(field_name or "").strip()
+        if not raw_name:
+            return []
+
+        base_name = re.sub(r"[\(\（].*?[\)\）]", "", raw_name).strip() or raw_name
+        candidates = [raw_name, base_name]
+        candidates.extend(cls._field_aliases(raw_name))
+
+        seen: Set[str] = set()
+        terms: List[str] = []
+        for candidate in candidates:
+            text = str(candidate or "").strip().lower()
+            if not text:
+                continue
+            for variant in (text, re.sub(r"\s+", "", text)):
+                normalized = variant.strip()
+                if len(normalized) < 2 or normalized in seen:
+                    continue
+                seen.add(normalized)
+                terms.append(normalized)
+                if len(terms) >= 24:
+                    return terms
+        return terms
+
+    @classmethod
+    def _extract_key_value_text(cls, text: str, search_terms: List[str]) -> Optional[str]:
+        probe = cls._clean_text_rule_value(text)
+        lower_probe = probe.lower()
+        for term in search_terms:
+            if term not in lower_probe:
+                continue
+            pattern = re.compile(
+                rf"(?:^|[\s【\[]){re.escape(term)}\s*[:：]\s*(?P<value>.+)$",
+                flags=re.IGNORECASE,
+            )
+            match = pattern.search(lower_probe)
+            if not match:
+                continue
+            start = match.start("value")
+            return probe[start:]
+        return None
+
+    @classmethod
+    def _extract_inline_text_value(
+        cls,
+        *,
+        text: str,
+        search_terms: List[str],
+        expected_type: Any,
+        field_name: str,
+    ) -> Optional[str]:
+        probe = cls._clean_text_rule_value(text)
+        expected_str = str(expected_type or "").strip().lower()
+        bridge_pattern = (
+            r"(?:"
+            r"[\s,，;；:：()（）/\-]+|"
+            r"同比|"
+            r"环比|"
+            r"平均|"
+            r"约为|"
+            r"约|"
+            r"为|"
+            r"达到|"
+            r"达|"
+            r"实现|"
+            r"共有|"
+            r"共|"
+            r"拥有|"
+            r"占比为|"
+            r"比重为|"
+            r"占|"
+            r"提升至|"
+            r"上升至|"
+            r"下降至|"
+            r"增长至"
+            r"){0,6}"
+        )
+        for term in search_terms:
+            if term not in probe.lower():
+                continue
+            if expected_str in {"date", "datetime", "timestamp"} or cls._looks_like_date_field(field_name):
+                match = re.search(
+                    rf"{re.escape(term)}{bridge_pattern}(?P<value>\d{{4}}[年/\-.]\d{{1,2}}(?:[月/\-.]\d{{1,2}}日?)?)",
+                    probe,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    return match.group("value")
+            if expected_str in {"number", "float", "double", "integer", "int"} or cls._looks_like_numeric_field(field_name):
+                match = re.search(
+                    rf"{re.escape(term)}{bridge_pattern}(?P<value>[-+]?\d[\d,]*(?:\.\d+)?%?)",
+                    probe,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    return match.group("value")
+        return None
+
+    @classmethod
+    def _extract_intro_text_value(
+        cls,
+        *,
+        field_name: str,
+        expected_type: Any,
+        intro_blocks: List[Tuple[str, str]],
+    ) -> Optional[Tuple[str, str, float]]:
+        if not intro_blocks:
+            return None
+
+        if cls._looks_like_title_field(field_name):
+            for ref_id, text in intro_blocks[:3]:
+                title = cls._strip_heading_prefix(text)
+                if cls._looks_like_heading_text(title):
+                    return title, ref_id, 0.92
+
+        if str(expected_type or "").strip().lower() in {"date", "datetime", "timestamp"} or cls._looks_like_date_field(field_name):
+            for ref_id, text in intro_blocks[:5]:
+                date_match = re.search(r"\d{4}[年/\-.]\d{1,2}(?:[月/\-.]\d{1,2}日?)?", text)
+                if date_match:
+                    return date_match.group(0), ref_id, 0.88
+
+        if cls._looks_like_org_field(field_name):
+            for ref_id, text in intro_blocks[:5]:
+                if cls._looks_like_org_name(text):
+                    return text, ref_id, 0.9
+
+        return None
+
+    @staticmethod
+    def _strip_heading_prefix(text: str) -> str:
+        cleaned = str(text or "").strip()
+        cleaned = re.sub(r"^#+\s*", "", cleaned).strip()
+        cleaned = re.sub(r"^第[一二三四五六七八九十百千万\d]+[章节部分篇]\s*", "", cleaned)
+        cleaned = re.sub(r"^[（(][一二三四五六七八九十\d]+[)）]\s*", "", cleaned)
+        cleaned = re.sub(r"^[一二三四五六七八九十百千万\d]+[、.．]\s*", "", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _looks_like_heading_text(text: str) -> bool:
+        probe = str(text or "").strip()
+        if not probe:
+            return False
+        if len(probe) > 64:
+            return False
+        if re.search(r"[。！？!?；;:：]", probe):
+            return False
+        if re.fullmatch(r"[-+]?\d[\d\s,.;:%/]*", probe):
+            return False
+        return True
+
+    @staticmethod
+    def _looks_like_org_name(text: str) -> bool:
+        probe = str(text or "").strip()
+        if not probe or len(probe) > 48:
+            return False
+        return bool(re.search(r"(局|部|厅|委|委员会|中心|研究院|大学|学院|医院|公司|集团|办公室|政府)$", probe))
+
+    @staticmethod
+    def _looks_like_title_field(field_name: str) -> bool:
+        probe = str(field_name or "").strip().lower()
+        if "title" in probe:
+            return True
+        if any(token in probe for token in ("标题", "题目", "公报名称", "报告名称", "文档名称")):
+            return True
+        return "名称" in probe and any(marker in probe for marker in ("公报", "报告", "文档", "项目"))
+
+    @staticmethod
+    def _looks_like_org_field(field_name: str) -> bool:
+        probe = str(field_name or "").strip().lower()
+        return any(token in probe for token in ("issuer", "organization", "org", "发布机构", "机构", "单位", "部门", "来源", "作者"))
+
+    @staticmethod
+    def _looks_like_date_field(field_name: str) -> bool:
+        probe = str(field_name or "").strip().lower()
+        return any(token in probe for token in ("date", "time", "日期", "时间", "年份", "year"))
+
+    @staticmethod
+    def _looks_like_numeric_field(field_name: str) -> bool:
+        probe = str(field_name or "").strip().lower()
+        return any(token in probe for token in ("amount", "total", "count", "number", "qty", "rate", "金额", "总额", "总数", "数量", "比率", "比例", "增长率"))
+
+    @staticmethod
+    def _clean_text_rule_value(value: Any) -> str:
+        text = unescape(str(value or "")).strip()
+        text = re.sub(r"\s+", " ", text)
+        text = text.strip("[](){}<> \t\r\n")
+        return text
+
+    @classmethod
+    def _normalize_date_text(cls, value: Any) -> Optional[str]:
+        parsed = cls._parse_datetime(value)
+        if parsed is None:
+            return None
+        return parsed.strftime("%Y-%m-%d")
+
     def _select_tables_for_fields(
         self,
         table_blocks: List[Dict[str, Any]],
@@ -1127,6 +1509,24 @@ class ExtractionGraph:
                     lookup[ref_id] = cell
         return lookup
 
+    @staticmethod
+    def _iter_backfill_rows(table: Dict[str, Any]) -> List[Dict[str, Any]]:
+        artifact_rows = load_xlsx_sheet_rows_for_table(table)
+        if artifact_rows:
+            return artifact_rows
+        rows = table.get("rows")
+        return list(rows or []) if isinstance(rows, list) else []
+
+    @staticmethod
+    def _all_table_blocks_are_spreadsheet_sources(table_blocks: List[Dict[str, Any]]) -> bool:
+        if not table_blocks:
+            return False
+        for table in table_blocks:
+            source = str((table or {}).get("source") or "").strip().lower()
+            if source not in {"xlsx", "xlsx_formula"}:
+                return False
+        return True
+
     def _backfill_missing_table_fields(
         self,
         *,
@@ -1153,6 +1553,14 @@ class ExtractionGraph:
                 continue
 
             ref_id = str(candidate.get("ref_id") or "").strip()
+            candidate_bbox = candidate.get("bbox")
+            if (
+                ref_id
+                and ref_id not in bbox_map
+                and isinstance(candidate_bbox, list)
+                and len(candidate_bbox) == 5
+            ):
+                bbox_map[ref_id] = [float(item) for item in candidate_bbox[:5]]
             if not ref_id or ref_id not in bbox_map:
                 continue
             value = candidate.get("value")
@@ -1177,15 +1585,20 @@ class ExtractionGraph:
         wants_number = str(expected_type).lower() in {"number", "float", "double", "integer", "int"}
         best_score = 0
         best_candidate: Optional[Dict[str, Any]] = None
+        spreadsheet_only = self._all_table_blocks_are_spreadsheet_sources(table_blocks)
+        tables_to_scan = table_blocks if spreadsheet_only else table_blocks[:12]
 
-        for table_idx, table in enumerate(table_blocks[:12]):
+        for table_idx, table in enumerate(tables_to_scan):
             candidate_columns = self._rank_table_columns_for_field(table, field_name)
             if not candidate_columns:
                 continue
             for score, col_index in candidate_columns:
                 if score < best_score:
                     break
-                for row in table.get("rows", [])[:160]:
+                row_iter = self._iter_backfill_rows(table)
+                if not spreadsheet_only:
+                    row_iter = row_iter[:160]
+                for row in row_iter:
                     if not isinstance(row, dict):
                         continue
                     cell = next(
@@ -1223,10 +1636,11 @@ class ExtractionGraph:
                         continue
 
                     confidence = min(0.94, 0.74 + 0.03 * float(score))
-                    row_index = int(row.get("row_index", 0) or 0)
+                    row_index = int(row.get("source_row_index", row.get("row_index", 0)) or 0)
                     candidate = {
                         "value": coerced_value,
                         "ref_id": str(cell.get("ref_id") or "").strip(),
+                        "bbox": list(cell.get("bbox") or []),
                         "confidence": confidence,
                         "score": score,
                         "table_order": table_idx,
@@ -1254,8 +1668,16 @@ class ExtractionGraph:
 
     def _rank_table_columns_for_field(self, table: Dict[str, Any], field_name: str) -> List[Tuple[int, int]]:
         ranked: List[Tuple[int, int]] = []
-        headers = table.get("headers", []) if isinstance(table.get("headers"), list) else []
-        header_meta = table.get("header_meta", []) if isinstance(table.get("header_meta"), list) else []
+        headers = (
+            table.get("source_headers", [])
+            if isinstance(table.get("source_headers"), list) and table.get("source_headers")
+            else table.get("headers", [])
+        )
+        header_meta = (
+            table.get("source_header_meta", [])
+            if isinstance(table.get("source_header_meta"), list) and table.get("source_header_meta")
+            else table.get("header_meta", [])
+        )
         seen: Set[int] = set()
 
         for idx, header in enumerate(headers, start=1):
@@ -1326,6 +1748,8 @@ class ExtractionGraph:
             "-",
             "--",
             "---",
+            "?",
+            "？",
             "—",
             "——",
             "/",
@@ -1366,6 +1790,32 @@ class ExtractionGraph:
             batch_size = max(batch_size, min(5, default_size + 1))
         items = list(target_fields.items())
         return [dict(items[index : index + batch_size]) for index in range(0, len(items), batch_size)]
+
+    @classmethod
+    def _build_field_extract_batches(
+        cls,
+        target_fields: Dict[str, Any],
+        *,
+        table_blocks: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not target_fields:
+            return []
+        if table_blocks:
+            return cls._chunk_target_fields(
+                target_fields,
+                env_name="MODULE2_FIELD_EXTRACT_BATCH_SIZE",
+                default_size=4,
+            )
+
+        plain_text_batch_size = max(
+            4,
+            int(os.getenv("MODULE2_PLAIN_TEXT_FIELD_EXTRACT_BATCH_SIZE", "12") or "12"),
+        )
+        return cls._chunk_target_fields(
+            target_fields,
+            env_name="MODULE2_PLAIN_TEXT_FIELD_EXTRACT_BATCH_SIZE",
+            default_size=plain_text_batch_size,
+        )
 
     async def invoke_json_object(
         self,
@@ -1973,7 +2423,7 @@ class ExtractionGraph:
         return score
 
     @staticmethod
-    def _field_aliases_legacy(field_name: str) -> List[str]:
+    def _field_aliases(field_name: str) -> List[str]:
         key = str(field_name or "").strip().lower()
         if not key:
             return []
@@ -2013,60 +2463,6 @@ class ExtractionGraph:
             aliases.extend(["流量", "flow rate"])
         if "material" in key or "substance" in key or "component" in key:
             aliases.extend(["物料", "材料", "组分"])
-
-        seen: Set[str] = set()
-        unique: List[str] = []
-        for alias in aliases:
-            text = alias.strip().lower()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            unique.append(text)
-            if len(unique) >= 20:
-                break
-        return unique
-
-    @staticmethod
-    def _field_aliases(field_name: str) -> List[str]:
-        key = str(field_name or "").strip().lower()
-        if not key:
-            return []
-
-        aliases = [key]
-        alias_map = {
-            "\u6e29\u5ea6": ["temperature", "temp", "t"],
-            "\u538b\u529b": ["pressure", "press", "p"],
-            "\u6d53\u5ea6": ["concentration", "conc"],
-            "\u6d41\u91cf": ["flow", "flowrate", "flow rate"],
-            "\u65f6\u95f4": ["time", "duration"],
-            "\u65e5\u671f": ["date"],
-            "\u7269\u6599": ["material", "component", "substance"],
-            "\u6750\u6599": ["material", "component", "substance"],
-            "\u7ec4\u5206": ["component", "composition"],
-            "\u542b\u91cf": ["content", "fraction"],
-            "\u4f53\u79ef": ["volume", "vol"],
-            "\u8d28\u91cf": ["mass", "weight", "wt"],
-            "\u5bc6\u5ea6": ["density", "rho"],
-            "\u901f\u7387": ["rate", "velocity"],
-            "\u4ea7\u7387": ["yield"],
-            "ph": ["ph", "acidity"],
-            "\u4f5c\u8005": ["author"],
-            "\u4e66\u540d": ["title", "name"],
-        }
-
-        for zh, mapped in alias_map.items():
-            if zh in key:
-                aliases.extend(mapped)
-        if "temperature" in key:
-            aliases.extend(["\u6e29\u5ea6", "temp", "t"])
-        if "pressure" in key:
-            aliases.extend(["\u538b\u529b", "press", "p"])
-        if "concentration" in key:
-            aliases.extend(["\u6d53\u5ea6", "conc"])
-        if "flow" in key:
-            aliases.extend(["\u6d41\u91cf", "flow rate"])
-        if "material" in key or "substance" in key or "component" in key:
-            aliases.extend(["\u7269\u6599", "\u6750\u6599", "\u7ec4\u5206"])
         aliases.extend(build_field_aliases(str(field_name)))
 
         seen: Set[str] = set()
@@ -2155,8 +2551,8 @@ class ExtractionGraph:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 return float(value), False
             if isinstance(value, str):
-                cleaned = re.sub(r"[,\s$\u00a5\uffe5\uff0c]", "", value).strip()
-                cleaned = cleaned[:-1] if cleaned.endswith(("%", "\uff05")) else cleaned
+                cleaned = re.sub(r"[,\s$\u00a5￥，]", "", value).strip()
+                cleaned = cleaned[:-1] if cleaned.endswith(("%", "％")) else cleaned
                 try:
                     return float(cleaned), True
                 except ValueError:
@@ -2169,8 +2565,8 @@ class ExtractionGraph:
             if isinstance(value, float):
                 return int(value), True
             if isinstance(value, str):
-                cleaned = re.sub(r"[,\s$\u00a5\uffe5\uff0c]", "", value).strip()
-                cleaned = cleaned[:-1] if cleaned.endswith(("%", "\uff05")) else cleaned
+                cleaned = re.sub(r"[,\s$\u00a5￥，]", "", value).strip()
+                cleaned = cleaned[:-1] if cleaned.endswith(("%", "％")) else cleaned
                 try:
                     return int(float(cleaned)), True
                 except ValueError:
@@ -2182,9 +2578,9 @@ class ExtractionGraph:
                 return value, False
             if isinstance(value, str):
                 v = value.strip().lower()
-                if v in {"true", "yes", "y", "1", "\u662f", "\u6709", "\u5df2"}:
+                if v in {"true", "yes", "y", "1", "是", "有", "已"}:
                     return True, True
-                if v in {"false", "no", "n", "0", "\u5426", "\u65e0", "\u672a"}:
+                if v in {"false", "no", "n", "0", "否", "无", "未"}:
                     return False, True
             return value, False
 
@@ -2235,11 +2631,11 @@ class ExtractionGraph:
             "%Y-%m-%d",
             "%Y/%m/%d",
             "%Y.%m.%d",
-            "%Y\u5e74%m\u6708%d\u65e5",
+            "%Y年%m月%d日",
             "%Y-%m-%d %H:%M:%S",
             "%Y/%m/%d %H:%M:%S",
             "%Y.%m.%d %H:%M:%S",
-            "%Y\u5e74%m\u6708%d\u65e5 %H:%M:%S",
+            "%Y年%m月%d日 %H:%M:%S",
         )
         for fmt in formats:
             try:

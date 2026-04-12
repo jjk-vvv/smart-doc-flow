@@ -1,0 +1,85 @@
+{
+  "base_url": "http://127.0.0.1:3001",
+  "generated_at": "2026-04-10 18:54:27",
+  "authenticated": false,
+  "login_account": "",
+  "question_count": 4,
+  "results": [
+    {
+      "id": "H1",
+      "priority": "high",
+      "question": "当前文档的统计年份是什么？只回答数字。",
+      "intent": "快速拿字段值",
+      "expected_shape": "仅返回 2021",
+      "result": {
+        "first_delta_sec": null,
+        "first_delta_text": "",
+        "warnings": [],
+        "statuses": [],
+        "done": {},
+        "event_types": [],
+        "error": {
+          "type": "HTTPError",
+          "message": "HTTP Error 401: Unauthorized"
+        }
+      }
+    },
+    {
+      "id": "H2",
+      "priority": "high",
+      "question": "请用中文概括当前选中文档的核心内容，并列出你当前最确定的 3 个字段。",
+      "intent": "先建全局理解，再抓关键字段",
+      "expected_shape": "先总结文档主题，再列出统计年份、基金会总数、民政服务床位总数",
+      "result": {
+        "first_delta_sec": null,
+        "first_delta_text": "",
+        "warnings": [],
+        "statuses": [],
+        "done": {},
+        "event_types": [],
+        "error": {
+          "type": "HTTPError",
+          "message": "HTTP Error 401: Unauthorized"
+        }
+      }
+    },
+    {
+      "id": "H3",
+      "priority": "high",
+      "question": "这个数值是多少？",
+      "intent": "模糊提问，期待助手引导澄清",
+      "expected_shape": "不能乱猜，应该进入 clarification_required / requires_followup",
+      "result": {
+        "first_delta_sec": null,
+        "first_delta_text": "",
+        "warnings": [],
+        "statuses": [],
+        "done": {},
+        "event_types": [],
+        "error": {
+          "type": "HTTPError",
+          "message": "HTTP Error 401: Unauthorized"
+        }
+      }
+    },
+    {
+      "id": "H4",
+      "priority": "high",
+      "question": "如果我是第一次核对这份文档，最应该先核对哪 3 类信息？",
+      "intent": "文档质检建议",
+      "expected_shape": "建议先看统计年份、核心总量字段、同比或变化口径",
+      "result": {
+        "first_delta_sec": null,
+        "first_delta_text": "",
+        "warnings": [],
+        "statuses": [],
+        "done": {},
+        "event_types": [],
+        "error": {
+          "type": "HTTPError",
+          "message": "HTTP Error 401: Unauthorized"
+        }
+      }
+    }
+  ]
+}

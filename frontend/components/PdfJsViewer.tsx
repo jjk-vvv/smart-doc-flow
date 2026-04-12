@@ -39,6 +39,44 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
   const [viewportHeight, setViewportHeight] = useState(0);
   const [renderedPageCount, setRenderedPageCount] = useState(0);
 
+  const resolvePdfDocumentSource = async (targetSrc: string, signal: AbortSignal) => {
+    const normalizedSrc = String(targetSrc || '').trim();
+    if (!normalizedSrc) {
+      throw new Error('PDF preview source is empty');
+    }
+
+    const shouldHydrateBinary =
+      normalizedSrc.startsWith('blob:')
+      || normalizedSrc.startsWith('data:')
+      || normalizedSrc.startsWith('/')
+      || /^https?:\/\//i.test(normalizedSrc);
+
+    if (!shouldHydrateBinary) {
+      return {
+        url: normalizedSrc,
+        withCredentials: false,
+      };
+    }
+
+    const response = await fetch(normalizedSrc, {
+      credentials: 'include',
+      cache: 'no-store',
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`PDF preview request failed (${response.status})`);
+    }
+
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength <= 0) {
+      throw new Error('PDF preview file is empty');
+    }
+
+    return {
+      data: new Uint8Array(buffer),
+    };
+  };
+
   const syncVisiblePage = () => {
     const container = scrollRef.current;
     if (!container) return;
@@ -101,6 +139,7 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
   useEffect(() => {
     let cancelled = false;
     let loadingTask: any = null;
+    const abortController = new AbortController();
 
     const load = async () => {
       setLoading(true);
@@ -115,10 +154,11 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
             import.meta.url
           ).toString();
         }
-        loadingTask = pdfjsLib.getDocument({
-          url: src,
-          withCredentials: false,
-        });
+        const documentSource = await resolvePdfDocumentSource(src, abortController.signal);
+        if (cancelled) {
+          return;
+        }
+        loadingTask = pdfjsLib.getDocument(documentSource);
         const doc = await loadingTask.promise;
         if (cancelled) {
           try {
@@ -134,7 +174,10 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
         onPageCount?.(pages);
         setDocReadyTick((prev) => prev + 1);
       } catch (err) {
-        if (!cancelled) {
+        const aborted =
+          abortController.signal.aborted
+          || (err instanceof DOMException && err.name === 'AbortError');
+        if (!cancelled && !aborted) {
           setError(err instanceof Error ? err.message : 'PDF 预览加载失败');
         }
       } finally {
@@ -149,6 +192,7 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
 
     return () => {
       cancelled = true;
+      abortController.abort();
       try {
         loadingTask?.destroy?.();
       } catch {
@@ -299,11 +343,11 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
   const hasMorePagesPending = loading && hasFirstPagePainted && renderedPageCount < pageCount;
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-slate-100/70 dark:bg-slate-950/90">
+    <div className="relative h-full w-full overflow-hidden bg-slate-100/70 dark:bg-transparent">
       <div
         ref={scrollRef}
         onScroll={scheduleVisiblePageSync}
-        className="absolute inset-0 overflow-auto overscroll-contain px-2 py-2 sm:px-2.5 sm:py-2.5"
+        className="absolute inset-0 overflow-auto overscroll-contain px-2 py-2 sm:px-2.5 sm:py-2.5 custom-scrollbar"
       >
         <div
           ref={stackRef}
@@ -316,21 +360,21 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
                 pageWrapperRefs.current[pageNumber - 1] = node;
               }}
               data-page-number={pageNumber}
-              className="mx-auto w-fit max-w-full overflow-hidden rounded-[10px] border border-slate-200/90 bg-white shadow-[0_8px_20px_rgba(15,23,42,0.08)] dark:border-slate-700/80 dark:bg-slate-900 dark:shadow-[0_10px_24px_rgba(2,6,23,0.26)]"
+              className="mx-auto w-fit max-w-full overflow-hidden rounded-[10px] border border-slate-200/90 bg-white shadow-[0_8px_20px_rgba(15,23,42,0.08)] dark:border-white/[0.05]/80 dark:bg-white/[0.02] dark:shadow-[0_10px_24px_rgba(2,6,23,0.26)]"
             >
               <canvas
                 ref={(node) => {
                   pageCanvasRefs.current[pageNumber - 1] = node;
                 }}
-                className="mx-auto block h-auto max-w-full bg-white dark:bg-slate-900"
+                className="mx-auto block h-auto max-w-full bg-white dark:bg-white/[0.02]"
               />
             </div>
           ))}
         </div>
       </div>
       {loading && !hasFirstPagePainted && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/20 dark:bg-slate-950/20">
-          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/92 px-3 py-1.5 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/92 dark:text-slate-300">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/20 dark:bg-slate-900/20">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/92 px-3 py-1.5 text-xs text-slate-600 shadow-sm dark:border-white/[0.05] dark:bg-white/[0.02]/92 dark:text-slate-300">
             <Loader2 size={14} className="animate-spin" />
             正在加载文档预览...
           </div>
@@ -338,20 +382,20 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
       )}
       {hasMorePagesPending && (
         <div className="pointer-events-none absolute right-3 top-3 z-10">
-          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 px-3 py-1 text-[11px] text-slate-600 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/88 dark:text-slate-300">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 px-3 py-1 text-[11px] text-slate-600 shadow-sm backdrop-blur-sm dark:border-white/[0.05] dark:bg-white/[0.02]/88 dark:text-slate-300">
             <Loader2 size={12} className="animate-spin" />
             正在补充其余页面...
           </div>
         </div>
       )}
       {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/84 p-4 text-center dark:bg-slate-950/82">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/84 p-4 text-center dark:bg-[#0B1120]/82">
           <p className="max-w-[420px] text-xs text-slate-600 dark:text-slate-300">{error}</p>
           <a
             href={src}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-md border border-slate-200/80 px-2 py-1 text-[11px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200/80 px-2 py-1 text-[11px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-white/[0.05] dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
           >
             <ExternalLink size={12} />
             在新窗口打开文档

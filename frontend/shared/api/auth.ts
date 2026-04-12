@@ -1,0 +1,254 @@
+import { ensureOk, parseErrorMessage, requestRaw, resolveApiBase } from './client';
+
+export type AuthUser =
+  | {
+      id?: string;
+      name: string;
+      email: string;
+      phone?: string;
+      status?: string;
+      tenantId?: string;
+    }
+  | null;
+
+export type AuthUserPayload = {
+  user: {
+    id?: string;
+    name: string;
+    email: string;
+    phone?: string;
+    status?: string;
+    tenantId?: string;
+  };
+};
+
+export type LoginPayload = {
+  account: string;
+  password: string;
+};
+
+export type RegisterPayload = {
+  name: string;
+  email: string;
+  phone: string;
+  password: string;
+  code: string;
+};
+
+export type SendCodePayload = {
+  message?: string;
+  maskedContact?: string;
+  devCode?: string;
+};
+
+export type AuthSessionItem = {
+  sessionId: string;
+  current: boolean;
+  ipAddress: string;
+  userAgent: string;
+  createdAt?: string | null;
+  lastSeenAt?: string | null;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  status: string;
+};
+
+export type AuthSessionListPayload = {
+  sessions: AuthSessionItem[];
+  supportsPersistentSessions: boolean;
+};
+
+export type SessionRevokePayload = {
+  message?: string;
+  revokedCount?: number;
+};
+
+const jsonHeaders = {
+  'Content-Type': 'application/json',
+};
+
+type AuthHealthPayload = {
+  ok?: boolean;
+  notifierMode?: string;
+  databaseConnected?: boolean;
+};
+
+const AUTH_HEALTH_PATH = '/api/auth/health';
+const AUTH_SESSION_HINT_KEY = 'smart_doc_flow.auth.session_hint';
+
+let authApiBasePromise: Promise<string> | null = null;
+
+const readSessionHint = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(AUTH_SESSION_HINT_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+const writeSessionHint = (value: boolean): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(AUTH_SESSION_HINT_KEY, value ? '1' : '0');
+  } catch {
+    // Ignore storage write failures in restricted environments.
+  }
+};
+
+const buildAuthApiBaseCandidates = (): string[] => {
+  const candidates: string[] = [];
+  const push = (value = '') => {
+    const normalized = resolveApiBase(value);
+    if (!candidates.includes(normalized)) {
+      candidates.push(normalized);
+    }
+  };
+
+  push('');
+  push(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
+
+  return candidates;
+};
+
+const detectAuthApiBase = async (): Promise<string> => {
+  const candidates = buildAuthApiBaseCandidates();
+  let firstReachableBase = '';
+
+  for (const candidate of candidates) {
+    try {
+      const { response } = await requestRaw(AUTH_HEALTH_PATH, { method: 'GET' }, candidate);
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload = (await response.json()) as AuthHealthPayload;
+      if (!firstReachableBase) {
+        firstReachableBase = candidate;
+      }
+
+      const notifierMode = String(payload.notifierMode || '').trim().toLowerCase();
+      if (payload.databaseConnected && notifierMode === 'smtp') {
+        return candidate;
+      }
+    } catch {
+      // Fall through to the next candidate until we find a healthy auth backend.
+    }
+  }
+
+  return firstReachableBase;
+};
+
+const getAuthApiBase = async (): Promise<string> => {
+  if (!authApiBasePromise) {
+    authApiBasePromise = detectAuthApiBase();
+  }
+  return authApiBasePromise;
+};
+
+const requestAuthJson = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
+  const preferredBase = await getAuthApiBase();
+  const { response } = await requestRaw(path, init, preferredBase);
+  await ensureOk(response);
+  return (await response.json()) as T;
+};
+
+const requestCurrentUserAtBase = async (preferredBase = ''): Promise<AuthUserPayload | null> => {
+  const { response } = await requestRaw(
+    '/api/me',
+    {
+      method: 'GET',
+    },
+    preferredBase,
+  );
+  if (response.status === 401 || response.status === 403) {
+    writeSessionHint(false);
+    return null;
+  }
+  await ensureOk(response);
+  const payload = (await response.json()) as AuthUserPayload;
+  writeSessionHint(Boolean(payload?.user));
+  return payload;
+};
+
+export const loginAuth = async (payload: LoginPayload): Promise<AuthUserPayload> => {
+  const response = await requestAuthJson<AuthUserPayload>('/api/login', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+  writeSessionHint(true);
+  return response;
+};
+
+export const registerAuth = async (payload: RegisterPayload): Promise<AuthUserPayload> => {
+  const response = await requestAuthJson<AuthUserPayload>('/api/register', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+  writeSessionHint(true);
+  return response;
+};
+
+export const logoutAuth = async (): Promise<{ message?: string }> => {
+  const response = await requestAuthJson<{ message?: string }>('/api/logout', {
+    method: 'POST',
+  });
+  writeSessionHint(false);
+  return response;
+};
+
+export const getCurrentUser = async (): Promise<AuthUserPayload | null> => {
+  if (!readSessionHint()) {
+    return null;
+  }
+  try {
+    return await requestCurrentUserAtBase('');
+  } catch {
+    const preferredBase = await getAuthApiBase();
+    return await requestCurrentUserAtBase(preferredBase);
+  }
+};
+
+export const sendForgotCode = async (contact: string): Promise<SendCodePayload> =>
+  requestAuthJson<SendCodePayload>('/api/forgot/send-code', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ contact }),
+  });
+
+export const resetForgotPassword = async (payload: {
+  contact: string;
+  code: string;
+  newPassword: string;
+}): Promise<{ message?: string }> =>
+  requestAuthJson<{ message?: string }>('/api/forgot/reset', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+
+export const sendRegisterCode = async (contact: string): Promise<SendCodePayload> =>
+  requestAuthJson<SendCodePayload>('/api/register/send-code', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ contact }),
+  });
+
+export const listAuthSessions = async (): Promise<AuthSessionListPayload> =>
+  requestAuthJson<AuthSessionListPayload>('/api/sessions', {
+    method: 'GET',
+  });
+
+export const revokeOtherAuthSessions = async (): Promise<SessionRevokePayload> =>
+  requestAuthJson<SessionRevokePayload>('/api/sessions/revoke-others', {
+    method: 'POST',
+  });
+
+export const revokeAuthSession = async (sessionId: string): Promise<SessionRevokePayload> =>
+  requestAuthJson<SessionRevokePayload>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+
+export const authErrorMessage = async (response: Response): Promise<string> => parseErrorMessage(response);

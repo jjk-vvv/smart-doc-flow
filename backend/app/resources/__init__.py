@@ -1,0 +1,2 @@
+"""Gateway static/config resources."""
+

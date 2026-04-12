@@ -14,6 +14,7 @@ class _Candidate:
     image_key: str
     bbox_raw: list[float]
     caption: str
+    nearby_heading: str = ""
 
 
 class Assistant1Matcher:
@@ -35,6 +36,7 @@ class Assistant1Matcher:
                     image_key=normalize_image_key(table.image_path),
                     bbox_raw=table.bbox_raw,
                     caption=table.caption or table.title,
+                    nearby_heading=normalize_image_key(table.title) if table.title and not table.caption else "",
                 )
             )
         for figure in figures:
@@ -46,6 +48,7 @@ class Assistant1Matcher:
                     image_key=normalize_image_key(figure.image_path),
                     bbox_raw=figure.bbox_raw,
                     caption=figure.caption or figure.title,
+                    nearby_heading=normalize_image_key(figure.title) if figure.title and not figure.caption else "",
                 )
             )
 
@@ -87,9 +90,14 @@ class Assistant1Matcher:
         if item_image_key and item_image_key == candidate.image_key:
             score += 0.70
             reasons.append("image basename match")
-        if item.page_no and candidate.page_no and item.page_no == candidate.page_no:
-            score += 0.15
-            reasons.append("same page")
+        if item.page_no and candidate.page_no:
+            page_dist = abs(item.page_no - candidate.page_no)
+            if page_dist == 0:
+                score += 0.15
+                reasons.append("same page")
+            elif page_dist == 1:
+                score += 0.07
+                reasons.append("adjacent page")
         overlap = bbox_iou(item.bbox, candidate.bbox_raw)
         if overlap > 0:
             score += min(0.20, overlap * 0.20)
@@ -98,4 +106,9 @@ class Assistant1Matcher:
         if caption_score > 0:
             score += min(0.15, caption_score * 0.15)
             reasons.append(f"caption similarity={caption_score:.3f}")
+        if candidate.nearby_heading:
+            heading_score = similarity(item.image_caption or item.image_footnote, candidate.nearby_heading)
+            if heading_score > 0:
+                score += min(0.30, heading_score * 0.30)
+                reasons.append(f"heading similarity={heading_score:.3f}")
         return score, reasons

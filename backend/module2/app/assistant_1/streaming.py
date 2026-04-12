@@ -68,6 +68,7 @@ class Assistant1SSEEmitter:
         run_id: str = "",
         turn_id: str = "",
         assistant_message_id: str = "",
+        initial_seq: int = 0,
         debug: bool = False,
     ) -> None:
         self.session_id = str(session_id or "").strip() or _new_id("sess")
@@ -75,7 +76,7 @@ class Assistant1SSEEmitter:
         self.turn_id = str(turn_id or "").strip() or _new_id("turn")
         self.assistant_message_id = str(assistant_message_id or "").strip() or _new_id("msg")
         self.debug = bool(debug)
-        self._seq = 0
+        self._seq = max(0, int(initial_seq or 0))
 
     def event(
         self,
@@ -123,7 +124,18 @@ class Assistant1SSEEmitter:
             phase="init",
         )
 
-    def status(self, code: str, label: str, detail: str = "", *, phase: str = "", blocking: bool = False) -> Optional[bytes]:
+    def status(
+        self,
+        code: str,
+        label: str,
+        detail: str = "",
+        *,
+        phase: str = "",
+        blocking: bool = False,
+        ui_state: str = "thinking",
+        thinking_label: str = "Thinking",
+        accent: str = "blue",
+    ) -> Optional[bytes]:
         return self.event(
             "status",
             {
@@ -131,6 +143,9 @@ class Assistant1SSEEmitter:
                 "label": str(label or "").strip(),
                 "detail": str(detail or "").strip(),
                 "blocking": bool(blocking),
+                "ui_state": str(ui_state or "thinking").strip(),
+                "thinking_label": str(thinking_label or "Thinking").strip(),
+                "accent": str(accent or "blue").strip(),
             },
             phase=phase or code,
         )
@@ -212,7 +227,9 @@ class Assistant1SSEEmitter:
         finish_reason: str = "completed",
         requires_followup: bool = False,
         action_preview: Optional[Dict[str, Any]] = None,
+        current_object_lock: Optional[Dict[str, Any]] = None,
         warnings: Optional[List[str]] = None,
+        user_visible_warnings: Optional[List[str]] = None,
         phase: str = "done",
     ) -> Optional[bytes]:
         payload: Dict[str, Any] = {
@@ -222,8 +239,14 @@ class Assistant1SSEEmitter:
         }
         if isinstance(action_preview, dict) and action_preview:
             payload["action_preview"] = action_preview
+        if isinstance(current_object_lock, dict) and current_object_lock:
+            payload["current_object_lock"] = current_object_lock
         if isinstance(warnings, list) and warnings:
             payload["warnings"] = [str(item).strip() for item in warnings if str(item or "").strip()]
+        if isinstance(user_visible_warnings, list) and user_visible_warnings:
+            payload["user_visible_warnings"] = [
+                str(item).strip() for item in user_visible_warnings if str(item or "").strip()
+            ]
         return self.event("assistant.done", payload, phase=phase)
 
     def error(

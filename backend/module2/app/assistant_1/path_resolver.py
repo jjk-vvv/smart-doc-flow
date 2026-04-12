@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ class Assistant1PathResolver:
     def __init__(self, settings: Assistant1Settings | None = None) -> None:
         self.settings = settings or Assistant1Settings.from_env()
         self.module2_root = self.settings.module2_root
-        self.artifact_root = self.module2_root / "artifacts"
+        self.artifact_root = self.settings.module2_artifact_root_dir
 
     def resolve(self, file_hash: str) -> DocumentSourceBundle:
         normalized_hash = str(file_hash or "").strip()
@@ -30,7 +31,7 @@ class Assistant1PathResolver:
         )
         uploaded_text_artifact_path = self._find_uploaded_text_artifact(normalized_hash)
 
-        mineru_logical_dir = self.module2_root / "artifacts" / "pdf_parse" / "mineru" / normalized_hash
+        mineru_logical_dir = self.artifact_root / "pdf_parse" / "mineru" / normalized_hash
         pointer_path = mineru_logical_dir / "mineru_run_pointer.json"
         meta_path = mineru_logical_dir / "mineru_run_meta.json"
 
@@ -46,14 +47,21 @@ class Assistant1PathResolver:
                     meta_data = self._read_json(inferred_meta_path)
                 warnings.append("resolved MinerU run dir from assistant_payload image_path fallback")
 
+        run_dir_raw = self._remap_legacy_data_path(run_dir_raw)
         actual_run_dir = Path(run_dir_raw) if run_dir_raw else None
 
         if actual_run_dir and not actual_run_dir.exists():
-            warnings.append(f"resolved MinerU run dir does not exist: {actual_run_dir}")
+            remapped_run_dir = self._remap_missing_runtime_path(actual_run_dir)
+            if remapped_run_dir is not None:
+                actual_run_dir = remapped_run_dir
+                run_dir_raw = str(remapped_run_dir)
+                warnings.append(f"resolved MinerU run dir via managed data root remap: {actual_run_dir}")
+            else:
+                warnings.append(f"resolved MinerU run dir does not exist: {actual_run_dir}")
 
-        markdown_path = str(meta_data.get("markdown_path", "") or "")
-        content_list_path = str(meta_data.get("content_list_path", "") or "")
-        images_dir = str(meta_data.get("images_dir", "") or "")
+        markdown_path = self._remap_legacy_data_path(str(meta_data.get("markdown_path", "") or ""))
+        content_list_path = self._remap_legacy_data_path(str(meta_data.get("content_list_path", "") or ""))
+        images_dir = self._remap_legacy_data_path(str(meta_data.get("images_dir", "") or ""))
 
         if not markdown_path and actual_run_dir:
             fallback_markdown = actual_run_dir / "o" / "i" / "auto" / "i.md"
@@ -112,7 +120,7 @@ class Assistant1PathResolver:
         )
 
     def _find_assistant_payload(self, file_hash: str) -> str:
-        payload_dir = self.module2_root / "artifacts" / "assistant_payload" / file_hash[:12]
+        payload_dir = self.artifact_root / "assistant_payload" / file_hash[:12]
         if not payload_dir.exists():
             return ""
         for candidate in sorted(payload_dir.glob("*.json")):
@@ -155,8 +163,71 @@ class Assistant1PathResolver:
             return ""
         candidate = Path(raw)
         if candidate.is_absolute():
-            return str(candidate)
+            return self._remap_legacy_data_path(str(candidate))
         return str((self.artifact_root / Path(*raw.replace("\\", "/").split("/"))).resolve())
+
+    def _remap_legacy_data_path(self, raw_path: str) -> str:
+        raw = str(raw_path or "").strip()
+        if not raw:
+            return ""
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            return raw
+
+        runtime_root = self._runtime_root_dir()
+        data_root = self._data_root_dir()
+        replacements = (
+            ((runtime_root / "backend" / "module2" / "artifacts").resolve(), (data_root / "module2" / "artifacts").resolve()),
+            ((runtime_root / "module2").resolve(), (data_root / "module2").resolve()),
+            ((runtime_root / "backend" / "module4" / "workspaces").resolve(), (data_root / "module4" / "workspaces").resolve()),
+            ((runtime_root / "auth").resolve(), (data_root / "auth").resolve()),
+        )
+        remapped = self._remap_prefix(candidate, replacements)
+        return str(remapped if remapped is not None else candidate)
+
+    def _remap_missing_runtime_path(self, candidate: Path) -> Path | None:
+        if candidate.exists():
+            return candidate
+        runtime_root = self._runtime_root_dir()
+        data_root = self._data_root_dir()
+        replacements = (
+            ((runtime_root / "backend" / "module2" / "artifacts").resolve(), (data_root / "module2" / "artifacts").resolve()),
+            ((runtime_root / "module2").resolve(), (data_root / "module2").resolve()),
+            ((runtime_root / "backend" / "module4" / "workspaces").resolve(), (data_root / "module4" / "workspaces").resolve()),
+            ((runtime_root / "auth").resolve(), (data_root / "auth").resolve()),
+        )
+        remapped = self._remap_prefix(candidate, replacements)
+        if remapped is not None and remapped.exists():
+            return remapped
+        return None
+
+    def _runtime_root_dir(self) -> Path:
+        configured = str(os.getenv("SMART_DOC_FLOW_RUNTIME_ROOT", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
+        return self.module2_root.parents[1].resolve()
+
+    def _data_root_dir(self) -> Path:
+        configured = str(os.getenv("SMART_DOC_FLOW_DATA_ROOT", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
+        return self._runtime_root_dir()
+
+    @staticmethod
+    def _remap_prefix(candidate: Path, replacements: tuple[tuple[Path, Path], ...]) -> Path | None:
+        candidate_resolved = candidate.resolve(strict=False)
+        candidate_text = str(candidate_resolved).lower()
+        ordered = sorted(replacements, key=lambda item: len(str(item[0])), reverse=True)
+        for old_root, new_root in ordered:
+            old_root_resolved = old_root.resolve(strict=False)
+            old_text = str(old_root_resolved).lower()
+            if candidate_text == old_text:
+                return new_root.resolve(strict=False)
+            prefix = old_text + "\\"
+            if candidate_text.startswith(prefix):
+                suffix = candidate_resolved.relative_to(old_root_resolved)
+                return (new_root / suffix).resolve(strict=False)
+        return None
 
     @staticmethod
     def _infer_run_dir_from_assistant_payload(payload: dict[str, Any]) -> str:

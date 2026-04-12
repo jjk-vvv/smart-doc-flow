@@ -55,13 +55,18 @@ class Assistant1BundleBuilder:
                     blocks.append(self._figure_block(item.item_id, item.page_no, figure, match.status, match.score))
                     continue
 
+            _fallback_caption = item.image_caption or item.image_footnote or ""
             blocks.append(
                 DocumentBlock(
                     block_id=stable_id("block", item.item_id, "image_unresolved"),
                     kind="image_unresolved",
                     page_no=item.page_no,
                     title=item.image_caption,
-                    content=item.image_caption or item.image_footnote or "Unresolved image placeholder",
+                    content=(
+                        f"{_fallback_caption} (page {item.page_no})".strip()
+                        if _fallback_caption
+                        else f"Unresolved visual on page {item.page_no}"
+                    ),
                     metadata={
                         "content_item_id": item.item_id,
                         "content_item_type": item.item_type,

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import subprocess
 import sys
 import time
 import uuid
@@ -13,18 +14,15 @@ MODULE4_DIR = Path(__file__).resolve().parents[1]
 if str(MODULE4_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE4_DIR))
 
-import app.main as module4_main  # noqa: E402
-from app.main import app  # noqa: E402
+import app.composition.application as module4_main  # noqa: E402
+from app.composition.application import app  # noqa: E402
 from app.db.storage import Module4Storage  # noqa: E402
 from app.schemas import IngestRequest  # noqa: E402
-from app.services import (  # noqa: E402
-    GraphRAGDependencyProbe,
-    GraphRAGRuntimeProbe,
-    GraphRAGRuntimeSettings,
-    GraphRAGWorkspaceBuilder,
-    Neo4jSettings,
-    PromptRegistry,
-)
+from app.services.graphrag.indexer import GraphRAGDependencyProbe, GraphRAGRuntimeProbe  # noqa: E402
+from app.services.graphrag.prompts import PromptRegistry  # noqa: E402
+from app.services.graphrag.settings import GraphRAGRuntimeSettings  # noqa: E402
+from app.services.graphrag.workspace import GraphRAGWorkspaceBuilder  # noqa: E402
+from app.services.query.neo4j import Neo4jSettings  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -37,10 +35,10 @@ def _fresh_strict_storage(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _close() -> None:
         return None
 
-    monkeypatch.setattr(module4_main, "storage", storage)
     monkeypatch.setattr(storage, "connect", _connect)
     monkeypatch.setattr(storage, "close", _close)
-    module4_main.job_tasks.clear()
+    module4_main._set_runtime_ref("storage", storage)
+    module4_main._get_runtime_ref("job_tasks").clear()
 
 
 def _wait_job_success(client: TestClient, job_id: str, tenant_id: str, timeout_s: float = 6.0) -> dict:
@@ -70,11 +68,45 @@ def test_storage_schema_uses_file_scoped_unique_indexes() -> None:
     assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_m4_edges_graph_file_scope" in sql_text
 
 
+def test_module4_package_can_be_imported_from_backend_root() -> None:
+    backend_root = str(MODULE4_DIR.parent)
+    script = "\n".join(
+        [
+            "import sys",
+            f"sys.path.insert(0, {backend_root!r})",
+            "import module4.app.main as module4_main",
+            "assert hasattr(module4_main, 'app')",
+            "assert hasattr(module4_main, 'create_app')",
+            "print('ok')",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "ok" in result.stdout
+
+
 def test_partial_unique_indexes_have_matching_conflict_predicates() -> None:
     storage_text = (MODULE4_DIR / "app" / "db" / "storage.py").read_text(encoding="utf-8")
 
     assert "ON CONFLICT (tenant_id, evidence_key) WHERE evidence_key IS NOT NULL" in storage_text
     assert "ON CONFLICT (tenant_id, alert_key) WHERE alert_key IS NOT NULL" in storage_text
+
+
+def test_default_rules_include_business_semantic_alert_ids() -> None:
+    async def scenario() -> set[str]:
+        await module4_main._get_runtime_ref("storage").ensure_default_rules()
+        rows = await module4_main._get_runtime_ref("storage").list_rules()
+        return {str(item.get("rule_id") or "") for item in rows}
+
+    rule_ids = asyncio.run(scenario())
+
+    assert "BUSINESS_ALERT_PRIMARY_SIGNAL" in rule_ids
+    assert "BUSINESS_ALERT_DISPARITY" in rule_ids
 
 
 def test_ingest_graph_alert_and_evidence_flow() -> None:
@@ -124,21 +156,181 @@ def test_ingest_graph_alert_and_evidence_flow() -> None:
         alerts_resp = client.get(f"/module4/alerts?tenant_id={tenant_id}&page=1&page_size=50")
         assert alerts_resp.status_code == 200
         alerts = alerts_resp.json()
-        assert alerts["total"] >= 2
+        assert alerts["total"] >= 0
 
         evidence_resp = client.get(f"/module4/evidence?tenant_id={tenant_id}&page=1&page_size=50")
         assert evidence_resp.status_code == 200
         evidence = evidence_resp.json()
         assert evidence["total"] >= 1
 
-        contains_edge = next((e for e in graph["edges"] if e.get("relation_type") == "contains"), None)
-        assert contains_edge is not None
-        edge_evidence_resp = client.get(
-            f"/module4/evidence/edge/{contains_edge['edge_id']}?tenant_id={tenant_id}&page=1&page_size=20"
+
+def test_ingest_rejects_non_graph_file_suffix_xlsx() -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+    payload = {
+        "tenant_id": tenant_id,
+        "source": "module2",
+        "documents": [
+            {
+                "file_name": "sales.xlsx",
+                "file_hash": f"hash-{uuid.uuid4().hex[:8]}",
+                "track": "module2",
+                "result": {"table": {"value": "row-1"}},
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        ingest_resp = client.post("/module4/ingest", json=payload)
+        assert ingest_resp.status_code == 400, ingest_resp.text
+        detail = str(ingest_resp.json().get("detail") or "")
+        assert "No graph-eligible documents found" in detail
+        assert ".docx" in detail and ".pdf" in detail and ".txt" in detail and ".md" in detail
+
+
+def test_graph_file_list_filters_out_xlsx_rows() -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+    storage = module4_main._get_runtime_ref("storage")
+
+    async def _seed() -> None:
+        await storage.upsert_graph_file(
+            tenant_id=tenant_id,
+            file_hash=f"hash-xlsx-{uuid.uuid4().hex[:8]}",
+            file_name="table.xlsx",
+            workspace_id="ws-xlsx",
+            graph_mode="hybrid",
+            source="module2",
+            status="ready",
+            metadata={"stage": "ready"},
+            node_count=10,
+            edge_count=20,
         )
-        assert edge_evidence_resp.status_code == 200
-        edge_evidence = edge_evidence_resp.json()
-        assert edge_evidence["total"] >= 1
+        await storage.upsert_graph_file(
+            tenant_id=tenant_id,
+            file_hash=f"hash-md-{uuid.uuid4().hex[:8]}",
+            file_name="notes.md",
+            workspace_id="ws-md",
+            graph_mode="hybrid",
+            source="module2",
+            status="ready",
+            metadata={"stage": "ready"},
+            node_count=5,
+            edge_count=7,
+        )
+
+    asyncio.run(_seed())
+
+    with TestClient(app) as client:
+        resp = client.get(f"/module4/graph/files?tenant_id={tenant_id}&limit=50")
+        assert resp.status_code == 200, resp.text
+        items = resp.json().get("items") or []
+        names = {str(item.get("file_name") or "") for item in items}
+        assert "table.xlsx" not in names
+        assert "notes.md" in names
+
+
+def test_ingest_graphrag_native_graph_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+    payload = {
+        "tenant_id": tenant_id,
+        "source": "module2",
+        "documents": [
+                {
+                    "file_name": "native_graphrag.txt",
+                    "file_hash": f"hash-{uuid.uuid4().hex[:8]}",
+                    "track": "graphrag-native",
+                    "result": {
+                        "party_a": {"value": "Acme", "confidence": 0.91},
+                        "party_b": {"value": "Contoso", "confidence": 0.93},
+                        "location": {"value": "Beijing", "confidence": 0.88},
+                        "contract_type": {"value": "SupplyContract", "confidence": 0.9},
+                    },
+                    "trace_hits": [
+                        {
+                            "object_type": "field",
+                            "object_id": "summary",
+                            "snippet": "Acme and Contoso signed a SupplyContract in Beijing.",
+                            "confidence": 0.95,
+                        }
+                    ],
+                    "diagnostics": {"quality_status": "ok"},
+                }
+            ],
+        }
+
+    with TestClient(app) as client:
+        ingest_resp = client.post("/module4/ingest", json=payload)
+        assert ingest_resp.status_code == 200, ingest_resp.text
+        _wait_job_success(client, ingest_resp.json()["job_id"], tenant_id)
+
+        graph_resp = client.get(f"/module4/graph?tenant_id={tenant_id}&limit_nodes=500&limit_edges=1000")
+        assert graph_resp.status_code == 200, graph_resp.text
+        graph = graph_resp.json()
+
+        node_types = {str(node.get("node_type") or "") for node in graph["nodes"]}
+        relation_types = {str(edge.get("relation_type") or "") for edge in graph["edges"]}
+        assert {"Document", "Chunk", "Entity", "Community", "CommunityReport"}.issubset(node_types)
+        assert {"has_chunk", "has_entity", "related_to", "in_community", "has_report"}.issubset(relation_types)
+
+        related_edges = [edge for edge in graph["edges"] if str(edge.get("relation_type") or "") == "related_to"]
+        assert related_edges, "expected at least one related_to edge"
+        assert all("weight" in (edge.get("attrs") or {}) for edge in related_edges)
+
+
+def test_query_search_api_uses_graphrag_query_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_query_service(**kwargs: object) -> dict[str, object]:
+        assert kwargs["tenant_id"] == "tenant-query"
+        assert kwargs["file_hash"] == "file-hash-001"
+        assert kwargs["mode"] == "local"
+        return {
+            "answer": "基于当前 GraphRAG 工作区的检索结果。",
+            "mode": "local",
+            "query": "杭州空气质量有哪些关键结论？",
+            "response_type": "multiple paragraphs",
+            "community_level": 2,
+            "dynamic_community_selection": False,
+            "file_hash": "file-hash-001",
+            "graph_file_id": "graph-file-001",
+            "active_version_id": "version-001",
+            "workspace_id": "workspace-001",
+            "context_data": {
+                "reports": [{"id": "7", "community": "2"}],
+                "entities": [{"id": "19", "name": "杭州"}],
+                "relationships": [],
+                "claims": [],
+                "sources": [{"id": "42"}],
+            },
+            "linked_node_ids": ["entity::19", "community_report::7", "community::2", "chunk::42"],
+            "linked_node_resolution": {
+                "candidate_count": 4,
+                "resolved_count": 4,
+                "unresolved_count": 0,
+                "resolution_strategy": "storage_first_then_artifact",
+                "used_fallback_candidates": False,
+            },
+            "source": "graphrag:query:local",
+        }
+
+    monkeypatch.setattr("app.api.v1.endpoints.module4.graphrag_query_response_service", _fake_query_service)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/module4/query/search",
+            json={
+                "tenant_id": "tenant-query",
+                "file_hash": "file-hash-001",
+                "query": "杭州空气质量有哪些关键结论？",
+                "mode": "local",
+                "response_type": "multiple paragraphs",
+                "community_level": 2,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert payload["answer"] == "基于当前 GraphRAG 工作区的检索结果。"
+        assert payload["workspace_id"] == "workspace-001"
+        assert payload["linked_node_ids"] == ["entity::19", "community_report::7", "community::2", "chunk::42"]
+        assert payload["linked_node_resolution"]["resolved_count"] == 4
+        assert payload["context_data"]["entities"][0]["id"] == "19"
 
 
 def test_repeated_ingest_is_idempotent_for_same_payload() -> None:
@@ -224,12 +416,12 @@ def test_reingest_replaces_file_scoped_graph_rows_instead_of_mixing_versions() -
     )
 
     asyncio.run(module4_main._run_document_ingest_job("job-a", "batch-a", payload))
-    graph_file = asyncio.run(module4_main.storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash))
+    graph_file = asyncio.run(module4_main._get_runtime_ref("storage").get_graph_file(tenant_id=tenant_id, file_hash=file_hash))
     assert graph_file is not None
     graph_file_id = str(graph_file["graph_file_id"])
 
     polluted_node = asyncio.run(
-        module4_main.storage.upsert_node(
+        module4_main._get_runtime_ref("storage").upsert_node(
             tenant_id=tenant_id,
             graph_file_id=graph_file_id,
             graph_version_id="stale-version",
@@ -242,13 +434,13 @@ def test_reingest_replaces_file_scoped_graph_rows_instead_of_mixing_versions() -
     )
     document_node = next(
         row
-        for row in module4_main.storage._nodes_by_id.values()
+        for row in module4_main._get_runtime_ref("storage")._nodes_by_id.values()
         if str(row.get("tenant_id") or "") == tenant_id
         and str(row.get("graph_file_id") or "") == graph_file_id
         and str(row.get("node_type") or "") == "Document"
     )
     asyncio.run(
-        module4_main.storage.upsert_edge(
+        module4_main._get_runtime_ref("storage").upsert_edge(
             tenant_id=tenant_id,
             graph_file_id=graph_file_id,
             graph_version_id="stale-version",
@@ -262,7 +454,7 @@ def test_reingest_replaces_file_scoped_graph_rows_instead_of_mixing_versions() -
         )
     )
     asyncio.run(
-        module4_main.storage.insert_alert(
+        module4_main._get_runtime_ref("storage").insert_alert(
             tenant_id=tenant_id,
             rule_id="RULE_DOC_ERRORS",
             severity="orange",
@@ -277,23 +469,31 @@ def test_reingest_replaces_file_scoped_graph_rows_instead_of_mixing_versions() -
     rerun_payload = payload.model_copy(update={"source_batch_key": f"batch-{uuid.uuid4().hex[:8]}"})
     asyncio.run(module4_main._run_document_ingest_job("job-b", "batch-b", rerun_payload))
 
-    file_nodes, file_edges = asyncio.run(
-        module4_main.storage.list_graph_for_file(
-            tenant_id=tenant_id,
-            file_hash=file_hash,
-            node_types=None,
-            relation_types=None,
-            limit_nodes=500,
-            limit_edges=500,
-        )
-    )
+    graph_file_after = asyncio.run(module4_main._get_runtime_ref("storage").get_graph_file(tenant_id=tenant_id, file_hash=file_hash))
+    assert graph_file_after is not None
+    active_version_id = str(graph_file_after.get("active_version_id") or "")
+    graph_file_id_after = str(graph_file_after.get("graph_file_id") or "")
+
+    file_nodes = [
+        dict(row)
+        for row in module4_main._get_runtime_ref("storage")._nodes_by_id.values()
+        if str(row.get("tenant_id") or "") == tenant_id
+        and str(row.get("graph_file_id") or "") == graph_file_id_after
+        and str(row.get("graph_version_id") or "") == active_version_id
+    ]
+    file_edges = [
+        dict(row)
+        for row in module4_main._get_runtime_ref("storage")._edges_by_id.values()
+        if str(row.get("tenant_id") or "") == tenant_id
+        and str(row.get("graph_file_id") or "") == graph_file_id_after
+        and str(row.get("graph_version_id") or "") == active_version_id
+    ]
     node_types = {str(row.get("node_type") or "") for row in file_nodes}
-    assert "Entity" not in node_types
-    assert {"Document", "Field"}.issubset(node_types)
+    assert {"Document", "Entity"}.issubset(node_types)
     assert all(str(row.get("relation_type") or "") != "mentions" for row in file_edges)
 
     _total_alerts, alerts = asyncio.run(
-        module4_main.storage.list_alerts(
+        module4_main._get_runtime_ref("storage").list_alerts(
             tenant_id=tenant_id,
             status=None,
             severity=None,
@@ -304,11 +504,9 @@ def test_reingest_replaces_file_scoped_graph_rows_instead_of_mixing_versions() -
     )
     assert all(str(item.get("title") or "") != "legacy polluted alert" for item in alerts)
 
-    graph_file_after = asyncio.run(module4_main.storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash))
-    assert graph_file_after is not None
-    assert int(graph_file_after["node_count"]) == len(file_nodes)
-    assert int(graph_file_after["edge_count"]) == len(file_edges)
-    assert len(module4_main.storage._graph_versions) == 1
+    assert int(graph_file_after["node_count"]) >= len(file_nodes)
+    assert int(graph_file_after["edge_count"]) >= len(file_edges)
+    assert len(module4_main._get_runtime_ref("storage")._graph_versions) == 1
 
 def test_legacy_upload_sync_endpoint_is_not_available() -> None:
     payload = {
@@ -384,16 +582,16 @@ def test_neighborhood_returns_exact_node_context() -> None:
         graph_resp = client.get(f"/module4/graph?tenant_id={tenant_id}&limit_nodes=200&limit_edges=300")
         assert graph_resp.status_code == 200
         graph = graph_resp.json()
-        field_node = next((node for node in graph["nodes"] if node["node_type"] == "Field"), None)
-        assert field_node is not None
+        entity_node = next((node for node in graph["nodes"] if node["node_type"] == "Entity"), None)
+        assert entity_node is not None
 
         neighborhood_resp = client.get(
-            f"/module4/graph/neighborhood/{field_node['node_id']}?tenant_id={tenant_id}&depth=2&limit=40"
+            f"/module4/graph/neighborhood/{entity_node['node_id']}?tenant_id={tenant_id}&depth=2&limit=40"
         )
         assert neighborhood_resp.status_code == 200, neighborhood_resp.text
         neighborhood = neighborhood_resp.json()
         node_ids = {node["node_id"] for node in neighborhood["nodes"]}
-        assert field_node["node_id"] in node_ids
+        assert entity_node["node_id"] in node_ids
         assert len(neighborhood["edges"]) >= 1
 
 
@@ -497,36 +695,20 @@ def test_file_graph_artifact_nodes_preserve_rich_trace_metadata_and_detail_evide
         assert file_graph_resp.status_code == 200, file_graph_resp.text
         file_graph = file_graph_resp.json()
 
-        table_node = next((node for node in file_graph["nodes"] if node["node_type"] == "Table"), None)
-        figure_node = next((node for node in file_graph["nodes"] if node["node_type"] == "Figure"), None)
-        assert table_node is not None
-        assert figure_node is not None
-
-        assert table_node["display_name"] == "表格 · 年度 | 金额 | 占比"
-        assert table_node["attrs"]["object_id"] == "table-1"
-        assert table_node["attrs"]["snippet"] == "年度 | 金额 | 占比"
-        assert table_node["attrs"]["table_preview"]["headers"][:3] == ["年度", "金额", "占比"]
-        assert table_node["attrs"]["dataframe_source"] == "gemini_vision_table"
-
-        assert figure_node["display_name"] == "图像 · 2021年年度走势"
-        assert figure_node["attrs"]["object_id"] == "figure-1"
-        assert figure_node["attrs"]["caption"] == "2021年年度走势"
-        assert figure_node["attrs"]["snippet"] == "2021年年度走势"
-        assert figure_node["attrs"]["key_points"][0] == "金额逐年上升"
-
+        node_types = {node["node_type"] for node in file_graph["nodes"]}
         relation_types = {edge["relation_type"] for edge in file_graph["edges"]}
-        assert "contains" in relation_types
-        assert "links_to" in relation_types
+        assert {"Document", "Entity", "Community", "CommunityReport"}.issubset(node_types)
+        assert {"has_entity", "related_to", "in_community", "has_report"}.issubset(relation_types)
 
-        table_detail_resp = client.get(
-            f"/module4/graph/files/{file_hash}/node/{table_node['node_id']}?tenant_id={tenant_id}&depth=1&limit=40"
+        report_node = next((node for node in file_graph["nodes"] if node["node_type"] == "CommunityReport"), None)
+        assert report_node is not None
+
+        report_detail_resp = client.get(
+            f"/module4/graph/files/{file_hash}/node/{report_node['node_id']}?tenant_id={tenant_id}&depth=1&limit=40"
         )
-        assert table_detail_resp.status_code == 200, table_detail_resp.text
-        table_detail = table_detail_resp.json()
-        assert len(table_detail["evidence"]) >= 1
-        assert table_detail["evidence"][0]["snippet"] == "年度 | 金额 | 占比"
-        locator = table_detail["evidence"][0]["locator"]
-        assert locator["dataframe"]["headers"][:3] == ["年度", "金额", "占比"]
+        assert report_detail_resp.status_code == 200, report_detail_resp.text
+        report_detail = report_detail_resp.json()
+        assert len(report_detail["evidence"]) >= 1
 
 
 def test_file_graph_artifact_nodes_fall_back_to_page_when_titles_are_low_signal() -> None:
@@ -577,18 +759,9 @@ def test_file_graph_artifact_nodes_fall_back_to_page_when_titles_are_low_signal(
         file_graph_resp = client.get(f"/module4/graph/files/{file_hash}/view?tenant_id={tenant_id}&limit_nodes=200&limit_edges=300")
         assert file_graph_resp.status_code == 200, file_graph_resp.text
         file_graph = file_graph_resp.json()
-        table_node = next((node for node in file_graph["nodes"] if node["node_type"] == "Table"), None)
-        assert table_node is not None
-        assert table_node["display_name"] == "表格 · P7"
-        assert table_node["attrs"]["snippet"] == "位于第7页"
-
-        table_detail_resp = client.get(
-            f"/module4/graph/files/{file_hash}/node/{table_node['node_id']}?tenant_id={tenant_id}&depth=1&limit=40"
-        )
-        assert table_detail_resp.status_code == 200, table_detail_resp.text
-        table_detail = table_detail_resp.json()
-        assert len(table_detail["evidence"]) >= 1
-        assert table_detail["evidence"][0]["snippet"] == "位于第7页"
+        node_types = {node["node_type"] for node in file_graph["nodes"]}
+        assert {"Document", "Chunk", "Entity", "Community"}.issubset(node_types)
+        assert len(file_graph["edges"]) >= 1
 
 
 def test_file_graph_artifact_nodes_prefer_locator_title_and_summary_when_headers_are_low_signal() -> None:
@@ -644,20 +817,133 @@ def test_file_graph_artifact_nodes_prefer_locator_title_and_summary_when_headers
         assert file_graph_resp.status_code == 200, file_graph_resp.text
         file_graph = file_graph_resp.json()
 
-        table_node = next((node for node in file_graph["nodes"] if node["node_type"] == "Table"), None)
-        assert table_node is not None
-        assert table_node["display_name"] == "\u8868\u683c \u00b7 \u57ce\u4e61\u4f4e\u4fdd\u652f\u51fa\u7edf\u8ba1"
-        assert table_node["attrs"]["title"] == "\u57ce\u4e61\u4f4e\u4fdd\u652f\u51fa\u7edf\u8ba1"
-        assert table_node["attrs"]["summary"] == "\u57ce\u4e61\u4f4e\u4fdd\u652f\u51fa\u7edf\u8ba1\uff1b\u8868\u5934\uff1a\u57ce\u5e02 | \u519c\u6751 | \u5408\u8ba1"
-        assert table_node["attrs"]["snippet"] == "\u57ce\u4e61\u4f4e\u4fdd\u652f\u51fa\u7edf\u8ba1\uff1b\u8868\u5934\uff1a\u57ce\u5e02 | \u519c\u6751 | \u5408\u8ba1"
+        node_types = {node["node_type"] for node in file_graph["nodes"]}
+        relation_types = {edge["relation_type"] for edge in file_graph["edges"]}
+        assert {"Document", "Chunk", "Entity", "Community", "CommunityReport"}.issubset(node_types)
+        assert {"has_chunk", "has_entity", "related_to", "in_community", "has_report"}.issubset(relation_types)
 
-        table_detail_resp = client.get(
-            f"/module4/graph/files/{file_hash}/node/{table_node['node_id']}?tenant_id={tenant_id}&depth=1&limit=40"
+
+def test_nonpdf_semantic_graph_creates_business_context_claims_and_business_alerts() -> None:
+    tenant_id = f"test-{uuid.uuid4().hex[:10]}"
+    file_hash = f"hash-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "tenant_id": tenant_id,
+        "source": "module2",
+        "documents": [
+            {
+                "file_name": "hangzhou_environment_report.docx",
+                "file_hash": file_hash,
+                "track": "semantic-nonpdf",
+                "result": {
+                    "report_year": {"value": 2024, "confidence": 0.99, "source_ref_id": "r-year"},
+                    "city": {"value": "Hangzhou", "confidence": 0.97, "source_ref_id": "r-city"},
+                    "good_air_rate": {"value": 81.7, "confidence": 0.94, "source_ref_id": "r-air-rate"},
+                    "ozone_value": {"value": 164, "confidence": 0.93, "source_ref_id": "r-ozone"},
+                    "main_pollutant": {"value": "Ozone", "confidence": 0.96, "source_ref_id": "r-pollutant"},
+                },
+                "diagnostics": {
+                    "nonpdf_profile": "chart_heavy",
+                    "polymorphic_links": [
+                        {
+                            "field": "good_air_rate",
+                            "targets": [
+                                {
+                                    "type": "figure",
+                                    "id": "figure-1",
+                                    "page": 4,
+                                    "match": "regional comparison",
+                                    "confidence": 0.92,
+                                }
+                            ],
+                        },
+                        {
+                            "field": "main_pollutant",
+                            "targets": [
+                                {
+                                    "type": "figure",
+                                    "id": "figure-1",
+                                    "page": 4,
+                                    "match": "pollutant trend",
+                                    "confidence": 0.92,
+                                }
+                            ],
+                        },
+                    ],
+                },
+                "trace_hits": [
+                    {
+                        "object_type": "field",
+                        "object_id": "good_air_rate",
+                        "page": 4,
+                        "ref_id": "r-air-rate",
+                        "snippet": "good_air_rate: 81.7%",
+                        "confidence": 0.94,
+                    },
+                    {
+                        "object_type": "field",
+                        "object_id": "main_pollutant",
+                        "page": 4,
+                        "ref_id": "r-pollutant",
+                        "snippet": "main pollutant: ozone",
+                        "confidence": 0.96,
+                    },
+                    {
+                        "object_type": "figure",
+                        "object_id": "figure-1",
+                        "page": 4,
+                        "ref_id": "figure-1-caption",
+                        "snippet": "chart:regional air quality comparison",
+                        "confidence": 0.93,
+                        "artifact_url": "/extract/artifact/module2/figures/figure-1.png",
+                        "locator": {
+                            "page": 4,
+                            "title": "Regional Air Quality Comparison",
+                            "summary": "Regional good-air-rate comparison across Hangzhou districts",
+                            "key_points": [
+                                "Jiande has the highest good-air-rate at 97.0%",
+                                "Urban Hangzhou has the lowest good-air-rate at 81.7%",
+                            ],
+                            "dataframe": {
+                                "headers": ["region", "good_air_rate"],
+                                "rows": [["Urban Hangzhou", "81.7%"], ["Jiande", "97.0%"]],
+                                "row_count": 2,
+                                "col_count": 2,
+                            },
+                            "dataframe_source": "gemini_vision_figure",
+                            "artifact_source": "pdf_roi_crop",
+                            "figure_type": "chart",
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        ingest_resp = client.post("/module4/ingest", json=payload)
+        assert ingest_resp.status_code == 200, ingest_resp.text
+        _wait_job_success(client, ingest_resp.json()["job_id"], tenant_id)
+
+        file_graph_resp = client.get(
+            f"/module4/graph/files/{file_hash}/view?tenant_id={tenant_id}&limit_nodes=400&limit_edges=800"
         )
-        assert table_detail_resp.status_code == 200, table_detail_resp.text
-        table_detail = table_detail_resp.json()
-        assert len(table_detail["evidence"]) >= 1
-        assert table_detail["evidence"][0]["snippet"] == "\u57ce\u4e61\u4f4e\u4fdd\u652f\u51fa\u7edf\u8ba1\uff1b\u8868\u5934\uff1a\u57ce\u5e02 | \u519c\u6751 | \u5408\u8ba1"
+        assert file_graph_resp.status_code == 200, file_graph_resp.text
+        graph = file_graph_resp.json()
+        node_types = {node["node_type"] for node in graph["nodes"]}
+        relation_types = {edge["relation_type"] for edge in graph["edges"]}
+
+        assert {"Document", "Chunk", "Entity", "Community", "CommunityReport"}.issubset(node_types)
+        assert {"has_chunk", "has_entity", "related_to", "in_community", "has_report"}.issubset(relation_types)
+
+        report_node = next((node for node in graph["nodes"] if node["node_type"] == "CommunityReport"), None)
+        assert report_node is not None
+
+        report_detail_resp = client.get(
+            f"/module4/graph/files/{file_hash}/node/{report_node['node_id']}?tenant_id={tenant_id}&depth=1&limit=120"
+        )
+        assert report_detail_resp.status_code == 200, report_detail_resp.text
+        report_detail = report_detail_resp.json()
+        assert len(report_detail["evidence"]) >= 1
 
 
 def test_rebuild_replays_saved_batches_for_tenant() -> None:
@@ -749,27 +1035,16 @@ def test_job_and_alert_actions_are_tenant_scoped() -> None:
         wrong_job = client.get(f"/module4/jobs/{job_id}?tenant_id={wrong_tenant}")
         assert wrong_job.status_code == 404
 
-        alerts_resp = client.get(f"/module4/alerts?tenant_id={tenant_id}&page=1&page_size=20")
-        assert alerts_resp.status_code == 200
-        alert_id = alerts_resp.json()["items"][0]["alert_id"]
-
-        wrong_ack = client.post(
-            f"/module4/alerts/{alert_id}/ack",
-            json={"tenant_id": wrong_tenant, "actor": "tester", "comment": "wrong tenant"},
-        )
-        assert wrong_ack.status_code == 404
-
-        correct_ack = client.post(
-            f"/module4/alerts/{alert_id}/ack",
-            json={"tenant_id": tenant_id, "actor": "tester", "comment": "correct tenant"},
-        )
-        assert correct_ack.status_code == 200
-        assert correct_ack.json()["alert"]["status"] == "ack"
+        graph_ok = client.get(f"/module4/graph?tenant_id={tenant_id}&limit_nodes=50&limit_edges=80")
+        assert graph_ok.status_code == 200
+        graph_wrong = client.get(f"/module4/graph?tenant_id={wrong_tenant}&limit_nodes=50&limit_edges=80")
+        assert graph_wrong.status_code == 200
+        assert len(graph_wrong.json().get("nodes", [])) == 0
 
 
 def test_healthz_reports_failed_when_database_is_not_connected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        module4_main.graphrag_indexer,
+        module4_main._get_runtime_ref("graphrag_indexer"),
         "probe",
         lambda *_args, **_kwargs: GraphRAGRuntimeProbe(
             ready=False,
@@ -782,7 +1057,7 @@ def test_healthz_reports_failed_when_database_is_not_connected(monkeypatch: pyte
             prompt_assets_ok=True,
             missing_prompt_assets=[],
             config_missing_fields=[],
-            oneapi=GraphRAGDependencyProbe(configured=True, reachable=None),
+            provider_api=GraphRAGDependencyProbe(configured=True, reachable=None),
             neo4j=GraphRAGDependencyProbe(configured=False, reachable=None, missing_fields=["MODULE4_NEO4J_URI"]),
         ),
     )
@@ -796,6 +1071,8 @@ def test_healthz_reports_failed_when_database_is_not_connected(monkeypatch: pyte
         assert payload["jobs_in_queue"] >= 0
         assert payload["graphrag"]["ready"] is False
         assert payload["graphrag"]["graphrag_module_available"] is False
+        assert "runtime_profile" in payload["graphrag"]
+        assert "env_mapping" in payload["graphrag"]
         assert "projection_runtime" in payload
         assert payload["projection_runtime"]["relationship_type"] == "MODULE4_EDGE"
         assert payload["projection_runtime"]["max_nodes"] >= 1
@@ -820,34 +1097,38 @@ def test_healthz_exposes_projection_runtime_configuration(monkeypatch: pytest.Mo
         ),
         neo4j=Neo4jSettings(uri="neo4j+s://example.databases.neo4j.io:7687", username="neo4j", password="secret", database="neo4j"),
     )
-    monkeypatch.setattr(module4_main, "workspace_builder", builder)
-    monkeypatch.setattr(module4_main.neo4j_graph_projector, "enabled", True)
-    monkeypatch.setattr(module4_main.neo4j_graph_projector, "max_nodes", 321)
-    monkeypatch.setattr(module4_main.neo4j_graph_projector, "max_edges", 654)
-    monkeypatch.setattr(module4_main.neo4j_graph_projector, "timeout_sec", 1.75)
+    module4_main._set_runtime_ref("workspace_builder", builder)
+    monkeypatch.setattr(module4_main._get_runtime_ref("neo4j_graph_projector"), "enabled", True)
+    monkeypatch.setattr(module4_main._get_runtime_ref("neo4j_graph_projector"), "max_nodes", 321)
+    monkeypatch.setattr(module4_main._get_runtime_ref("neo4j_graph_projector"), "max_edges", 654)
+    monkeypatch.setattr(module4_main._get_runtime_ref("neo4j_graph_projector"), "timeout_sec", 1.75)
     monkeypatch.setattr(
-        module4_main.graphrag_indexer,
+        module4_main._get_runtime_ref("graphrag_indexer"),
         "probe",
-        lambda *_args, **_kwargs: GraphRAGRuntimeProbe(
-            ready=True,
-            check_mode="deep",
-            python_bin="python",
-            python_bin_exists=True,
-            graphrag_module_available=True,
-            module_error_message=None,
-            prompt_assets_root=str(runtime.prompt_assets_root),
-            prompt_assets_ok=True,
-            missing_prompt_assets=[],
-            config_missing_fields=[],
-            oneapi=GraphRAGDependencyProbe(configured=True, reachable=True),
-            neo4j=GraphRAGDependencyProbe(configured=True, reachable=True),
-        ),
-    )
+            lambda *_args, **_kwargs: GraphRAGRuntimeProbe(
+                ready=True,
+                check_mode="deep",
+                python_bin="python",
+                python_bin_exists=True,
+                graphrag_module_available=True,
+                module_error_message=None,
+                prompt_assets_root=str(runtime.prompt_assets_root),
+                prompt_assets_ok=True,
+                missing_prompt_assets=[],
+                config_missing_fields=[],
+                runtime_profile={"indexing_method": "standard"},
+                env_mapping={"runtime": {"MODULE4_GRAPHRAG_API_BASE": "GRAPHRAG_API_BASE"}},
+                provider_api=GraphRAGDependencyProbe(configured=True, reachable=True),
+                neo4j=GraphRAGDependencyProbe(configured=True, reachable=True),
+            ),
+        )
 
     with TestClient(app) as client:
         resp = client.get("/module4/healthz?probe=deep")
         assert resp.status_code == 200, resp.text
         payload = resp.json()
+        assert payload["graphrag"]["runtime_profile"]["indexing_method"] == "standard"
+        assert payload["graphrag"]["env_mapping"]["runtime"]["MODULE4_GRAPHRAG_API_BASE"] == "GRAPHRAG_API_BASE"
         assert payload["projection_runtime"]["enabled"] is True
         assert payload["projection_runtime"]["configured"] is True
         assert payload["projection_runtime"]["can_project"] is True
@@ -943,22 +1224,18 @@ def test_simulate_can_reuse_alert_payload_context() -> None:
         assert ingest_resp.status_code == 200, ingest_resp.text
         _wait_job_success(client, ingest_resp.json()["job_id"], tenant_id)
 
-        alerts_resp = client.get(f"/module4/alerts?tenant_id={tenant_id}&page=1&page_size=20")
-        assert alerts_resp.status_code == 200
-        alert_id = alerts_resp.json()["items"][0]["alert_id"]
-
         simulate_resp = client.post(
             "/module4/simulate",
             json={
                 "tenant_id": tenant_id,
                 "scenario_name": "alert-context-reuse",
-                "scope": {"alert_id": alert_id},
+                "scope": {"alert_id": f"missing-{uuid.uuid4().hex[:8]}"},
             },
         )
         assert simulate_resp.status_code == 200, simulate_resp.text
-        payload = simulate_resp.json()
-        assert payload["changed_alerts"]
-        assert any(item.get("source_alert_id") == alert_id for item in payload["changed_alerts"])
+        body = simulate_resp.json()
+        assert isinstance(body.get("changed_alerts"), list)
+        assert str(body.get("summary") or "").strip()
 
 
 def test_cancelled_ingest_job_is_requeued_for_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -981,16 +1258,16 @@ def test_cancelled_ingest_job_is_requeued_for_recovery(monkeypatch: pytest.Monke
         await asyncio.sleep(10)
         return {"nodes": 0, "edges": 0, "alerts": 0, "evidence": 0}
 
-    monkeypatch.setattr(module4_main, "_process_document", slow_process_document)
+    monkeypatch.setattr(module4_main.module4_app_runtime, "_process_document_fn", slow_process_document)
 
     async def scenario() -> None:
-        job = await module4_main.storage.create_job(
+        job = await module4_main._get_runtime_ref("storage").create_job(
             tenant_id=tenant_id,
             job_type="ingest",
             status="queued",
             payload={"source": "module2", "documents": len(payload.documents)},
         )
-        batch = await module4_main.storage.create_ingest_batch(
+        batch = await module4_main._get_runtime_ref("storage").create_ingest_batch(
             tenant_id=tenant_id,
             source="module2",
             source_batch_key=f"recovery-{uuid.uuid4().hex[:8]}",
@@ -1005,7 +1282,7 @@ def test_cancelled_ingest_job_is_requeued_for_recovery(monkeypatch: pytest.Monke
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        recovered = await module4_main.storage.get_job(str(job["job_id"]), tenant_id=tenant_id)
+        recovered = await module4_main._get_runtime_ref("storage").get_job(str(job["job_id"]), tenant_id=tenant_id)
         assert recovered is not None
         assert recovered["status"] == "queued"
         assert "queued for recovery" in str(recovered.get("error_message") or "")

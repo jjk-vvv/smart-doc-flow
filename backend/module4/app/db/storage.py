@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-from urllib.parse import SplitResult, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -84,6 +84,40 @@ def _build_default_rules() -> Tuple[Dict[str, Any], ...]:
             "enabled": True,
             "version": 1,
         },
+        {
+            "rule_id": "BUSINESS_ALERT_PRIMARY_SIGNAL",
+            "name": "Primary Business Signal Alert",
+            "severity": "orange",
+            "rule_kind": "deterministic",
+            "expr": {
+                "scope": "document",
+                "path": "__semantic_business_alert_kind__",
+                "op": "eq",
+                "value": "primary_signal",
+                "risk_score": 78.0,
+                "title": "Primary business signal detected: {file_name}",
+                "summary": "Business semantic pipeline identified a primary signal in {file_name}",
+            },
+            "enabled": True,
+            "version": 1,
+        },
+        {
+            "rule_id": "BUSINESS_ALERT_DISPARITY",
+            "name": "Business Disparity Alert",
+            "severity": "orange",
+            "rule_kind": "deterministic",
+            "expr": {
+                "scope": "document",
+                "path": "__semantic_business_alert_kind__",
+                "op": "eq",
+                "value": "disparity",
+                "risk_score": 83.0,
+                "title": "Business disparity detected: {file_name}",
+                "summary": "Business semantic pipeline identified a disparity signal in {file_name}",
+            },
+            "enabled": True,
+            "version": 1,
+        },
     )
 
 
@@ -136,33 +170,6 @@ def _graph_scope_key(graph_file_id: Optional[str]) -> str:
     return str(graph_file_id or "").strip() or "__legacy__"
 
 
-def _row_matches_graph_scope(
-    row: Dict[str, Any],
-    *,
-    file_hash: str,
-    workspace_id: Optional[str],
-    graph_file_id: Optional[str] = None,
-    graph_version_id: Optional[str] = None,
-) -> bool:
-    attrs = row.get("attrs") if isinstance(row.get("attrs"), dict) else {}
-    row_file_hash = _json_text(attrs, "file_hash")
-    row_workspace_id = _json_text(attrs, "workspace_id")
-    row_graph_file_id = str(row.get("graph_file_id") or "").strip()
-    row_graph_version_id = str(row.get("graph_version_id") or "").strip()
-    canonical_key = str(row.get("canonical_key") or "").strip()
-    if graph_version_id and row_graph_version_id == graph_version_id:
-        return True
-    if graph_file_id and row_graph_file_id == graph_file_id:
-        return True
-    if file_hash and row_file_hash == file_hash:
-        return True
-    if workspace_id and row_workspace_id == workspace_id:
-        return True
-    if file_hash and canonical_key == file_hash:
-        return True
-    return False
-
-
 def _rewrite_localhost_dsn(dsn: str, replacement_host: str = "127.0.0.1") -> str | None:
     raw = str(dsn or "").strip()
     if not raw:
@@ -193,14 +200,60 @@ def _rewrite_localhost_dsn(dsn: str, replacement_host: str = "127.0.0.1") -> str
     return urlunsplit(rewritten)
 
 
+def _rewrite_local_dsn_sslmode(dsn: str, sslmode: str = "disable") -> str | None:
+    raw = str(dsn or "").strip()
+    if not raw:
+        return None
+    try:
+        parts = urlsplit(raw)
+    except Exception:
+        return None
+    hostname = str(parts.hostname or "").strip().lower()
+    if hostname not in {"localhost", "127.0.0.1"}:
+        return None
+
+    query_items = dict(parse_qsl(parts.query, keep_blank_values=True))
+    current_sslmode = str(query_items.get("sslmode") or "").strip().lower()
+    if current_sslmode:
+        return None
+
+    query_items["sslmode"] = sslmode
+    rewritten = SplitResult(
+        scheme=parts.scheme,
+        netloc=parts.netloc,
+        path=parts.path,
+        query=urlencode(query_items),
+        fragment=parts.fragment,
+    )
+    return urlunsplit(rewritten)
+
+
 def _dsn_connection_candidates(dsn: str) -> List[str]:
     raw = str(dsn or "").strip()
     if not raw:
         return []
-    fallback = _rewrite_localhost_dsn(raw)
-    candidates: List[str] = [raw]
-    if fallback and fallback not in candidates:
-        candidates.append(fallback)
+
+    initial_candidates: List[str] = []
+    preferred_local = _rewrite_local_dsn_sslmode(raw)
+    if preferred_local:
+        initial_candidates.append(preferred_local)
+    initial_candidates.append(raw)
+
+    candidates: List[str] = []
+    for candidate in initial_candidates:
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in list(candidates):
+        ipv4_fallback = _rewrite_localhost_dsn(candidate)
+        if ipv4_fallback and ipv4_fallback not in candidates:
+            candidates.append(ipv4_fallback)
+
+    for candidate in list(candidates):
+        ssl_disabled = _rewrite_local_dsn_sslmode(candidate)
+        if ssl_disabled and ssl_disabled not in candidates:
+            candidates.append(ssl_disabled)
+
     return candidates
 
 
@@ -298,7 +351,7 @@ class Module4Storage:
 
     def diagnostics(self) -> Dict[str, Any]:
         return {
-            "db_connected": bool(self._pool is not None),
+            "db_connected": self._pool is not None,
             "last_connect_error": self._last_connect_error,
             "jobs_in_memory": len(self._jobs),
             "alerts_in_memory": len(self._alerts),
@@ -626,7 +679,6 @@ class Module4Storage:
                 updated_at = NOW()
             RETURNING *
         """
-        runner = conn if conn is not None else self._pool.acquire()
         if conn is not None:
             row = await conn.fetchrow(
                 sql,
@@ -646,7 +698,7 @@ class Module4Storage:
                 last_indexed_at,
             )
         else:
-            async with runner as acquired:
+            async with self._pool.acquire() as acquired:
                 row = await acquired.fetchrow(
                     sql,
                     tenant_id,
@@ -2323,265 +2375,119 @@ class Module4Storage:
             rows = await conn.fetch(sql_items, edge_id, tenant_id, page_size, offset)
         return total, [_to_plain(dict(r)) for r in rows]
 
-    async def count_graph_for_file(self, *, tenant_id: str, file_hash: str) -> Dict[str, int]:
-        nodes, edges = await self.list_graph_for_file(
-            tenant_id=tenant_id,
-            file_hash=file_hash,
-            node_types=None,
-            relation_types=None,
-            limit_nodes=5000,
-            limit_edges=10000,
-        )
-        return {"node_count": len(nodes), "edge_count": len(edges)}
-
-    async def list_graph_for_file(
+    async def list_nodes_by_graph_file(
         self,
         *,
         tenant_id: str,
-        file_hash: str,
-        node_types: Optional[Iterable[str]],
-        relation_types: Optional[Iterable[str]],
-        limit_nodes: int,
-        limit_edges: int,
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        graph_file = await self.get_graph_file(tenant_id=tenant_id, file_hash=file_hash)
-        if not graph_file:
-            return [], []
-
-        graph_file_id = str(graph_file.get("graph_file_id") or "").strip() or None
-        active_version_id = str(graph_file.get("active_version_id") or "").strip() or None
-        workspace_id = str(graph_file.get("workspace_id") or "").strip() or None
-        node_types_set = {str(x) for x in (node_types or []) if str(x).strip()}
-        relation_types_set = {str(x) for x in (relation_types or []) if str(x).strip()}
-        limit_nodes = max(20, min(5000, int(limit_nodes)))
-        limit_edges = max(20, min(10000, int(limit_edges)))
+        graph_file_id: str,
+        node_types: Optional[Sequence[str]] = None,
+        limit: int = 5000,
+    ) -> List[Dict[str, Any]]:
+        graph_file_value = str(graph_file_id or "").strip()
+        if not graph_file_value:
+            return []
+        normalized_node_types = [str(value).strip() for value in (node_types or []) if str(value).strip()]
+        limit_value = max(1, min(50000, int(limit)))
 
         if not self._pool:
-            def _select_nodes(
-                *,
-                graph_version: Optional[str] = None,
-                graph_file: Optional[str] = None,
-                legacy: bool = False,
-            ) -> List[Dict[str, Any]]:
-                rows = []
-                for value in self._nodes_by_id.values():
-                    if value.get("tenant_id") != tenant_id:
-                        continue
-                    if graph_version:
-                        if str(value.get("graph_version_id") or "") != graph_version:
-                            continue
-                    elif graph_file:
-                        if str(value.get("graph_file_id") or "") != graph_file:
-                            continue
-                    elif legacy:
-                        if not _row_matches_graph_scope(
-                            value,
-                            file_hash=file_hash,
-                            workspace_id=workspace_id,
-                            graph_file_id=graph_file_id,
-                            graph_version_id=active_version_id,
-                        ):
-                            continue
-                    else:
-                        continue
-                    rows.append(dict(value))
-                if node_types_set:
-                    rows = [item for item in rows if str(item.get("node_type")) in node_types_set]
-                rows.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-                return rows[:limit_nodes]
-
-            def _select_edges(
-                node_rows: List[Dict[str, Any]],
-                *,
-                graph_version: Optional[str] = None,
-                graph_file: Optional[str] = None,
-            ) -> List[Dict[str, Any]]:
-                node_ids = {str(item.get("node_id")) for item in node_rows}
-                rows = []
-                for value in self._edges_by_id.values():
-                    if value.get("tenant_id") != tenant_id:
-                        continue
-                    if str(value.get("source_node_id")) not in node_ids or str(value.get("target_node_id")) not in node_ids:
-                        continue
-                    if graph_version and str(value.get("graph_version_id") or "") != graph_version:
-                        continue
-                    if not graph_version and graph_file and str(value.get("graph_file_id") or "") != graph_file:
-                        continue
-                    rows.append(dict(value))
-                if relation_types_set:
-                    rows = [item for item in rows if str(item.get("relation_type")) in relation_types_set]
-                rows.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-                return rows[:limit_edges]
-
-            for scope in (
-                {"graph_version": active_version_id, "graph_file": None, "legacy": False},
-                {"graph_version": None, "graph_file": graph_file_id, "legacy": False},
-                {"graph_version": None, "graph_file": None, "legacy": True},
-            ):
-                nodes = _select_nodes(**scope)
-                if not nodes:
+            items: List[Dict[str, Any]] = []
+            for row in self._nodes_by_id.values():
+                if str(row.get("tenant_id") or "") != tenant_id:
                     continue
-                edges = _select_edges(nodes, graph_version=scope["graph_version"], graph_file=scope["graph_file"])
-                return nodes, edges
-            return [], []
+                if str(row.get("graph_file_id") or "") != graph_file_value:
+                    continue
+                if normalized_node_types and str(row.get("node_type") or "") not in normalized_node_types:
+                    continue
+                items.append(dict(row))
+            items.sort(
+                key=lambda item: (
+                    str(item.get("updated_at") or ""),
+                    str(item.get("created_at") or ""),
+                    str(item.get("node_id") or ""),
+                ),
+                reverse=True,
+            )
+            return items[:limit_value]
 
-        async def _query_nodes_strict(column_name: str, value: str) -> List[Dict[str, Any]]:
-            clauses = ["tenant_id = $1", f"{column_name} = $2"]
-            params: List[Any] = [tenant_id, value]
-            idx = 3
-            if node_types_set:
-                clauses.append(f"node_type = ANY(${idx}::text[])")
-                params.append(list(node_types_set))
-                idx += 1
-            sql = f"""
-                SELECT *
-                FROM module4.nodes
-                WHERE {' AND '.join(clauses)}
-                ORDER BY updated_at DESC
-                LIMIT ${idx}
-            """
-            params.append(limit_nodes)
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(sql, *params)
-            return [_to_plain(dict(row)) for row in rows]
+        clauses = ["tenant_id = $1", "graph_file_id = $2::uuid"]
+        params: List[Any] = [tenant_id, graph_file_value]
+        idx = 3
+        if normalized_node_types:
+            clauses.append(f"node_type = ANY(${idx}::text[])")
+            params.append(normalized_node_types)
+            idx += 1
+        sql = (
+            f"SELECT * FROM module4.nodes WHERE {' AND '.join(clauses)} "
+            f"ORDER BY updated_at DESC, created_at DESC, node_id DESC LIMIT ${idx}"
+        )
+        params.append(limit_value)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_to_plain(dict(row)) for row in rows]
 
-        async def _query_nodes_legacy() -> List[Dict[str, Any]]:
-            scope_clauses = ["tenant_id = $1"]
-            params: List[Any] = [tenant_id]
-            idx = 2
-            scope_parts: List[str] = []
-            if file_hash:
-                scope_parts.append(f"(attrs->>'file_hash') = ${idx}")
-                params.append(file_hash)
-                idx += 1
-                scope_parts.append(f"canonical_key = ${idx}")
-                params.append(file_hash)
-                idx += 1
-            if workspace_id:
-                scope_parts.append(f"(attrs->>'workspace_id') = ${idx}")
-                params.append(workspace_id)
-                idx += 1
-            if scope_parts:
-                scope_clauses.append(f"({' OR '.join(scope_parts)})")
-            if node_types_set:
-                scope_clauses.append(f"node_type = ANY(${idx}::text[])")
-                params.append(list(node_types_set))
-                idx += 1
-            sql = f"""
-                SELECT *
-                FROM module4.nodes
-                WHERE {' AND '.join(scope_clauses)}
-                ORDER BY updated_at DESC
-                LIMIT ${idx}
-            """
-            params.append(limit_nodes)
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(sql, *params)
-            return [_to_plain(dict(row)) for row in rows]
-
-        async def _query_edges(
-            node_rows: List[Dict[str, Any]],
-            *,
-            column_name: Optional[str] = None,
-            value: Optional[str] = None,
-        ) -> List[Dict[str, Any]]:
-            node_ids = [str(item.get("node_id")) for item in node_rows if str(item.get("node_id") or "").strip()]
-            if not node_ids:
-                return []
-            edge_params: List[Any] = [tenant_id, node_ids]
-            edge_idx = 3
-            edge_where = [
-                "tenant_id = $1",
-                "source_node_id::text = ANY($2::text[])",
-                "target_node_id::text = ANY($2::text[])",
-            ]
-            if column_name and value:
-                edge_where.append(f"{column_name} = ${edge_idx}")
-                edge_params.append(value)
-                edge_idx += 1
-            if relation_types_set:
-                edge_where.append(f"relation_type = ANY(${edge_idx}::text[])")
-                edge_params.append(list(relation_types_set))
-                edge_idx += 1
-            edge_sql = f"""
-                SELECT *
-                FROM module4.edges
-                WHERE {' AND '.join(edge_where)}
-                ORDER BY updated_at DESC
-                LIMIT ${edge_idx}
-            """
-            edge_params.append(limit_edges)
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(edge_sql, *edge_params)
-            return [_to_plain(dict(row)) for row in rows]
-
-        for column_name, value in (("graph_version_id", active_version_id), ("graph_file_id", graph_file_id)):
-            if not value:
-                continue
-            nodes = await _query_nodes_strict(column_name, value)
-            if not nodes:
-                continue
-            edges = await _query_edges(nodes, column_name=column_name, value=value)
-            return nodes, edges
-
-        nodes = await _query_nodes_legacy()
-        if not nodes:
-            return [], []
-        edges = await _query_edges(nodes)
-        return nodes, edges
-
-    async def list_neighborhood_for_file(
+    async def list_edges_by_graph_file(
         self,
         *,
         tenant_id: str,
-        file_hash: str,
-        node_id: str,
-        depth: int,
-        relation_types: Optional[Iterable[str]],
-        limit: int,
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        limit = max(20, min(5000, int(limit)))
-        depth = max(1, min(4, int(depth)))
-        nodes, edges = await self.list_graph_for_file(
-            tenant_id=tenant_id,
-            file_hash=file_hash,
-            node_types=None,
-            relation_types=relation_types,
-            limit_nodes=max(limit * 4, 400),
-            limit_edges=max(limit * 8, 800),
-        )
-        if not nodes:
-            return [], []
+        graph_file_id: str,
+        relation_types: Optional[Sequence[str]] = None,
+        node_ids: Optional[Sequence[str]] = None,
+        limit: int = 10000,
+    ) -> List[Dict[str, Any]]:
+        graph_file_value = str(graph_file_id or "").strip()
+        if not graph_file_value:
+            return []
+        normalized_relation_types = [
+            str(value).strip() for value in (relation_types or []) if str(value).strip()
+        ]
+        normalized_node_ids = [str(value).strip() for value in (node_ids or []) if str(value).strip()]
+        node_id_set = set(normalized_node_ids)
+        limit_value = max(1, min(100000, int(limit)))
 
-        node_map = {str(item.get("node_id")): item for item in nodes}
-        root = node_map.get(str(node_id))
-        if not root:
-            return [], []
-
-        visited = {str(node_id)}
-        frontier = {str(node_id)}
-        selected_edges: Dict[str, Dict[str, Any]] = {}
-        for _ in range(depth):
-            if not frontier or len(visited) >= limit:
-                break
-            next_frontier = set()
-            for edge in edges:
-                src = str(edge.get("source_node_id") or "")
-                tgt = str(edge.get("target_node_id") or "")
-                if src not in frontier and tgt not in frontier:
+        if not self._pool:
+            items: List[Dict[str, Any]] = []
+            for row in self._edges_by_id.values():
+                if str(row.get("tenant_id") or "") != tenant_id:
                     continue
-                selected_edges[str(edge.get("edge_id"))] = edge
-                for candidate in (src, tgt):
-                    if candidate and candidate not in visited and len(visited) < limit:
-                        visited.add(candidate)
-                        next_frontier.add(candidate)
-            frontier = next_frontier
+                if str(row.get("graph_file_id") or "") != graph_file_value:
+                    continue
+                if normalized_relation_types and str(row.get("relation_type") or "") not in normalized_relation_types:
+                    continue
+                source_node_id = str(row.get("source_node_id") or "")
+                target_node_id = str(row.get("target_node_id") or "")
+                if node_id_set and (source_node_id not in node_id_set or target_node_id not in node_id_set):
+                    continue
+                items.append(dict(row))
+            items.sort(
+                key=lambda item: (
+                    str(item.get("updated_at") or ""),
+                    str(item.get("created_at") or ""),
+                    str(item.get("edge_id") or ""),
+                ),
+                reverse=True,
+            )
+            return items[:limit_value]
 
-        selected_nodes = [dict(node_map[item]) for item in visited if item in node_map]
-        selected_nodes.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-        selected_edge_rows = list(selected_edges.values())
-        selected_edge_rows.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-        return selected_nodes[:limit], selected_edge_rows[: limit * 2]
+        clauses = ["tenant_id = $1", "graph_file_id = $2::uuid"]
+        params: List[Any] = [tenant_id, graph_file_value]
+        idx = 3
+        if normalized_relation_types:
+            clauses.append(f"relation_type = ANY(${idx}::text[])")
+            params.append(normalized_relation_types)
+            idx += 1
+        if normalized_node_ids:
+            clauses.append(f"source_node_id::text = ANY(${idx}::text[])")
+            clauses.append(f"target_node_id::text = ANY(${idx}::text[])")
+            params.append(normalized_node_ids)
+            idx += 1
+        sql = (
+            f"SELECT * FROM module4.edges WHERE {' AND '.join(clauses)} "
+            f"ORDER BY updated_at DESC, created_at DESC, edge_id DESC LIMIT ${idx}"
+        )
+        params.append(limit_value)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_to_plain(dict(row)) for row in rows]
 
     async def get_node(self, *, tenant_id: str, node_id: str) -> Optional[Dict[str, Any]]:
         node_id = str(node_id).strip()
@@ -2598,198 +2504,3 @@ class Module4Storage:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, tenant_id, node_id)
         return _to_plain(dict(row)) if row else None
-
-    async def list_neighborhood(
-        self,
-        *,
-        tenant_id: str,
-        node_id: str,
-        depth: int,
-        relation_types: Optional[Iterable[str]],
-        limit: int,
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        relation_types_set = {str(x) for x in (relation_types or []) if str(x).strip()}
-        depth = max(1, min(4, int(depth)))
-        limit = max(20, min(5000, int(limit)))
-
-        root = await self.get_node(tenant_id=tenant_id, node_id=node_id)
-        if not root:
-            return [], []
-
-        if not self._pool:
-            visited = {str(node_id)}
-            frontier = {str(node_id)}
-            selected_edges: Dict[str, Dict[str, Any]] = {}
-            all_edges = [dict(v) for v in self._edges_by_id.values() if v.get("tenant_id") == tenant_id]
-            if relation_types_set:
-                all_edges = [edge for edge in all_edges if edge.get("relation_type") in relation_types_set]
-            all_edges.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-            for _ in range(depth):
-                if not frontier or len(visited) >= limit:
-                    break
-                next_frontier = set()
-                for edge in all_edges:
-                    src = str(edge.get("source_node_id") or "")
-                    tgt = str(edge.get("target_node_id") or "")
-                    if src not in frontier and tgt not in frontier:
-                        continue
-                    selected_edges[str(edge.get("edge_id"))] = edge
-                    for candidate in (src, tgt):
-                        if candidate and candidate not in visited and len(visited) < limit:
-                            visited.add(candidate)
-                            next_frontier.add(candidate)
-                frontier = next_frontier
-            nodes = [dict(self._nodes_by_id[nid]) for nid in visited if nid in self._nodes_by_id]
-            nodes.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-            edges = list(selected_edges.values())
-            edges.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-            return nodes[:limit], edges[: limit * 2]
-
-        visited = {str(node_id)}
-        frontier = {str(node_id)}
-        selected_edges: Dict[str, Dict[str, Any]] = {}
-        async with self._pool.acquire() as conn:
-            for _ in range(depth):
-                if not frontier or len(visited) >= limit:
-                    break
-                frontier_list = list(frontier)
-                next_frontier = set()
-                if relation_types_set:
-                    rows = await conn.fetch(
-                        """
-                        SELECT *
-                        FROM module4.edges
-                        WHERE tenant_id = $1
-                          AND relation_type = ANY($2::text[])
-                          AND (
-                            source_node_id::text = ANY($3::text[])
-                            OR target_node_id::text = ANY($3::text[])
-                          )
-                        ORDER BY updated_at DESC
-                        LIMIT $4
-                        """,
-                        tenant_id,
-                        list(relation_types_set),
-                        frontier_list,
-                        max(limit * 3, 200),
-                    )
-                else:
-                    rows = await conn.fetch(
-                        """
-                        SELECT *
-                        FROM module4.edges
-                        WHERE tenant_id = $1
-                          AND (
-                            source_node_id::text = ANY($2::text[])
-                            OR target_node_id::text = ANY($2::text[])
-                          )
-                        ORDER BY updated_at DESC
-                        LIMIT $3
-                        """,
-                        tenant_id,
-                        frontier_list,
-                        max(limit * 3, 200),
-                    )
-                for row in rows:
-                    edge = _to_plain(dict(row))
-                    selected_edges[str(edge.get("edge_id"))] = edge
-                    src = str(edge.get("source_node_id") or "")
-                    tgt = str(edge.get("target_node_id") or "")
-                    for candidate in (src, tgt):
-                        if candidate and candidate not in visited and len(visited) < limit:
-                            visited.add(candidate)
-                            next_frontier.add(candidate)
-                frontier = next_frontier
-
-            node_rows = await conn.fetch(
-                """
-                SELECT *
-                FROM module4.nodes
-                WHERE tenant_id = $1 AND node_id::text = ANY($2::text[])
-                ORDER BY updated_at DESC
-                """,
-                tenant_id,
-                list(visited),
-            )
-        nodes = [_to_plain(dict(row)) for row in node_rows]
-        edges = list(selected_edges.values())
-        edges.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-        return nodes[:limit], edges[: limit * 2]
-
-    async def list_graph(
-        self,
-        *,
-        tenant_id: str,
-        node_types: Optional[Iterable[str]],
-        relation_types: Optional[Iterable[str]],
-        limit_nodes: int,
-        limit_edges: int,
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        node_types_set = {str(x) for x in (node_types or []) if str(x).strip()}
-        relation_types_set = {str(x) for x in (relation_types or []) if str(x).strip()}
-        limit_nodes = max(20, min(5000, int(limit_nodes)))
-        limit_edges = max(20, min(10000, int(limit_edges)))
-
-        if not self._pool:
-            nodes = [dict(v) for v in self._nodes_by_id.values() if v.get("tenant_id") == tenant_id]
-            if node_types_set:
-                nodes = [n for n in nodes if n.get("node_type") in node_types_set]
-            nodes.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-            nodes = nodes[:limit_nodes]
-            node_ids = {n["node_id"] for n in nodes}
-
-            edges = [dict(v) for v in self._edges_by_id.values() if v.get("tenant_id") == tenant_id]
-            edges = [e for e in edges if e.get("source_node_id") in node_ids and e.get("target_node_id") in node_ids]
-            if relation_types_set:
-                edges = [e for e in edges if e.get("relation_type") in relation_types_set]
-            edges.sort(key=lambda x: x.get("updated_at") or _now(), reverse=True)
-            edges = edges[:limit_edges]
-            return nodes, edges
-
-        async with self._pool.acquire() as conn:
-            if node_types_set:
-                node_rows = await conn.fetch(
-                    """
-                    SELECT *
-                    FROM module4.nodes
-                    WHERE tenant_id = $1 AND node_type = ANY($2::text[])
-                    ORDER BY updated_at DESC
-                    LIMIT $3
-                    """,
-                    tenant_id,
-                    list(node_types_set),
-                    limit_nodes,
-                )
-            else:
-                node_rows = await conn.fetch(
-                    "SELECT * FROM module4.nodes WHERE tenant_id = $1 ORDER BY updated_at DESC LIMIT $2",
-                    tenant_id,
-                    limit_nodes,
-                )
-            nodes = [_to_plain(dict(r)) for r in node_rows]
-            node_ids = {n["node_id"] for n in nodes}
-            if not node_ids:
-                return [], []
-            if relation_types_set:
-                edge_rows = await conn.fetch(
-                    """
-                    SELECT *
-                    FROM module4.edges
-                    WHERE tenant_id = $1
-                      AND relation_type = ANY($2::text[])
-                    ORDER BY updated_at DESC
-                    LIMIT $3
-                    """,
-                    tenant_id,
-                    list(relation_types_set),
-                    max(limit_edges, 2000),
-                )
-            else:
-                edge_rows = await conn.fetch(
-                    "SELECT * FROM module4.edges WHERE tenant_id = $1 ORDER BY updated_at DESC LIMIT $2",
-                    tenant_id,
-                    max(limit_edges, 2000),
-                )
-            edges = [_to_plain(dict(r)) for r in edge_rows]
-            edges = [e for e in edges if e.get("source_node_id") in node_ids and e.get("target_node_id") in node_ids]
-            return nodes, edges[:limit_edges]

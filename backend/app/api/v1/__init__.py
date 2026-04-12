@@ -1,0 +1,2 @@
+"""Versioned gateway API namespace."""
+

@@ -1,6 +1,7 @@
 const path = require('path');
 const { spawn } = require('child_process');
 const {
+  buildManagedRuntimeEnv,
   buildPythonRuntimeEnv,
   buildReloadArgs,
   formatCommand,
@@ -13,7 +14,6 @@ const module4Dir = path.join(rootDir, 'backend', 'module4');
 const module4PythonExec = resolvePythonExec({
   overrideExec: process.env.MODULE4_PYTHON,
   preferredVenvDirs: [
-    path.join(module4Dir, '.venv'),
     path.join(rootDir, '.venv-module4-py311'),
     path.join(rootDir, '.venv'),
   ],
@@ -46,7 +46,10 @@ const child = spawn(module4PythonExec, args, {
   stdio: 'inherit',
   shell: false,
   env: buildPythonRuntimeEnv({
-    baseEnv: process.env,
+    baseEnv: buildManagedRuntimeEnv({
+      baseEnv: process.env,
+      scopes: ['backend', 'module4'],
+    }),
     pythonExec: module4PythonExec,
   }),
 });

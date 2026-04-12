@@ -81,7 +81,22 @@ CREATE TABLE IF NOT EXISTS module4.evidence (
   tenant_id TEXT NOT NULL DEFAULT 'default',
   evidence_key TEXT,
   doc_id UUID REFERENCES module4.documents(doc_id) ON DELETE CASCADE,
-  object_type TEXT NOT NULL CHECK (object_type IN ('field','table','figure','text')),
+  object_type TEXT NOT NULL CHECK (
+    object_type IN (
+      'field',
+      'table',
+      'figure',
+      'image',
+      'text',
+      'document',
+      'chunk',
+      'entity',
+      'relationship',
+      'community',
+      'community_report',
+      'covariate'
+    )
+  ),
   object_id TEXT,
   ref_id TEXT,
   page_no INT,
