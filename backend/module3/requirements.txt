@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+requests
+openpyxl
+python-docx
+pandas
+sqlalchemy
+psycopg[binary]
