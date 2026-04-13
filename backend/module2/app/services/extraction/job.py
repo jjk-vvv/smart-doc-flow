@@ -90,6 +90,7 @@ class ExtractionJobRuntime:
         self.persist_markers: Dict[str, float] = {}
 
     def serialize_job(self, job: Any, *, include_documents: bool = False) -> Dict[str, Any]:
+        runtime_spec = self.runtime_specs.get(str(getattr(job, "job_id", "") or "").strip()) or {}
         total_files = max(1, int(job.total_files or 0))
         serialized_files: List[Dict[str, Any]] = []
         file_progress_values: List[float] = []
@@ -154,6 +155,7 @@ class ExtractionJobRuntime:
             "job_id": job.job_id,
             "status": job.status,
             "terminal": job.terminal(),
+            "tenant_id": str(runtime_spec.get("tenant_id") or "").strip(),
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "progress": {

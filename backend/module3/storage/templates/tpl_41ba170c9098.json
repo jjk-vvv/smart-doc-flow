@@ -1,0 +1,284 @@
+{
+  "template_id": "tpl_41ba170c9098",
+  "filename": "2025山东省环境空气质量监测数据信息.xlsx",
+  "path": "D:\\smart_doc_flow\\smart-doc-flow\\backend\\module3\\storage\\templates\\tpl_41ba170c9098__2025山东省环境空气质量监测数据信息.xlsx",
+  "sheet_name": "air_station_hour202512171921_10",
+  "header_row": 1,
+  "write_row": 2,
+  "table_index": null,
+  "template_type": "xlsx",
+  "fields": [
+    {
+      "key": "序号",
+      "header": "序号",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "A1",
+      "write_cell": "A2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 1,
+      "write_row": 2,
+      "aliases": [
+        "序号"
+      ]
+    },
+    {
+      "key": "监测时间",
+      "header": "监测时间",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "B1",
+      "write_cell": "B2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 2,
+      "write_row": 2,
+      "aliases": [
+        "监测时间"
+      ]
+    },
+    {
+      "key": "城市",
+      "header": "城市",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "C1",
+      "write_cell": "C2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 3,
+      "write_row": 2,
+      "aliases": [
+        "城市"
+      ]
+    },
+    {
+      "key": "区",
+      "header": "区",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "D1",
+      "write_cell": "D2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 4,
+      "write_row": 2,
+      "aliases": [
+        "区"
+      ]
+    },
+    {
+      "key": "站点编码",
+      "header": "站点编码",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "E1",
+      "write_cell": "E2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 5,
+      "write_row": 2,
+      "aliases": [
+        "站点编码"
+      ]
+    },
+    {
+      "key": "站点名称",
+      "header": "站点名称",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "F1",
+      "write_cell": "F2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 6,
+      "write_row": 2,
+      "aliases": [
+        "站点名称"
+      ]
+    },
+    {
+      "key": "空气质量指数",
+      "header": "空气质量指数",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "G1",
+      "write_cell": "G2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 7,
+      "write_row": 2,
+      "aliases": [
+        "空气质量指数"
+      ]
+    },
+    {
+      "key": "二氧化硫监测值",
+      "header": "二氧化硫监测值",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "H1",
+      "write_cell": "H2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 8,
+      "write_row": 2,
+      "aliases": [
+        "二氧化硫监测值"
+      ]
+    },
+    {
+      "key": "二氧化氮监测值",
+      "header": "二氧化氮监测值",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "I1",
+      "write_cell": "I2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 9,
+      "write_row": 2,
+      "aliases": [
+        "二氧化氮监测值"
+      ]
+    },
+    {
+      "key": "PM10监测值",
+      "header": "PM10监测值",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "J1",
+      "write_cell": "J2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 10,
+      "write_row": 2,
+      "aliases": [
+        "PM10监测值"
+      ]
+    },
+    {
+      "key": "PM2.5监测值",
+      "header": "PM2.5监测值",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "K1",
+      "write_cell": "K2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 11,
+      "write_row": 2,
+      "aliases": [
+        "PM2.5监测值"
+      ]
+    },
+    {
+      "key": "一氧化碳监测值",
+      "header": "一氧化碳监测值",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "L1",
+      "write_cell": "L2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 12,
+      "write_row": 2,
+      "aliases": [
+        "一氧化碳监测值"
+      ]
+    },
+    {
+      "key": "臭氧监测值",
+      "header": "臭氧监测值",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "M1",
+      "write_cell": "M2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 13,
+      "write_row": 2,
+      "aliases": [
+        "臭氧监测值"
+      ]
+    },
+    {
+      "key": "首要污染物",
+      "header": "首要污染物",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "N1",
+      "write_cell": "N2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 14,
+      "write_row": 2,
+      "aliases": [
+        "首要污染物"
+      ]
+    },
+    {
+      "key": "污染类型",
+      "header": "污染类型",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "O1",
+      "write_cell": "O2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 15,
+      "write_row": 2,
+      "aliases": [
+        "污染类型"
+      ]
+    },
+    {
+      "key": "数据标记",
+      "header": "数据标记",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "P1",
+      "write_cell": "P2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 16,
+      "write_row": 2,
+      "aliases": [
+        "数据标记"
+      ]
+    },
+    {
+      "key": "创建时间",
+      "header": "创建时间",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "Q1",
+      "write_cell": "Q2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 17,
+      "write_row": 2,
+      "aliases": [
+        "创建时间"
+      ]
+    },
+    {
+      "key": "最后更新时间",
+      "header": "最后更新时间",
+      "sheet": "air_station_hour202512171921_10",
+      "cell": "R1",
+      "write_cell": "R2",
+      "unit": null,
+      "template_type": "xlsx",
+      "table_index": null,
+      "col_idx": 18,
+      "write_row": 2,
+      "aliases": [
+        "最后更新时间"
+      ]
+    }
+  ],
+  "tables": [],
+  "created_at": "2026-04-12T15:38:41.666648"
+}

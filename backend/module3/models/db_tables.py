@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -13,6 +13,13 @@ class TemplateTable(Base):
     __tablename__ = "module3_templates"
 
     template_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        default="default",
+        server_default=text("'default'"),
+        index=True,
+    )
     filename: Mapped[str] = mapped_column(Text, nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)
     sheet_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -29,6 +36,13 @@ class DocsetTable(Base):
     __tablename__ = "module3_docsets"
 
     doc_set_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        default="default",
+        server_default=text("'default'"),
+        index=True,
+    )
     count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -59,6 +73,13 @@ class RunTable(Base):
     __tablename__ = "module3_runs"
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        default="default",
+        server_default=text("'default'"),
+        index=True,
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     filled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

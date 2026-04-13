@@ -8,8 +8,52 @@ from dotenv import load_dotenv
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+BACKEND_DIR = BASE_DIR.parent
+REPO_ROOT = BACKEND_DIR.parent
 ENV_PATH = BASE_DIR / ".env"
-STORAGE_DIR = BASE_DIR / "storage"
+LEGACY_STORAGE_DIR = BASE_DIR / "storage"
+
+
+def _load_module3_env() -> None:
+    load_dotenv(dotenv_path=ENV_PATH, encoding="utf-8-sig", override=False)
+    custom_env_file = str(os.getenv("MODULE3_ENV_FILE", "") or "").strip()
+    if custom_env_file:
+        load_dotenv(dotenv_path=Path(custom_env_file), encoding="utf-8-sig", override=True)
+
+
+def _resolve_runtime_root() -> Path:
+    runtime_root = str(os.getenv("SMART_DOC_FLOW_RUNTIME_ROOT", "") or "").strip()
+    if runtime_root:
+        return Path(runtime_root).resolve()
+    return REPO_ROOT.resolve()
+
+
+def _resolve_data_root(runtime_root: Path) -> Path:
+    data_root = str(os.getenv("SMART_DOC_FLOW_DATA_ROOT", "") or "").strip()
+    if data_root:
+        return Path(data_root).resolve()
+    return (runtime_root / "runtime-data").resolve()
+
+
+def _resolve_storage_dir() -> Path:
+    explicit_storage_dir = str(os.getenv("MODULE3_STORAGE_DIR", "") or "").strip()
+    if explicit_storage_dir:
+        return Path(explicit_storage_dir).resolve()
+
+    runtime_root = _resolve_runtime_root()
+    managed_storage_dir = (_resolve_data_root(runtime_root) / "module3" / "storage").resolve()
+
+    # In managed runtime mode, always keep artifacts out of the source tree.
+    if str(os.getenv("SMART_DOC_FLOW_DATA_ROOT", "") or "").strip():
+        return managed_storage_dir
+
+    # Backward-compatible local fallback for direct standalone runs.
+    if LEGACY_STORAGE_DIR.exists() and not managed_storage_dir.exists():
+        return LEGACY_STORAGE_DIR.resolve()
+    return managed_storage_dir
+
+
+STORAGE_DIR = _resolve_storage_dir()
 TEMPLATES_DIR = STORAGE_DIR / "templates"
 DOCSETS_DIR = STORAGE_DIR / "docsets"
 RUNS_DIR = STORAGE_DIR / "runs"
@@ -48,7 +92,7 @@ def normalize_database_url(raw: str) -> str:
 
 
 def read_database_url() -> str:
-    load_dotenv(dotenv_path=ENV_PATH, encoding="utf-8-sig")
+    _load_module3_env()
     raw = (
         os.getenv("MODULE3_DATABASE_URL", "").strip()
         or os.getenv("MODULE3_DATABASE_DSN", "").strip()
@@ -59,7 +103,7 @@ def read_database_url() -> str:
 
 
 def read_runtime_settings(api_mode_override: str | None = None) -> dict[str, Any]:
-    load_dotenv(dotenv_path=ENV_PATH, encoding="utf-8-sig")
+    _load_module3_env()
 
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
@@ -96,13 +140,16 @@ __all__ = [
     "ALLOWED_SOURCE_SUFFIXES",
     "ALLOWED_TEMPLATE_SUFFIXES",
     "BASE_DIR",
+    "BACKEND_DIR",
     "DEFAULT_HEADER_ROW",
     "DEFAULT_PROMPT",
     "DEFAULT_WRITE_ROW",
     "DOCSETS_DIR",
     "ENV_PATH",
+    "LEGACY_STORAGE_DIR",
     "PREVIEW_CHAR_LIMIT",
     "PREVIEW_LINE_LIMIT",
+    "REPO_ROOT",
     "RUNS_DIR",
     "STORAGE_DIR",
     "TEMPLATES_DIR",

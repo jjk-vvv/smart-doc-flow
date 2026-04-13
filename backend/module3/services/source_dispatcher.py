@@ -78,6 +78,324 @@ def _non_empty_columns(values: list[str]) -> list[tuple[int, str]]:
     return [(idx, value) for idx, value in enumerate(values, start=1) if value]
 
 
+def _normalize_match_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(text or "")).lower()
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", normalized)
+
+
+def _row_filled_count(row: dict[str, str], headers: list[str]) -> int:
+    return sum(1 for header in headers if _cell_text(row.get(header, "")))
+
+
+def _rows_quality(rows: list[dict[str, str]], headers: list[str]) -> tuple[int, int]:
+    return len(rows), sum(_row_filled_count(row, headers) for row in rows)
+
+
+def _anchor_value(row: dict[str, str], anchor_header: str) -> str:
+    return _normalize_match_text(row.get(anchor_header, ""))
+
+
+def _contains_digit(text: str) -> bool:
+    return any(char.isdigit() for char in str(text or ""))
+
+
+def _resolve_word_row_roles(headers: list[str]) -> dict[str, str]:
+    anchor_header = headers[0] if headers else ""
+    unit_header = next((header for header in headers if "单位" in header), headers[1] if len(headers) > 1 else "")
+    value_header = next(
+        (
+            header
+            for header in headers
+            if any(token in header for token in ("产量", "数量", "数值", "总量", "值"))
+            and "增长" not in header
+            and "%" not in header
+            and "同比" not in header
+        ),
+        headers[2] if len(headers) > 2 else (headers[1] if len(headers) > 1 else ""),
+    )
+    yoy_header = next(
+        (header for header in headers if any(token in header for token in ("增长", "同比", "%", "增速", "变化"))),
+        headers[-1] if headers else "",
+    )
+    return {
+        "anchor": anchor_header,
+        "unit": unit_header,
+        "value": value_header,
+        "yoy": yoy_header,
+    }
+
+
+def _find_number_token(text: str, start: int = 0) -> tuple[str, int, int]:
+    index = max(start, 0)
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char.isdigit() or char in {"-", "−"}:
+            break
+        index += 1
+    if index >= length:
+        return "", -1, -1
+
+    end = index + 1
+    while end < length and (text[end].isdigit() or text[end] == "."):
+        end += 1
+    return text[index:end], index, end
+
+
+def _extract_anchor_metrics_from_text(
+    doc_text: str,
+    anchor_text: str,
+) -> tuple[str, str, str]:
+    anchor = str(anchor_text or "").strip()
+    if not anchor:
+        return "", "", ""
+
+    position = doc_text.find(anchor)
+    if position < 0:
+        return "", "", ""
+
+    window = doc_text[position : position + 180]
+    pivot = window.find("产量")
+    parse_start = pivot + 2 if pivot >= 0 else len(anchor)
+
+    value, _, value_end = _find_number_token(window, parse_start)
+    if not value:
+        return "", "", ""
+
+    unit_start = value_end
+    while unit_start < len(window) and window[unit_start] in {" ", "\t"}:
+        unit_start += 1
+    unit_end = unit_start
+    while unit_end < len(window) and window[unit_end] not in {",", "，", ";", "；", "。", "\n", "\r"}:
+        if window[unit_end] == "%":
+            break
+        unit_end += 1
+    unit = window[unit_start:unit_end].strip()
+
+    trend_keyword = ""
+    trend_pos = len(window)
+    for keyword in ("增长", "增⻓", "下降", "减少"):
+        hit = window.find(keyword)
+        if 0 <= hit < trend_pos:
+            trend_keyword = keyword
+            trend_pos = hit
+
+    rate = ""
+    if trend_keyword:
+        rate, _, _ = _find_number_token(window, trend_pos + len(trend_keyword))
+        if rate and trend_keyword in {"下降", "减少"} and not rate.startswith("-"):
+            rate = f"-{rate}"
+
+    return value.strip(), unit.strip(), rate.strip()
+
+
+def _repair_recall_row_from_source(
+    row: dict[str, str],
+    *,
+    doc_text: str,
+    roles: dict[str, str],
+) -> dict[str, str]:
+    anchor_header = roles.get("anchor", "")
+    value_header = roles.get("value", "")
+    unit_header = roles.get("unit", "")
+    yoy_header = roles.get("yoy", "")
+
+    anchor_text = str(row.get(anchor_header, "")).strip()
+    if not anchor_text:
+        return row
+
+    value = str(row.get(value_header, "")).strip() if value_header else ""
+    unit = str(row.get(unit_header, "")).strip() if unit_header else ""
+    yoy = str(row.get(yoy_header, "")).strip() if yoy_header else ""
+
+    needs_repair = False
+    if value_header and not _contains_digit(value):
+        needs_repair = True
+    if unit_header and not unit:
+        needs_repair = True
+    if yoy_header and yoy and not _contains_digit(yoy):
+        needs_repair = True
+
+    if not needs_repair:
+        return row
+
+    parsed_value, parsed_unit, parsed_rate = _extract_anchor_metrics_from_text(doc_text, anchor_text)
+    if not any((parsed_value, parsed_unit, parsed_rate)):
+        return row
+
+    repaired = dict(row)
+    if value_header and parsed_value and not _contains_digit(value):
+        repaired[value_header] = parsed_value
+    if unit_header and parsed_unit and not unit:
+        repaired[unit_header] = parsed_unit
+    if yoy_header and parsed_rate and (not yoy or not _contains_digit(yoy)):
+        repaired[yoy_header] = parsed_rate
+    return repaired
+
+
+def _build_word_recall_messages(
+    headers: list[str],
+    custom_prompt: str,
+    doc_text: str,
+    extracted_rows: list[dict[str, str]],
+) -> tuple[str, str]:
+    system_prompt = (
+        "You are a strict extraction completeness auditor. "
+        "Your job is to output a COMPLETE row list for the target headers based on the source text. "
+        "Return strict JSON only and do not include explanations."
+    )
+    user_prompt = (
+        f"[Target Headers]\n{json.dumps(headers, ensure_ascii=False)}\n\n"
+        f"[User Requirements]\n{custom_prompt}\n\n"
+        f"[Current Extracted Rows]\n{json.dumps(extracted_rows, ensure_ascii=False)}\n\n"
+        f"[Parsed Word Text]\n{doc_text}\n\n"
+        "Return JSON in this format only:\n"
+        '{\n  "rows": [\n    {"target_header_1": "value"}\n  ]\n}\n\n'
+        "Rules:\n"
+        "1) Keep every row key exactly equal to target headers.\n"
+        "2) Keep existing correct rows and补全遗漏行.\n"
+        "3) For semicolon-separated items (e.g. A; B; C), extract each item as a separate row.\n"
+        "4) If a value is unavailable, return an empty string.\n"
+        "5) Do not hallucinate facts not present in source text.\n"
+    )
+    return system_prompt, user_prompt
+
+
+def _extract_rows_with_word_recall_pass(
+    *,
+    headers: list[str],
+    prompt: str,
+    doc_text: str,
+    extracted_rows: list[dict[str, str]],
+    base_url: str,
+    api_key: str,
+    model: str,
+    api_mode: str,
+    logger: Callable[[str], None] | None = None,
+) -> list[dict[str, str]]:
+    if not extracted_rows or not doc_text.strip():
+        return []
+
+    system_prompt, user_prompt = _build_word_recall_messages(headers, prompt, doc_text, extracted_rows)
+    try:
+        if api_mode == "responses":
+            log_event(logger, "[recall] running Word completeness pass via /v1/responses")
+            model_text = request_text_responses(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+        else:
+            log_event(logger, "[recall] running Word completeness pass via /v1/chat/completions")
+            model_text = request_chat_completions(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                image_inputs=None,
+            )
+
+        parsed = parse_model_json(model_text)
+        rows = normalize_rows_output(headers, parsed)
+        log_event(logger, f"[recall] completeness pass returned rows={len(rows)}")
+        return rows
+    except Exception as exc:
+        log_event(logger, f"[recall skipped] completeness pass failed: {exc}")
+        return []
+
+
+def _merge_rows_with_word_recall(
+    *,
+    headers: list[str],
+    primary_rows: list[dict[str, str]],
+    recall_rows: list[dict[str, str]],
+    doc_text: str,
+) -> list[dict[str, str]]:
+    if not recall_rows or not primary_rows or not headers:
+        return primary_rows
+
+    roles = _resolve_word_row_roles(headers)
+    anchor_header = roles.get("anchor", "")
+    if not anchor_header:
+        return primary_rows
+
+    doc_norm = _normalize_match_text(doc_text)
+    result_rows = [dict(row) for row in primary_rows]
+    unit_header = roles.get("unit", "")
+    allowed_unit_tokens = {
+        _normalize_match_text(str(row.get(unit_header, "")).strip())
+        for row in primary_rows
+        if unit_header and str(row.get(unit_header, "")).strip()
+    }
+
+    def _rebuild_anchor_index() -> dict[str, int]:
+        index: dict[str, int] = {}
+        for row_idx, row in enumerate(result_rows):
+            anchor = _anchor_value(row, anchor_header)
+            if anchor and anchor not in index:
+                index[anchor] = row_idx
+        return index
+
+    anchor_index = _rebuild_anchor_index()
+    recall_anchor_order: list[str] = []
+    recall_rows_by_anchor: dict[str, dict[str, str]] = {}
+
+    for row in recall_rows:
+        anchor = _anchor_value(row, anchor_header)
+        if not anchor:
+            continue
+        if doc_norm and anchor not in doc_norm:
+            continue
+        repaired_row = _repair_recall_row_from_source(row, doc_text=doc_text, roles=roles)
+        if allowed_unit_tokens and unit_header:
+            unit_token = _normalize_match_text(str(repaired_row.get(unit_header, "")).strip())
+            if unit_token and unit_token not in allowed_unit_tokens and anchor not in anchor_index:
+                continue
+        if anchor not in recall_rows_by_anchor:
+            recall_anchor_order.append(anchor)
+            recall_rows_by_anchor[anchor] = repaired_row
+            continue
+        if _row_filled_count(repaired_row, headers) > _row_filled_count(recall_rows_by_anchor[anchor], headers):
+            recall_rows_by_anchor[anchor] = repaired_row
+
+    if not recall_rows_by_anchor:
+        return primary_rows
+
+    # First, improve existing rows without changing row order.
+    for anchor, row in recall_rows_by_anchor.items():
+        if anchor not in anchor_index:
+            continue
+        idx = anchor_index[anchor]
+        if _row_filled_count(row, headers) > _row_filled_count(result_rows[idx], headers):
+            result_rows[idx] = row
+
+    # Then, insert anchors that are truly missing, following recall relative order.
+    for anchor in recall_anchor_order:
+        if anchor in anchor_index:
+            continue
+        row = recall_rows_by_anchor[anchor]
+        anchor_pos = recall_anchor_order.index(anchor)
+        insert_at = len(result_rows)
+
+        for prev_anchor in reversed(recall_anchor_order[:anchor_pos]):
+            if prev_anchor in anchor_index:
+                insert_at = anchor_index[prev_anchor] + 1
+                break
+        else:
+            for next_anchor in recall_anchor_order[anchor_pos + 1 :]:
+                if next_anchor in anchor_index:
+                    insert_at = anchor_index[next_anchor]
+                    break
+
+        result_rows.insert(insert_at, row)
+        anchor_index = _rebuild_anchor_index()
+
+    return result_rows
+
+
 def read_excel_source_sheets(
     source_path: Path,
     *,
@@ -713,6 +1031,26 @@ def extract_rows_from_word_source(
         parsed_data = parse_model_json(repair_text)
 
     rows_values = normalize_rows_output(headers, parsed_data)
+    recall_rows = _extract_rows_with_word_recall_pass(
+        headers=headers,
+        prompt=prompt,
+        doc_text=doc_text,
+        extracted_rows=rows_values,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        api_mode=api_mode,
+        logger=logger,
+    )
+    merged_rows = _merge_rows_with_word_recall(
+        headers=headers,
+        primary_rows=rows_values,
+        recall_rows=recall_rows,
+        doc_text=doc_text,
+    )
+    if _rows_quality(merged_rows, headers) > _rows_quality(rows_values, headers):
+        rows_values = merged_rows
+        log_event(logger, f"[recall] merged rows improved to {len(rows_values)}")
     log_event(logger, f"[step2] normalized Word rows={len(rows_values)}")
     log_event(logger, "[normalized rows]\n" + json.dumps({"rows": rows_values}, ensure_ascii=False, indent=2))
     return rows_values

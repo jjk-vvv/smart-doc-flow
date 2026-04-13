@@ -395,8 +395,8 @@ def execute_web_run(run_id: str, request: WebRunRequest) -> None:
         append_run_log(run_id, message)
 
     try:
-        template_record = load_template_record(request.template_id)
-        docset_record = load_docset_record(request.doc_set_id)
+        template_record = load_template_record(request.template_id, owner_id=request.owner_id)
+        docset_record = load_docset_record(request.doc_set_id, owner_id=request.owner_id)
         settings = read_runtime_settings(request.api_mode)
 
         template_path = Path(template_record["path"]).resolve()

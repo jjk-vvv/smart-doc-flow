@@ -51,6 +51,7 @@ class ExtractionSettings:
     extract_job_cap: int
     shadow_poll_timeout_sec: float
     shadow_poll_interval_sec: float
+    job_tenant_guard_mode: str
     assistant1_mode: str
     assistant1_fallback_to_legacy: bool
     assistant1_context_max_source_chars: int
@@ -68,6 +69,9 @@ class ExtractionSettings:
         module2_sidecar_mode = _env_str("UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE", "auto").lower()
         if module2_sidecar_mode not in {"disabled", "auto", "managed"}:
             module2_sidecar_mode = "auto"
+        job_tenant_guard_mode = _env_str("UNIFIED_EXTRACT_JOB_TENANT_GUARD_MODE", "warn").lower()
+        if job_tenant_guard_mode not in {"compat", "warn", "strict"}:
+            job_tenant_guard_mode = "warn"
         return cls(
             module2_port_hint=_env_str("MODULE2_PORT", ""),
             artifact_root_dir=_env_str("MODULE2_ARTIFACT_ROOT_DIR", ""),
@@ -90,6 +94,7 @@ class ExtractionSettings:
             extract_job_cap=max(16, _env_int("MODULE2_EXTRACT_JOB_CAP", 240)),
             shadow_poll_timeout_sec=max(120.0, _env_float("UNIFIED_EXTRACT_SHADOW_POLL_TIMEOUT_SEC", 2700.0)),
             shadow_poll_interval_sec=max(0.5, _env_float("UNIFIED_EXTRACT_SHADOW_POLL_INTERVAL_SEC", 1.2)),
+            job_tenant_guard_mode=job_tenant_guard_mode,
             assistant1_mode=assistant1_mode,
             assistant1_fallback_to_legacy=_env_bool("UNIFIED_EXTRACT_ASSISTANT1_FALLBACK_TO_LEGACY", True),
             assistant1_context_max_source_chars=max(

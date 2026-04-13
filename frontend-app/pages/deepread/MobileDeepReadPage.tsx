@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   AlertTriangle,
-  ArrowRight,
   BarChart3,
+  Bot,
   Download,
   ExternalLink,
   FileSearch,
@@ -12,20 +12,34 @@ import {
   Loader2,
   RefreshCcw,
   Table2,
-  UploadCloud,
+  Trash2,
   Search,
-  ChevronRight,
   FileText,
   FileSpreadsheet,
   MonitorPlay,
   File,
-  MoreVertical,
+  Play,
+  RotateCcw,
+  UploadCloud,
+  X,
+  type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { parseErrorMessage } from '../../shared/api/client';
+import { MobileAssistantDialog } from './mobile/MobileAssistantDialog';
+import { MobileDocumentPreviewCard } from './mobile/MobileDocumentPreviewCard';
 import TraceChartPreview from '../../components/trace/TraceChartPreview';
 import headerIllustration from '../../assets/插图1.png';
+import bodyIllustration from '../../assets/插图二.png';
+import allIcon from '../../assets/文档.png';
+import pdfIcon from '../../assets/pdf.png';
+import wordIcon from '../../assets/WORD.png';
+import excelIcon from '../../assets/xlsx.png';
+import txtIcon from '../../assets/txt.png';
 import {
+  requestExtractionJobCancelFile,
+  requestExtractionJobCreateWithRetry,
+  requestExtractionJobStatus,
   requestTraceLocate,
   resolveExtractBase,
   resolveExtractArtifactUrlFromTraceHit,
@@ -40,6 +54,7 @@ import {
   type TraceHit,
   writeExtractionDocuments,
 } from '../../shared/state/extractionDocuments';
+import type { AssistantCitation } from './assistant/types';
 import {
   getTraceChartPointCount,
   getTraceChartSpec,
@@ -47,18 +62,39 @@ import {
   getTraceChartTitle,
 } from '../../shared/trace/chartSpec';
 
-type MobileDeepReadPageProps = {
-  onOpenLegacyWorkbench: () => void;
-};
-
 type ArtifactTab = 'fields' | 'tables' | 'charts' | 'images';
 type TraceKind = 'field' | 'table' | 'chart' | 'image' | 'other';
+type QuickUploadShortcutId = 'all' | 'pdf' | 'word' | 'excel' | 'txt' | 'md';
+
+type QuickUploadShortcut = {
+  id: QuickUploadShortcutId;
+  label: string;
+  hint: string;
+  accept: string;
+  icon?: LucideIcon;
+  iconImg?: string;
+  color: string;
+  activeBg: string;
+  activeBorder: string;
+};
 
 type DataframePayload = {
   headers: string[];
   rows: string[][];
   rowCount: number;
   colCount: number;
+};
+
+type UploadTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+type UploadQueueItem = {
+  id: string;
+  file: File;
+  status: UploadTaskStatus;
+  message: string;
+  jobId?: string;
+  fileHash?: string;
+  resolvedFileName?: string;
 };
 
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
@@ -194,20 +230,136 @@ const toFileBaseName = (value: string): string => {
   return dotIdx > 0 ? safe.slice(0, dotIdx) : safe;
 };
 
-export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLegacyWorkbench }) => {
+const normalizeFileName = (value: string): string => String(value || '').trim().toLowerCase();
+
+const getFileExtension = (value: string): string => {
+  const normalized = normalizeFileName(value);
+  const dotIdx = normalized.lastIndexOf('.');
+  return dotIdx >= 0 ? normalized.slice(dotIdx + 1) : '';
+};
+
+const mergeDocuments = (
+  previousDocs: ExtractionDocument[],
+  incomingDocs: ExtractionDocument[],
+): ExtractionDocument[] => {
+  const previous = Array.isArray(previousDocs) ? previousDocs : [];
+  const incoming = Array.isArray(incomingDocs) ? incomingDocs : [];
+  if (incoming.length === 0) return previous;
+  const map = new Map<string, ExtractionDocument>();
+  previous.forEach((doc) => map.set(String(doc.file_hash || ''), doc));
+  incoming.forEach((doc) => map.set(String(doc.file_hash || ''), doc));
+  return Array.from(map.values());
+};
+
+const QUICK_UPLOAD_ALL_ACCEPT =
+  '.pdf,.doc,.docx,.xlsx,.txt,.md';
+
+const QUICK_UPLOAD_SCHEMA = JSON.stringify({
+  auto_infer: true,
+  prefer_llm: true,
+  max_auto_fields: 20,
+});
+
+const POLL_INTERVAL_MS = 900;
+const POLL_TIMEOUT_MS = 12 * 60 * 1000;
+const SUPPORTED_UPLOAD_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'txt', 'md']);
+
+const UPLOAD_STATUS_LABELS: Record<UploadTaskStatus, string> = {
+  queued: '待确认',
+  running: '解析中',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+};
+
+const QUICK_UPLOAD_SHORTCUTS: QuickUploadShortcut[] = [
+  {
+    id: 'all',
+    label: '全部',
+    hint: '支持所有',
+    accept: QUICK_UPLOAD_ALL_ACCEPT,
+    iconImg: allIcon,
+    color: 'text-slate-600',
+    activeBg: 'bg-slate-100 dark:bg-slate-500/10',
+    activeBorder: 'border-slate-300 dark:border-slate-500/30',
+  },
+  {
+    id: 'pdf',
+    label: 'PDF',
+    hint: '扫描/原生',
+    accept: '.pdf',
+    iconImg: pdfIcon,
+    color: 'text-red-500',
+    activeBg: 'bg-red-50 dark:bg-red-500/10',
+    activeBorder: 'border-red-200 dark:border-red-500/30',
+  },
+  {
+    id: 'word',
+    label: 'Word',
+    hint: 'doc/docx',
+    accept: '.doc,.docx',
+    iconImg: wordIcon,
+    color: 'text-blue-500',
+    activeBg: 'bg-blue-50 dark:bg-blue-500/10',
+    activeBorder: 'border-blue-200 dark:border-blue-500/30',
+  },
+  {
+    id: 'excel',
+    label: 'Excel',
+    hint: '数据表格',
+    accept: '.xlsx',
+    iconImg: excelIcon,
+    color: 'text-green-600',
+    activeBg: 'bg-green-50 dark:bg-green-500/10',
+    activeBorder: 'border-green-200 dark:border-green-500/30',
+  },
+  {
+    id: 'txt',
+    label: 'TXT',
+    hint: '纯文本',
+    accept: '.txt',
+    iconImg: txtIcon,
+    color: 'text-slate-600',
+    activeBg: 'bg-slate-100 dark:bg-slate-500/10',
+    activeBorder: 'border-slate-200 dark:border-slate-500/30',
+  },
+  {
+    id: 'md',
+    label: 'MD',
+    hint: 'Markdown',
+    accept: '.md',
+    iconImg: txtIcon, // Using txtIcon for md fallback
+    color: 'text-cyan-600',
+    activeBg: 'bg-cyan-50 dark:bg-cyan-500/10',
+    activeBorder: 'border-cyan-200 dark:border-cyan-500/30',
+  },
+];
+
+export const MobileDeepReadPage: React.FC = () => {
   const [documents, setDocuments] = useState<ExtractionDocument[]>([]);
   const [activeDocHash, setActiveDocHash] = useState('');
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [activeUploadShortcut, setActiveUploadShortcut] = useState<QuickUploadShortcutId>('all');
   const [activeTab, setActiveTab] = useState<ArtifactTab>('fields');
   const [traceHits, setTraceHits] = useState<TraceHit[]>([]);
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceError, setTraceError] = useState('');
   const [apiBaseHint, setApiBaseHint] = useState(() => resolveExtractBase(''));
   const [downloadMessage, setDownloadMessage] = useState('');
+  const [uploadMessage, setUploadMessage] = useState('');
+  const [toastMessage, setToastMessage] = useState('');
+  const [pendingRemoveDoc, setPendingRemoveDoc] = useState<ExtractionDocument | null>(null);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [expandedTableKeys, setExpandedTableKeys] = useState<string[]>([]);
   const [traceRefreshNonce, setTraceRefreshNonce] = useState(0);
   const hasSanitizedInitialDocumentsRef = useRef(false);
+  const quickUploadInputRef = useRef<HTMLInputElement>(null);
+  const cancelledUploadIdsRef = useRef<Set<string>>(new Set());
+  const uploadQueueRef = useRef<UploadQueueItem[]>([]);
+  const documentsRef = useRef<ExtractionDocument[]>([]);
+  const sourceFilesByHashRef = useRef<Record<string, File>>({});
+  const [sourceFilesByHash, setSourceFilesByHash] = useState<Record<string, File>>({});
 
   useEffect(() => {
     const sync = () => {
@@ -227,28 +379,442 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
     return subscribeExtractionUpdates(sync);
   }, []);
 
+  useEffect(() => {
+    documentsRef.current = documents;
+  }, [documents]);
+
+  useEffect(() => {
+    sourceFilesByHashRef.current = sourceFilesByHash;
+  }, [sourceFilesByHash]);
+
+  useEffect(() => {
+    uploadQueueRef.current = uploadQueue;
+  }, [uploadQueue]);
+
+  useEffect(() => {
+    const message = String(uploadMessage || '').trim();
+    if (!message) return undefined;
+    setToastMessage(message);
+    const timer = window.setTimeout(() => {
+      setToastMessage('');
+    }, 2200);
+    return () => window.clearTimeout(timer);
+  }, [uploadMessage]);
+
   const filteredDocuments = useMemo(() => {
     return documents.filter((doc) => {
       const fileName = (doc.file_name || '').toLowerCase();
       const query = searchQuery.trim().toLowerCase();
-      const matchesSearch = !query || fileName.includes(query);
-      
-      let matchesCategory = true;
-      if (activeCategory !== 'all') {
-        if (activeCategory === 'pdf') {
-          matchesCategory = fileName.endsWith('.pdf');
-        } else if (activeCategory === 'word') {
-          matchesCategory = fileName.endsWith('.doc') || fileName.endsWith('.docx');
-        } else if (activeCategory === 'excel') {
-          matchesCategory = fileName.endsWith('.xls') || fileName.endsWith('.xlsx') || fileName.endsWith('.csv');
-        } else if (activeCategory === 'ppt') {
-          matchesCategory = fileName.endsWith('.ppt') || fileName.endsWith('.pptx');
-        }
+      return !query || fileName.includes(query);
+    });
+  }, [documents, searchQuery]);
+
+  const handleQuickUploadShortcut = (shortcut: QuickUploadShortcut) => {
+    setActiveUploadShortcut(shortcut.id);
+    const input = quickUploadInputRef.current;
+    if (!input) return;
+    input.value = '';
+    input.accept = shortcut.accept;
+    input.click();
+  };
+
+  const updateUploadQueueItem = (
+    itemId: string,
+    updater: (current: UploadQueueItem) => UploadQueueItem,
+  ) => {
+    setUploadQueue((previous) =>
+      previous.map((item) => (item.id === itemId ? updater(item) : item)),
+    );
+  };
+
+  const removeUploadQueueItem = (itemId: string) => {
+    cancelledUploadIdsRef.current.delete(itemId);
+    setUploadQueue((previous) => previous.filter((item) => item.id !== itemId));
+  };
+
+  const clearFinishedUploadQueue = () => {
+    setUploadQueue((previous) =>
+      previous.filter((item) => item.status === 'queued' || item.status === 'running'),
+    );
+  };
+
+  const enqueueFilesForConfirmation = (files: File[]) => {
+    const supported = files.filter((file) =>
+      SUPPORTED_UPLOAD_EXTENSIONS.has(getFileExtension(file.name)),
+    );
+    if (supported.length === 0) {
+      setUploadMessage('仅支持 PDF / Word / Excel / TXT / MD 文件');
+      return;
+    }
+    const queuedItems: UploadQueueItem[] = supported.map((file) => ({
+      id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      status: 'queued',
+      message: '等待确认，点击开始解析',
+    }));
+    setUploadQueue((previous) => [...queuedItems, ...previous]);
+    setUploadMessage(`已加入 ${queuedItems.length} 个文件，请逐个点击“开始解析”`);
+  };
+
+  const pollExtractionJobTerminal = async (
+    jobId: string,
+    preferredBase: string,
+    itemId: string,
+  ): Promise<{
+    status: string;
+    errors: string[];
+    documents: ExtractionDocument[];
+    usedBase: string;
+  }> => {
+    let usedBase = preferredBase;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= POLL_TIMEOUT_MS) {
+      if (cancelledUploadIdsRef.current.has(itemId)) {
+        throw new Error('upload_item_cancelled');
+      }
+      const statusResult = await requestExtractionJobStatus(jobId, usedBase, true);
+      if (statusResult.usedBase) {
+        usedBase = statusResult.usedBase;
+        setApiBaseHint(statusResult.usedBase);
+      }
+      if (!statusResult.response.ok) {
+        throw new Error(await parseErrorMessage(statusResult.response));
+      }
+      const payload = (await statusResult.response.json()) as {
+        status?: string;
+        terminal?: boolean;
+        errors?: string[];
+        documents?: ExtractionDocument[];
+      };
+      const status = String(payload.status || '').trim();
+      const errors = Array.isArray(payload.errors)
+        ? payload.errors.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      const documents = filterAutoRestorableExtractionDocuments(
+        Array.isArray(payload.documents) ? payload.documents : [],
+      );
+      const terminal = Boolean(payload.terminal)
+        || ['completed', 'failed', 'cached', 'cancelled'].includes(status.toLowerCase());
+      if (terminal) {
+        return {
+          status,
+          errors,
+          documents,
+          usedBase,
+        };
+      }
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, POLL_INTERVAL_MS);
+      });
+    }
+    throw new Error('job_terminal_timeout');
+  };
+
+  const startSingleUpload = async (itemId: string) => {
+    const current = uploadQueueRef.current.find((item) => item.id === itemId);
+    if (!current || current.status === 'running') return;
+
+    cancelledUploadIdsRef.current.delete(itemId);
+    updateUploadQueueItem(itemId, (item) => ({
+      ...item,
+      status: 'running',
+      message: '正在创建解析任务',
+    }));
+    setUploadMessage(`正在解析 ${current.file.name}...`);
+    setDownloadMessage('');
+    setTraceError('');
+
+    try {
+      const createResult = await requestExtractionJobCreateWithRetry(
+        [current.file],
+        QUICK_UPLOAD_SCHEMA,
+        2,
+        apiBaseHint,
+      );
+      if (createResult.usedBase) {
+        setApiBaseHint(createResult.usedBase);
+      }
+      if (!createResult.response.ok) {
+        throw new Error(await parseErrorMessage(createResult.response));
       }
 
-      return matchesSearch && matchesCategory;
+      const createPayload = (await createResult.response.json()) as {
+        job_id?: string;
+        status?: string;
+        terminal?: boolean;
+        errors?: string[];
+        documents?: ExtractionDocument[];
+      };
+      const jobId = String(createPayload.job_id || '').trim();
+      if (!jobId) {
+        throw new Error('create_payload_missing_job_id');
+      }
+
+      updateUploadQueueItem(itemId, (item) => ({
+        ...item,
+        jobId,
+        status: 'running',
+        message: '任务已创建，正在等待完成',
+      }));
+
+      let parsedDocuments = filterAutoRestorableExtractionDocuments(
+        Array.isArray(createPayload.documents) ? createPayload.documents : [],
+      );
+      if (parsedDocuments.length === 0) {
+        const terminalState = await pollExtractionJobTerminal(
+          jobId,
+          createResult.usedBase || apiBaseHint,
+          itemId,
+        );
+        if (terminalState.status.toLowerCase() !== 'completed' && terminalState.errors.length > 0) {
+          throw new Error(terminalState.errors[0]);
+        }
+        parsedDocuments = terminalState.documents;
+      }
+      if (parsedDocuments.length === 0) {
+        throw new Error('未返回可用解析结果');
+      }
+
+      const nextDocuments = mergeDocuments(documentsRef.current, parsedDocuments);
+      setDocuments(nextDocuments);
+      writeExtractionDocuments(nextDocuments);
+      documentsRef.current = nextDocuments;
+
+      setSourceFilesByHash((previous) => {
+        const next = { ...previous };
+        parsedDocuments.forEach((doc) => {
+          if (normalizeFileName(doc.file_name) === normalizeFileName(current.file.name)) {
+            next[doc.file_hash] = current.file;
+          }
+        });
+        sourceFilesByHashRef.current = next;
+        return next;
+      });
+
+      const matchedDoc = parsedDocuments.find(
+        (doc) => normalizeFileName(doc.file_name) === normalizeFileName(current.file.name),
+      ) || parsedDocuments[0];
+      if (matchedDoc?.file_hash) {
+        setActiveDocHash(matchedDoc.file_hash);
+      }
+
+      updateUploadQueueItem(itemId, (item) => ({
+        ...item,
+        status: 'completed',
+        fileHash: String(matchedDoc?.file_hash || '').trim(),
+        resolvedFileName: String(matchedDoc?.file_name || item.file.name).trim(),
+        message: '解析完成',
+      }));
+      setUploadMessage(`解析完成：${current.file.name}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '文件解析失败，请稍后重试';
+      if (message === 'upload_item_cancelled') {
+        updateUploadQueueItem(itemId, (item) => ({
+          ...item,
+          status: 'cancelled',
+          message: '解析已取消',
+        }));
+        setUploadMessage(`已取消：${current.file.name}`);
+        return;
+      }
+      updateUploadQueueItem(itemId, (item) => ({
+        ...item,
+        status: 'failed',
+        message,
+      }));
+      setUploadMessage(`解析失败：${current.file.name}`);
+    }
+  };
+
+  const cancelSingleUpload = async (itemId: string) => {
+    const current = uploadQueueRef.current.find((item) => item.id === itemId);
+    if (!current) return;
+    cancelledUploadIdsRef.current.add(itemId);
+
+    if (current.status === 'queued') {
+      updateUploadQueueItem(itemId, (item) => ({
+        ...item,
+        status: 'cancelled',
+        message: '已取消（未开始）',
+      }));
+      setUploadMessage(`已取消：${current.file.name}`);
+      return;
+    }
+    if (current.status !== 'running') return;
+
+    updateUploadQueueItem(itemId, (item) => ({
+      ...item,
+      status: 'cancelled',
+      message: '正在取消...',
+    }));
+
+    if (current.jobId) {
+      try {
+        const cancelResult = await requestExtractionJobCancelFile(
+          current.jobId,
+          String(current.fileHash || '').trim(),
+          String(current.resolvedFileName || current.file.name).trim(),
+          apiBaseHint,
+        );
+        if (cancelResult.usedBase) {
+          setApiBaseHint(cancelResult.usedBase);
+        }
+      } catch {
+        // keep local cancelled state
+      }
+    }
+
+    updateUploadQueueItem(itemId, (item) => ({
+      ...item,
+      status: 'cancelled',
+      message: '解析已取消',
+    }));
+    setUploadMessage(`已取消：${current.file.name}`);
+  };
+
+  const isQueueItemMatchedToDocument = (
+    item: UploadQueueItem,
+    document: ExtractionDocument,
+  ): boolean => {
+    const docHash = String(document.file_hash || '').trim();
+    const itemHash = String(item.fileHash || '').trim();
+    if (docHash && itemHash && docHash === itemHash) return true;
+    const docName = normalizeFileName(document.file_name);
+    const itemName = normalizeFileName(item.resolvedFileName || item.file.name);
+    return Boolean(docName) && docName === itemName;
+  };
+
+  const removeDocument = async (document: ExtractionDocument) => {
+    const fileName = String(document.file_name || '').trim() || '当前文档';
+    const shouldRemove = typeof window === 'undefined'
+      ? true
+      : true;
+    if (!shouldRemove) return;
+
+    const relatedRunningQueueItems = uploadQueueRef.current.filter(
+      (item) => isQueueItemMatchedToDocument(item, document) && item.status === 'running',
+    );
+    for (const queueItem of relatedRunningQueueItems) {
+      await cancelSingleUpload(queueItem.id);
+    }
+
+    setUploadQueue((previous) =>
+      previous.filter((item) => !isQueueItemMatchedToDocument(item, document)),
+    );
+
+    const targetHash = String(document.file_hash || '').trim();
+    const targetName = normalizeFileName(document.file_name);
+    const nextDocuments = documentsRef.current.filter((item) => {
+      const sameHash = targetHash && String(item.file_hash || '').trim() === targetHash;
+      if (sameHash) return false;
+      if (!targetHash) {
+        return normalizeFileName(item.file_name) !== targetName;
+      }
+      return true;
     });
-  }, [documents, searchQuery, activeCategory]);
+    setDocuments(nextDocuments);
+    writeExtractionDocuments(nextDocuments);
+    documentsRef.current = nextDocuments;
+
+    setSourceFilesByHash((previous) => {
+      if (!targetHash) return previous;
+      if (!(targetHash in previous)) return previous;
+      const next = { ...previous };
+      delete next[targetHash];
+      sourceFilesByHashRef.current = next;
+      return next;
+    });
+
+    if (targetHash && activeDocHash === targetHash) {
+      setActiveDocHash(nextDocuments[0]?.file_hash || '');
+    }
+    setUploadMessage(`已移除：${fileName}`);
+  };
+
+  const performDocumentRemoval = async (document: ExtractionDocument) => {
+    const fileName = String(document.file_name || '').trim() || '当前文档';
+
+    const relatedRunningQueueItems = uploadQueueRef.current.filter(
+      (item) => isQueueItemMatchedToDocument(item, document) && item.status === 'running',
+    );
+    for (const queueItem of relatedRunningQueueItems) {
+      await cancelSingleUpload(queueItem.id);
+    }
+
+    setUploadQueue((previous) =>
+      previous.filter((item) => !isQueueItemMatchedToDocument(item, document)),
+    );
+
+    const targetHash = String(document.file_hash || '').trim();
+    const targetName = normalizeFileName(document.file_name);
+    const nextDocuments = documentsRef.current.filter((item) => {
+      const sameHash = targetHash && String(item.file_hash || '').trim() === targetHash;
+      if (sameHash) return false;
+      if (!targetHash) {
+        return normalizeFileName(item.file_name) !== targetName;
+      }
+      return true;
+    });
+    setDocuments(nextDocuments);
+    writeExtractionDocuments(nextDocuments);
+    documentsRef.current = nextDocuments;
+
+    setSourceFilesByHash((previous) => {
+      if (!targetHash) return previous;
+      if (!(targetHash in previous)) return previous;
+      const next = { ...previous };
+      delete next[targetHash];
+      sourceFilesByHashRef.current = next;
+      return next;
+    });
+
+    if (targetHash && activeDocHash === targetHash) {
+      setActiveDocHash(nextDocuments[0]?.file_hash || '');
+    }
+    setUploadMessage(`已移除：${fileName}`);
+  };
+
+  const requestRemoveDocument = (document: ExtractionDocument) => {
+    setPendingRemoveDoc(document);
+  };
+
+  const confirmRemoveDocument = async () => {
+    const target = pendingRemoveDoc;
+    if (!target) return;
+    setPendingRemoveDoc(null);
+    await performDocumentRemoval(target);
+  };
+
+  const cancelRemoveDocument = () => {
+    setPendingRemoveDoc(null);
+  };
+
+  const reparseDocument = async (document: ExtractionDocument) => {
+    const sourceFile = sourceFilesByHashRef.current[String(document.file_hash || '').trim()];
+    if (!sourceFile) {
+      setUploadMessage(`无法重解析 ${document.file_name}：缺少本地源文件，请重新上传`);
+      return;
+    }
+    const queueId = `reparse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const queuedItem: UploadQueueItem = {
+      id: queueId,
+      file: sourceFile,
+      status: 'queued',
+      message: '等待重新解析',
+      fileHash: String(document.file_hash || '').trim(),
+      resolvedFileName: String(document.file_name || sourceFile.name).trim(),
+    };
+    setUploadQueue((previous) => [queuedItem, ...previous]);
+    setUploadMessage(`开始重新解析：${document.file_name}`);
+    await startSingleUpload(queueId);
+  };
+
+  const handleQuickUploadChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []) as File[];
+    event.target.value = '';
+    if (files.length === 0) return;
+    enqueueFilesForConfirmation(files);
+  };
 
   useEffect(() => {
     if (filteredDocuments.length === 0) {
@@ -266,6 +832,14 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
   const activeDoc = useMemo(
     () => documents.find((doc) => doc.file_hash === activeDocHash) ?? null,
     [documents, activeDocHash],
+  );
+  const activeDocIndex = useMemo(
+    () => documents.findIndex((doc) => doc.file_hash === activeDocHash),
+    [documents, activeDocHash],
+  );
+  const activeSourceFile = useMemo(
+    () => (activeDoc ? sourceFilesByHash[activeDoc.file_hash] || null : null),
+    [activeDoc, sourceFilesByHash],
   );
 
   const fieldEntries = useMemo(() => {
@@ -396,6 +970,30 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
     }
   };
 
+  const handleAssistantCitationSelect = (citation: AssistantCitation) => {
+    const figureType = String((citation.payload as Record<string, unknown> | undefined)?.figure_type || '')
+      .trim()
+      .toLowerCase();
+    if (citation.citation_type === 'table') {
+      setActiveTab('tables');
+    } else if (citation.citation_type === 'figure' && figureType === 'chart') {
+      setActiveTab('charts');
+    } else if (citation.citation_type === 'figure') {
+      setActiveTab('images');
+    } else {
+      setActiveTab('fields');
+    }
+    setAssistantOpen(false);
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => {
+        document.getElementById('mobile-artifact-detail')?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      });
+    }
+  };
+
   const containerVariants = {
     hidden: { opacity: 0 },
     show: {
@@ -461,41 +1059,85 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
           </div>
         </motion.div>
 
-        {/* Categories Grid */}
-        <motion.div variants={itemVariants} className="-mx-1 mb-5 flex gap-2 overflow-x-auto px-1 pb-1 custom-scrollbar">
-          {[
-            { id: 'all', label: '全部', icon: LayoutList, color: 'text-amber-500', bg: 'bg-white', activeBg: 'bg-amber-50 dark:bg-amber-500/10', activeBorder: 'border-amber-200 dark:border-amber-500/30' },
-            { id: 'pdf', label: 'PDF', icon: FileText, color: 'text-red-500', bg: 'bg-white', activeBg: 'bg-red-50 dark:bg-red-500/10', activeBorder: 'border-red-200 dark:border-red-500/30' },
-            { id: 'word', label: 'Word', icon: File, color: 'text-blue-500', bg: 'bg-white', activeBg: 'bg-blue-50 dark:bg-blue-500/10', activeBorder: 'border-blue-200 dark:border-blue-500/30' },
-            { id: 'excel', label: 'Excel', icon: FileSpreadsheet, color: 'text-green-600', bg: 'bg-white', activeBg: 'bg-green-50 dark:bg-green-500/10', activeBorder: 'border-green-200 dark:border-green-500/30' },
-            { id: 'ppt', label: 'PPT', icon: MonitorPlay, color: 'text-orange-500', bg: 'bg-white', activeBg: 'bg-orange-50 dark:bg-orange-500/10', activeBorder: 'border-orange-200 dark:border-orange-500/30' },
-          ].map((cat) => {
-            const isActive = activeCategory === cat.id;
-            return (
-              <button 
-                key={cat.id} 
-                onClick={() => setActiveCategory(cat.id)}
-                className="group flex min-w-[68px] shrink-0 flex-col items-center justify-center gap-1.5 transition-transform active:scale-95"
-              >
-                <div className={cn(
-                  "flex h-[46px] w-[46px] items-center justify-center rounded-[16px] transition-colors border shadow-[0_4px_18px_rgba(0,0,0,0.03)] dark:shadow-none",
-                  isActive ? cn(cat.activeBg, cat.activeBorder) : "border-transparent bg-white dark:bg-slate-800 dark:border-slate-700/50"
-                )}>
-                  <cat.icon size={21} className={cn("transition-transform group-hover:scale-110", cat.color)} strokeWidth={2} />
-                </div>
-                <span className={cn(
-                  "text-[11px] font-semibold",
-                  isActive ? "text-slate-900 dark:text-white" : "text-slate-600 dark:text-slate-400"
-                )}>{cat.label}</span>
-              </button>
-            );
-          })}
+        {/* Quick Upload Rail */}
+        <motion.div variants={itemVariants} className="mb-4">
+          <div className="mb-3.5 px-1">
+            <h3 className="text-[17px] font-bold text-slate-800 dark:text-slate-100">文件上传</h3>
+          </div>
+
+          <div className="-mx-1 flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-1 pb-1 scrollbar-hide [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+            {QUICK_UPLOAD_SHORTCUTS.map((shortcut) => {
+              const isActive = activeUploadShortcut === shortcut.id;
+              const Icon = shortcut.icon;
+              return (
+                <button
+                  key={shortcut.id}
+                  type="button"
+                  onClick={() => handleQuickUploadShortcut(shortcut)}
+                  className="group flex min-w-[74px] snap-start shrink-0 flex-col items-center gap-2.5 rounded-[16px] bg-transparent px-1 py-1 text-center transition-transform active:scale-[0.97]"
+                >
+                  <div
+                    className={cn(
+                      'flex h-[56px] w-[56px] items-center justify-center rounded-[18px] border shadow-[0_4px_12px_rgba(15,23,42,0.04)] transition-all dark:shadow-[0_4px_12px_rgba(2,6,23,0.16)]',
+                      isActive
+                        ? cn(shortcut.activeBg, shortcut.activeBorder, 'shadow-[0_8px_16px_rgba(59,130,246,0.08)]')
+                        : 'border-white/80 bg-white/92 dark:border-slate-700/60 dark:bg-slate-800/95',
+                    )}
+                  >
+                    {shortcut.iconImg ? (
+                      <img
+                        src={shortcut.iconImg}
+                        alt={shortcut.label}
+                        className="h-[32px] w-[32px] object-contain transition-transform group-hover:scale-110"
+                      />
+                    ) : Icon ? (
+                      <Icon
+                        size={22}
+                        className={cn('transition-transform group-hover:scale-110', shortcut.color)}
+                        strokeWidth={2.1}
+                      />
+                    ) : null}
+                  </div>
+                  <p
+                    className={cn(
+                      'text-[12px] font-semibold tracking-tight',
+                      isActive ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-300',
+                    )}
+                  >
+                    {shortcut.label}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+
+          <input
+            ref={quickUploadInputRef}
+            type="file"
+            multiple
+            accept={QUICK_UPLOAD_ALL_ACCEPT}
+            aria-label="手机端快捷上传文件"
+            className="hidden"
+            onChange={handleQuickUploadChange}
+          />
         </motion.div>
         
-        {/* Recently Added Banner */}
+        {/* Decorative Body Illustration */}
+        <motion.div variants={itemVariants} className="mb-3 mt-0.5 flex w-full justify-center px-2">
+          <img 
+            src={bodyIllustration} 
+            alt="Upload Workspace Illustration" 
+            className="h-auto w-full max-w-[288px] object-contain drop-shadow-sm transition-transform duration-500 hover:scale-[1.02] dark:opacity-90 dark:mix-blend-lighten" 
+            aria-hidden="true" 
+          />
+        </motion.div>
+
+        {/* Deprecated banner removed: keep single-path upload flow */}
+        {/*
         <motion.button
           variants={itemVariants}
-          onClick={onOpenLegacyWorkbench}
+          onClick={() => handleQuickUploadShortcut(QUICK_UPLOAD_SHORTCUTS[0])}
+          data-testid="mobile-upload-workspace-entry"
           className="flex w-full items-center justify-between rounded-[22px] bg-[#0A2E36] px-4 py-3.5 text-left shadow-xl transition-transform active:scale-[0.98] dark:bg-slate-800"
         >
           <div className="flex items-center gap-3">
@@ -503,16 +1145,86 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
               <FileSearch size={20} className="text-white" strokeWidth={2} />
             </div>
             <div>
-              <h3 className="text-[16px] font-semibold text-white tracking-wide">最近添加 (工作台)</h3>
-              <p className="mt-0.5 text-[12px] text-slate-300/80">一键上传与解析全部文档</p>
+              <h3 className="text-[16px] font-semibold text-white tracking-wide">上传后手动开始解析</h3>
+              <p className="mt-0.5 text-[12px] text-slate-300/80">上传仅入队，不会自动解析；请按文件逐个确认</p>
             </div>
           </div>
-          <ChevronRight size={20} className="text-slate-400" />
         </motion.button>
+        */}
+
+        {uploadQueue.length > 0 && (
+          <motion.div
+            variants={itemVariants}
+            className="mt-2 rounded-[16px] border border-slate-200 bg-white/90 p-3 shadow-[0_8px_20px_rgba(0,0,0,0.03)] dark:border-slate-700 dark:bg-slate-800/80"
+          >
+            <div className="mb-2.5 flex items-center justify-between gap-2">
+              <p className="text-[13px] font-semibold text-slate-700 dark:text-slate-200">
+                单文件解析队列
+              </p>
+              <button
+                type="button"
+                onClick={clearFinishedUploadQueue}
+                className="text-[12px] font-medium text-slate-500 transition hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+              >
+                清理已结束
+              </button>
+            </div>
+            <div className="space-y-2">
+              {uploadQueue.map((item) => {
+                const canStart = item.status === 'queued' || item.status === 'failed' || item.status === 'cancelled' || item.status === 'completed';
+                return (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-2 rounded-[12px] border border-slate-200/80 bg-slate-50/70 px-2.5 py-2 dark:border-slate-700 dark:bg-slate-900/30"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                        {item.resolvedFileName || item.file.name}
+                      </p>
+                      <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                        {UPLOAD_STATUS_LABELS[item.status]} · {item.message}
+                      </p>
+                    </div>
+                    {canStart && (
+                      <button
+                        type="button"
+                        onClick={() => void startSingleUpload(item.id)}
+                        className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-600 transition hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-500/15 dark:text-blue-300"
+                      >
+                        {item.status === 'queued' ? <Play size={12} /> : <RotateCcw size={12} />}
+                        {item.status === 'queued' ? '开始解析' : '重新解析'}
+                      </button>
+                    )}
+                    {item.status === 'running' && (
+                      <button
+                        type="button"
+                        onClick={() => void cancelSingleUpload(item.id)}
+                        className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-500/15 dark:text-rose-300"
+                      >
+                        <X size={12} />
+                        取消解析
+                      </button>
+                    )}
+                    {item.status !== 'running' && (
+                      <button
+                        type="button"
+                        onClick={() => removeUploadQueueItem(item.id)}
+                        className="inline-flex items-center rounded-full border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-500 transition hover:text-slate-700 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-300"
+                        aria-label={`移除 ${item.file.name}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
       </div>
 
-      <div className="mt-2 flex-1 px-4 pb-28">
-        <section className="mb-6">
+      <div className="mt-1.5 flex-1 px-4 pb-28">
+        <section className="mb-5">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-[17px] font-bold text-slate-800 dark:text-slate-100">解析文档列表</h3>
             <button className="inline-flex items-center gap-1 rounded-full bg-slate-200/50 px-3 py-1.5 text-[13px] font-medium text-slate-600 transition hover:bg-slate-300/50 hover:text-slate-800 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200">
@@ -562,6 +1274,14 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
                   iconColors = 'bg-orange-50 text-orange-500 dark:bg-orange-500/10 dark:text-orange-400';
                 }
 
+                const relatedQueueItem = uploadQueue.find((item) => {
+                  const sameHash = Boolean(item.fileHash) && item.fileHash === doc.file_hash;
+                  const sameName =
+                    normalizeFileName(item.resolvedFileName || item.file.name)
+                    === normalizeFileName(doc.file_name);
+                  return sameHash || sameName;
+                });
+
                 return (
                   <button
                     key={doc.file_hash}
@@ -593,9 +1313,67 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
                       </p>
                     </div>
                     
-                    {/* Action */}
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300">
-                      <MoreVertical size={18} />
+                    <div className="flex shrink-0 items-center gap-1">
+                      {relatedQueueItem?.status === 'running' ? (
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void cancelSingleUpload(relatedQueueItem.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void cancelSingleUpload(relatedQueueItem.id);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-500/15 dark:text-rose-300"
+                        >
+                          <X size={12} />
+                          取消解析
+                        </div>
+                      ) : (
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void reparseDocument(doc);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void reparseDocument(doc);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-600 transition hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-500/15 dark:text-blue-300"
+                        >
+                          <RotateCcw size={12} />
+                          重新解析
+                        </div>
+                      )}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          requestRemoveDocument(doc);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            requestRemoveDocument(doc);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-200"
+                      >
+                        <Trash2 size={12} />
+                        移除
+                      </div>
                     </div>
                   </button>
                 );
@@ -605,7 +1383,13 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
           </motion.div>
         </section>
 
-        <section>
+        <MobileDocumentPreviewCard
+          activeDoc={activeDoc}
+          preferredBase={apiBaseHint}
+          activeSourceFile={activeSourceFile}
+        />
+
+        <section id="mobile-artifact-detail">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="truncate text-[17px] font-bold text-slate-800 dark:text-slate-100">
               {activeDoc ? `${activeDoc.file_name} · 产物详情` : '产物详情'}
@@ -925,6 +1709,70 @@ export const MobileDeepReadPage: React.FC<MobileDeepReadPageProps> = ({ onOpenLe
           </motion.div>
         </section>
       </div>
+
+      {pendingRemoveDoc && (
+        <div className="fixed inset-0 z-[70] flex items-end bg-black/40 p-4 backdrop-blur-[1px]">
+          <div className="w-full rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_20px_40px_rgba(15,23,42,0.2)] dark:border-slate-700 dark:bg-slate-900">
+            <p className="text-[16px] font-semibold text-slate-900 dark:text-slate-100">
+              移除文件
+            </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-600 dark:text-slate-300">
+              确认移除 <span className="font-medium text-slate-800 dark:text-slate-100">{pendingRemoveDoc.file_name}</span> 吗？
+              如果该文件正在解析，会先取消任务再移除。
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={cancelRemoveDocument}
+                className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmRemoveDocument()}
+                className="inline-flex items-center justify-center rounded-xl bg-rose-600 px-3 py-2 text-[13px] font-semibold text-white transition hover:bg-rose-700"
+              >
+                确认移除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toastMessage && (
+        <div className="pointer-events-none fixed bottom-[calc(env(safe-area-inset-bottom)+5.8rem)] left-1/2 z-[75] -translate-x-1/2">
+          <div className="max-w-[88vw] rounded-full bg-slate-900/92 px-4 py-2 text-[12px] font-medium text-white shadow-[0_12px_24px_rgba(15,23,42,0.28)] dark:bg-slate-700/95">
+            {toastMessage}
+          </div>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setAssistantOpen(true)}
+        className={cn(
+          'fixed bottom-[calc(env(safe-area-inset-bottom)+5.4rem)] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full shadow-[0_12px_28px_rgba(15,23,42,0.22)] transition-all active:scale-[0.92] dark:shadow-[0_12px_28px_rgba(2,6,23,0.4)]',
+          activeDoc
+            ? 'bg-slate-900 text-white hover:bg-black dark:bg-slate-100 dark:text-slate-900'
+            : 'bg-slate-700 text-white hover:bg-slate-800 dark:bg-slate-200 dark:text-slate-900',
+        )}
+        aria-label="打开智能助手"
+      >
+        <Bot size={24} strokeWidth={2} />
+      </button>
+
+      <MobileAssistantDialog
+        open={assistantOpen}
+        activeDoc={activeDoc}
+        activeDocIndex={activeDocIndex >= 0 ? activeDocIndex : 0}
+        documents={documents}
+        traceHits={traceHits}
+        preferredBase={apiBaseHint}
+        onPreferredBaseChange={setApiBaseHint}
+        onClose={() => setAssistantOpen(false)}
+        onSelectCitation={handleAssistantCitationSelect}
+      />
     </motion.div>
   );
 };

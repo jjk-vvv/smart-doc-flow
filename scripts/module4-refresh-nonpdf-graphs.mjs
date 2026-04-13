@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 
 const datasetsRoot = process.env.MODULE4_REFRESH_DATASETS_ROOT || path.join(projectRoot, "datasets");
-const module2Base = String(process.env.MODULE2_API_BASE || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
+const module2Base = String(process.env.MODULE2_API_BASE || "http://127.0.0.1:8010").trim().replace(/\/+$/, "");
 const module4Base = String(process.env.MODULE4_API_BASE || "http://127.0.0.1:8100").trim().replace(/\/+$/, "");
 const tenantId = String(process.env.MODULE4_REFRESH_TENANT_ID || "default").trim() || "default";
 const batchSize = Math.max(1, Math.min(Number(process.env.MODULE4_REFRESH_BATCH_SIZE || 5), 5));

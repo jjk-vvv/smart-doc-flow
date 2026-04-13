@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from ..core.bootstrap import ensure_module3_storage
@@ -29,6 +29,7 @@ from ..services.preview_service import build_preview_text
 from ..services.run_service import cancel_run, execute_web_run, register_run_control
 from ..services.storage_service import (
     create_run_record,
+    get_owner_mode,
     load_docset_record,
     load_run_record,
     load_template_record,
@@ -45,6 +46,7 @@ from ..services.template_service import create_template_record
 from ..services.word_json_service import apply_word_section_diffs, parse_word_document_to_json
 
 router = APIRouter()
+DEFAULT_OWNER_ID = "default"
 
 
 def _normalize_legacy_text_lines(value: Any) -> list[str]:
@@ -129,9 +131,35 @@ def _legacy_sections_to_diffs(
     ]
 
 
-def _require_run_output_path(run_id: str) -> tuple[dict[str, Any], Path]:
+def _normalize_owner_id(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return normalized or DEFAULT_OWNER_ID
+
+
+def _resolve_request_owner_id(request: Request, *, explicit_owner_id: str | None = None) -> str:
+    headers = request.headers
+    authenticated_owner_id = (
+        str(headers.get("X-Authenticated-User-Id") or "").strip()
+        or str(headers.get("X-Authenticated-Tenant-Id") or "").strip()
+    )
+    explicit_candidate = (
+        str(explicit_owner_id or "").strip()
+        or str(request.query_params.get("owner_id") or "").strip()
+        or str(request.query_params.get("tenant_id") or "").strip()
+    )
+    if authenticated_owner_id and explicit_candidate and authenticated_owner_id != explicit_candidate:
+        return _normalize_owner_id(authenticated_owner_id)
+    header_tenant_id = str(headers.get("X-Tenant-Id") or "").strip()
+    if get_owner_mode() == "strict_required" and not (
+        authenticated_owner_id or explicit_candidate or header_tenant_id
+    ):
+        raise HTTPException(status_code=401, detail="owner identity is required in strict mode")
+    return _normalize_owner_id(authenticated_owner_id or explicit_candidate or header_tenant_id)
+
+
+def _require_run_output_path(run_id: str, owner_id: str) -> tuple[dict[str, Any], Path]:
     try:
-        record = load_run_record(run_id)
+        record = load_run_record(run_id, owner_id=owner_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -145,15 +173,15 @@ def _require_run_output_path(run_id: str) -> tuple[dict[str, Any], Path]:
     return record, output_path
 
 
-def _require_docx_run_output_path(run_id: str) -> tuple[dict[str, Any], Path]:
-    record, output_path = _require_run_output_path(run_id)
+def _require_docx_run_output_path(run_id: str, owner_id: str) -> tuple[dict[str, Any], Path]:
+    record, output_path = _require_run_output_path(run_id, owner_id)
     if output_path.suffix.lower() != ".docx":
         raise HTTPException(status_code=400, detail="当前仅支持 DOCX 输出文件")
     return record, output_path
 
 
-def _require_xlsx_run_output_path(run_id: str) -> tuple[dict[str, Any], Path]:
-    record, output_path = _require_run_output_path(run_id)
+def _require_xlsx_run_output_path(run_id: str, owner_id: str) -> tuple[dict[str, Any], Path]:
+    record, output_path = _require_run_output_path(run_id, owner_id)
     if output_path.suffix.lower() != ".xlsx":
         raise HTTPException(status_code=400, detail="当前仅支持 XLSX 输出文件")
     return record, output_path
@@ -169,12 +197,14 @@ def module3_health() -> dict[str, Any]:
         "source_extensions": sorted(ALLOWED_SOURCE_SUFFIXES),
         "storage_dir": str(STORAGE_DIR),
         "database_enabled": database_enabled(),
+        "owner_mode": get_owner_mode(),
     }
 
 
 @router.post("/module3/template/upload")
-async def upload_template(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_template(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     ensure_module3_storage()
+    owner_id = _resolve_request_owner_id(request)
 
     filename = safe_filename(file.filename or "template.xlsx")
     suffix = Path(filename).suffix.lower()
@@ -186,7 +216,7 @@ async def upload_template(file: UploadFile = File(...)) -> dict[str, Any]:
 
     try:
         await save_upload_file(file, stored_path)
-        record = create_template_record(template_id, filename, stored_path)
+        record = create_template_record(template_id, filename, stored_path, owner_id=owner_id)
         save_template_record(record)
         return {
             "template_id": record["template_id"],
@@ -200,8 +230,9 @@ async def upload_template(file: UploadFile = File(...)) -> dict[str, Any]:
 
 
 @router.post("/module3/docset/upload")
-async def upload_docset(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+async def upload_docset(request: Request, files: list[UploadFile] = File(...)) -> dict[str, Any]:
     ensure_module3_storage()
+    owner_id = _resolve_request_owner_id(request)
     if not files:
         raise HTTPException(status_code=400, detail="请至少上传一个数据源文件")
 
@@ -227,7 +258,7 @@ async def upload_docset(files: list[UploadFile] = File(...)) -> dict[str, Any]:
             await save_upload_file(upload, stored_path)
             saved_files.append({"filename": filename, "path": str(stored_path)})
 
-        record = create_docset_record(doc_set_id, saved_files)
+        record = create_docset_record(doc_set_id, saved_files, owner_id=owner_id)
         save_docset_record(record)
         return {
             "doc_set_id": record["doc_set_id"],
@@ -241,16 +272,17 @@ async def upload_docset(files: list[UploadFile] = File(...)) -> dict[str, Any]:
 
 
 @router.post("/module3/run")
-def create_run(request: WebRunRequest) -> dict[str, Any]:
+def create_run(request: Request, payload: WebRunRequest) -> dict[str, Any]:
     ensure_module3_storage()
+    owner_id = _resolve_request_owner_id(request, explicit_owner_id=payload.owner_id)
 
     try:
-        load_template_record(request.template_id)
+        load_template_record(payload.template_id, owner_id=owner_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
     try:
-        load_docset_record(request.doc_set_id)
+        load_docset_record(payload.doc_set_id, owner_id=owner_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -267,30 +299,34 @@ def create_run(request: WebRunRequest) -> dict[str, Any]:
             "output_filename": None,
             "error": None,
             "created_at": utcnow_iso(),
-            "template_id": request.template_id,
-            "doc_set_id": request.doc_set_id,
+            "template_id": payload.template_id,
+            "doc_set_id": payload.doc_set_id,
+            "owner_id": owner_id,
         },
     )
 
     register_run_control(run_id)
-    worker = threading.Thread(target=execute_web_run, args=(run_id, request), daemon=True)
+    run_request = payload.model_copy(update={"owner_id": owner_id})
+    worker = threading.Thread(target=execute_web_run, args=(run_id, run_request), daemon=True)
     worker.start()
 
     return {"run_id": run_id, "status": "running"}
 
 
 @router.get("/module3/run/{run_id}")
-def get_run_status(run_id: str) -> dict[str, Any]:
+def get_run_status(run_id: str, request: Request) -> dict[str, Any]:
+    owner_id = _resolve_request_owner_id(request)
     try:
-        return load_run_record(run_id)
+        return load_run_record(run_id, owner_id=owner_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.post("/module3/run/{run_id}/cancel")
-def cancel_run_request(run_id: str) -> dict[str, Any]:
+def cancel_run_request(run_id: str, request: Request) -> dict[str, Any]:
+    owner_id = _resolve_request_owner_id(request)
     try:
-        record = load_run_record(run_id)
+        record = load_run_record(run_id, owner_id=owner_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -309,8 +345,9 @@ def cancel_run_request(run_id: str) -> dict[str, Any]:
 
 
 @router.get("/module3/run/{run_id}/download")
-def download_run_output(run_id: str) -> FileResponse:
-    _, output_path = _require_run_output_path(run_id)
+def download_run_output(run_id: str, request: Request) -> FileResponse:
+    owner_id = _resolve_request_owner_id(request)
+    _, output_path = _require_run_output_path(run_id, owner_id)
     return FileResponse(path=str(output_path), filename=output_path.name)
 
 
@@ -327,47 +364,50 @@ def preview_document(path: str = Query(...)) -> PlainTextResponse:
 
 
 @router.post("/module3/api/v1/word/parse-json")
-def parse_word_document_json(request: WordParseRequest) -> dict[str, Any]:
-    _, output_path = _require_docx_run_output_path(request.run_id)
+def parse_word_document_json(request: Request, payload: WordParseRequest) -> dict[str, Any]:
+    owner_id = _resolve_request_owner_id(request)
+    _, output_path = _require_docx_run_output_path(payload.run_id, owner_id)
 
     try:
-        payload = parse_word_document_to_json(output_path)
+        parsed_payload = parse_word_document_to_json(output_path)
         return {
-            "run_id": request.run_id,
+            "run_id": payload.run_id,
             "document_name": output_path.name,
-            **payload,
+            **parsed_payload,
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.post("/module3/api/v1/excel/parse-json")
-def parse_excel_document_json(request: ExcelParseRequest) -> dict[str, Any]:
-    _, output_path = _require_xlsx_run_output_path(request.run_id)
+def parse_excel_document_json(request: Request, payload: ExcelParseRequest) -> dict[str, Any]:
+    owner_id = _resolve_request_owner_id(request)
+    _, output_path = _require_xlsx_run_output_path(payload.run_id, owner_id)
 
     try:
-        payload = parse_excel_workbook_to_json(output_path)
+        parsed_payload = parse_excel_workbook_to_json(output_path)
         return {
-            "run_id": request.run_id,
+            "run_id": payload.run_id,
             "document_name": output_path.name,
-            **payload,
+            **parsed_payload,
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.post("/module3/api/v1/word/apply-diff")
-def apply_word_document_diff(request: WordApplyDiffRequest) -> dict[str, Any]:
-    _, output_path = _require_docx_run_output_path(request.run_id)
+def apply_word_document_diff(request: Request, payload: WordApplyDiffRequest) -> dict[str, Any]:
+    owner_id = _resolve_request_owner_id(request)
+    _, output_path = _require_docx_run_output_path(payload.run_id, owner_id)
 
     try:
         section_payloads = [
             section.model_dump() if hasattr(section, "model_dump") else section.dict()
-            for section in request.sections
+            for section in payload.sections
         ]
         action_payloads = [
             action.model_dump() if hasattr(action, "model_dump") else action.dict()
-            for action in request.actions
+            for action in payload.actions
         ]
         applied = apply_word_section_diffs(
             output_path,
@@ -384,8 +424,9 @@ def apply_word_document_diff(request: WordApplyDiffRequest) -> dict[str, Any]:
 
 
 @router.post("/module3/run/{run_id}/save")
-def save_run_output(run_id: str, request: UpdateExcelRequest) -> dict[str, Any]:
-    _, output_path = _require_xlsx_run_output_path(run_id)
+def save_run_output(run_id: str, request: Request, payload: UpdateExcelRequest) -> dict[str, Any]:
+    owner_id = _resolve_request_owner_id(request)
+    _, output_path = _require_xlsx_run_output_path(run_id, owner_id)
 
     try:
         from openpyxl import load_workbook
@@ -393,7 +434,7 @@ def save_run_output(run_id: str, request: UpdateExcelRequest) -> dict[str, Any]:
         workbook = load_workbook(filename=str(output_path))
         known_sheet_names = set(workbook.sheetnames)
 
-        for sheet_data in request.sheets:
+        for sheet_data in payload.sheets:
             worksheet = (
                 workbook[sheet_data.name]
                 if sheet_data.name in known_sheet_names
@@ -431,9 +472,11 @@ def save_run_output(run_id: str, request: UpdateExcelRequest) -> dict[str, Any]:
 @router.post("/module3/run/{run_id}/save-file")
 async def save_run_output_file(
     run_id: str,
+    request: Request,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    _, output_path = _require_run_output_path(run_id)
+    owner_id = _resolve_request_owner_id(request)
+    _, output_path = _require_run_output_path(run_id, owner_id)
 
     incoming_suffix = Path(file.filename or "").suffix.lower()
     current_suffix = output_path.suffix.lower()
@@ -456,11 +499,12 @@ async def save_run_output_file(
 
 
 @router.post("/module3/run/{run_id}/save-word")
-def save_run_output_word(run_id: str, request: UpdateWordRequest) -> dict[str, Any]:
-    _, output_path = _require_docx_run_output_path(run_id)
+def save_run_output_word(run_id: str, request: Request, payload: UpdateWordRequest) -> dict[str, Any]:
+    owner_id = _resolve_request_owner_id(request)
+    _, output_path = _require_docx_run_output_path(run_id, owner_id)
 
     try:
-        ordered_sections = sorted(request.sections, key=lambda item: item.order)
+        ordered_sections = sorted(payload.sections, key=lambda item: item.order)
         if not ordered_sections:
             raise HTTPException(status_code=400, detail="未提供可保存的 Word 内容")
 

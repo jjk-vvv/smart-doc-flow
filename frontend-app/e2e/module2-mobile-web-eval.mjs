@@ -74,7 +74,7 @@ const scenarios = [
     id: "pdf_single",
     description: "单文件 PDF",
     files: [
-      "PDF/Choppin, Gregory, et al. Radiochemistry and nuclear chemistry. Academic Press, 2013/Appendix A Solvent Extraction Separations/A.4. Solvent Extraction Equipment.pdf",
+      "PDF/Choppin, Gregory, et al. Radiochemistry and nuclear chemistry. Academic Press, 2013/Foreword to the 4th Edition.pdf",
     ],
   },
 ];
@@ -224,6 +224,7 @@ async function resolveBrowserExecutablePath() {
 
 async function clearFrontendState(page) {
   await page.evaluate((nextApiBase) => {
+    window.localStorage.setItem("smart_doc_flow.has_seen_onboarding", "true");
     window.localStorage.removeItem("module2_last_documents");
     window.localStorage.removeItem("module2_last_updated");
     window.localStorage.removeItem("module2_workbench_session_v1");
@@ -259,15 +260,20 @@ async function enterLegacyWorkbench(page) {
   await openProtectedTab(page, appUrl, "deepread_extraction");
   await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
 
-  const fileInput = page.locator('[data-testid="module2-file-input"]');
+  const fileInput = page.locator('input[type="file"]');
   if ((await fileInput.count().catch(() => 0)) > 0) {
     await fileInput.first().waitFor({ state: "attached", timeout: 30_000 });
     return;
   }
 
-  const openLegacyBtn = page.getByRole("button", { name: /进入完整工作台/ }).first();
-  if (await openLegacyBtn.isVisible().catch(() => false)) {
-    await openLegacyBtn.click({ timeout: 20_000 });
+  const uploadWorkspaceEntry = page.locator('[data-testid="mobile-upload-workspace-entry"]').first();
+  if (await uploadWorkspaceEntry.isVisible().catch(() => false)) {
+    await uploadWorkspaceEntry.click({ timeout: 20_000 });
+  } else {
+    const openLegacyBtn = page.getByRole("button", { name: /进入上传工作区|进入工作台|进入完整工作台/ }).first();
+    if (await openLegacyBtn.isVisible().catch(() => false)) {
+      await openLegacyBtn.click({ timeout: 20_000 });
+    }
   }
 
   await fileInput.first().waitFor({ state: "attached", timeout: 60_000 });
@@ -446,7 +452,13 @@ async function ensureMobilePageRobust(page) {
   await openProtectedTab(page, appUrl, "deepread_extraction");
   await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
   await page.waitForFunction(
-    () => document.querySelectorAll("section").length >= 2,
+    () => {
+      const sections = Array.from(document.querySelectorAll("section"));
+      const hasDocList = sections.some((section) =>
+        String(section.textContent || "").includes("解析文档列表"),
+      );
+      return hasDocList && Boolean(document.getElementById("mobile-artifact-detail"));
+    },
     null,
     { timeout: 30_000 },
   );
@@ -454,7 +466,7 @@ async function ensureMobilePageRobust(page) {
 
 async function countMobileDetailArticlesRobust(page) {
   return await page.evaluate(() => {
-    const section = document.querySelectorAll("section")[2];
+    const section = document.getElementById("mobile-artifact-detail");
     if (!section) return 0;
     return section.querySelectorAll("article").length;
   });
@@ -463,9 +475,16 @@ async function countMobileDetailArticlesRobust(page) {
 async function collectMobileCountsForDocRobust(page, fileName, fallbackIndex = 0) {
   const docClicked = await page.evaluate(({ targetName, index }) => {
     const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
-    const listSection = document.querySelectorAll("section")[1];
+    const sections = Array.from(document.querySelectorAll("section"));
+    const listSection =
+      sections.find((section) => normalize(section.textContent || "").includes("解析文档列表")) ||
+      sections[0] ||
+      null;
     if (!listSection) return false;
-    const buttons = Array.from(listSection.querySelectorAll("button"));
+    const buttons = Array.from(listSection.querySelectorAll("button")).filter((button) => {
+      const text = normalize(button.textContent || "");
+      return text && text !== "查看全部";
+    });
     if (buttons.length === 0) return false;
     const target = normalize(targetName);
     const targetNoExt = target.includes(".") ? normalize(target.slice(0, target.lastIndexOf("."))) : target;
@@ -486,10 +505,19 @@ async function collectMobileCountsForDocRobust(page, fileName, fallbackIndex = 0
 
   const selectTab = async (index) => {
     const clicked = await page.evaluate((idx) => {
-      const detailSection = document.querySelectorAll("section")[2];
+      const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const detailSection = document.getElementById("mobile-artifact-detail");
       if (!detailSection) return false;
-      const tabButtons = detailSection.querySelectorAll("div.grid.grid-cols-3 button");
-      const target = tabButtons[idx];
+      const labels = ["字段", "表格", "图表", "图片"];
+      const targetLabel = labels[idx];
+      const tabButtons = Array.from(detailSection.querySelectorAll("button")).filter((button) => {
+        const text = normalize(button.textContent || "");
+        return Boolean(text) && labels.some((label) => text === label || text.startsWith(label));
+      });
+      const target = tabButtons.find((button) => {
+        const text = normalize(button.textContent || "");
+        return text === targetLabel || text.startsWith(targetLabel);
+      });
       if (!(target instanceof HTMLButtonElement)) return false;
       target.click();
       return true;
@@ -507,11 +535,15 @@ async function collectMobileCountsForDocRobust(page, fileName, fallbackIndex = 0
   const tablesCount = await countMobileDetailArticlesRobust(page);
 
   await selectTab(2);
+  const chartsCount = await countMobileDetailArticlesRobust(page);
+
+  await selectTab(3);
   const imagesCount = await countMobileDetailArticlesRobust(page);
 
   return {
     fieldsCount,
     tablesCount,
+    chartsCount,
     imagesCount,
   };
 }

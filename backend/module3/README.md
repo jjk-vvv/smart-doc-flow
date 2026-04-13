@@ -54,9 +54,21 @@ Example:
 MODULE3_DATABASE_URL=postgresql+psycopg://postgres:your_password@localhost:5433/module3
 ```
 
-If `MODULE3_DATABASE_URL` is left empty, the service will run without database persistence and will use local storage files under `backend/module3/storage`.
+If `MODULE3_DATABASE_URL` is left empty, the service will run without database persistence and will use file storage.
+In managed runtime mode (`SMART_DOC_FLOW_DATA_ROOT` set), storage defaults to:
+
+- `runtime-data/module3/storage`
+
+For standalone local debug without managed runtime env, it can fall back to:
+
+- `backend/module3/storage`
 
 ## 4. Start the service
+
+Canonical FastAPI entrypoint:
+
+- `backend/module3/main.py` (compat wrapper)
+- standard app composition now lives under `backend/module3/app/`
 
 From the project root:
 

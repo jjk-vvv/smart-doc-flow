@@ -200,12 +200,14 @@ export const logoutAuth = async (): Promise<{ message?: string }> => {
 };
 
 export const getCurrentUser = async (): Promise<AuthUserPayload | null> => {
-  if (!readSessionHint()) {
-    return null;
-  }
+  const hasSessionHint = readSessionHint();
   try {
     return await requestCurrentUserAtBase('');
   } catch {
+    if (!hasSessionHint) {
+      // Even without a local hint, probe the backend once so a persisted auth cookie
+      // can restore the session after localStorage is cleared or in fresh browser contexts.
+    }
     const preferredBase = await getAuthApiBase();
     return await requestCurrentUserAtBase(preferredBase);
   }

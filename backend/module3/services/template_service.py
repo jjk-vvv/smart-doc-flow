@@ -15,7 +15,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from ..core.config import DEFAULT_HEADER_ROW
-from .storage_service import utcnow_iso
+from .storage_service import normalize_owner_id, utcnow_iso
 
 
 def _squish(text: str) -> str:
@@ -623,7 +623,14 @@ def write_filled_template(
     raise ValueError(f"Unsupported template format: {template_type}")
 
 
-def create_template_record(template_id: str, original_name: str, stored_path: Path) -> dict[str, Any]:
+def create_template_record(
+    template_id: str,
+    original_name: str,
+    stored_path: Path,
+    *,
+    owner_id: str = "default",
+) -> dict[str, Any]:
+    resolved_owner_id = normalize_owner_id(owner_id)
     template_info = read_template_headers(stored_path, None, DEFAULT_HEADER_ROW)
     template_type = template_info["template_type"]
 
@@ -633,6 +640,7 @@ def create_template_record(template_id: str, original_name: str, stored_path: Pa
         first_table = tables[0]
         return {
             "template_id": template_id,
+            "owner_id": resolved_owner_id,
             "filename": original_name,
             "path": str(stored_path),
             "sheet_name": template_info["sheet_name"],
@@ -655,6 +663,7 @@ def create_template_record(template_id: str, original_name: str, stored_path: Pa
     )
     return {
         "template_id": template_id,
+        "owner_id": resolved_owner_id,
         "filename": original_name,
         "path": str(stored_path),
         "sheet_name": template_info["sheet_name"],

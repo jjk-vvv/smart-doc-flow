@@ -3,6 +3,10 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const normalizeModuleId = (id: string) => id.replace(/\\/g, '/');
+const parsePort = (value: string | undefined, fallback: number): number => {
+  const parsed = Number.parseInt(String(value || '').trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 const GRAPH_RUNTIME_PACKAGES = [
   '/node_modules/@neo4j-nvl/',
@@ -30,14 +34,18 @@ const PREBUNDLED_DYNAMIC_PREVIEW_DEPS = [
 
 export default defineConfig(({ mode }) => {
   loadEnv(mode, '.', '');
-  const backendEntryUrl = process.env.VITE_BACKEND_ENTRY_URL || 'http://localhost:3001';
+  const gatewayPort = parsePort(process.env.GATEWAY_PORT, 3001);
+  const frontendAppPort = parsePort(process.env.FRONTEND_APP_PORT, 3002);
+  const module3Port = parsePort(process.env.MODULE3_PORT, 8001);
+  const backendEntryUrl = process.env.VITE_BACKEND_ENTRY_URL || `http://localhost:${gatewayPort}`;
+  const module3EntryUrl = process.env.VITE_MODULE3_ENTRY_URL || `http://localhost:${module3Port}`;
   const devProxyTimeoutMs = Math.max(
     180_000,
     Number.parseInt(process.env.VITE_DEV_PROXY_TIMEOUT_MS || '600000', 10) || 600_000,
   );
   return {
     server: {
-      port: 3002,
+      port: frontendAppPort,
       strictPort: true,
       host: '0.0.0.0',
       proxy: {
@@ -69,10 +77,17 @@ export default defineConfig(({ mode }) => {
           timeout: devProxyTimeoutMs,
           proxyTimeout: devProxyTimeoutMs,
         },
+        '/module3': {
+          target: module3EntryUrl,
+          changeOrigin: true,
+          secure: false,
+          timeout: devProxyTimeoutMs,
+          proxyTimeout: devProxyTimeoutMs,
+        },
       },
     },
     preview: {
-      port: 3002,
+      port: frontendAppPort,
       strictPort: true,
       host: '0.0.0.0',
     },

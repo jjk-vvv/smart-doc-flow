@@ -9,6 +9,13 @@ const {
   rootDir,
 } = require('./python-service-utils.cjs');
 
+const managedBackendEnv = buildManagedRuntimeEnv({
+  baseEnv: process.env,
+  scopes: ['backend'],
+});
+const frontendHost = managedBackendEnv.FRONTEND_HOST || process.env.FRONTEND_HOST || '0.0.0.0';
+const frontendPort = managedBackendEnv.FRONTEND_PORT || process.env.FRONTEND_PORT || '3000';
+
 const backendPythonExec = resolvePythonExec({
   overrideExec: process.env.GATEWAY_PYTHON || process.env.PYTHON,
   preferredVenvDirs: [
@@ -44,12 +51,13 @@ const services = [
     args: [
       path.join(rootDir, 'frontend', 'node_modules', 'vite', 'bin', 'vite.js'),
       '--port',
-      '3000',
+      String(frontendPort),
       '--host',
-      '0.0.0.0',
+      String(frontendHost),
     ],
     cwd: path.join(rootDir, 'frontend'),
     required: true,
+    env: managedBackendEnv,
   },
 ];
 

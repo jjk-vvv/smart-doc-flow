@@ -136,10 +136,17 @@ class Assistant1UpstreamRuntime:
             port = 443
         else:
             port = 80
-        if int(port) != 8000:
+        if int(port) not in {8000, 8010}:
             return [normalized]
         preferred = f"{scheme}://{host}:8010"
-        return [preferred, normalized]
+        fallback = f"{scheme}://{host}:8000"
+        # Prefer the canonical 8010 endpoint, but keep 8000 as a compatibility
+        # fallback for older local setups that still expose module2 on 8000.
+        if normalized == preferred:
+            return [preferred, fallback]
+        if normalized == fallback:
+            return [preferred, fallback]
+        return [preferred, normalized, fallback]
 
     def _resolve_target_base_url(
         self,

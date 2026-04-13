@@ -19,9 +19,14 @@ const gatewayPythonExec = resolvePythonExec({
   ],
 });
 
-const host = process.env.GATEWAY_HOST || '0.0.0.0';
-const port = process.env.GATEWAY_PORT || '3001';
-const module2Port = process.env.MODULE2_PORT || '8000';
+const managedEnv = buildManagedRuntimeEnv({
+  baseEnv: process.env,
+  scopes: ['module2', 'module4', 'backend'],
+});
+const host = managedEnv.GATEWAY_HOST || process.env.GATEWAY_HOST || '0.0.0.0';
+const port = managedEnv.GATEWAY_PORT || process.env.GATEWAY_PORT || '3001';
+const module2Port = managedEnv.MODULE2_PORT || process.env.MODULE2_PORT || '8010';
+const module4Port = managedEnv.MODULE4_PORT || process.env.MODULE4_PORT || '8100';
 const reloadArgs = reloadEnabled('GATEWAY_UVICORN_RELOAD', true)
   ? buildReloadArgs({
       sourceDirs: ['app'],
@@ -41,9 +46,15 @@ const child = spawn(gatewayPythonExec, args, {
   env: buildPythonRuntimeEnv({
     baseEnv: buildManagedRuntimeEnv({
       baseEnv: {
-        ...process.env,
-        MODULE2_UPSTREAM_URL: process.env.MODULE2_UPSTREAM_URL || `http://127.0.0.1:${module2Port}`,
-        MODULE4_UPSTREAM_URL: process.env.MODULE4_UPSTREAM_URL || 'http://127.0.0.1:8100',
+        ...managedEnv,
+        MODULE2_UPSTREAM_URL:
+          managedEnv.MODULE2_UPSTREAM_URL
+          || process.env.MODULE2_UPSTREAM_URL
+          || `http://127.0.0.1:${module2Port}`,
+        MODULE4_UPSTREAM_URL:
+          managedEnv.MODULE4_UPSTREAM_URL
+          || process.env.MODULE4_UPSTREAM_URL
+          || `http://127.0.0.1:${module4Port}`,
         UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE: process.env.UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE || 'managed',
       },
       scopes: ['module2', 'backend'],

@@ -273,7 +273,12 @@ const App: React.FC = () => {
       case 'nexus':
         return <KnowledgeNexus />;
       case 'guide':
-        return <UserGuide />;
+        return (
+          <UserGuide
+            onBackToDashboard={() => handleActiveTabChange('dashboard')}
+            onOpenLogin={() => setShowLoginModal(true)}
+          />
+        );
       default:
         return <Dashboard />;
     }

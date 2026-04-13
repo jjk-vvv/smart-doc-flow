@@ -23,7 +23,8 @@ const managedEnv = buildManagedRuntimeEnv({
 });
 const host = managedEnv.GATEWAY_HOST || process.env.GATEWAY_HOST || '0.0.0.0';
 const port = managedEnv.GATEWAY_PORT || process.env.GATEWAY_PORT || '3001';
-const module2Port = managedEnv.MODULE2_PORT || process.env.MODULE2_PORT || '8000';
+const module2Port = managedEnv.MODULE2_PORT || process.env.MODULE2_PORT || '8010';
+const module4Port = managedEnv.MODULE4_PORT || process.env.MODULE4_PORT || '8100';
 const module2UpstreamUrl =
   managedEnv.MODULE2_UPSTREAM_URL
   || process.env.MODULE2_UPSTREAM_URL
@@ -31,7 +32,7 @@ const module2UpstreamUrl =
 const module4UpstreamUrl =
   managedEnv.MODULE4_UPSTREAM_URL
   || process.env.MODULE4_UPSTREAM_URL
-  || 'http://127.0.0.1:8100';
+  || `http://127.0.0.1:${module4Port}`;
 const args = ['-m', 'uvicorn', 'app.main:app', '--host', host, '--port', port];
 
 console.log(`[start:gateway] python=${gatewayPythonExec}`);

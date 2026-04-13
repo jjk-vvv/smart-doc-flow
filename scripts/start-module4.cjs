@@ -17,8 +17,12 @@ const module4PythonExec = resolvePythonExec({
   ],
 });
 
-const host = process.env.MODULE4_HOST || '0.0.0.0';
-const port = process.env.MODULE4_PORT || '8100';
+const managedEnv = buildManagedRuntimeEnv({
+  baseEnv: process.env,
+  scopes: ['backend', 'module4'],
+});
+const host = managedEnv.MODULE4_HOST || process.env.MODULE4_HOST || '0.0.0.0';
+const port = managedEnv.MODULE4_PORT || process.env.MODULE4_PORT || '8100';
 const args = ['-m', 'uvicorn', 'app.main:app', '--host', host, '--port', port];
 
 console.log(`[start:module4] python=${module4PythonExec}`);
@@ -30,10 +34,7 @@ const child = spawn(module4PythonExec, args, {
   stdio: 'inherit',
   shell: false,
   env: buildPythonRuntimeEnv({
-    baseEnv: buildManagedRuntimeEnv({
-      baseEnv: process.env,
-      scopes: ['backend', 'module4'],
-    }),
+    baseEnv: managedEnv,
     pythonExec: module4PythonExec,
   }),
 });

@@ -13,7 +13,7 @@ const datasetRoot = path.resolve(
   projectRoot,
   String(process.env.MODULE2_DATASET_ROOT || "datasets").trim(),
 );
-const apiBase = String(process.env.MODULE2_API_BASE || "http://127.0.0.1:8000")
+const apiBase = String(process.env.MODULE2_API_BASE || "http://127.0.0.1:8010")
   .trim()
   .replace(/\/+$/, "");
 const pollIntervalMs = Math.max(

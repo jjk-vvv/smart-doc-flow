@@ -10,6 +10,7 @@ class WebRunRequest(BaseModel):
     doc_set_id: str
     prompt: str | None = None
     api_mode: str | None = None
+    owner_id: str | None = None
 
 
 class UpdateExcelSheet(BaseModel):

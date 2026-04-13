@@ -15,7 +15,8 @@ const rerunRoot = path.resolve(
     || path.join(projectRoot, "runtime-data-rerun", "20260411_165004", "xlsx_rerun_forced_fresh"),
 );
 const appUrl = String(process.env.MODULE2_APP_URL || "http://127.0.0.1:3002").trim().replace(/\/+$/, "");
-const apiBase = String(process.env.MODULE2_API_BASE_OVERRIDE || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
+const gatewayPort = String(process.env.GATEWAY_PORT || "3001").trim() || "3001";
+const apiBase = String(process.env.MODULE2_API_BASE_OVERRIDE || `http://127.0.0.1:${gatewayPort}`).trim().replace(/\/+$/, "");
 const runTag = new Date().toISOString().replace(/[:.]/g, "-");
 const outputDir = path.join(projectRoot, ".runlogs", "xlsx-web-monitor", runTag);
 const docSwitchWaitMs = Math.max(0, Number.parseInt(process.env.MODULE2_XLSX_DOC_WAIT_MS || "2500", 10) || 2500);

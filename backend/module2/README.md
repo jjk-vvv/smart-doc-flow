@@ -18,7 +18,7 @@
 
 - `frontend`：Vite 前端，端口 `3000`
 - `auth`：认证与聊天服务，端口 `3001`
-- `module2`：本文档对应服务，端口 `8000`
+- `module2`：本文档对应服务，端口 `8010`
 - `module4`：知识图谱服务，端口 `8100`
 
 如果只想跳过模块二或模块四，可在 PowerShell 中临时设置：
@@ -47,7 +47,7 @@ npm run dev:module2
 或直接执行：
 
 ```powershell
-D:\smart_doc_flow\smart-doc-flow\.venv-module2-py311\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
+D:\smart_doc_flow\smart-doc-flow\.venv-module2-py311\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload --reload-dir app
 ```
 
 ## 环境准备
@@ -383,7 +383,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 
 - 前端：`http://localhost:3000`
 - 认证服务：`http://localhost:3001`
-- 模块二：`http://localhost:8000`
+- 模块二：`http://localhost:8010`
 - 模块四：`http://localhost:8100`
 
 前端代理配置见：`frontend/vite.config.ts`
@@ -397,7 +397,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - 模块二依赖是否安装完成
 - `python` 是否可用
 - `backend/module2/.env` 是否存在
-- `http://localhost:8000/healthz` 是否可访问
+- `http://localhost:8010/healthz` 是否可访问
 
 ### 2. Word 预览一直失败
 

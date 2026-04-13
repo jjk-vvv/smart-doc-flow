@@ -44,24 +44,34 @@ def build_router() -> APIRouter:
 
     @router.get("/extract/jobs/status/{job_id}")
     async def extract_jobs_status(
+        request: Request,
         job_id: str,
         include_documents: bool = False,
         settings: Settings = Depends(get_settings),
         extraction_service: ExtractionService = Depends(get_extraction_service),
-        _current_user: AuthenticatedUser = Depends(require_authenticated_user),
+        current_user: AuthenticatedUser = Depends(require_authenticated_user),
     ):
-        return extraction_service.get_job_status(settings, job_id, include_documents=include_documents)
+        request.state.authenticated_user = current_user
+        return extraction_service.get_job_status(
+            settings,
+            request,
+            job_id,
+            include_documents=include_documents,
+        )
 
     @router.post("/extract/jobs/{job_id}/cancel-file", response_model=CancelExtractionJobFileResponse)
     async def extract_jobs_cancel_file(
+        request: Request,
         job_id: str,
         payload: CancelExtractionJobFileRequest,
         settings: Settings = Depends(get_settings),
         extraction_service: ExtractionService = Depends(get_extraction_service),
-        _current_user: AuthenticatedUser = Depends(require_authenticated_user),
+        current_user: AuthenticatedUser = Depends(require_authenticated_user),
     ):
+        request.state.authenticated_user = current_user
         return extraction_service.cancel_job_file(
             settings,
+            request,
             job_id,
             file_hash=payload.file_hash,
             file_name=payload.file_name,

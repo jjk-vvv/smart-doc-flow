@@ -2312,7 +2312,19 @@ const formatCompactInt = (value: number): string => {
     return safeValue.toLocaleString('zh-CN');
 };
 
-export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ isSidebarCollapsed = false }) => {
+type DeepReadWorkbenchProps = {
+    isSidebarCollapsed?: boolean;
+    pendingExternalFiles?: File[];
+    pendingExternalUploadToken?: string;
+    onPendingExternalUploadConsumed?: () => void;
+};
+
+export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
+    isSidebarCollapsed = false,
+    pendingExternalFiles,
+    pendingExternalUploadToken,
+    onPendingExternalUploadConsumed,
+}) => {
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
     const [schemaText] = useState<string>(JSON.stringify(DEFAULT_SCHEMA, null, 2));
     const [documents, setDocuments] = useState<DocumentResult[]>([]);
@@ -2402,6 +2414,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const extractionJobApiBaseRef = useRef<string>('');
     const terminalJobResyncRef = useRef<string>('');
     const persistedSelectedFilesRef = useRef<PersistedWorkbenchFile[]>([]);
+    const consumedExternalUploadTokenRef = useRef('');
     const assistantAbortRef = useRef<AbortController | null>(null);
     const paneResizeFrameRef = useRef<number | null>(null);
     const paneResizeLatestXRef = useRef<number | null>(null);
@@ -4041,6 +4054,22 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             fileInputRef.current.value = '';
         }
     };
+
+    useEffect(() => {
+        if (!sessionHydrated || sessionRestorePending) return;
+        if (!pendingExternalUploadToken) return;
+        if (!Array.isArray(pendingExternalFiles) || pendingExternalFiles.length === 0) return;
+        if (consumedExternalUploadTokenRef.current === pendingExternalUploadToken) return;
+        consumedExternalUploadTokenRef.current = pendingExternalUploadToken;
+        mergeSelectedFiles(pendingExternalFiles);
+        onPendingExternalUploadConsumed?.();
+    }, [
+        onPendingExternalUploadConsumed,
+        pendingExternalFiles,
+        pendingExternalUploadToken,
+        sessionHydrated,
+        sessionRestorePending,
+    ]);
 
     const resetWorkbenchState = (message: string) => {
         officePreviewPollRef.current = {};

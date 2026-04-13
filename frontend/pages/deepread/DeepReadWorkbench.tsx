@@ -2386,6 +2386,11 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         return restorable.length > 0;
     });
     const [errorMessage, setErrorMessage] = useState('');
+    const [pendingRemoveFile, setPendingRemoveFile] = useState<{
+        index: number;
+        fileName: string;
+        message: string;
+    } | null>(null);
     const [infoMessage, setInfoMessage] = useState("每批最多上传 5 个文件。");
     const [activeSummaryText, setActiveSummaryText] = useState('');
     const [activeSummaryLoading, setActiveSummaryLoading] = useState(false);
@@ -4154,7 +4159,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         resetWorkbenchState('已清空当前页面数据与本地缓存。');
     };
 
-    const removeFile = (index: number) => {
+    const removeFile = (index: number, forceConfirm = false) => {
         const removed = selectedFiles[index];
         if (!removed) return;
         const normalizedRemovedName = removed.name.trim().toLowerCase();
@@ -4166,7 +4171,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             : removingParsedResult
                 ? `移除 ${removed.name} 会同步移除它的解析结果，是否继续？`
                 : '';
-        if (confirmMessage && typeof window !== 'undefined' && !window.confirm(confirmMessage)) {
+        if (confirmMessage && !forceConfirm) {
+            setPendingRemoveFile({
+                index,
+                fileName: removed.name,
+                message: confirmMessage,
+            });
             return;
         }
 
@@ -4216,6 +4226,17 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         }
         setActiveFieldKey(null);
         setInfoMessage(`已移除 ${removed.name}`);
+    };
+
+    const confirmRemoveFile = () => {
+        if (!pendingRemoveFile) return;
+        const targetIndex = pendingRemoveFile.index;
+        setPendingRemoveFile(null);
+        removeFile(targetIndex, true);
+    };
+
+    const cancelRemoveFile = () => {
+        setPendingRemoveFile(null);
     };
 
     const clearAllFiles = () => {
@@ -6080,7 +6101,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                                     }}
                                                                     title={`移除 ${file.name}`}
                                                                     aria-label={`移除 ${file.name}`}
-                                                                    className="rounded-md p-1 text-slate-400 opacity-0 group-hover:opacity-100 transition-all duration-200 hover:bg-slate-200/50 hover:text-slate-700 active:scale-95 focus-visible:outline-none dark:hover:bg-white/10 dark:hover:text-slate-300"
+                                                                    className="rounded-md p-1 text-slate-500/90 opacity-100 transition-all duration-200 hover:bg-slate-200/60 hover:text-slate-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-slate-200"
                                                                 >
                                                                     <Trash2 size={13} />
                                                                 </button>
@@ -7475,6 +7496,41 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     )}
                 </div>
             </div>
+            {pendingRemoveFile && (
+                <div className="fixed inset-0 z-[58] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[1px]">
+                    <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_28px_70px_rgba(15,23,42,0.28)] dark:border-white/[0.08] dark:bg-slate-900">
+                        <div className="border-b border-slate-100/90 px-5 py-4 dark:border-white/[0.08]">
+                            <p className="text-[16px] font-semibold text-slate-900 dark:text-slate-100">
+                                确认移除文件
+                            </p>
+                            <p className="mt-1 text-[12px] text-slate-500 dark:text-slate-400">
+                                将从当前工作区移除，必要时会同步取消解析并清理结果。
+                            </p>
+                        </div>
+                        <div className="px-5 py-4">
+                            <p className="text-[13px] leading-relaxed text-slate-700 dark:text-slate-200">
+                                {pendingRemoveFile.message}
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t border-slate-100/90 px-5 py-4 dark:border-white/[0.08]">
+                            <button
+                                type="button"
+                                onClick={cancelRemoveFile}
+                                className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-white/[0.12] dark:bg-white/[0.03] dark:text-slate-300 dark:hover:bg-white/[0.08]"
+                            >
+                                取消
+                            </button>
+                            <button
+                                type="button"
+                                onClick={confirmRemoveFile}
+                                className="inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-[13px] font-semibold text-white transition hover:bg-rose-700"
+                            >
+                                确认移除
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {showAssistantHelp && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95 duration-200">
                     <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-white/[0.02] border border-slate-100/80 dark:border-white/[0.05]">

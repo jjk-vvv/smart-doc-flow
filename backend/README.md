@@ -59,8 +59,9 @@ Recommended runtime entrypoints:
 Public port contract:
 
 - frontend public entry: `3000`
+- frontend-app public entry: `3002`
 - unified FastAPI backend public entry: `3001`
-- `3003`, `8000`, and `8100` are internal compatibility or sidecar ports
+- `3003`, `8010`, `8001`, and `8100` are internal compatibility or sidecar ports
 - frontend code should target `3001` by default and only reach older upstream ports through explicit developer overrides
 
 Desktop runtime entrypoints:
@@ -146,21 +147,36 @@ Data/storage direction:
 FastAPI module structure:
 
 - `backend/app/modules/auth/`
-  - auth router, service, repository, security, notifier
-- `backend/app/modules/assistant/`
-  - unified assistant router and provider-backed service
-- `backend/app/modules/extraction/`
-  - unified extraction endpoints, shadow jobs, artifact/preview serving
-  - owns the unified-side Module 2 compat worker entry used by subprocess execution mode
-  - `config.py` now centralizes the FastAPI extraction-layer env parsing
-  - `router.py` now depends on `ExtractionService` instead of calling scattered
-    module-level entrypoints directly
-- `backend/app/modules/gateway/`
-  - gateway info, health, readiness, and upstream proxy helpers
+  - standardized layering (`api/services/repositories/schemas/domain`) with
+    compatibility adapters to existing auth implementation
+- `backend/app/modules/module1/`
+  - standardized layering plus compatibility bridge to current placeholder path
+- `backend/app/modules/module2/`
+  - standardized layering (`api/services/repositories/schemas/domain/core/integrations/resources`)
+    wrapping existing extraction + assistant routes
+- `backend/app/modules/module3/`
+  - standardized layering (`api/services/repositories/schemas/models/domain/core`)
+    wrapping module3 FastAPI routes
+  - controlled by `UNIFIED_GATEWAY_MODULE3_ROUTER_MODE` (`auto` / `disabled` / `required`)
+- `backend/app/modules/module4/`
+  - standardized layering (`api/services/repositories/schemas/domain/core/integrations/resources`)
+    wrapping current gateway/module4 integration path
 - `backend/app/modules/frontend_static/`
   - packaged frontend static asset serving
-- `backend/app/modules/module1_placeholder/`
-  - retained placeholder page/module shell
+- legacy adapters retained during migration:
+  - `backend/app/modules/assistant/`
+  - `backend/app/modules/extraction/`
+  - `backend/app/modules/gateway/`
+  - `backend/app/modules/module1_placeholder/`
+
+Unified route assembly:
+
+- `backend/app/factory.py`
+  - canonical FastAPI app factory (`create_app`)
+- `backend/app/create_app.py`
+  - compatibility import shim that re-exports `create_app`
+- `backend/app/modules/registry.py`
+  - module-level router registration for API v1 assembly
 
 Service-internal standard structure (migration target):
 

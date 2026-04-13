@@ -34,6 +34,11 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
+    value = _env_str(name, default).lower()
+    return value if value in set(allowed) else default
+
+
 def _split_csv(raw_value: str) -> tuple[str, ...]:
     items = [item.strip() for item in str(raw_value or "").split(",") if item.strip()]
     if not items:
@@ -54,6 +59,7 @@ class Settings:
     frontend_dist_dir: Path
     module2_upstream_url: str
     module4_upstream_url: str
+    module3_router_mode: str = "auto"
     auth_tenant_mode: str = "compat_default"
     auth_tenant_default_id: str = "default"
     gateway_health_probe_timeout_sec: float = 2.0
@@ -66,7 +72,7 @@ def get_settings() -> Settings:
     config_root_dir = resolve_config_root_dir(runtime_root_dir)
     data_root_dir = resolve_data_root_dir(runtime_root_dir)
     frontend_dist_dir = resolve_frontend_dist_dir(runtime_root_dir)
-    module2_port = _env_str("MODULE2_PORT", "8000")
+    module2_port = _env_str("MODULE2_PORT", "8010")
 
     return Settings(
         gateway_host=_env_str("GATEWAY_HOST", "0.0.0.0"),
@@ -74,7 +80,7 @@ def get_settings() -> Settings:
         cors_origins=_split_csv(
             _env_str(
                 "GATEWAY_CORS_ORIGINS",
-                "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:3010,http://127.0.0.1:3010,http://localhost:5173,http://127.0.0.1:5173,http://localhost:19006,http://127.0.0.1:19006,http://localhost:19007,http://127.0.0.1:19007,http://localhost:19008,http://127.0.0.1:19008",
+                "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3002,http://127.0.0.1:3002,http://localhost:3001,http://127.0.0.1:3001,http://localhost:3010,http://127.0.0.1:3010,http://localhost:5173,http://127.0.0.1:5173,http://localhost:19006,http://127.0.0.1:19006,http://localhost:19007,http://127.0.0.1:19007,http://localhost:19008,http://127.0.0.1:19008",
             )
         ),
         request_timeout_sec=max(1.0, _env_float("GATEWAY_REQUEST_TIMEOUT_SEC", 60.0)),
@@ -85,6 +91,11 @@ def get_settings() -> Settings:
         frontend_dist_dir=frontend_dist_dir,
         module2_upstream_url=_env_str("MODULE2_UPSTREAM_URL", f"http://127.0.0.1:{module2_port}"),
         module4_upstream_url=_env_str("MODULE4_UPSTREAM_URL", "http://127.0.0.1:8100"),
+        module3_router_mode=_env_choice(
+            "UNIFIED_GATEWAY_MODULE3_ROUTER_MODE",
+            "auto",
+            ("auto", "disabled", "required"),
+        ),
         auth_tenant_mode=_env_str("AUTH_TENANT_MODE", "compat_default"),
         auth_tenant_default_id=_env_str("AUTH_TENANT_DEFAULT_ID", "default"),
         gateway_health_probe_timeout_sec=max(1.0, _env_float("GATEWAY_HEALTH_PROBE_TIMEOUT_SEC", 2.0)),

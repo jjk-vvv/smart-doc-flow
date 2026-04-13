@@ -180,6 +180,9 @@ const MANAGED_ENV_SCOPE_SPECS = {
   module4: {
     relPath: path.join('backend', 'module4', '.env'),
   },
+  module3: {
+    relPath: path.join('backend', 'module3', '.env'),
+  },
 };
 
 const resolveScopedEnvFileSpecs = ({
@@ -257,6 +260,7 @@ const buildManagedRuntimeEnv = ({ baseEnv = process.env, scopes = DEFAULT_MANAGE
   env.SMART_DOC_FLOW_DATA_ROOT = dataRoot;
   env.SMART_DOC_FLOW_GATEWAY_ENV_FILE = path.join(configRoot, 'backend', '.env');
   env.MODULE2_ENV_FILE = path.join(configRoot, 'backend', 'module2', '.env');
+  env.MODULE3_ENV_FILE = path.join(configRoot, 'backend', 'module3', '.env');
   env.SMART_DOC_FLOW_MODULE4_ENV_FILE = path.join(configRoot, 'backend', 'module4', '.env');
 
   const forceManagedDataPaths = path.resolve(dataRoot) !== path.resolve(runtimeRoot);

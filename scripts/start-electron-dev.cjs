@@ -2,10 +2,19 @@ const path = require('path');
 const { spawn } = require('child_process');
 const electronExec = require('electron');
 
-const { buildNodeRuntimeEnv, nodeExec, rootDir } = require('./python-service-utils.cjs');
+const {
+  buildManagedRuntimeEnv,
+  buildNodeRuntimeEnv,
+  nodeExec,
+  rootDir,
+} = require('./python-service-utils.cjs');
 
-const gatewayPort = process.env.GATEWAY_PORT || '3001';
-const frontendPort = process.env.FRONTEND_PORT || '3000';
+const managedBackendEnv = buildManagedRuntimeEnv({
+  baseEnv: process.env,
+  scopes: ['backend'],
+});
+const gatewayPort = managedBackendEnv.GATEWAY_PORT || process.env.GATEWAY_PORT || '3001';
+const frontendPort = managedBackendEnv.FRONTEND_PORT || process.env.FRONTEND_PORT || '3000';
 const gatewayUrl = `http://127.0.0.1:${gatewayPort}`;
 const frontendUrl = process.env.SMART_DOC_FLOW_ELECTRON_RENDERER_URL || `http://127.0.0.1:${frontendPort}`;
 const readyUrl = `${gatewayUrl}/gateway/ready?scope=${encodeURIComponent(process.env.GATEWAY_READY_SCOPE || 'backend')}`;
@@ -65,7 +74,7 @@ backendChild = spawn(nodeExec, [path.join(rootDir, 'scripts', 'dev-backend-fasta
   shell: false,
   env: buildNodeRuntimeEnv({
     baseEnv: {
-      ...process.env,
+      ...managedBackendEnv,
       MODULE2_ENABLED: process.env.MODULE2_ENABLED || '0',
       UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE: process.env.UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE || 'managed',
     },
@@ -85,7 +94,7 @@ frontendChild = spawn(
     cwd: path.join(rootDir, 'frontend'),
     stdio: 'inherit',
     shell: false,
-    env: buildNodeRuntimeEnv({ baseEnv: process.env }),
+    env: buildNodeRuntimeEnv({ baseEnv: managedBackendEnv }),
   },
 );
 
@@ -114,6 +123,7 @@ Promise.all([waitForHttpOk(readyUrl), waitForHttpOk(frontendUrl)])
       shell: false,
       env: buildElectronChildEnv({
         ...process.env,
+        ...managedBackendEnv,
         SMART_DOC_FLOW_ELECTRON_MANAGED_BACKEND: '0',
         SMART_DOC_FLOW_ELECTRON_GATEWAY_URL: gatewayUrl,
         SMART_DOC_FLOW_ELECTRON_RENDERER_URL: frontendUrl,

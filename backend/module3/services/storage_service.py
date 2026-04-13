@@ -23,6 +23,106 @@ RUN_WARNING_PREFIXES = (
     "[header inferred]",
     "[header unresolved]",
 )
+DEFAULT_OWNER_ID = "default"
+OWNER_MODE_COMPAT_DEFAULT = "compat_default"
+OWNER_MODE_STRICT_PREFERRED = "strict_preferred"
+OWNER_MODE_STRICT_REQUIRED = "strict_required"
+_OWNER_MODES = {
+    OWNER_MODE_COMPAT_DEFAULT,
+    OWNER_MODE_STRICT_PREFERRED,
+    OWNER_MODE_STRICT_REQUIRED,
+}
+_OWNER_BACKFILL_LOCK = threading.Lock()
+_OWNER_BACKFILL_DONE = False
+
+
+def get_owner_mode() -> str:
+    raw_value = str(os.getenv("MODULE3_OWNER_MODE", "") or "").strip().lower()
+    if raw_value in _OWNER_MODES:
+        return raw_value
+
+    # Legacy switch compatibility:
+    # MODULE3_OWNER_COMPAT_FALLBACK=0 means strict mode if MODULE3_OWNER_MODE is omitted.
+    legacy_fallback_enabled = str(os.getenv("MODULE3_OWNER_COMPAT_FALLBACK", "1") or "").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    return OWNER_MODE_COMPAT_DEFAULT if legacy_fallback_enabled else OWNER_MODE_STRICT_REQUIRED
+
+
+def _owner_backfill_on_boot_enabled() -> bool:
+    raw_value = str(os.getenv("MODULE3_OWNER_BACKFILL_ON_BOOT", "1") or "").strip().lower()
+    return raw_value not in {"0", "false", "off", "no"}
+
+
+def normalize_owner_id(owner_id: Any) -> str:
+    normalized = str(owner_id or "").strip()
+    return normalized or DEFAULT_OWNER_ID
+
+
+def _owner_matches(record_owner_id: Any, expected_owner_id: str | None) -> bool:
+    if expected_owner_id is None:
+        return True
+
+    mode = get_owner_mode()
+    expected = normalize_owner_id(expected_owner_id)
+    raw_owner = str(record_owner_id or "").strip()
+    if not raw_owner:
+        return mode in {OWNER_MODE_COMPAT_DEFAULT, OWNER_MODE_STRICT_PREFERRED}
+
+    actual = normalize_owner_id(raw_owner)
+    if actual == expected:
+        return True
+    if mode == OWNER_MODE_COMPAT_DEFAULT and actual == DEFAULT_OWNER_ID:
+        return True
+    return False
+
+
+def _resolve_record_owner(record: dict[str, Any], requested_owner_id: str | None = None) -> str:
+    raw_owner = str(record.get("owner_id") or "").strip()
+    if raw_owner:
+        return normalize_owner_id(raw_owner)
+    if requested_owner_id is not None:
+        return normalize_owner_id(requested_owner_id)
+    return DEFAULT_OWNER_ID
+
+
+def _owner_backfill_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    candidates.extend(TEMPLATES_DIR.glob("*.json"))
+    candidates.extend(DOCSETS_DIR.glob("*.json"))
+    candidates.extend(RUNS_DIR.glob("*/status.json"))
+    return candidates
+
+
+def _backfill_owner_in_record(path: Path) -> None:
+    try:
+        payload = read_json(path)
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    if str(payload.get("owner_id") or "").strip():
+        return
+    payload["owner_id"] = DEFAULT_OWNER_ID
+    write_json_atomic(path, payload)
+
+
+def _backfill_owner_metadata_once() -> None:
+    global _OWNER_BACKFILL_DONE
+    if _OWNER_BACKFILL_DONE:
+        return
+    if not _owner_backfill_on_boot_enabled():
+        _OWNER_BACKFILL_DONE = True
+        return
+    with _OWNER_BACKFILL_LOCK:
+        if _OWNER_BACKFILL_DONE:
+            return
+        for candidate in _owner_backfill_candidates():
+            _backfill_owner_in_record(candidate)
+        _OWNER_BACKFILL_DONE = True
 
 
 def utcnow_iso() -> str:
@@ -49,6 +149,7 @@ def _datetime_to_iso(value: datetime | None) -> str | None:
 def _template_record_from_entity(entity: TemplateTable) -> dict[str, Any]:
     return {
         "template_id": entity.template_id,
+        "owner_id": normalize_owner_id(getattr(entity, "owner_id", "")),
         "filename": entity.filename,
         "path": entity.path,
         "sheet_name": entity.sheet_name,
@@ -66,6 +167,7 @@ def _docset_record_from_entity(entity: DocsetTable) -> dict[str, Any]:
     files = [{"filename": item.filename, "path": item.path} for item in entity.files]
     return {
         "doc_set_id": entity.doc_set_id,
+        "owner_id": normalize_owner_id(getattr(entity, "owner_id", "")),
         "count": entity.count,
         "files": files,
         "created_at": _datetime_to_iso(entity.created_at),
@@ -75,6 +177,7 @@ def _docset_record_from_entity(entity: DocsetTable) -> dict[str, Any]:
 def _run_record_from_entity(entity: RunTable) -> dict[str, Any]:
     return {
         "run_id": entity.run_id,
+        "owner_id": normalize_owner_id(getattr(entity, "owner_id", "")),
         "status": entity.status,
         "filled": entity.filled,
         "total": entity.total,
@@ -95,6 +198,11 @@ def _sync_template_record(record: dict[str, Any]) -> None:
         entity = session.get(TemplateTable, record["template_id"])
         if entity is None:
             entity = TemplateTable(template_id=record["template_id"])
+            owner_id = _resolve_record_owner(record)
+        else:
+            owner_id = normalize_owner_id(getattr(entity, "owner_id", "")) or _resolve_record_owner(record)
+        entity.owner_id = owner_id
+        record["owner_id"] = owner_id
         entity.filename = str(record["filename"])
         entity.path = str(record["path"])
         entity.sheet_name = record.get("sheet_name")
@@ -119,6 +227,11 @@ def _sync_docset_record(record: dict[str, Any]) -> None:
         ).scalar_one_or_none()
         if entity is None:
             entity = DocsetTable(doc_set_id=record["doc_set_id"])
+            owner_id = _resolve_record_owner(record)
+        else:
+            owner_id = normalize_owner_id(getattr(entity, "owner_id", "")) or _resolve_record_owner(record)
+        entity.owner_id = owner_id
+        record["owner_id"] = owner_id
         entity.count = int(record.get("count") or 0)
         entity.created_at = _parse_datetime(record.get("created_at")) or datetime.utcnow()
         entity.files.clear()
@@ -139,6 +252,11 @@ def _sync_run_record(record: dict[str, Any]) -> None:
         entity = session.get(RunTable, record["run_id"])
         if entity is None:
             entity = RunTable(run_id=record["run_id"])
+            owner_id = _resolve_record_owner(record)
+        else:
+            owner_id = normalize_owner_id(getattr(entity, "owner_id", "")) or _resolve_record_owner(record)
+        entity.owner_id = owner_id
+        record["owner_id"] = owner_id
         entity.status = str(record.get("status") or "running")
         entity.filled = int(record.get("filled") or 0)
         entity.total = int(record.get("total") or 0)
@@ -155,6 +273,7 @@ def _sync_run_record(record: dict[str, Any]) -> None:
 def ensure_storage_dirs() -> None:
     for directory in (STORAGE_DIR, TEMPLATES_DIR, DOCSETS_DIR, RUNS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
+    _backfill_owner_metadata_once()
     if database_enabled():
         init_database()
 
@@ -257,12 +376,14 @@ def _load_run_warnings(run_id: str) -> list[str]:
 
 
 def save_template_record(record: dict[str, Any]) -> dict[str, Any]:
+    record["owner_id"] = _resolve_record_owner(record)
     _sync_template_record(record)
     write_json_atomic(template_meta_path(record["template_id"]), record)
     return record
 
 
 def save_docset_record(record: dict[str, Any]) -> dict[str, Any]:
+    record["owner_id"] = _resolve_record_owner(record)
     _sync_docset_record(record)
     write_json_atomic(docset_meta_path(record["doc_set_id"]), record)
     return record
@@ -270,27 +391,35 @@ def save_docset_record(record: dict[str, Any]) -> dict[str, Any]:
 
 def create_run_record(run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     record = {"run_id": run_id, **payload}
+    record["owner_id"] = _resolve_record_owner(record)
     _sync_run_record(record)
     write_json_atomic(run_status_path(run_id), record)
     return record
 
 
-def load_template_record(template_id: str) -> dict[str, Any]:
+def load_template_record(template_id: str, owner_id: str | None = None) -> dict[str, Any]:
+    normalized_owner = normalize_owner_id(owner_id) if owner_id is not None else None
     if database_enabled():
         with session_scope() as session:
             entity = session.get(TemplateTable, template_id)
             if entity is not None:
-                return _template_record_from_entity(entity)
+                record = _template_record_from_entity(entity)
+                if _owner_matches(record.get("owner_id"), normalized_owner):
+                    return record
     path = template_meta_path(template_id)
     if not path.exists():
         raise FileNotFoundError(f"模板不存在: {template_id}")
     record = read_json(path)
+    if not _owner_matches(record.get("owner_id"), normalized_owner):
+        raise FileNotFoundError(f"template not found: {template_id}")
+    record["owner_id"] = _resolve_record_owner(record, normalized_owner)
     if database_enabled():
         _sync_template_record(record)
     return record
 
 
-def load_docset_record(doc_set_id: str) -> dict[str, Any]:
+def load_docset_record(doc_set_id: str, owner_id: str | None = None) -> dict[str, Any]:
+    normalized_owner = normalize_owner_id(owner_id) if owner_id is not None else None
     if database_enabled():
         with session_scope() as session:
             entity = session.execute(
@@ -299,28 +428,39 @@ def load_docset_record(doc_set_id: str) -> dict[str, Any]:
                 .where(DocsetTable.doc_set_id == doc_set_id)
             ).scalar_one_or_none()
             if entity is not None:
-                return _docset_record_from_entity(entity)
+                record = _docset_record_from_entity(entity)
+                if _owner_matches(record.get("owner_id"), normalized_owner):
+                    return record
     path = docset_meta_path(doc_set_id)
     if not path.exists():
         raise FileNotFoundError(f"文档集不存在: {doc_set_id}")
     record = read_json(path)
+    if not _owner_matches(record.get("owner_id"), normalized_owner):
+        raise FileNotFoundError(f"docset not found: {doc_set_id}")
+    record["owner_id"] = _resolve_record_owner(record, normalized_owner)
     if database_enabled():
         _sync_docset_record(record)
     return record
 
 
-def load_run_record(run_id: str) -> dict[str, Any]:
+def load_run_record(run_id: str, owner_id: str | None = None) -> dict[str, Any]:
+    normalized_owner = normalize_owner_id(owner_id) if owner_id is not None else None
     if database_enabled():
         with session_scope() as session:
             entity = session.get(RunTable, run_id)
             if entity is not None:
                 record = _run_record_from_entity(entity)
+                if not _owner_matches(record.get("owner_id"), normalized_owner):
+                    raise FileNotFoundError(f"run not found: {run_id}")
                 record["warnings"] = _load_run_warnings(run_id)
                 return record
     path = run_status_path(run_id)
     if not path.exists():
         raise FileNotFoundError(f"任务不存在: {run_id}")
     record = read_json(path)
+    if not _owner_matches(record.get("owner_id"), normalized_owner):
+        raise FileNotFoundError(f"run not found: {run_id}")
+    record["owner_id"] = _resolve_record_owner(record, normalized_owner)
     record["warnings"] = _load_run_warnings(run_id)
     if database_enabled():
         _sync_run_record(record)
@@ -366,10 +506,12 @@ __all__ = [
     "create_run_record",
     "docset_meta_path",
     "ensure_storage_dirs",
+    "get_owner_mode",
     "load_docset_record",
     "load_run_record",
     "load_template_record",
     "new_id",
+    "normalize_owner_id",
     "read_json",
     "run_directory",
     "run_log_path",

@@ -1,0 +1,14 @@
+{
+  "run_id": "run_b41bb7f9b2a3",
+  "status": "done",
+  "filled": 2,
+  "total": 2,
+  "fill_rate": 1.0,
+  "output_filename": "D:\\smart_doc_flow\\smart-doc-flow\\backend\\module3\\storage\\runs\\run_b41bb7f9b2a3\\tpl_f6fa371025b2__2025山东省环境空气质量监测数据信息_filled.xlsx",
+  "error": null,
+  "created_at": "2026-04-12T14:56:26.250233",
+  "template_id": "tpl_f6fa371025b2",
+  "doc_set_id": "docset_3b7d0ed49f7c",
+  "warnings": [],
+  "finished_at": "2026-04-12T14:58:07.052229"
+}

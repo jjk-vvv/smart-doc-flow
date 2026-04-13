@@ -31,6 +31,9 @@ import {
   type Variants,
 } from "framer-motion";
 import { Label } from "recharts";
+import deepreadWorkbenchImage from "../../assets/deepread-workbench.svg";
+import knowledgeGraphImage from "../../assets/knowledge-graph.svg";
+import documentFlowImage from "../../assets/文档.png";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -557,6 +560,7 @@ const CapabilitiesInteractiveBackdrop: React.FC<{ active: boolean }> = ({
 
 interface UserGuideProps {
   onBackToDashboard?: () => void;
+  onOpenLogin?: () => void;
 }
 
 const GuideSectiondemonstration: React.FC<{
@@ -851,7 +855,10 @@ const GuideSectiondemonstration: React.FC<{
   );
 };
 
-export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
+export const UserGuide: React.FC<UserGuideProps> = ({
+  onBackToDashboard,
+  onOpenLogin,
+}) => {
   const [currentSection, setCurrentSection] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeNavId, setActiveNavId] = useState<GuideNavId>("overview");
@@ -1608,7 +1615,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             className="order-1 lg:order-1 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
           >
             <img
-              src=""
+              src={deepreadWorkbenchImage}
               className="w-full h-full object-cover"
               alt="智能文档解析"
             />
@@ -1665,7 +1672,11 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             variants={gatherRightVariants}
             className="order-1 lg:order-2 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
           >
-            <img src="" className="w-full h-full object-cover" alt="模板回填" />
+            <img
+              src={documentFlowImage}
+              className="w-full h-full object-cover"
+              alt="模板回填"
+            />
           </motion.div>
         </div>
 
@@ -1679,7 +1690,11 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             variants={gatherLeftVariants}
             className="order-1 lg:order-1 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
           >
-            <img src="" className="w-full h-full object-cover" alt="知识图谱" />
+            <img
+              src={knowledgeGraphImage}
+              className="w-full h-full object-cover"
+              alt="知识图谱"
+            />
           </motion.div>
           {/* Text Right */}
           <motion.div
@@ -1958,7 +1973,17 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             </div>
 
             <div className="flex items-center gap-4">
-              <button className="px-6 py-2.5 rounded-full bg-white text-[#0d1c2e] font-semibold border border-[#e2e8f0] shadow-sm hover:bg-gray-50 transition-all text-sm h-[44px]">
+              <button
+                type="button"
+                onClick={() => {
+                  if (onOpenLogin) {
+                    onOpenLogin();
+                    return;
+                  }
+                  onBackToDashboard?.();
+                }}
+                className="px-6 py-2.5 rounded-full bg-white text-[#0d1c2e] font-semibold border border-[#e2e8f0] shadow-sm hover:bg-gray-50 transition-all text-sm h-[44px]"
+              >
                 登录账号
               </button>
               <button

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, UploadFile, status
 from requests import RequestException
 
 from app.core.config import Settings
@@ -76,19 +76,24 @@ def get_shadow_extraction_job_status(
     *,
     execution_facade_factory: ExecutionFacadeFactory,
     include_documents: bool = False,
+    expected_tenant_id: str = "",
 ) -> dict[str, Any]:
     normalized_job_id = _normalize_job_id(job_id)
     if not normalized_job_id:
         raise HTTPException(status_code=404, detail="Extraction job not found")
 
     _cleanup_shadow_jobs(settings)
-    snapshot_payload = _get_shadow_payload(settings, normalized_job_id)
+    snapshot_payload = _enforce_shadow_payload_tenant(
+        _get_shadow_payload(settings, normalized_job_id),
+        expected_tenant_id,
+    )
     try:
         payload = execution_facade_factory().get_job_status(
             settings,
             job_id=normalized_job_id,
             include_documents=include_documents,
         )
+        payload = _enforce_shadow_payload_tenant(payload, expected_tenant_id) or payload
         _upsert_shadow_payload(settings, payload)
         if not bool(payload.get("terminal")):
             _ensure_shadow_poller(settings, normalized_job_id, execution_facade_factory=execution_facade_factory)
@@ -110,6 +115,7 @@ def cancel_shadow_extraction_job_file(
     file_hash: str,
     file_name: str = "",
     execution_facade_factory: ExecutionFacadeFactory,
+    expected_tenant_id: str = "",
 ) -> dict[str, Any]:
     normalized_job_id = _normalize_job_id(job_id)
     normalized_hash = str(file_hash or "").strip()
@@ -120,6 +126,7 @@ def cancel_shadow_extraction_job_file(
         raise HTTPException(status_code=400, detail="file_hash or file_name is required")
 
     _cleanup_shadow_jobs(settings)
+    _enforce_shadow_payload_tenant(_get_shadow_payload(settings, normalized_job_id), expected_tenant_id)
     result = execution_facade_factory().cancel_job_file(
         settings,
         job_id=normalized_job_id,
@@ -137,6 +144,7 @@ def cancel_shadow_extraction_job_file(
         refreshed_payload = None
 
     if isinstance(refreshed_payload, dict) and refreshed_payload:
+        refreshed_payload = _enforce_shadow_payload_tenant(refreshed_payload, expected_tenant_id) or refreshed_payload
         _upsert_shadow_payload(settings, refreshed_payload)
         if not bool(refreshed_payload.get("terminal")):
             _ensure_shadow_poller(settings, normalized_job_id, execution_facade_factory=execution_facade_factory)
@@ -260,6 +268,73 @@ def _normalize_job_id(value: Any) -> str:
     if not re.fullmatch(r"extract_job_[A-Za-z0-9]+", normalized):
         return normalized
     return normalized
+
+
+def _normalize_tenant_id(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _extract_payload_tenant_id(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    tenant_id = _normalize_tenant_id(payload.get("tenant_id"))
+    if tenant_id:
+        return tenant_id
+    runtime_spec = payload.get("runtime_spec")
+    if isinstance(runtime_spec, dict):
+        return _normalize_tenant_id(runtime_spec.get("tenant_id"))
+    return ""
+
+
+def _tenant_guard_mode() -> str:
+    mode = str(get_extraction_settings().job_tenant_guard_mode or "").strip().lower()
+    if mode in {"compat", "warn", "strict"}:
+        return mode
+    return "warn"
+
+
+def _append_tenant_guard_warning(payload: dict[str, Any], warning: str) -> dict[str, Any]:
+    warnings = payload.get("warnings")
+    if isinstance(warnings, list):
+        warning_list = [str(item) for item in warnings]
+    else:
+        warning_list = []
+    if warning not in warning_list:
+        warning_list.append(warning)
+    cloned_payload = dict(payload)
+    cloned_payload["warnings"] = warning_list
+    return cloned_payload
+
+
+def _enforce_shadow_payload_tenant(payload: dict[str, Any] | None, expected_tenant_id: str) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized_expected = _normalize_tenant_id(expected_tenant_id)
+    if not normalized_expected:
+        return payload
+
+    actual_tenant_id = _extract_payload_tenant_id(payload)
+    mode = _tenant_guard_mode()
+    if not actual_tenant_id:
+        if mode == "strict":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Legacy extraction job is missing tenant binding in strict guard mode",
+            )
+        if mode == "warn":
+            return _append_tenant_guard_warning(
+                payload,
+                "legacy extraction job payload missing tenant_id; compatibility path used",
+            )
+        return payload
+
+    if actual_tenant_id != normalized_expected:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Extraction job does not belong to current tenant",
+        )
+    return payload
 
 
 def _shadow_job_root_dir(settings: Settings) -> Path:

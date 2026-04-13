@@ -2,9 +2,18 @@ const path = require('path');
 const { spawn } = require('child_process');
 const electronExec = require('electron');
 
-const { buildNodeRuntimeEnv, nodeExec, rootDir } = require('./python-service-utils.cjs');
+const {
+  buildManagedRuntimeEnv,
+  buildNodeRuntimeEnv,
+  nodeExec,
+  rootDir,
+} = require('./python-service-utils.cjs');
 
-const gatewayPort = process.env.GATEWAY_PORT || '3001';
+const managedBackendEnv = buildManagedRuntimeEnv({
+  baseEnv: process.env,
+  scopes: ['backend'],
+});
+const gatewayPort = managedBackendEnv.GATEWAY_PORT || process.env.GATEWAY_PORT || '3001';
 const gatewayUrl = (process.env.SMART_DOC_FLOW_ELECTRON_GATEWAY_URL || `http://127.0.0.1:${gatewayPort}`).replace(/\/+$/, '');
 const readyUrl = `${gatewayUrl}/gateway/ready?scope=${encodeURIComponent(process.env.GATEWAY_READY_SCOPE || 'all')}`;
 const waitTimeoutMs = Math.max(10_000, Number(process.env.GATEWAY_WAIT_TIMEOUT_MS || 180_000));
@@ -63,7 +72,7 @@ backendChild = spawn(nodeExec, [path.join(rootDir, 'scripts', 'start-backend-fas
   shell: false,
   env: buildNodeRuntimeEnv({
     baseEnv: {
-      ...process.env,
+      ...managedBackendEnv,
       MODULE2_ENABLED: process.env.MODULE2_ENABLED || '0',
       UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE: process.env.UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE || 'managed',
     },
@@ -87,6 +96,7 @@ waitForGatewayReady()
       shell: false,
       env: buildElectronChildEnv({
         ...process.env,
+        ...managedBackendEnv,
         SMART_DOC_FLOW_ELECTRON_MANAGED_BACKEND: '0',
         SMART_DOC_FLOW_ELECTRON_GATEWAY_URL: gatewayUrl,
         SMART_DOC_FLOW_ELECTRON_READY_SCOPE: process.env.SMART_DOC_FLOW_ELECTRON_READY_SCOPE || 'all',

@@ -231,6 +231,32 @@ export const requestExtractionJobStatus = async (
   );
 };
 
+export const requestExtractionJobCancelFile = async (
+  jobId: string,
+  fileHash: string,
+  fileName: string,
+  preferredBase = '',
+): Promise<ExtractionApiFetchResult> => {
+  const normalizedJobId = String(jobId || '').trim();
+  if (!normalizedJobId) {
+    throw new Error('Missing extraction job id');
+  }
+  return requestExtraction(
+    `/extract/jobs/${encodeURIComponent(normalizedJobId)}/cancel-file`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        file_hash: String(fileHash || '').trim(),
+        file_name: String(fileName || '').trim(),
+      }),
+    },
+    preferredBase,
+  );
+};
+
 export const requestExtractionSummary = async (
   payload: Record<string, unknown>,
   preferredBase = '',

@@ -193,31 +193,39 @@ class ExtractionService:
     def get_job_status(
         self,
         settings: Settings,
+        request: Request | None,
         job_id: str,
         *,
         include_documents: bool = False,
+        tenant_id: str = "",
     ) -> dict[str, Any]:
+        tenant_resolution, _ = self._resolve_module2_tenant_context(settings, request, tenant_id)
         return get_shadow_extraction_job_status(
             settings,
             job_id,
             execution_facade_factory=get_module2_execution_facade,
             include_documents=include_documents,
+            expected_tenant_id=(tenant_resolution.tenant_id if tenant_resolution is not None else tenant_id),
         )
 
     def cancel_job_file(
         self,
         settings: Settings,
+        request: Request | None,
         job_id: str,
         *,
         file_hash: str,
         file_name: str = "",
+        tenant_id: str = "",
     ) -> dict[str, Any]:
+        tenant_resolution, _ = self._resolve_module2_tenant_context(settings, request, tenant_id)
         return cancel_shadow_extraction_job_file(
             settings,
             job_id,
             file_hash=file_hash,
             file_name=file_name,
             execution_facade_factory=get_module2_execution_facade,
+            expected_tenant_id=(tenant_resolution.tenant_id if tenant_resolution is not None else tenant_id),
         )
 
     async def clear_cache(self, settings: Settings, scope: str = "results") -> dict[str, Any]:

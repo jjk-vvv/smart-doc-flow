@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = REPO_ROOT / "backend"
 GATEWAY_ROOT = BACKEND_ROOT / "gateway"
 MODULE2_ROOT = BACKEND_ROOT / "module2"
+MODULE3_ROOT = BACKEND_ROOT / "module3"
 MODULE4_ROOT = BACKEND_ROOT / "module4"
 REEXEC_MARKER = "SMART_DOC_FLOW_BACKEND_RUN_SERVICE_REEXEC"
 DEFAULT_DATA_ROOT = REPO_ROOT / "runtime-data"
@@ -27,6 +28,15 @@ def _resolve_python(service: str) -> Path:
         candidates.extend(
             [
                 _venv_python(REPO_ROOT / ".venv-module4-py311"),
+                _venv_python(REPO_ROOT / ".venv"),
+            ]
+        )
+    elif service == "module3":
+        candidates.extend(
+            [
+                _venv_python(REPO_ROOT / ".venv-module3-py311"),
+                _venv_python(MODULE3_ROOT / ".venv"),
+                _venv_python(REPO_ROOT / ".venv-module2-py311"),
                 _venv_python(REPO_ROOT / ".venv"),
             ]
         )
@@ -65,9 +75,11 @@ def _maybe_reexec(service: str) -> int | None:
     return int(completed.returncode)
 
 
-def _reload_args(enabled: bool) -> list[str]:
+def _reload_args(enabled: bool, service: str) -> list[str]:
     if not enabled:
         return []
+    if service == "module3":
+        return ["--reload", "--reload-dir", "."]
     return ["--reload", "--reload-dir", "app"]
 
 
@@ -84,7 +96,13 @@ def _service_runtime(service: str) -> tuple[Path, str, str]:
         return (
             MODULE2_ROOT,
             str(env.get("MODULE2_HOST") or "0.0.0.0").strip() or "0.0.0.0",
-            str(env.get("MODULE2_PORT") or "8000").strip() or "8000",
+            str(env.get("MODULE2_PORT") or "8010").strip() or "8010",
+        )
+    if service == "module3":
+        return (
+            MODULE3_ROOT,
+            str(env.get("MODULE3_HOST") or "0.0.0.0").strip() or "0.0.0.0",
+            str(env.get("MODULE3_PORT") or "8001").strip() or "8001",
         )
     return (
         MODULE4_ROOT,
@@ -104,6 +122,7 @@ def _build_env(service: str) -> dict[str, str]:
     env.setdefault("SMART_DOC_FLOW_DATA_ROOT", str(data_root))
     env.setdefault("SMART_DOC_FLOW_GATEWAY_ENV_FILE", str((config_root / "backend" / ".env").resolve()))
     env.setdefault("MODULE2_ENV_FILE", str((config_root / "backend" / "module2" / ".env").resolve()))
+    env.setdefault("MODULE3_ENV_FILE", str((config_root / "backend" / "module3" / ".env").resolve()))
     env.setdefault(
         "SMART_DOC_FLOW_MODULE4_ENV_FILE",
         str((config_root / "backend" / "module4" / ".env").resolve()),
@@ -141,7 +160,7 @@ def _build_env(service: str) -> dict[str, str]:
     )
 
     if service in {"backend", "gateway"}:
-        module2_port = str(env.get("MODULE2_PORT") or "8000").strip() or "8000"
+        module2_port = str(env.get("MODULE2_PORT") or "8010").strip() or "8010"
         module4_port = str(env.get("MODULE4_PORT") or "8100").strip() or "8100"
         # Default to auto mode to avoid blocking gateway startup when sidecars are
         # already running externally (or temporarily unavailable during boot).
@@ -154,7 +173,7 @@ def _build_env(service: str) -> dict[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Smart Doc Flow FastAPI services without Node.js backend wrappers.")
-    parser.add_argument("service", choices=("backend", "gateway", "module2", "module4"))
+    parser.add_argument("service", choices=("backend", "gateway", "module2", "module3", "module4"))
     parser.add_argument("--reload", action="store_true", help="Enable uvicorn reload mode.")
     args = parser.parse_args()
 
@@ -163,16 +182,17 @@ def main() -> int:
         return reexec_code
 
     service_root, host, port = _service_runtime(args.service)
+    module_path = "main:app" if args.service == "module3" else "app.main:app"
     command = [
         sys.executable,
         "-m",
         "uvicorn",
-        "app.main:app",
+        module_path,
         "--host",
         host,
         "--port",
         port,
-        *_reload_args(args.reload),
+        *_reload_args(args.reload, args.service),
     ]
 
     print(f"[run_service] service={args.service}")

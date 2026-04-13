@@ -45,7 +45,7 @@ import {
   type Module3RunStatusResponse,
   type Module3TaskStatus,
   type Module3TemplateField,
-} from "../lib/module3Api";
+} from "../../lib/module3Api";
 import {
   readFusionGridState,
   writeFusionGridState,
@@ -54,13 +54,13 @@ import {
   type FusionGridState,
   type FusionGridTaskRecord,
   type FusionGridTemplateRecord,
-} from "../lib/fusionGridStore";
+} from "../../lib/fusionGridStore";
 import { Module3WordPreview } from "./Module3WordPreview";
 
-import wordIconUrl from "../icons/word.svg";
-import excelIconUrl from "../icons/excel.svg";
-import mdIconUrl from "../icons/md.svg";
-import txtIconUrl from "../icons/txt.svg";
+import wordIconUrl from "../../assets/WORD.png";
+import excelIconUrl from "../../assets/xlsx.png";
+import mdIconUrl from "../../assets/md.png";
+import txtIconUrl from "../../assets/txt.png";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -1371,6 +1371,12 @@ export const FusionGrid: React.FC = () => {
   );
 
   const normalizedDraftRequirements = draftRequirements.trim();
+  const canStartRun =
+    !isRunning &&
+    !isUploadingTemplate &&
+    !isUploadingDocset &&
+    templates.length > 0 &&
+    docsets.length > 0;
 
   useEffect(() => {
     writeFusionGridState(gridState);
@@ -1586,13 +1592,27 @@ export const FusionGrid: React.FC = () => {
   };
 
   const handleStartRun = async () => {
-    if (!selectedTemplateRecord) {
+    const templateForRun = selectedTemplateRecord ?? templates[0] ?? null;
+    const docsetForRun = selectedDocsetRecord ?? docsets[0] ?? null;
+
+    if (!templateForRun) {
       setErrorMessage("请先上传并选择模板。");
       return;
     }
-    if (!selectedDocsetRecord) {
+    if (!docsetForRun) {
       setErrorMessage("请先上传并选择文档集。");
       return;
+    }
+
+    if (
+      selectedTemplateRecord?.id !== templateForRun.id ||
+      selectedDocsetRecord?.id !== docsetForRun.id
+    ) {
+      setGridState((current) => ({
+        ...current,
+        selectedTemplateId: templateForRun.id,
+        selectedDocsetId: docsetForRun.id,
+      }));
     }
 
     setErrorMessage("");
@@ -1602,8 +1622,8 @@ export const FusionGrid: React.FC = () => {
 
     try {
       const payload = {
-        template_id: selectedTemplateRecord.id,
-        doc_set_id: selectedDocsetRecord.id,
+        template_id: templateForRun.id,
+        doc_set_id: docsetForRun.id,
         ...(userRequirements ? { prompt: userRequirements } : {}),
       };
       const run = await createModule3Run(payload);
@@ -1616,7 +1636,7 @@ export const FusionGrid: React.FC = () => {
           run_id: run.run_id,
           status: run.status,
           filled: 0,
-          total: selectedTemplateRecord.fields.length,
+          total: templateForRun.fields.length,
           fill_rate: 0,
           output_filename: null,
           error: null,
@@ -1631,11 +1651,11 @@ export const FusionGrid: React.FC = () => {
         filled: Number.isFinite(status.filled) ? status.filled : 0,
         total: Number.isFinite(status.total)
           ? status.total
-          : selectedTemplateRecord.fields.length,
-        templateId: selectedTemplateRecord.id,
-        templateName: selectedTemplateRecord.name,
-        docsetId: selectedDocsetRecord.id,
-        docsetLabel: `${selectedDocsetRecord.count} 个文件`,
+          : templateForRun.fields.length,
+        templateId: templateForRun.id,
+        templateName: templateForRun.name,
+        docsetId: docsetForRun.id,
+        docsetLabel: `${docsetForRun.count} 个文件`,
         outputFilename: status.output_filename ?? null,
         error: status.error ?? null,
       };
@@ -2552,7 +2572,13 @@ export const FusionGrid: React.FC = () => {
                   type="button"
                   whileTap={{ scale: 0.98 }}
                   onClick={handleStartRun}
-                  className="w-full shrink-0 flex items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-[#60a5fa] to-[#3b82f6] shadow-[0_1px_3px_rgba(59,130,246,0.2)] px-6 h-[42px] text-sm font-semibold text-white transition-all hover:bg-[#0030c2] dark:bg-blue-600 2xl:w-auto"
+                  disabled={!canStartRun}
+                  className={cn(
+                    "w-full shrink-0 flex items-center justify-center gap-2 rounded-lg px-6 h-[42px] text-sm font-semibold text-white transition-all 2xl:w-auto",
+                    canStartRun
+                      ? "bg-gradient-to-b from-[#60a5fa] to-[#3b82f6] shadow-[0_1px_3px_rgba(59,130,246,0.2)] hover:bg-[#0030c2] dark:bg-blue-600"
+                      : "cursor-not-allowed bg-slate-300 text-slate-100 shadow-none dark:bg-slate-700 dark:text-slate-400",
+                  )}
                 >
                   {isRunning ? (
                     <Loader2 size={8} className="animate-spin" />

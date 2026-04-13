@@ -53,7 +53,7 @@ def _is_loopback_upstream(base_url: str) -> bool:
     return host in {"127.0.0.1", "localhost"}
 
 
-def _candidate_port_from_base_url(base_url: str, default_port: str = "8000") -> str:
+def _candidate_port_from_base_url(base_url: str, default_port: str = "8010") -> str:
     parsed = urlparse(str(base_url or "").strip())
     if parsed.port:
         return str(parsed.port)
@@ -61,7 +61,7 @@ def _candidate_port_from_base_url(base_url: str, default_port: str = "8000") -> 
         return "443"
     if parsed.scheme == "http":
         return "80"
-    return str(default_port or "8000").strip() or "8000"
+    return str(default_port or "8010").strip() or "8010"
 
 
 def _preferred_local_host_aliases() -> list[str]:
@@ -133,22 +133,24 @@ def _local_alias_base_urls(*, scheme: str, port: str) -> list[str]:
 
 
 def module2_upstream_candidates(settings: Settings) -> list[str]:
-    configured = str(settings.module2_upstream_url or "").strip() or "http://127.0.0.1:8000"
+    configured = str(settings.module2_upstream_url or "").strip() or "http://127.0.0.1:8010"
     candidates: list[str] = [configured]
     env_port = get_extraction_settings().module2_port_hint
     if env_port:
         candidates.append(f"http://127.0.0.1:{env_port}")
 
-    local_fallbacks = ("http://127.0.0.1:8000", "http://127.0.0.1:8010")
+    # Keep 8010 as canonical module2 local port while preserving 8000 fallback
+    # compatibility for old local dev environments.
+    local_fallbacks = ("http://127.0.0.1:8010", "http://127.0.0.1:8000")
     if _is_loopback_upstream(configured):
         parsed = urlparse(configured)
         scheme = str(parsed.scheme or "http").strip() or "http"
-        configured_port = _candidate_port_from_base_url(configured, env_port or "8000")
+        configured_port = _candidate_port_from_base_url(configured, env_port or "8010")
         alias_ports = [configured_port]
         if env_port and env_port not in alias_ports:
             alias_ports.append(env_port)
         for fallback in local_fallbacks:
-            fallback_port = _candidate_port_from_base_url(fallback, "8000")
+            fallback_port = _candidate_port_from_base_url(fallback, "8010")
             if fallback_port not in alias_ports:
                 alias_ports.append(fallback_port)
         alias_candidates: list[str] = []

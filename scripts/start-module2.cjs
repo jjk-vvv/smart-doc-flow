@@ -18,8 +18,12 @@ const module2PythonExec = resolvePythonExec({
   ],
 });
 
-const host = process.env.MODULE2_HOST || '0.0.0.0';
-const port = process.env.MODULE2_PORT || '8000';
+const managedEnv = buildManagedRuntimeEnv({
+  baseEnv: process.env,
+  scopes: ['backend', 'module2'],
+});
+const host = managedEnv.MODULE2_HOST || process.env.MODULE2_HOST || '0.0.0.0';
+const port = managedEnv.MODULE2_PORT || process.env.MODULE2_PORT || '8010';
 const args = ['-m', 'uvicorn', 'app.main:app', '--host', host, '--port', port];
 
 console.log(`[start:module2] python=${module2PythonExec}`);
@@ -31,10 +35,7 @@ const child = spawn(module2PythonExec, args, {
   stdio: 'inherit',
   shell: false,
   env: buildPythonRuntimeEnv({
-    baseEnv: buildManagedRuntimeEnv({
-      baseEnv: process.env,
-      scopes: ['backend', 'module2'],
-    }),
+    baseEnv: managedEnv,
     pythonExec: module2PythonExec,
   }),
 });

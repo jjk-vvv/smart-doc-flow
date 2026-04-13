@@ -3,9 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 
+const frontendPort = String(process.env.FRONTEND_PORT || '3000').trim() || '3000';
+const frontendAppPort = String(process.env.FRONTEND_APP_PORT || '3002').trim() || '3002';
 const DEFAULT_URLS = [
-  'http://127.0.0.1:3000/',
-  'http://127.0.0.1:3002/',
+  `http://127.0.0.1:${frontendPort}/`,
+  `http://127.0.0.1:${frontendAppPort}/`,
 ];
 
 const urls = String(process.env.MONITOR_URLS || '')

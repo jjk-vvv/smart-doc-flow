@@ -71,6 +71,7 @@ export type WorkbenchSessionSnapshot = {
 };
 
 const STORAGE_KEY = 'module2_workbench_session_v1';
+export const WORKBENCH_SESSION_UPDATED_EVENT = 'module2-workbench-session-updated';
 
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
@@ -104,9 +105,27 @@ export const readWorkbenchSession = (): WorkbenchSessionSnapshot | null => {
 export const writeWorkbenchSession = (snapshot: WorkbenchSessionSnapshot): void => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  window.dispatchEvent(new Event(WORKBENCH_SESSION_UPDATED_EVENT));
 };
 
 export const clearWorkbenchSession = (): void => {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(STORAGE_KEY);
+  window.dispatchEvent(new Event(WORKBENCH_SESSION_UPDATED_EVENT));
+};
+
+export const subscribeWorkbenchSessionUpdates = (handler: () => void): (() => void) => {
+  if (typeof window === 'undefined') return () => undefined;
+  const onCustom = () => handler();
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === STORAGE_KEY) {
+      handler();
+    }
+  };
+  window.addEventListener(WORKBENCH_SESSION_UPDATED_EVENT, onCustom);
+  window.addEventListener('storage', onStorage);
+  return () => {
+    window.removeEventListener(WORKBENCH_SESSION_UPDATED_EVENT, onCustom);
+    window.removeEventListener('storage', onStorage);
+  };
 };

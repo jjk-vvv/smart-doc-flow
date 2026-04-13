@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node ./node_modules/vite/bin/vite.js --host 0.0.0.0 --port 3002 --strictPort --force",
+    "dev": "node ./node_modules/vite/bin/vite.js --host 0.0.0.0 --strictPort --force",
     "build": "node ./node_modules/vite/bin/vite.js build",
-    "preview": "node ./node_modules/vite/bin/vite.js preview --host 0.0.0.0 --port 3002 --strictPort",
+    "preview": "node ./node_modules/vite/bin/vite.js preview --host 0.0.0.0 --strictPort",
     "module2:realistic": "node ./e2e/deepread-batch-simulation.mjs",
     "module2:frontend-realistic": "node ./e2e/deepread-frontend-regression.mjs",
     "module2:text-regression": "node ./e2e/deepread-text-regression.mjs",

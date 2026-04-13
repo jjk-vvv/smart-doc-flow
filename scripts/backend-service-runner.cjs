@@ -15,9 +15,11 @@ const buildBackendServices = ({
   label,
   scriptPrefix,
   defaultModule2Enabled = true,
+  defaultModule3Enabled = false,
   defaultModule4Enabled = true,
 }) => {
   const enableModule2 = envEnabled('MODULE2_ENABLED', defaultModule2Enabled);
+  const enableModule3 = envEnabled('MODULE3_ENABLED', defaultModule3Enabled);
   const enableModule4 = envEnabled('MODULE4_ENABLED', defaultModule4Enabled);
 
   const services = [];
@@ -54,6 +56,19 @@ const buildBackendServices = ({
     console.log(
       `[${label}] standalone module2 disabled; unified FastAPI sidecar will attach or start module2 when required`,
     );
+  }
+
+  if (enableModule3) {
+    services.push({
+      name: 'module3-backend',
+      command: nodeExec,
+      args: [path.join(rootDir, 'scripts', `${scriptPrefix}-module3.cjs`)],
+      cwd: rootDir,
+      scopes: ['backend', 'module3'],
+      required: true,
+    });
+  } else {
+    console.log(`[${label}] standalone module3 disabled; enable MODULE3_ENABLED=1 to run module3 side-by-side`);
   }
 
   if (enableModule4) {

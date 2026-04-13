@@ -1,6 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BookOpen, Database, FileSearch, Home } from 'lucide-react';
+import { BookOpen, Database, FileSearch, Home, UserCircle2 } from 'lucide-react';
 
 import { AccountSecurityModal } from './components/AccountSecurityModal';
 import { AuthModal } from './components/AuthModal';
@@ -9,6 +9,7 @@ import {
   MobilePersonalDrawer,
   type MobileDrawerItem,
 } from './components/MobilePersonalDrawer';
+import { MobileProfilePage } from './pages/profile/MobileProfilePage';
 import { Sidebar } from './components/Sidebar';
 import { cn } from './lib/utils';
 import { Dashboard } from './pages/dashboard/Dashboard';
@@ -31,7 +32,7 @@ type AppTab =
   | 'guide'
   | 'mine';
 
-type NormalizedTab = Exclude<AppTab, 'mine'>;
+type NormalizedTab = AppTab;
 
 const ACTIVE_TAB_KEY = 'smart_doc_flow.frontend_app.active_tab';
 const THEME_KEY = 'smart_doc_flow.frontend_app.theme';
@@ -45,18 +46,48 @@ const normalizeMobileTab = (tab: NormalizedTab): NormalizedTab => {
 };
 
 const normalizeTab = (value: string | null | undefined): NormalizedTab => {
-  if (value === 'mine') return 'dashboard';
   if (
     value === 'dashboard' ||
     value === 'deepread_interaction' ||
     value === 'deepread_extraction' ||
     value === 'fusion' ||
     value === 'nexus' ||
-    value === 'guide'
+    value === 'guide' ||
+    value === 'mine'
   ) {
     return value;
   }
   return 'dashboard';
+};
+
+const readRequestedTabFromUrl = (): NormalizedTab | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const url = new URL(window.location.href);
+    const queryTab = url.searchParams.get('tab');
+    return queryTab ? normalizeTab(queryTab) : null;
+  } catch {
+    return null;
+  }
+};
+
+const syncActiveTabLocation = (activeTab: NormalizedTab): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    if (activeTab === 'dashboard') {
+      url.searchParams.delete('tab');
+    } else {
+      url.searchParams.set('tab', activeTab);
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl !== currentUrl) {
+      window.history.replaceState(null, '', nextUrl);
+    }
+  } catch {
+    // Ignore history sync failures so local navigation still works.
+  }
 };
 
 const isProtectedTab = (tab: NormalizedTab): boolean => tab === 'deepread_extraction';
@@ -77,7 +108,8 @@ const readInitialTheme = (): boolean => {
 
 const readInitialTab = (): NormalizedTab => {
   if (typeof window === 'undefined') return 'dashboard';
-  const nextTab = normalizeTab(window.localStorage.getItem(ACTIVE_TAB_KEY));
+  const requestedTab = readRequestedTabFromUrl();
+  const nextTab = requestedTab ?? normalizeTab(window.localStorage.getItem(ACTIVE_TAB_KEY));
   return window.innerWidth < MOBILE_BREAKPOINT ? normalizeMobileTab(nextTab) : nextTab;
 };
 
@@ -91,13 +123,14 @@ const MOBILE_DRAWER_ITEMS: MobileDrawerItem[] = [
 ];
 
 const MOBILE_BOTTOM_TABS: Array<{
-  id: 'dashboard' | 'deepread_extraction' | 'fusion';
+  id: 'dashboard' | 'deepread_extraction' | 'fusion' | 'mine';
   label: string;
   icon: MobileDrawerItem['icon'];
 }> = [
   { id: 'dashboard', label: '首页', icon: Home },
   { id: 'deepread_extraction', label: '提取', icon: FileSearch },
   { id: 'fusion', label: '融合', icon: Database },
+  { id: 'mine', label: '我的', icon: UserCircle2 },
 ];
 
 export default function App() {
@@ -112,14 +145,9 @@ export default function App() {
   const [showOnboarding, setShowOnboarding] = useState(() => readInitialOnboarding());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [user, setUser] = useState<AuthUser>(null);
+  const [authBootstrapDone, setAuthBootstrapDone] = useState(false);
   const [pendingProtectedTab, setPendingProtectedTab] = useState<NormalizedTab | null>(null);
-  const [mobileExtractionMode, setMobileExtractionMode] = useState<'summary' | 'workbench'>(
-    'summary',
-  );
-
   const avatarText = useMemo(() => getAvatarText(user), [user]);
-  const showMobileWorkbench =
-    isMobile && Boolean(user) && activeTab === 'deepread_extraction' && mobileExtractionMode === 'workbench';
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
@@ -140,6 +168,7 @@ export default function App() {
 
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
+    syncActiveTabLocation(activeTab);
   }, [activeTab]);
 
   useEffect(() => {
@@ -151,6 +180,8 @@ export default function App() {
         if (!cancelled) setUser(payload?.user ?? null);
       } catch {
         if (!cancelled) setUser(null);
+      } finally {
+        if (!cancelled) setAuthBootstrapDone(true);
       }
     };
 
@@ -168,14 +199,19 @@ export default function App() {
   }, [activeTab, isMobile]);
 
   useEffect(() => {
+    if (!authBootstrapDone) return;
     if (user || !isProtectedTab(activeTab)) return;
-    setMobileExtractionMode('summary');
     setPendingProtectedTab(activeTab);
     setShowLoginModal(true);
     if (activeTab !== 'dashboard') {
       startTransition(() => setActiveTab('dashboard'));
     }
-  }, [activeTab, user]);
+  }, [activeTab, authBootstrapDone, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    setShowLoginModal(false);
+  }, [user]);
 
   useEffect(() => {
     const openDrawer = () => setDrawerOpen(true);
@@ -187,13 +223,13 @@ export default function App() {
   const toggleTheme = useCallback(() => setIsDark((prev) => !prev), []);
 
   const handleTabChange = useCallback((next: AppTab) => {
-    if (next === 'mine') {
-      setDrawerOpen(true);
-      return;
-    }
-
     const normalized = isMobile ? normalizeMobileTab(normalizeTab(next)) : normalizeTab(next);
     if (isProtectedTab(normalized) && !user) {
+      if (!authBootstrapDone) {
+        startTransition(() => setActiveTab(normalized));
+        setDrawerOpen(false);
+        return;
+      }
       setPendingProtectedTab(normalized);
       setShowLoginModal(true);
       setDrawerOpen(false);
@@ -202,10 +238,9 @@ export default function App() {
     startTransition(() => setActiveTab(normalized));
     setDrawerOpen(false);
     if (normalized !== 'deepread_extraction') {
-      setMobileExtractionMode('summary');
       setPendingProtectedTab(null);
     }
-  }, [isMobile, user]);
+  }, [authBootstrapDone, isMobile, user]);
 
   const handleLogout = useCallback(async () => {
     try {
@@ -217,7 +252,6 @@ export default function App() {
       setDrawerOpen(false);
       setShowAccountSecurityModal(false);
       setActiveTab('dashboard');
-      setMobileExtractionMode('summary');
       setPendingProtectedTab(null);
     }
   }, []);
@@ -237,6 +271,18 @@ export default function App() {
           </div>
         );
       case 'deepread_extraction':
+        if (!authBootstrapDone) {
+          return (
+            <div className="h-screen flex items-center justify-center p-6">
+              <div className="max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm dark:border-white/10 dark:bg-slate-900">
+                <div className="text-base font-semibold text-slate-900 dark:text-slate-100">Checking Login</div>
+                <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  Verifying your session before opening DeepRead extraction.
+                </div>
+              </div>
+            </div>
+          );
+        }
         if (!user) {
           return (
             <div className="h-screen flex items-center justify-center p-6">
@@ -271,40 +317,32 @@ export default function App() {
         );
       case 'guide':
         return <UserGuide onBackToDashboard={() => handleTabChange('dashboard')} />;
+      case 'mine':
+        return <MobileProfilePage user={user} onNavigate={handleTabChange} onOpenAccountSecurity={() => setShowAccountSecurityModal(true)} onToggleTheme={toggleTheme} isDark={isDark} onLogout={handleLogout} />;
       default:
         return null;
     }
   };
 
   const renderMobileContent = () => {
-    if (showMobileWorkbench) {
-      return (
-        <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
-          <div className="sticky top-0 z-40 flex items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 py-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/92">
-            <button
-              type="button"
-              onClick={() => setMobileExtractionMode('summary')}
-              className="rounded-full border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200"
-            >
-              返回解析概览
-            </button>
-            <MobileAvatarButton
-              avatarText={avatarText}
-              onClick={openDrawer}
-              className="shadow-sm dark:shadow-none"
-            />
-          </div>
-          <DeepReadWorkbench isSidebarCollapsed={false} />
-        </div>
-      );
-    }
-
     switch (activeTab) {
       case 'dashboard':
         return <MobileDashboard user={user} onNavigate={handleTabChange} onOpenDrawer={openDrawer} />;
       case 'deepread_interaction':
         return <DocInteractionWorkbench />;
       case 'deepread_extraction':
+        if (!authBootstrapDone) {
+          return (
+            <div className="min-h-screen bg-slate-50 px-4 pt-24 dark:bg-slate-950">
+              <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-sm dark:border-white/10 dark:bg-slate-900">
+                <div className="text-base font-semibold text-slate-900 dark:text-slate-100">Checking Login</div>
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  Verifying your session before starting file extraction.
+                </p>
+              </div>
+            </div>
+          );
+        }
         if (!user) {
           return (
             <div className="min-h-screen bg-slate-50 px-4 pt-24 dark:bg-slate-950">
@@ -324,17 +362,15 @@ export default function App() {
             </div>
           );
         }
-        return (
-          <MobileDeepReadPage
-            onOpenLegacyWorkbench={() => setMobileExtractionMode('workbench')}
-          />
-        );
+        return <MobileDeepReadPage />;
       case 'fusion':
         return <FusionGrid />;
       case 'nexus':
         return <MobileDashboard user={user} onNavigate={handleTabChange} onOpenDrawer={openDrawer} />;
       case 'guide':
         return <UserGuide onBackToDashboard={() => handleTabChange('dashboard')} />;
+      case 'mine':
+        return <MobileProfilePage user={user} onNavigate={handleTabChange} onOpenAccountSecurity={() => setShowAccountSecurityModal(true)} onToggleTheme={toggleTheme} isDark={isDark} onLogout={handleLogout} />;
       default:
         return null;
     }
@@ -343,13 +379,12 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <AuthModal
-        show={showLoginModal}
+        show={showLoginModal && authBootstrapDone && !user}
         onClose={() => setShowLoginModal(false)}
         onLoginSuccess={(nextUser) => {
           setUser(nextUser);
           if (pendingProtectedTab) {
             startTransition(() => setActiveTab(pendingProtectedTab));
-            setMobileExtractionMode('summary');
             setPendingProtectedTab(null);
           }
           setShowLoginModal(false);
@@ -402,7 +437,7 @@ export default function App() {
 
       {isMobile ? (
         <div className="relative min-h-screen overflow-x-hidden">
-          {!showMobileWorkbench && activeTab !== 'dashboard' && activeTab !== 'deepread_extraction' && (
+          {activeTab !== 'dashboard' && activeTab !== 'deepread_extraction' && activeTab !== 'mine' && (
             <div className="pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-end px-4 pt-[max(1rem,env(safe-area-inset-top))]">
               <MobileAvatarButton
                 avatarText={avatarText}
@@ -412,7 +447,7 @@ export default function App() {
             </div>
           )}
           <div aria-hidden={drawerOpen}>{renderMobileContent()}</div>
-          {!showMobileWorkbench && (
+          {(
             <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/80 bg-white/90 pb-[env(safe-area-inset-bottom)] shadow-sm backdrop-blur-2xl dark:border-white/[0.05] dark:bg-[#0B1120]/90">
               <div className="mx-auto flex h-[56px] w-full max-w-md items-center justify-between px-6">
                 {MOBILE_BOTTOM_TABS.map((item) => {
@@ -490,3 +525,5 @@ export default function App() {
     </div>
   );
 }
+
+

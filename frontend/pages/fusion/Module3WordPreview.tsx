@@ -32,7 +32,7 @@ import {
   type Module3WordStyle,
   type Module3WordTableSection,
   type Module3WordTextSection,
-} from "../lib/module3Api";
+} from "../../lib/module3Api";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));

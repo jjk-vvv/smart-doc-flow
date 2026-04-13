@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import http.cookiejar
 import json
+import os
 import time
 import urllib.request
 from pathlib import Path
@@ -10,7 +11,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_MODULE2_PORT = str(os.getenv("MODULE2_PORT", "8010") or "").strip() or "8010"
+DEFAULT_BASE_URL = f"http://127.0.0.1:{DEFAULT_MODULE2_PORT}"
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "backend" / "module2" / "tools" / "assistant_question_bank_eval_latest.json"
 
 

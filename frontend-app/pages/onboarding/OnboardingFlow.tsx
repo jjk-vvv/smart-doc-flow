@@ -90,19 +90,37 @@ const OnboardingSlogan = () => (
 
 export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete, onOpenLogin }) => {
   const [isVisible, setIsVisible] = useState(true);
+  const [isClosing, setIsClosing] = useState(false);
 
   const handleStart = () => {
+    if (isClosing) return;
+    setIsClosing(true);
     try {
       window.localStorage.setItem('smart_doc_flow.has_seen_onboarding', 'true');
     } catch {}
     setIsVisible(false);
-    setTimeout(onComplete, 400); // Wait for exit animation
+    setTimeout(onComplete, 220);
   };
 
   const handleLoginClick = () => {
     handleStart();
     onOpenLogin();
   };
+
+  const handleEnterAppClick = () => {
+    handleStart();
+  };
+
+  useEffect(() => {
+    if (!isVisible || typeof window === 'undefined') return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        handleEnterAppClick();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isVisible, isClosing]);
 
   if (!isVisible) return null;
 
@@ -119,6 +137,15 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete, onOp
           style={{ backgroundImage: `url(${splashBg})`, backgroundPosition: 'center calc(50% + 9vh)' }}
         >
           {/* 顶部文字区域 */}
+          <div className="absolute right-4 top-4 z-[60]">
+            <button
+              type="button"
+              onClick={handleEnterAppClick}
+              className="rounded-full border border-slate-900/20 bg-white/75 px-4 py-2 text-xs font-semibold text-slate-700 backdrop-blur hover:bg-white transition-colors"
+            >
+              直接进入首页
+            </button>
+          </div>
           <OnboardingSlogan />
 
           {/* 中部气泡提示 - 保持完美的弹出延迟 */}
@@ -192,6 +219,13 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete, onOp
               </motion.div>
               立即登录体验
             </motion.button>
+            <button
+              type="button"
+              onClick={handleEnterAppClick}
+              className="mt-3 text-sm font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900 transition-colors"
+            >
+              稍后登录，先进入首页
+            </button>
           </motion.div>
         </motion.div>
       </AnimatePresence>

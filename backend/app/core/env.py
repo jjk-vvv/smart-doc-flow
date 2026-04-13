@@ -51,6 +51,7 @@ def load_managed_env_files(scopes: tuple[str, ...] | None = None) -> None:
     scope_specs: dict[str, tuple[Path, tuple[str, ...] | None]] = {
         "backend": (Path("backend/.env"), None),
         "module2": (Path("backend/module2/.env"), None),
+        "module3": (Path("backend/module3/.env"), None),
         "module4": (Path("backend/module4/.env"), None),
     }
     normalized_scopes = scopes or ("backend", "module2", "module4")
@@ -82,6 +83,7 @@ def load_managed_env_files(scopes: tuple[str, ...] | None = None) -> None:
     os.environ["SMART_DOC_FLOW_DATA_ROOT"] = str(data_root)
     os.environ["SMART_DOC_FLOW_GATEWAY_ENV_FILE"] = str((config_root / "backend" / ".env").resolve())
     os.environ["MODULE2_ENV_FILE"] = str((config_root / "backend" / "module2" / ".env").resolve())
+    os.environ["MODULE3_ENV_FILE"] = str((config_root / "backend" / "module3" / ".env").resolve())
     os.environ["SMART_DOC_FLOW_MODULE4_ENV_FILE"] = str((config_root / "backend" / "module4" / ".env").resolve())
 
     force_managed_data_paths = data_root.resolve() != runtime_root.resolve()
