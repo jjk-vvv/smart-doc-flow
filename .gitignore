@@ -8,6 +8,27 @@ __pycache__/
 .env
 .env.local
 .env.*.local
+.env.*
+!.env.example
+!**/.env.example
+
+# Secrets and credentials
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.kdbx
+*.keystore
+*secrets*.json
+*credentials*.json
+*token*.json
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
 
 # Build outputs
 dist/
