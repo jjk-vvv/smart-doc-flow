@@ -129,6 +129,10 @@ backend/app/modules/module4/runtime-data/
 datasets.zip
 datasets/**/case_repo*/
 
+# Dataset policy: keep only curated PDF fixture for e2e; exclude fragmented PDF corpus
+datasets/PDF/**/*.pdf
+!datasets/PDF/Choppin, Gregory, et al. Radiochemistry and nuclear chemistry. Academic Press, 2013/Foreword to the 4th Edition.pdf
+
 # Exclude specific documents
 数据库操作步骤优化方案.md
 核燃料后处理工学.pdf
