@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 module4_sync_config_runtime_module = _load_module(
-    ["module2", "app", "core", "integration", "module4_sync_config_runtime.py"],
+    ["app", "modules", "module2", "core", "integration", "module4_sync_config_runtime.py"],
     "_smart_doc_flow_module2_module4_sync_config_runtime",
 )
 
@@ -92,6 +92,7 @@ def test_module4_sync_config_runtime_resolves_tenant_and_headers() -> None:
     assert runtime.headers("tenant-h") == {
         "Content-Type": "application/json",
         "X-Tenant-Id": "tenant-h",
+        "X-Authenticated-Tenant-Id": "tenant-h",
         "Authorization": "Bearer token-123",
     }
 

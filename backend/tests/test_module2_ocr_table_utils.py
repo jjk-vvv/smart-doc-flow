@@ -8,8 +8,9 @@ from pathlib import Path
 def _load_module():
     module_path = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "core"
         / "table"
         / "ocr_table_utils.py"

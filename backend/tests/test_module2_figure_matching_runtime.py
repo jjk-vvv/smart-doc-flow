@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 figure_matching_module = _load_module(
-    ["module2", "app", "core", "visual", "figure_semantics.py"],
+    ["app", "modules", "module2", "core", "visual", "figure_semantics.py"],
     "_smart_doc_flow_module2_figure_semantics_for_matching_runtime",
 )
 

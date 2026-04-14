@@ -21,7 +21,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 docx_enrichment_module = _load_module(
-    ["module2", "app", "core", "format", "docx_enrichment.py"],
+    ["app", "modules", "module2", "core", "format", "docx_enrichment.py"],
     "_smart_doc_flow_module2_docx_enrichment",
 )
 

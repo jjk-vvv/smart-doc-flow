@@ -10,8 +10,9 @@ from pathlib import Path
 def _load_module():
     module_path = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "runtime"
         / "artifact_support_runtime.py"
     )

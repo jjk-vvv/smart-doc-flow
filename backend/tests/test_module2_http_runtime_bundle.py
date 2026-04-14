@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from module2.app.runtime.http_runtime_bundle import build_module2_http_runtime_bundle
+from app.modules.module2.runtime.http_runtime_bundle import build_module2_http_runtime_bundle
 
 
 @dataclass

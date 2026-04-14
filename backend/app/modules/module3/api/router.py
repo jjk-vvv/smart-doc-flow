@@ -1,13 +1,26 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 
-from module3.app.api.v1.router import build_api_v1_router
+from app.core.auth_deps import AuthenticatedUser, require_authenticated_user
+
+from .endpoints.fusion import router as fusion_router
+
+
+async def _inject_authenticated_user(
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+) -> AuthenticatedUser:
+    request.state.authenticated_user = current_user
+    return current_user
 
 
 def build_router() -> APIRouter:
     router = APIRouter()
-    router.include_router(build_api_v1_router())
+    router.include_router(
+        fusion_router,
+        dependencies=[Depends(_inject_authenticated_user)],
+    )
     return router
 
 

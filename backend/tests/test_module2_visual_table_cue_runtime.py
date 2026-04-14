@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-visual_table_cue_module = import_module("module2.app.core.visual.visual_planning_runtime")
+visual_table_cue_module = import_module("app.modules.module2.core.visual.visual_planning_runtime")
 
 VisualTableCueRuntime = visual_table_cue_module.VisualTableCueRuntime
 

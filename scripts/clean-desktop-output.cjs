@@ -14,9 +14,7 @@ const rawOutputDirs = outputArgs.length > 0
   : (process.env.DESKTOP_OUTPUT_DIR ? [process.env.DESKTOP_OUTPUT_DIR] : defaultOutputDirs);
 const sourceCacheRoots = [
   'backend/app',
-  'backend/module2/app',
-  'backend/module2/tests',
-  'backend/module4/app',
+  'backend/app/modules/module4',
   'backend/tests',
   'frontend',
   'backend/auth',

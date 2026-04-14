@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 xlsx_parse_runtime_module = _load_module(
-    ["module2", "app", "core", "format", "xlsx_runtime.py"],
+    ["app", "modules", "module2", "core", "format", "xlsx_runtime.py"],
     "_smart_doc_flow_module2_xlsx_parse_runtime",
 )
 

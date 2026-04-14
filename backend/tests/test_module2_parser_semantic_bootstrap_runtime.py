@@ -10,10 +10,10 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-parser_semantic_bootstrap_module = import_module("module2.app.core.parsers.parser_semantic_bootstrap_runtime")
+parser_semantic_bootstrap_module = import_module("app.modules.module2.core.parsers.parser_semantic_bootstrap_runtime")
 parser_ocr_table_inference_bundle_module = parser_semantic_bootstrap_module
 parser_semantic_foundation_bundle_module = parser_semantic_bootstrap_module
-table_header_module = import_module("module2.app.core.table.table_header_runtime")
+table_header_module = import_module("app.modules.module2.core.table.table_header_runtime")
 
 ParserSemanticBootstrapRuntime = parser_semantic_bootstrap_module.ParserSemanticBootstrapRuntime
 ParserOcrTableInferenceBundleRuntime = (

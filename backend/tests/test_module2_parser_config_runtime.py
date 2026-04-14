@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 parser_config_runtime_module = _load_module(
-    ["module2", "app", "core", "parsers", "parser_config_runtime.py"],
+    ["app", "modules", "module2", "core", "parsers", "parser_config_runtime.py"],
     "_smart_doc_flow_module2_parser_config_runtime",
 )
 
@@ -47,7 +47,7 @@ def _limit_env_value(
 def _build_runtime(tmp_path: Path, env: dict[str, str] | None = None) -> ParserConfigRuntime:
     env_map = dict(env or {})
     repo_root = tmp_path / "repo"
-    module2_root = repo_root / "backend" / "module2"
+    module2_root = repo_root / "backend" / "app" / "modules" / "module2"
     module2_root.mkdir(parents=True, exist_ok=True)
     return ParserConfigRuntime(
         getenv=lambda name, default="": env_map.get(name, default),
@@ -79,19 +79,26 @@ def test_parser_config_runtime_resolves_cache_dir_and_builds_core_parse_config(t
     repo_cache = tmp_path / "repo" / "shared-cache"
     repo_cache.mkdir(parents=True, exist_ok=True)
 
-    resolved = runtime.resolve_cache_dir("shared-cache", tmp_path / "repo" / "backend" / "module2" / ".cache")
+    resolved = runtime.resolve_cache_dir(
+        "shared-cache",
+        tmp_path / "repo" / "backend" / "app" / "modules" / "module2" / ".cache",
+    )
     backend_prefixed = runtime.resolve_cache_dir(
-        "backend/module2/custom-cache",
-        tmp_path / "repo" / "backend" / "module2" / ".cache",
+        "backend/app/modules/module2/custom-cache",
+        tmp_path / "repo" / "backend" / "app" / "modules" / "module2" / ".cache",
     )
     core = runtime.build_core_parse_config(
-        module2_cache_root=tmp_path / "repo" / "backend" / "module2" / ".cache",
+        module2_cache_root=tmp_path / "repo" / "backend" / "app" / "modules" / "module2" / ".cache",
         max_pages_override=200,
     )
 
     assert resolved == str(repo_cache.resolve())
-    assert backend_prefixed == str((tmp_path / "repo" / "backend" / "module2" / "custom-cache").resolve())
-    assert core["artifact_root_dir"] == (tmp_path / "repo" / "backend" / "module2" / ".cache").resolve()
+    assert backend_prefixed == str(
+        (tmp_path / "repo" / "backend" / "app" / "modules" / "module2" / "custom-cache").resolve()
+    )
+    assert core["artifact_root_dir"] == (
+        tmp_path / "repo" / "backend" / "app" / "modules" / "module2" / ".cache"
+    ).resolve()
     assert core["office_convert_enabled"] is False
     assert core["word_parse_via_pdf"] is False
     assert core["word_convert_allow_native_fallback"] is True
@@ -173,7 +180,7 @@ def test_parser_config_runtime_builds_visual_mineru_config_with_resolved_paths(t
         tmp_path,
         env={
             "MODULE2_MINERU_TIMEOUT_SEC": "30",
-            "MODULE2_MINERU_CACHE_DIR": "backend/module2/cache/mineru-alt",
+            "MODULE2_MINERU_CACHE_DIR": "backend/app/modules/module2/cache/mineru-alt",
             "MODULE2_MINERU_DEVICE": "cuda",
             "MODULE2_MINERU_ENABLE_TABLE": "true",
             "MODULE2_VISUAL_TABLE_CROP_DPI": "100",
@@ -189,12 +196,12 @@ def test_parser_config_runtime_builds_visual_mineru_config_with_resolved_paths(t
     repo_gemini_cache.mkdir(parents=True, exist_ok=True)
 
     config = runtime.build_visual_mineru_config(
-        module2_cache_root=tmp_path / "repo" / "backend" / "module2" / ".cache",
+        module2_cache_root=tmp_path / "repo" / "backend" / "app" / "modules" / "module2" / ".cache",
     )
 
     assert config["mineru_timeout_sec"] == 120
     assert config["mineru_cache_dir"] == str(
-        (tmp_path / "repo" / "backend" / "module2" / "cache" / "mineru-alt").resolve()
+        (tmp_path / "repo" / "backend" / "app" / "modules" / "module2" / "cache" / "mineru-alt").resolve()
     )
     assert config["mineru_device"] == "cuda"
     assert config["mineru_enable_table"] is True

@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.create_app import create_app
-from app.modules.assistant.config import AssistantSettings
-from app.modules.assistant.service import AssistantService, get_assistant_service
+from app.core.assistant_config import AssistantSettings
+from app.services.assistant_service import AssistantService, get_assistant_service
 from app.modules.auth.deps import AuthenticatedUser, require_authenticated_user
 
 

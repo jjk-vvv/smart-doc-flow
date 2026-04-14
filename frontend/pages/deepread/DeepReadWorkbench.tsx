@@ -841,12 +841,21 @@ const isAllowedFile = (file: File) => {
 
 const fileExt = (name: string) => name.split('.').pop()?.toLowerCase() || '';
 const fileIdentityKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
+type SelectedFileArtifactRef = {
+    artifactByFileUrl?: string;
+    artifactFileId?: string;
+    artifactUrl?: string;
+    artifactPath?: string;
+};
+
 const toPersistedWorkbenchFile = (file: File, patch?: Partial<PersistedWorkbenchFile>): PersistedWorkbenchFile => ({
     key: fileIdentityKey(file),
     name: file.name,
     size: file.size,
     lastModified: file.lastModified,
     ext: fileExt(file.name),
+    artifactByFileUrl: patch?.artifactByFileUrl,
+    artifactFileId: patch?.artifactFileId,
     artifactUrl: patch?.artifactUrl,
     artifactPath: patch?.artifactPath,
 });
@@ -1044,16 +1053,22 @@ const filterVisibleDocumentsForJobFiles = (
     });
 };
 
-const toArtifactRouteFromPath = (artifactPathRaw: string): string => {
-    const normalized = String(artifactPathRaw || '').trim().replace(/\\/g, '/');
+const toArtifactRouteFromFileId = (fileIdRaw: unknown): string => {
+    const normalized = String(fileIdRaw || '').trim();
     if (!normalized) return '';
-    if (normalized.startsWith('/extract/')) return normalized;
-    const encoded = normalized
-        .split('/')
-        .filter(Boolean)
-        .map((segment) => encodeURIComponent(segment))
-        .join('/');
-    return encoded ? `/extract/artifact/${encoded}` : '';
+    return `/extract/artifact/by-file/${encodeURIComponent(normalized)}`;
+};
+
+const isLegacyExtractArtifactRoute = (rawUrl: string): boolean => {
+    const value = String(rawUrl || '').trim();
+    if (!value) return false;
+    try {
+        const parsed = /^https?:\/\//i.test(value) ? new URL(value) : new URL(value, 'http://localhost');
+        const pathname = String(parsed.pathname || '');
+        return pathname.startsWith('/extract/artifact/') && !pathname.startsWith('/extract/artifact/by-file/');
+    } catch {
+        return value.startsWith('/extract/artifact/') && !value.startsWith('/extract/artifact/by-file/');
+    }
 };
 
 const toRelativeExtractPath = (rawUrl: string): string => {
@@ -1071,13 +1086,62 @@ const toRelativeExtractPath = (rawUrl: string): string => {
     }
 };
 
-const normalizeExtractArtifactUrl = (rawUrl: string, preferredBase = ''): string => {
+const normalizeExtractArtifactUrl = (
+    rawUrl: string,
+    preferredBase = '',
+): string => {
     const relative = toRelativeExtractPath(rawUrl);
     if (relative) {
+        if (isLegacyExtractArtifactRoute(relative)) return '';
         const absolute = toAbsoluteExtractUrl(relative, preferredBase);
         return absolute || relative;
     }
+    if (isLegacyExtractArtifactRoute(rawUrl)) return '';
     return toAbsoluteExtractUrl(rawUrl, preferredBase);
+};
+
+const resolveByFileArtifactUrl = (
+    payload: Record<string, unknown> | null | undefined,
+    preferredBase = '',
+): string => {
+    const byFileRaw = String(payload?.artifact_by_file_url || '').trim();
+    if (byFileRaw) {
+        const normalized = normalizeExtractArtifactUrl(byFileRaw, preferredBase);
+        if (normalized) return normalized;
+    }
+    const byFileRoute = toArtifactRouteFromFileId(payload?.artifact_file_id);
+    if (byFileRoute) {
+        const normalized = normalizeExtractArtifactUrl(byFileRoute, preferredBase);
+        if (normalized) return normalized;
+    }
+    return '';
+};
+
+const normalizeSelectedFileArtifactRef = (
+    ref: Partial<SelectedFileArtifactRef> | null | undefined,
+    preferredBase = '',
+): SelectedFileArtifactRef => {
+    const artifactByFileUrlRaw = String(ref?.artifactByFileUrl || '').trim();
+    const artifactUrlRaw = String(ref?.artifactUrl || '').trim();
+    return {
+        artifactByFileUrl:
+            normalizeExtractArtifactUrl(artifactByFileUrlRaw, preferredBase)
+            || artifactByFileUrlRaw
+            || undefined,
+        artifactFileId: String(ref?.artifactFileId || '').trim() || undefined,
+        artifactUrl: normalizeExtractArtifactUrl(artifactUrlRaw, preferredBase) || undefined,
+        artifactPath: undefined,
+    };
+};
+
+const hasRestorableArtifactRef = (ref: Partial<SelectedFileArtifactRef> | null | undefined): boolean => {
+    const normalized = normalizeSelectedFileArtifactRef(ref);
+    return Boolean(
+        normalized.artifactByFileUrl
+        || normalized.artifactFileId
+        || normalized.artifactUrl
+        || normalized.artifactPath,
+    );
 };
 
 // --- Global Cache for Module Switching ---
@@ -1087,24 +1151,28 @@ const hydrateFileFromArtifact = async (item: PersistedWorkbenchFile): Promise<Fi
     if (item.key && fileBlobCache.has(item.key)) {
         return fileBlobCache.get(item.key)!;
     }
+    const artifactByFileUrl = String(item.artifactByFileUrl || '').trim();
+    const artifactByFileRoute = toArtifactRouteFromFileId(item.artifactFileId);
     const artifactUrl = String(item.artifactUrl || '').trim();
-    const artifactPath = String(item.artifactPath || '').trim();
-    if (!artifactUrl && !artifactPath) return null;
+    if (!artifactByFileUrl && !artifactByFileRoute && !artifactUrl) return null;
+    const byFileRelativeUrl = toRelativeExtractPath(artifactByFileUrl);
     const relativeUrl = toRelativeExtractPath(artifactUrl);
-    const routeFromPath = toArtifactRouteFromPath(artifactPath);
     const resolvedBase = resolveExtractBase('');
+    const byFileRelativeWithBase = byFileRelativeUrl ? joinExtractUrl(resolvedBase, byFileRelativeUrl) : '';
+    const byFileRouteWithBase = artifactByFileRoute ? joinExtractUrl(resolvedBase, artifactByFileRoute) : '';
     const relativeWithBase = relativeUrl ? joinExtractUrl(resolvedBase, relativeUrl) : '';
-    const routeWithBase = routeFromPath ? joinExtractUrl(resolvedBase, routeFromPath) : '';
+    const directArtifactUrl = normalizeExtractArtifactUrl(artifactUrl, resolvedBase);
     const candidates = Array.from(
         new Set(
             [
+                byFileRelativeWithBase,
+                byFileRouteWithBase,
+                byFileRelativeUrl,
+                artifactByFileRoute,
                 relativeWithBase,
-                routeWithBase,
                 relativeUrl,
-                routeFromPath,
-                artifactUrl,
-                routeFromPath ? toAbsoluteExtractUrl(routeFromPath, '') : '',
-                /^https?:\/\//i.test(artifactUrl) ? artifactUrl : toAbsoluteExtractUrl(artifactUrl, ''),
+                directArtifactUrl,
+                /^https?:\/\//i.test(directArtifactUrl) ? directArtifactUrl : toAbsoluteExtractUrl(directArtifactUrl, ''),
             ].filter(Boolean),
         ),
     );
@@ -1147,7 +1215,7 @@ const toSessionSnapshot = (
     smartUnitTab: SmartUnitTabId,
     officePreviewMap: Record<string, OfficePreviewState>,
     extractionJob: ExtractionJobState | null,
-    artifactMap: Record<string, { artifactUrl?: string; artifactPath?: string }>,
+    artifactMap: Record<string, SelectedFileArtifactRef>,
     fallbackSelectedFiles: PersistedWorkbenchFile[] = [],
 ): WorkbenchSessionSnapshot => ({
     version: 1,
@@ -1156,11 +1224,21 @@ const toSessionSnapshot = (
     smartUnitTab,
     selectedFiles: selectedFiles.length > 0
         ? selectedFiles.map((file) => toPersistedWorkbenchFile(file, artifactMap[fileIdentityKey(file)]))
-        : fallbackSelectedFiles.map((item) => ({
-            ...item,
-            artifactUrl: artifactMap[item.key]?.artifactUrl ?? item.artifactUrl,
-            artifactPath: artifactMap[item.key]?.artifactPath ?? item.artifactPath,
-        })),
+        : fallbackSelectedFiles.map((item) => {
+            const normalized = normalizeSelectedFileArtifactRef({
+                artifactByFileUrl: artifactMap[item.key]?.artifactByFileUrl ?? item.artifactByFileUrl,
+                artifactFileId: artifactMap[item.key]?.artifactFileId ?? item.artifactFileId,
+                artifactUrl: artifactMap[item.key]?.artifactUrl ?? item.artifactUrl,
+                artifactPath: artifactMap[item.key]?.artifactPath ?? item.artifactPath,
+            });
+            return {
+                ...item,
+                artifactByFileUrl: normalized.artifactByFileUrl,
+                artifactFileId: normalized.artifactFileId,
+                artifactUrl: normalized.artifactUrl,
+                artifactPath: normalized.artifactPath,
+            };
+        }),
     officePreviewMap,
     extractionJob: toPersistedExtractionJob(extractionJob),
 });
@@ -1461,7 +1539,10 @@ const toPersistedExtractionJob = (job: ExtractionJobState | null): PersistedExtr
                 stage: String(item.stage || 'queued').trim() || 'queued',
                 progress_ratio: Math.max(0, Math.min(1, Number(item.progress_ratio || 0))),
                 message: String(item.message || '').trim(),
-                artifact_path: item.artifact_path ?? null,
+                artifact_file_id: item.artifact_file_id ?? null,
+                artifact_download_url: item.artifact_download_url ?? null,
+                artifact_by_file_url: item.artifact_by_file_url ?? null,
+                artifact_path: null,
                 artifact_url: item.artifact_url ?? null,
                 error: String(item.error || '').trim(),
                 track: String(item.track || '').trim(),
@@ -1513,10 +1594,19 @@ const normalizeExtractionJobPayload = (
                     Math.max(0, Math.min(1, previousDisplayedRatio)),
                 );
             }
+            const normalizedByFileUrl = resolveByFileArtifactUrl(item as Record<string, unknown>, usedBase);
+            const normalizedArtifactUrl = normalizeExtractArtifactUrl(
+                String(item.artifact_url || '').trim(),
+                usedBase,
+            );
             return {
                 ...item,
                 progress_ratio: nextRatio,
-                artifact_url: normalizeExtractArtifactUrl(String(item.artifact_url || '').trim(), usedBase) || item.artifact_url,
+                artifact_by_file_url: normalizedByFileUrl || String(item.artifact_by_file_url || '').trim() || undefined,
+                artifact_download_url: String(item.artifact_download_url || '').trim() || undefined,
+                artifact_file_id: String(item.artifact_file_id || '').trim() || undefined,
+                artifact_url: normalizedByFileUrl || normalizedArtifactUrl || undefined,
+                artifact_path: undefined,
                 __syncedAtMs: syncedAtMs,
             };
         })
@@ -1702,10 +1792,10 @@ const mergeExtractionDocumentsForSelection = (
 };
 
 const mergeSelectedFileArtifactsFromJob = (
-    previousArtifacts: Record<string, { artifactUrl?: string; artifactPath?: string }>,
+    previousArtifacts: Record<string, SelectedFileArtifactRef>,
     selectedFiles: File[],
     jobFiles: RuntimeExtractionJobFileState[],
-): Record<string, { artifactUrl?: string; artifactPath?: string }> => {
+): Record<string, SelectedFileArtifactRef> => {
     const next = { ...(previousArtifacts || {}) };
     if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
         return next;
@@ -1730,10 +1820,12 @@ const mergeSelectedFileArtifactsFromJob = (
         if (!bucket || bucket.length === 0) return;
         const item = bucket.shift();
         if (!item) return;
-        next[fileIdentityKey(file)] = {
+        next[fileIdentityKey(file)] = normalizeSelectedFileArtifactRef({
+            artifactByFileUrl: String(item.artifact_by_file_url || '').trim() || undefined,
+            artifactFileId: String(item.artifact_file_id || '').trim() || undefined,
             artifactUrl: String(item.artifact_url || '').trim() || undefined,
-            artifactPath: String(item.artifact_path || '').trim() || undefined,
-        };
+            artifactPath: undefined,
+        });
     });
 
     return next;
@@ -2112,17 +2204,13 @@ const toTracePage = (hit: TraceHit): number => {
 };
 
 const resolveArtifactUrl = (hit: TraceHit): string => {
+    const byFileDirect = String((hit as Record<string, unknown>).artifact_by_file_url || '').trim();
+    if (byFileDirect) return normalizeExtractArtifactUrl(byFileDirect, '');
+    const fileIdRoute = toArtifactRouteFromFileId((hit as Record<string, unknown>).artifact_file_id);
+    if (fileIdRoute) return normalizeExtractArtifactUrl(fileIdRoute, '');
     const direct = String(hit.artifact_url || '').trim();
-    if (direct) return normalizeExtractArtifactUrl(direct);
-    const pathRaw = String(hit.artifact_path || '').trim();
-    if (!pathRaw) return '';
-    const normalized = pathRaw.replace(/\\/g, '/');
-    const encoded = normalized
-        .split('/')
-        .filter(Boolean)
-        .map((seg) => encodeURIComponent(seg))
-        .join('/');
-    return encoded ? `/extract/artifact/${encoded}` : '';
+    if (direct) return normalizeExtractArtifactUrl(direct, '');
+    return '';
 };
 
 const TRACE_BLOCKED_ARTIFACT_SOURCES = new Set(['pdf_roi_crop']);
@@ -2140,12 +2228,22 @@ const canShowTraceArtifactSource = (artifactSource: unknown): boolean => {
 
 const normalizeDocumentArtifactLinks = (doc: DocumentResult, usedBase: string): DocumentResult => {
     const normalizedTraceHits = Array.isArray(doc.trace_hits)
-        ? doc.trace_hits.map((hit) => ({
-            ...hit,
-            artifact_url:
-                normalizeExtractArtifactUrl(String(hit?.artifact_url || '').trim(), usedBase)
-                || hit?.artifact_url,
-        }))
+        ? doc.trace_hits.map((hit) => {
+            const byFileRaw = String((hit as Record<string, unknown>)?.artifact_by_file_url || '').trim();
+            const normalizedArtifactUrl = normalizeExtractArtifactUrl(
+                String(hit?.artifact_url || '').trim(),
+                usedBase,
+            );
+            return {
+                ...hit,
+                artifact_by_file_url:
+                    normalizeExtractArtifactUrl(byFileRaw, usedBase)
+                    || byFileRaw
+                    || undefined,
+                artifact_url: normalizedArtifactUrl || undefined,
+                artifact_path: undefined,
+            };
+        })
         : doc.trace_hits;
 
     const diagnosticsRaw =
@@ -2158,7 +2256,8 @@ const normalizeDocumentArtifactLinks = (doc: DocumentResult, usedBase: string): 
                 if (!/_url$/i.test(key) || typeof value !== 'string') {
                     return [key, value];
                 }
-                return [key, normalizeExtractArtifactUrl(String(value || '').trim(), usedBase) || value];
+                const normalized = normalizeExtractArtifactUrl(String(value || '').trim(), usedBase);
+                return [key, normalized || ''];
             }),
         )
         : doc.diagnostics;
@@ -2366,23 +2465,19 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const [isProcessing, setIsProcessing] = useState(false);
     const [extractionJob, setExtractionJob] = useState<RuntimeExtractionJobState | null>(null);
     const [progressNowMs, setProgressNowMs] = useState<number>(() => Date.now());
-    const [selectedFileArtifacts, setSelectedFileArtifacts] = useState<Record<string, { artifactUrl?: string; artifactPath?: string }>>({});
+    const [selectedFileArtifacts, setSelectedFileArtifacts] = useState<Record<string, SelectedFileArtifactRef>>({});
     const [sessionHydrated, setSessionHydrated] = useState(() => {
         if (typeof window === 'undefined') return false;
         const session = readWorkbenchSession();
         if (!session) return true;
-        const restorable = (session.selectedFiles || []).filter((item) =>
-            String(item.artifactUrl || item.artifactPath || '').trim()
-        );
+        const restorable = (session.selectedFiles || []).filter((item) => hasRestorableArtifactRef(item));
         return restorable.length === 0;
     });
     const [sessionRestorePending, setSessionRestorePending] = useState(() => {
         if (typeof window === 'undefined') return false;
         const session = readWorkbenchSession();
         if (!session) return false;
-        const restorable = (session.selectedFiles || []).filter((item) =>
-            String(item.artifactUrl || item.artifactPath || '').trim()
-        );
+        const restorable = (session.selectedFiles || []).filter((item) => hasRestorableArtifactRef(item));
         return restorable.length > 0;
     });
     const [errorMessage, setErrorMessage] = useState('');
@@ -2992,17 +3087,17 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         const artifactMap = Object.fromEntries(
             (session.selectedFiles || []).map((item) => [
                 item.key,
-                {
+                normalizeSelectedFileArtifactRef({
+                    artifactByFileUrl: item.artifactByFileUrl,
+                    artifactFileId: item.artifactFileId,
                     artifactUrl: item.artifactUrl,
                     artifactPath: item.artifactPath,
-                },
+                }),
             ]),
         );
         setSelectedFileArtifacts(artifactMap);
 
-        const restorable = (session.selectedFiles || []).filter((item) =>
-            String(item.artifactUrl || item.artifactPath || '').trim()
-        );
+        const restorable = (session.selectedFiles || []).filter((item) => hasRestorableArtifactRef(item));
         if (restorable.length === 0) {
             setSessionRestorePending(false);
             setSessionHydrated(true);
@@ -3660,7 +3755,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             const payload = await response.json();
             const status = String(payload.status || '').toLowerCase();
             if (status === 'completed') {
-                const pdfUrl = normalizeExtractArtifactUrl(String(payload.artifact_url || '').trim(), resolvedBase);
+                const pdfUrl =
+                    resolveByFileArtifactUrl(payload, resolvedBase)
+                    || normalizeExtractArtifactUrl(
+                        String(payload.artifact_url || '').trim(),
+                        resolvedBase,
+                    );
                 setOfficePreviewMap((prev) => ({
                     ...prev,
                     [key]: {
@@ -3738,7 +3838,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             const payload = await response.json();
             const status = String(payload.status || '').toLowerCase();
             const jobId = String(payload.job_id || '').trim();
-            const pdfUrl = normalizeExtractArtifactUrl(String(payload.artifact_url || '').trim(), usedBase);
+            const pdfUrl =
+                resolveByFileArtifactUrl(payload, usedBase)
+                || normalizeExtractArtifactUrl(
+                    String(payload.artifact_url || '').trim(),
+                    usedBase,
+                );
             if (status === 'completed' && pdfUrl) {
                 setOfficePreviewMap((prev) => ({
                     ...prev,
@@ -5142,8 +5247,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                 snippet: String(citation.snippet || citation.title || '').trim(),
                 confidence: 0.99,
                 locator: payload,
+                artifact_by_file_url: typeof payload.artifact_by_file_url === 'string' ? payload.artifact_by_file_url : undefined,
+                artifact_file_id: typeof payload.artifact_file_id === 'string' ? payload.artifact_file_id : undefined,
                 artifact_url: typeof payload.artifact_url === 'string' ? payload.artifact_url : undefined,
-                artifact_path: typeof payload.artifact_path === 'string' ? payload.artifact_path : undefined,
+                artifact_path: undefined,
             };
             matched.set(toTraceHitKey(synthetic, matched.size), synthetic);
         });
@@ -7278,7 +7385,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                             type="button"
                                                             onClick={() => setIsSummaryExpanded((prev) => !prev)}
                                                             className="group flex w-full items-center justify-between rounded-[8px] bg-slate-50/80 px-3 py-2.5 transition-all hover:bg-slate-100/80 dark:bg-white/[0.02] dark:hover:bg-white/[0.04] outline-none"
-                                                            aria-expanded={isSummaryExpanded}
+                                                            aria-expanded={isSummaryExpanded ? 'true' : 'false'}
                                                         >
                                                             <div className="flex items-center gap-2.5">
                                                                 <div className="flex h-5 w-5 items-center justify-center rounded-[6px] bg-blue-50/50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">

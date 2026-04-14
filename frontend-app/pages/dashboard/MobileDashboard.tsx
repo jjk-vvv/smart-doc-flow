@@ -12,7 +12,6 @@ import {
   User,
 } from 'lucide-react';
 
-import { MobileAvatarButton } from '../../components/MobileAvatarButton';
 import { cn } from '../../lib/utils';
 import type { AuthUser } from '../../shared/api/auth';
 import ImageModule1 from '../../assets/模块一.png';
@@ -31,7 +30,6 @@ type MobileDashboardAction = 'deepread_extraction' | 'fusion' | 'guide';
 type MobileDashboardProps = {
   user: AuthUser;
   onNavigate: (target: MobileDashboardAction) => void;
-  onOpenDrawer: () => void;
 };
 
 type MetricCard = {
@@ -59,15 +57,9 @@ const averageConfidence = (documents: ExtractionDocument[]): number => {
   return Math.round((total / entities.length) * 100);
 };
 
-const getAvatarText = (user: AuthUser): string => {
-  const source = String(user?.name || user?.email || '').trim();
-  return source ? source.slice(0, 1).toUpperCase() : '';
-};
-
 export const MobileDashboard: React.FC<MobileDashboardProps> = ({
   user,
   onNavigate,
-  onOpenDrawer,
 }) => {
   const [documents, setDocuments] = useState<ExtractionDocument[]>([]);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
@@ -134,7 +126,6 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
   const totalFieldCount = documents.reduce((acc, item) => acc + Object.keys(item.result || {}).length, 0);
   const recentDocs = documents.slice(0, 3);
   const latestUpdatedLabel = updatedAt ? new Date(updatedAt).toLocaleString() : '暂无';
-  const avatarText = getAvatarText(user);
 
   const metrics = useMemo<MetricCard[]>(
     () => [
@@ -199,14 +190,6 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
             </h1>
             <span className="text-[18px] leading-none">👋</span>
           </div>
-          <button
-            type="button"
-            onClick={onOpenDrawer}
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200/50 bg-white/50 px-3 py-1.5 shadow-[0_2px_8px_rgba(0,0,0,0.02)] backdrop-blur-md transition-colors hover:bg-white/80 active:scale-95 dark:border-slate-700/50 dark:bg-slate-800/50 dark:hover:bg-slate-800/80"
-          >
-            <User size={14} strokeWidth={2} className="text-[#475569] dark:text-slate-400" />
-            <span className="text-[12px] font-bold tracking-wide text-[#334155] dark:text-slate-300">个人中心</span>
-          </button>
         </div>
 
         <div

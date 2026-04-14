@@ -3,6 +3,7 @@ export type Module3TaskStatus =
   | "done"
   | "failed"
   | "pending"
+  | "cancelled"
   | "cancel_requested";
 
 export type Module3TemplateField = {
@@ -27,7 +28,7 @@ export type Module3TemplateUploadResponse = {
 
 export type Module3DocsetFile = {
   filename: string;
-  path: string;
+  file_id?: string | null;
 };
 
 export type Module3DocsetUploadResponse = {
@@ -53,9 +54,14 @@ export type Module3RunStatusResponse = {
   filled: number;
   total: number;
   fill_rate: number;
-  output_filename?: string | null;
+  output_file_id?: string | null;
+  output_name?: string | null;
+  output_download_url?: string;
+  output_preview_url?: string;
   error?: string | null;
   created_at?: string;
+  completed_at?: string;
+  finished_at?: string;
   template_id?: string;
   doc_set_id?: string;
 };
@@ -73,7 +79,6 @@ export type Module3WorkbookSheet = {
 export type Module3WorkbookPreviewResponse = {
   run_id?: string;
   document_name?: string;
-  path?: string;
   filename?: string;
   editable?: boolean;
   sheet_count?: number;
@@ -213,6 +218,12 @@ const MODULE3_BASE_URL = resolveModule3BaseUrl();
 
 const module3Url = (path: string): string => `${MODULE3_BASE_URL}${path}`;
 
+const module3Fetch = (path: string, init: RequestInit = {}): Promise<Response> =>
+  fetch(module3Url(path), {
+    credentials: "include",
+    ...init,
+  });
+
 const describeDetailItem = (value: unknown): string => {
   if (!value || typeof value !== "object") return "请求格式错误";
   const item = value as Record<string, unknown>;
@@ -246,7 +257,7 @@ export const normalizeModule3Status = (
   value: string,
   error?: string | null,
 ): Module3TaskStatus => {
-  if (value === "running" || value === "done" || value === "failed" || value === "pending" || value === "cancel_requested") {
+  if (value === "running" || value === "done" || value === "failed" || value === "pending" || value === "cancelled" || value === "cancel_requested") {
     return value;
   }
   if (error) return "failed";
@@ -259,7 +270,7 @@ export const uploadModule3Template = async (
   const formData = new FormData();
   formData.append("file", file, file.name);
 
-  const response = await fetch(module3Url("/template/upload"), {
+  const response = await module3Fetch("/template/upload", {
     method: "POST",
     body: formData,
   });
@@ -275,7 +286,7 @@ export const uploadModule3Docset = async (
     formData.append("files", file, file.name);
   }
 
-  const response = await fetch(module3Url("/docset/upload"), {
+  const response = await module3Fetch("/docset/upload", {
     method: "POST",
     body: formData,
   });
@@ -286,7 +297,7 @@ export const uploadModule3Docset = async (
 export const createModule3Run = async (
   payload: Module3RunRequest,
 ): Promise<Module3RunResponse> => {
-  const response = await fetch(module3Url("/run"), {
+  const response = await module3Fetch("/run", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -304,15 +315,15 @@ export const createModule3Run = async (
 export const fetchModule3RunStatus = async (
   runId: string,
 ): Promise<Module3RunStatusResponse> => {
-  const response = await fetch(module3Url(`/run/${encodeURIComponent(runId)}`));
+  const response = await module3Fetch(`/run/${encodeURIComponent(runId)}`);
   return readJson<Module3RunStatusResponse>(response);
 };
 
 export const cancelModule3Run = async (
   runId: string,
 ): Promise<Module3SaveResponse> => {
-  const response = await fetch(
-    module3Url(`/run/${encodeURIComponent(runId)}/cancel`),
+  const response = await module3Fetch(
+    `/run/${encodeURIComponent(runId)}/cancel`,
     {
       method: "POST",
     },
@@ -323,13 +334,25 @@ export const cancelModule3Run = async (
 export const module3RunDownloadUrl = (runId: string): string =>
   module3Url(`/run/${encodeURIComponent(runId)}/download`);
 
-export const module3DocumentPreviewUrl = (path: string): string =>
-  module3Url(`/documents/preview?path=${encodeURIComponent(path)}`);
+export const module3DocumentPreviewUrl = (fileId: string): string =>
+  module3Url(`/documents/preview?file_id=${encodeURIComponent(fileId)}`);
+
+export const fetchModule3DocumentPreviewText = async (
+  fileId: string,
+): Promise<string> => {
+  const response = await module3Fetch(
+    `/documents/preview?file_id=${encodeURIComponent(fileId)}`,
+  );
+  if (!response.ok) {
+    throw new Error(await readModule3Error(response));
+  }
+  return response.text();
+};
 
 export const parseModule3WordJson = async (
   runId: string,
 ): Promise<Module3WordParseResponse> => {
-  const response = await fetch(module3Url("/api/v1/word/parse-json"), {
+  const response = await module3Fetch("/api/v1/word/parse-json", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -343,7 +366,7 @@ export const parseModule3WordJson = async (
 export const applyModule3WordDiff = async (
   payload: Module3WordApplyDiffRequest,
 ): Promise<Module3WordApplyDiffResponse> => {
-  const response = await fetch(module3Url("/api/v1/word/apply-diff"), {
+  const response = await module3Fetch("/api/v1/word/apply-diff", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -357,7 +380,7 @@ export const applyModule3WordDiff = async (
 export const parseModule3ExcelJson = async (
   runId: string,
 ): Promise<Module3WorkbookPreviewResponse> => {
-  const response = await fetch(module3Url("/api/v1/excel/parse-json"), {
+  const response = await module3Fetch("/api/v1/excel/parse-json", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -372,7 +395,7 @@ export const saveModule3RunOutput = async (
   runId: string,
   payload: Module3ExcelSaveRequest,
 ): Promise<Module3SaveResponse> => {
-  const response = await fetch(module3Url(`/run/${encodeURIComponent(runId)}/save`), {
+  const response = await module3Fetch(`/run/${encodeURIComponent(runId)}/save`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

@@ -19,11 +19,11 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 ocr_table_utils_module = _load_module(
-    ["module2", "app", "core", "table", "ocr_table_utils.py"],
+    ["app", "modules", "module2", "core", "table", "ocr_table_utils.py"],
     "_smart_doc_flow_module2_ocr_table_utils_for_inference",
 )
 ocr_table_inference_module = _load_module(
-    ["module2", "app", "core", "table", "ocr_table_inference.py"],
+    ["app", "modules", "module2", "core", "table", "ocr_table_inference.py"],
     "_smart_doc_flow_module2_ocr_table_inference",
 )
 

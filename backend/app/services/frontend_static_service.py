@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from app.core.config import Settings
 
-RESERVED_PREFIXES = {"api", "extract", "module4", "gateway", "module1-placeholder"}
+RESERVED_PREFIXES = {"api", "extract", "module3", "module4", "gateway", "module1-placeholder"}
 
 # Windows often maps `.mjs` to `text/plain`, which breaks browser module loading.
 mimetypes.add_type("text/javascript", ".mjs")

@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 transport_module = _load_module(
-    ["module2", "app", "core", "integration", "gemini_native_transport_runtime.py"],
+    ["app", "modules", "module2", "core", "integration", "gemini_native_transport_runtime.py"],
     "_smart_doc_flow_module2_gemini_native_transport_runtime",
 )
 

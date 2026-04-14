@@ -1,4 +1,4 @@
-# Backend Migration Map
+﻿# Backend Migration Map
 
 This map tracks compatibility-preserving moves from legacy locations to the
 standardized layered structure.
@@ -50,16 +50,16 @@ standardized layered structure.
 
 ## Module2
 
-- Legacy routing source: `backend/module2/app/routes/*.py`
-- New API entry: `backend/module2/app/api/v1/endpoints/*.py`
+- Legacy routing source: `backend/app/modules/module2/routes/*.py`
+- New API entry: `backend/app/modules/module2/api/v1/endpoints/*.py`
 - Runtime assembly now mounts `app/api/v1/router_bundle.py`
-- HTTP orchestration canonical source is now `backend/module2/app/services/`:
+- HTTP orchestration canonical source is now `backend/app/modules/module2/services/`:
   - `extraction_request_service.py`
   - `extraction_executor_service.py`
   - `office_preview_service.py`
   - `document_tools_service.py`
   - `extraction_job_service.py`
-- Repository canonical source is now `backend/module2/app/repositories/`:
+- Repository canonical source is now `backend/app/modules/module2/repositories/`:
   - `runtime_state_repository.py`
   - `extraction_cache_repository.py`
   - `module4_sync_outbox_repository.py`
@@ -77,103 +77,103 @@ standardized layered structure.
   - `runtime/main_service_bundle.py`
   - `runtime/document_trace_hits_runtime.py`
   with `runtime/__init__.py` retained as compatibility export surface.
-- `module2/app/composition/foundation.py` now provides canonical composition
-  entrypoints for app assembly; `module2/app/bootstrap/foundation.py` remains
+- `backend/app/modules/module2/composition/foundation.py` now provides canonical composition
+  entrypoints for app assembly; `backend/app/modules/module2/bootstrap/foundation.py` remains
   a compatibility adapter.
 - Foundation composition canonical source is now
-  `module2/app/services/extraction/foundation_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/foundation_builder.py`.
+  `backend/app/modules/module2/services/extraction/foundation_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/foundation_builder.py`.
 - Entry orchestration canonical source is now
-  `module2/app/services/extraction/entry_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/entry_builder.py` with canonical import
-  surface `module2/app/bootstrap/entry.py`.
+  `backend/app/modules/module2/services/extraction/entry_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/entry_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/entry.py`.
 - Extraction orchestration canonical source is now
-  `module2/app/services/extraction/extraction_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/extraction_builder.py` with canonical
-  import surface `module2/app/bootstrap/extraction.py`.
+  `backend/app/modules/module2/services/extraction/extraction_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/extraction_builder.py` with canonical
+  import surface `backend/app/modules/module2/bootstrap/extraction.py`.
 - Service composition canonical source is now
-  `module2/app/services/extraction/service_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/service_builder.py` with canonical import
-  surface `module2/app/bootstrap/service.py`.
+  `backend/app/modules/module2/services/extraction/service_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/service_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/service.py`.
 - Support/bootstrap-runtime canonical source is now
-  `module2/app/services/extraction/support_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/support_builder.py` with canonical import
-  surface `module2/app/bootstrap/support.py`.
+  `backend/app/modules/module2/services/extraction/support_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/support_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/support.py`.
 - Document-io service canonical source is now
-  `module2/app/services/extraction/document_io_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/document_io_builder.py` with canonical
-  import surface `module2/app/bootstrap/document_io.py`.
+  `backend/app/modules/module2/services/extraction/document_io_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/document_io_builder.py` with canonical
+  import surface `backend/app/modules/module2/bootstrap/document_io.py`.
 - Platform service canonical source is now
-  `module2/app/services/extraction/platform_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/platform_builder.py` with canonical import
-  surface `module2/app/bootstrap/platform.py`.
+  `backend/app/modules/module2/services/extraction/platform_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/platform_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/platform.py`.
 - Policy service canonical source is now
-  `module2/app/services/extraction/policy_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/policy_builder.py` with canonical import
-  surface `module2/app/bootstrap/policy.py`.
+  `backend/app/modules/module2/services/extraction/policy_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/policy_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/policy.py`.
 - Geometry service canonical source is now
-  `module2/app/services/extraction/geometry_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/geometry_builder.py` with canonical import
-  surface `module2/app/bootstrap/geometry.py`.
+  `backend/app/modules/module2/services/extraction/geometry_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/geometry_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/geometry.py`.
 - Progress service canonical source is now
-  `module2/app/services/extraction/progress_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/progress_builder.py` with canonical import
-  surface `module2/app/bootstrap/progress.py`.
+  `backend/app/modules/module2/services/extraction/progress_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/progress_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/progress.py`.
 - Quality service canonical source is now
-  `module2/app/services/extraction/quality_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/quality_builder.py` with canonical import
-  surface `module2/app/bootstrap/quality.py`.
+  `backend/app/modules/module2/services/extraction/quality_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/quality_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/quality.py`.
 - Nonpdf service canonical source is now
-  `module2/app/services/extraction/nonpdf_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/nonpdf_builder.py` with canonical import
-  surface `module2/app/bootstrap/nonpdf.py`.
+  `backend/app/modules/module2/services/extraction/nonpdf_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/nonpdf_builder.py` with canonical import
+  surface `backend/app/modules/module2/bootstrap/nonpdf.py`.
 - Quick-extract service canonical source is now
-  `module2/app/services/extraction/quick_extract_builder.py`; bootstrap
-  adapter remains at `module2/app/bootstrap/quick_extract_builder.py` with
-  canonical import surface `module2/app/bootstrap/quick_extract.py`.
+  `backend/app/modules/module2/services/extraction/quick_extract_builder.py`; bootstrap
+  adapter remains at `backend/app/modules/module2/bootstrap/quick_extract_builder.py` with
+  canonical import surface `backend/app/modules/module2/bootstrap/quick_extract.py`.
 - Workflow orchestration canonical source is now
-  `module2/app/services/extraction/workflow_builder.py`; runtime adapter
-  remains at `module2/app/runtime/main_workflow_bundle.py`.
+  `backend/app/modules/module2/services/extraction/workflow_builder.py`; runtime adapter
+  remains at `backend/app/modules/module2/runtime/main_workflow_bundle.py`.
 - Schema-primitives service canonical source is now
-  `module2/app/services/schema/schema_primitives_builder.py`; bootstrap
-  adapter remains at `module2/app/bootstrap/schema_primitives_builder.py`
-  with canonical import surface `module2/app/bootstrap/schema_primitives.py`.
+  `backend/app/modules/module2/services/schema/schema_primitives_builder.py`; bootstrap
+  adapter remains at `backend/app/modules/module2/bootstrap/schema_primitives_builder.py`
+  with canonical import surface `backend/app/modules/module2/bootstrap/schema_primitives.py`.
 - Schema-pipeline service canonical source is now
-  `module2/app/services/schema/schema_pipeline_builder.py`; bootstrap
-  adapter remains at `module2/app/bootstrap/schema_pipeline_builder.py`
-  with canonical import surface `module2/app/bootstrap/schema_pipeline.py`.
+  `backend/app/modules/module2/services/schema/schema_pipeline_builder.py`; bootstrap
+  adapter remains at `backend/app/modules/module2/bootstrap/schema_pipeline_builder.py`
+  with canonical import surface `backend/app/modules/module2/bootstrap/schema_pipeline.py`.
 - Result-filter service canonical source is now
-  `module2/app/services/schema/result_filter_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/result_filter_builder.py` with canonical
-  import surface `module2/app/bootstrap/result_filter.py`.
+  `backend/app/modules/module2/services/schema/result_filter_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/result_filter_builder.py` with canonical
+  import surface `backend/app/modules/module2/bootstrap/result_filter.py`.
 - Schema-context service canonical source is now
-  `module2/app/services/schema/schema_context_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/schema_context_builder.py` with canonical
-  import surface `module2/app/bootstrap/schema_context.py`.
+  `backend/app/modules/module2/services/schema/schema_context_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/schema_context_builder.py` with canonical
+  import surface `backend/app/modules/module2/bootstrap/schema_context.py`.
 - Schema-fields service canonical source is now
-  `module2/app/services/schema/schema_fields_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/schema_fields_builder.py` with canonical
-  import surface `module2/app/bootstrap/schema_fields.py`.
+  `backend/app/modules/module2/services/schema/schema_fields_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/schema_fields_builder.py` with canonical
+  import surface `backend/app/modules/module2/bootstrap/schema_fields.py`.
 - Schema-inference service canonical source is now
-  `module2/app/services/schema/schema_inference_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/schema_inference_builder.py` with
-  canonical import surface `module2/app/bootstrap/schema_inference.py`.
+  `backend/app/modules/module2/services/schema/schema_inference_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/schema_inference_builder.py` with
+  canonical import surface `backend/app/modules/module2/bootstrap/schema_inference.py`.
 - Schema-llm service canonical source is now
-  `module2/app/services/schema/schema_llm_builder.py`; bootstrap adapter
-  remains at `module2/app/bootstrap/schema_llm_builder.py` with canonical
-  import surface `module2/app/bootstrap/schema_llm.py`.
+  `backend/app/modules/module2/services/schema/schema_llm_builder.py`; bootstrap adapter
+  remains at `backend/app/modules/module2/bootstrap/schema_llm_builder.py` with canonical
+  import surface `backend/app/modules/module2/bootstrap/schema_llm.py`.
 - Schema-semantics service canonical source is now
-  `module2/app/services/schema/schema_semantics_builder.py`; bootstrap
-  adapter remains at `module2/app/bootstrap/schema_semantics_builder.py`
-  with canonical import surface `module2/app/bootstrap/schema_semantics.py`.
+  `backend/app/modules/module2/services/schema/schema_semantics_builder.py`; bootstrap
+  adapter remains at `backend/app/modules/module2/bootstrap/schema_semantics_builder.py`
+  with canonical import surface `backend/app/modules/module2/bootstrap/schema_semantics.py`.
 - Schema-selection service canonical source is now
-  `module2/app/services/schema/schema_selection_builder.py`; bootstrap
-  adapter remains at `module2/app/bootstrap/schema_selection_builder.py`
-  with canonical import surface `module2/app/bootstrap/schema_selection.py`.
+  `backend/app/modules/module2/services/schema/schema_selection_builder.py`; bootstrap
+  adapter remains at `backend/app/modules/module2/bootstrap/schema_selection_builder.py`
+  with canonical import surface `backend/app/modules/module2/bootstrap/schema_selection.py`.
 - Schema-resolution service canonical source is now
-  `module2/app/services/schema/schema_resolution_builder.py`; bootstrap
-  adapter remains at `module2/app/bootstrap/schema_resolution_builder.py`
-  with canonical import surface `module2/app/bootstrap/schema_resolution.py`.
+  `backend/app/modules/module2/services/schema/schema_resolution_builder.py`; bootstrap
+  adapter remains at `backend/app/modules/module2/bootstrap/schema_resolution_builder.py`
+  with canonical import surface `backend/app/modules/module2/bootstrap/schema_resolution.py`.
 - `runtime/main_foundation_bundle.py` is now a compatibility shim that
   re-exports bootstrap foundation adapters (service-backed).
 - `runtime/main_entry_bundle.py` is now a compatibility shim that
@@ -248,7 +248,7 @@ standardized layered structure.
   `__getattr__` forwarding to `composition/foundation.py`,
   `bootstrap/entry.py`, `bootstrap/service.py`, and `bootstrap/support.py`,
   preventing import-cycle regressions while preserving legacy symbol access.
-- `module2/app/main.py` is now a standard FastAPI entrypoint that only exports
+- `backend/app/modules/module2/main.py` is now a standard FastAPI entrypoint that only exports
   `app` and `create_app` from `composition/application.py`.
 - Module2 internal tests now import runtime handles directly from
   `app/composition/application.py` instead of `app/main.py`.
@@ -266,7 +266,7 @@ standardized layered structure.
   surface, with a dedicated compatibility test for legacy `app/routes/*`.
 - Backend runtime/service regression tests for document tools, extraction job,
   extraction request, executor, and office preview now load canonical
-  `module2/app/services/*.py`; dedicated compatibility coverage remains in
+  `backend/app/modules/module2/services/*.py`; dedicated compatibility coverage remains in
   `backend/tests/test_module2_runtime_service_compat_shims.py`.
 - Foundation/service wiring now prefers repository-layer methods for:
   - extraction cache query/save (`check_cache`, `find_recent_document_caches`, `save_extraction_result`)
@@ -308,45 +308,43 @@ standardized layered structure.
   builder modules.
 
 - Legacy orchestration modules remain in:
-  - `backend/module2/app/runtime/`
-  - `backend/module2/app/core/`
-  - `backend/module2/app/assistant_1/`
+  - `backend/app/modules/module2/runtime/`
+  - `backend/app/modules/module2/core/`
+  - `backend/app/modules/module2/assistant_1/`
 - Standardized compatibility exports now available from:
-  - `backend/module2/app/services/`
-  - `backend/module2/app/repositories/`
-  - `backend/module2/app/integrations/`
-  - `backend/module2/app/resources/`
+  - `backend/app/modules/module2/services/`
+  - `backend/app/modules/module2/repositories/`
+  - `backend/app/modules/module2/integrations/`
+  - `backend/app/modules/module2/resources/`
 
 ## Module4
 
-- Legacy routing source: `backend/module4/app/router.py`
-- New API entry: `backend/module4/app/api/v1/endpoints/module4.py`
-- Main app now mounts `app/api/v1/router.py`
-- Main composition entry now uses `module4/app/composition/runtime.py`
+- Legacy standalone tree: `backend/module4/` (removed in unified layout)
+- Canonical API entry: `backend/app/modules/module4/api/v1/endpoints/module4.py`
+- Main app now mounts `backend/app/modules/module4/api/v1/router.py`
+- Main composition entry now uses `backend/app/modules/module4/core/runtime.py`
   as canonical runtime assembly surface.
-- `module4/app/api/v1/endpoints/module4.py` now carries canonical route
+- `backend/app/modules/module4/api/v1/endpoints/module4.py` now carries canonical route
   implementations.
-- `module4/app/api/v1/router.py` now wires directly to
+- `backend/app/modules/module4/api/v1/router.py` now wires directly to
   `api/v1/endpoints/graph.build_router` (with `endpoints/module4.py` retained
-  as a compatibility surface), avoiding any fallback through legacy
-  `app/router.py`.
-- `module4/app/router.py` is now a compatibility adapter that delegates to
-  the `api/v1` endpoint and emits `DeprecationWarning`.
-- `module4/app/main.py` is now a standard FastAPI entrypoint that only exports
-  `app` and `create_app` from `composition/application.py`.
+  as a compatibility surface for endpoint split), avoiding any fallback
+  through legacy router adapters.
+- `backend/app/modules/module4/main.py` is now a standard FastAPI entrypoint
+  that only exports `app` and `create_app` from `core/application.py`.
 - Module4 internal tests/tools now import runtime hooks directly from
-  `app/composition/application.py` instead of `app/main.py`.
-- `module4/app/services/app_runtime.py` now exposes
+  `app/modules/module4/core/application.py` instead of legacy entry wrappers.
+- `backend/app/modules/module4/core/app_runtime.py` now exposes
   `build_default_composition_components(...)` as canonical naming, while
   `build_default_bootstrap_components(...)` remains compatibility alias.
-- `module4/app/composition/runtime.py` now maps
+- `backend/app/modules/module4/core/runtime.py` now maps
   `build_default_composition_components` directly to the service-layer
   composition-named builder.
 
 - Standardized compatibility exports now available from:
-  - `backend/module4/app/repositories/`
-  - `backend/module4/app/integrations/`
-  - `backend/module4/app/resources/`
+  - `backend/app/modules/module4/repositories/`
+  - `backend/app/modules/module4/integrations/`
+  - `backend/app/modules/module4/resources/`
 
 ## Shared and Compatibility Layers
 
@@ -354,5 +352,6 @@ standardized layered structure.
 - Compatibility adapters root: `backend/compat/`
 - Legacy auth proxy remains runnable from `backend/auth/` during migration.
 - `backend/app/modules/extraction/module2_compat_worker.py` now imports
-  module2 compat entrypoints from `module2/app/composition/application.py`
-  so `module2/app/main.py` remains a thin FastAPI entrypoint.
+  module2 compat entrypoints from `backend/app/modules/module2/composition/application.py`
+  so `backend/app/modules/module2/main.py` remains a thin FastAPI entrypoint.
+

@@ -104,7 +104,7 @@ The FastAPI application is created in `create_app.py` and mounts six feature mod
 
 **Legacy directories** — do not treat as primary:
 - `backend/auth/` — compatibility proxy only, keeps historical entrypoints alive on port `3003`
-- `backend/module2/` — specialized extraction upstream (attached via sidecar in normal mode)
+- `backend/app/modules/module2/` — specialized extraction upstream (attached via sidecar in normal mode)
 - `backend/module4/` — specialized graph upstream (attached via sidecar in normal mode); preferred venv is repo-root `.venv-module4-py311`
 
 ### Frontend (`frontend/`)

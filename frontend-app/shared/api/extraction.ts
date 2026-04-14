@@ -7,6 +7,9 @@ export type ExtractionApiFetchResult = {
 };
 
 export type ExtractionTraceHitLike = {
+  artifact_file_id?: string | null;
+  artifact_by_file_url?: string | null;
+  artifact_download_url?: string | null;
   artifact_url?: string | null;
   artifact_path?: string | null;
   locator?: Record<string, unknown> | null;
@@ -83,29 +86,68 @@ const toObjectRecord = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-const toArtifactRouteFromPath = (artifactPathRaw: string): string => {
-  let normalized = String(artifactPathRaw || '').trim().replace(/\\/g, '/');
-  if (!normalized) return '';
-  const markerIndex = normalized.toLowerCase().lastIndexOf('/artifacts/');
-  if (markerIndex >= 0) {
-    normalized = normalized.slice(markerIndex + '/artifacts/'.length);
+const isLegacyExtractArtifactRoute = (rawUrl: string): boolean => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return false;
+  try {
+    const parsed = /^https?:\/\//i.test(value) ? new URL(value) : new URL(value, 'http://localhost');
+    const pathname = String(parsed.pathname || '');
+    return pathname.startsWith('/extract/artifact/') && !pathname.startsWith('/extract/artifact/by-file/');
+  } catch {
+    return value.startsWith('/extract/artifact/') && !value.startsWith('/extract/artifact/by-file/');
   }
-  const encoded = normalized
-    .split('/')
-    .filter(Boolean)
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
-  return encoded ? `/extract/artifact/${encoded}` : '';
+};
+
+const toArtifactByFileRoute = (fileIdRaw: unknown): string => {
+  const normalized = String(fileIdRaw || '').trim();
+  if (!normalized) return '';
+  return `/extract/artifact/by-file/${encodeURIComponent(normalized)}`;
+};
+
+const normalizeAllowedArtifactUrl = (rawUrl: string, preferredBase = ''): string => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return '';
+  if (isLegacyExtractArtifactRoute(value)) return '';
+  return toAbsoluteExtractUrl(value, preferredBase);
 };
 
 export const resolveExtractArtifactUrlFromTraceHit = (
   hit: ExtractionTraceHitLike,
   preferredBase = '',
 ): string => {
+  const directByFileUrl = String(hit?.artifact_by_file_url || '').trim();
+  if (directByFileUrl) return toAbsoluteExtractUrl(directByFileUrl, preferredBase);
+
+  const byFileFromId = toArtifactByFileRoute(hit?.artifact_file_id);
+  if (byFileFromId) return toAbsoluteExtractUrl(byFileFromId, preferredBase);
+
   const directUrl = String(hit?.artifact_url || '').trim();
-  if (directUrl) return toAbsoluteExtractUrl(directUrl, preferredBase);
+  if (directUrl) {
+    const normalized = normalizeAllowedArtifactUrl(directUrl, preferredBase);
+    if (normalized) return normalized;
+  }
 
   const locator = toObjectRecord(hit?.locator);
+  const locatorByFileUrlCandidates = [
+    locator.artifact_by_file_url,
+    locator.table_artifact_by_file_url,
+    locator.dataframe_artifact_by_file_url,
+  ];
+  for (const candidate of locatorByFileUrlCandidates) {
+    const direct = String(candidate || '').trim();
+    if (direct) return toAbsoluteExtractUrl(direct, preferredBase);
+  }
+
+  const locatorByFileIdCandidates = [
+    locator.artifact_file_id,
+    locator.table_artifact_file_id,
+    locator.dataframe_artifact_file_id,
+  ];
+  for (const candidate of locatorByFileIdCandidates) {
+    const byFileRoute = toArtifactByFileRoute(candidate);
+    if (byFileRoute) return toAbsoluteExtractUrl(byFileRoute, preferredBase);
+  }
+
   const locatorUrlCandidates = [
     locator.image_url,
     locator.screenshot_url,
@@ -115,22 +157,10 @@ export const resolveExtractArtifactUrlFromTraceHit = (
   ];
   for (const candidate of locatorUrlCandidates) {
     const direct = String(candidate || '').trim();
-    if (direct) return toAbsoluteExtractUrl(direct, preferredBase);
-  }
-
-  const pathCandidates = [
-    hit?.artifact_path,
-    locator.image_path,
-    locator.screenshot_path,
-    locator.artifact_path,
-    locator.table_artifact_path,
-    locator.dataframe_artifact_path,
-  ];
-  for (const candidate of pathCandidates) {
-    const path = String(candidate || '').trim();
-    if (!path) continue;
-    const route = toArtifactRouteFromPath(path);
-    if (route) return toAbsoluteExtractUrl(route, preferredBase);
+    if (direct) {
+      const normalized = normalizeAllowedArtifactUrl(direct, preferredBase);
+      if (normalized) return normalized;
+    }
   }
   return '';
 };
@@ -139,8 +169,14 @@ export const resolveExtractTableDownloadUrlFromTraceHit = (
   hit: ExtractionTraceHitLike,
   preferredBase = '',
 ): string => {
+  const directDownload = String(hit?.artifact_download_url || '').trim();
+  if (directDownload) return toAbsoluteExtractUrl(directDownload, preferredBase);
+
   const locator = toObjectRecord(hit?.locator);
   const candidates = [
+    locator.artifact_download_url,
+    locator.table_artifact_download_url,
+    locator.dataframe_artifact_download_url,
     locator.table_download_url,
     locator.dataframe_download_url,
     locator.table_csv_url,

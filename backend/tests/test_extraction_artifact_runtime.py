@@ -9,8 +9,9 @@ from pathlib import Path
 from starlette.datastructures import UploadFile
 
 from app.core.config import Settings
-from app.modules.extraction import artifact_runtime as extraction_artifact_runtime_module
-from app.modules.extraction.artifact_runtime import ExtractionArtifactRuntime
+from app.modules.module2.core.config import get_extraction_settings
+from app.modules.module2.core import artifact_runtime as extraction_artifact_runtime_module
+from app.modules.module2.core.artifact_runtime import ExtractionArtifactRuntime
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -122,3 +123,48 @@ def test_extraction_artifact_runtime_ignores_incompatible_word_com_disk_cache(
     )
 
     assert runtime.load_office_preview_record(settings, file_hash) == {}
+
+
+def test_extraction_artifact_runtime_reads_legacy_sidecar_artifact_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    primary_root = (settings.data_root_dir / "module2" / "artifacts").resolve()
+    monkeypatch.setenv("MODULE2_ARTIFACT_ROOT_DIR", str(primary_root))
+    get_extraction_settings.cache_clear()
+
+    runtime = ExtractionArtifactRuntime()
+    file_hash = hashlib.sha256(b"legacy-root-demo").hexdigest()
+    pdf_fragment, meta_fragment = runtime.office_preview_storage_fragments(file_hash)
+    primary_pdf_path = runtime.resolve_artifact_path(settings, pdf_fragment)
+    assert primary_pdf_path.exists() is False
+
+    legacy_root = (
+        settings.runtime_root_dir / "backend" / "app" / "modules" / "module2" / "runtime-data" / "module2" / "artifacts"
+    ).resolve()
+    legacy_pdf_path = (legacy_root / pdf_fragment).resolve()
+    legacy_meta_path = (legacy_root / meta_fragment).resolve()
+    legacy_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_pdf_path.write_bytes(b"%PDF-1.4\nlegacy\n")
+    legacy_meta_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_meta_path.write_text(
+        json.dumps(
+                {
+                    "file_name": "legacy.docx",
+                    "file_hash": file_hash,
+                    "converter": "libreoffice",
+                    "elapsed_ms": 31,
+                    "tenant_id": "",
+                },
+                ensure_ascii=False,
+            ),
+        encoding="utf-8",
+    )
+
+    recovered = runtime.load_office_preview_record(settings, file_hash)
+    assert recovered.get("artifact_path") == pdf_fragment
+    assert recovered.get("converter") == "libreoffice"
+
+    response = runtime.serve_artifact(settings, pdf_fragment, "GET")
+    assert response.status_code == 200

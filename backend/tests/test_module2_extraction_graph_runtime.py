@@ -23,7 +23,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 extraction_graph_runtime_module = _load_module(
-    ["module2", "app", "core", "pipeline", "extraction_graph_runtime.py"],
+    ["app", "modules", "module2", "core", "pipeline", "extraction_graph_runtime.py"],
     "_smart_doc_flow_module2_extraction_graph_runtime",
 )
 

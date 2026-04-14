@@ -12,7 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_schema_llm_bundle_module = import_module("module2.app.bootstrap.schema_llm")
+main_schema_llm_bundle_module = import_module("app.modules.module2.bootstrap.schema_llm")
 
 
 def _sanitize_field_name(value: object) -> str:

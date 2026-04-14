@@ -16,7 +16,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-app_runtime_module = import_module("module4.app.services.app_runtime")
+app_runtime_module = import_module("app.modules.module4.core.app_runtime")
 
 
 def _build_runtime(**overrides):
@@ -116,4 +116,3 @@ def test_module4_app_runtime_submit_ingest_job_maps_value_error_to_http_400() ->
     assert exc_info.value.status_code == 400
     assert "documents payload is required" in str(exc_info.value.detail)
     assert captured["tenant_id"] == "tenant-from-header"
-

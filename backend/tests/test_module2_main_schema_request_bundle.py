@@ -13,7 +13,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_schema_request_bundle_module = import_module("module2.app.bootstrap.schema_primitives")
+main_schema_request_bundle_module = import_module("app.modules.module2.bootstrap.schema_primitives")
 
 
 def _build_bundle():

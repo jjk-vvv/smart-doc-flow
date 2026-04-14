@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 reference_module = _load_module(
-    ["module2", "app", "core", "schema", "reference_runtime.py"],
+    ["app", "modules", "module2", "core", "schema", "reference_runtime.py"],
     "_smart_doc_flow_module2_reference_runtime",
 )
 

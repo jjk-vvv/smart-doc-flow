@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_policy_bundle_module = import_module("module2.app.bootstrap.policy")
+main_policy_bundle_module = import_module("app.modules.module2.bootstrap.policy")
 
 
 def test_build_module2_main_policy_bundle_exposes_expected_policy_helpers(tmp_path: Path) -> None:
@@ -28,7 +28,7 @@ def test_build_module2_main_policy_bundle_exposes_expected_policy_helpers(tmp_pa
     }
 
     bundle = main_policy_bundle_module.build_module2_main_policy_bundle(
-        module2_root=Path("backend/module2"),
+        module2_root=Path("backend/app/modules/module2"),
         getenv=lambda name, default=None: env_values.get(name, default),
         build_module2_llm_provider_fn=lambda **kwargs: kwargs,
     )

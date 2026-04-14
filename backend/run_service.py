@@ -6,12 +6,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from dotenv import dotenv_values
+except Exception:  # pragma: no cover - defensive fallback for minimal envs
+    dotenv_values = None
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = REPO_ROOT / "backend"
 GATEWAY_ROOT = BACKEND_ROOT / "gateway"
-MODULE2_ROOT = BACKEND_ROOT / "module2"
-MODULE3_ROOT = BACKEND_ROOT / "module3"
-MODULE4_ROOT = BACKEND_ROOT / "module4"
+MODULE2_MODULE_ROOT = BACKEND_ROOT / "app" / "modules" / "module2"
+MODULE3_MODULE_ROOT = BACKEND_ROOT / "app" / "modules" / "module3"
+MODULE4_ROOT = BACKEND_ROOT / "app" / "modules" / "module4"
 REEXEC_MARKER = "SMART_DOC_FLOW_BACKEND_RUN_SERVICE_REEXEC"
 DEFAULT_DATA_ROOT = REPO_ROOT / "runtime-data"
 
@@ -35,7 +40,7 @@ def _resolve_python(service: str) -> Path:
         candidates.extend(
             [
                 _venv_python(REPO_ROOT / ".venv-module3-py311"),
-                _venv_python(MODULE3_ROOT / ".venv"),
+                _venv_python(MODULE3_MODULE_ROOT / ".venv"),
                 _venv_python(REPO_ROOT / ".venv-module2-py311"),
                 _venv_python(REPO_ROOT / ".venv"),
             ]
@@ -44,7 +49,7 @@ def _resolve_python(service: str) -> Path:
         candidates.extend(
             [
                 _venv_python(REPO_ROOT / ".venv-module2-py311"),
-                _venv_python(MODULE2_ROOT / ".venv"),
+                _venv_python(MODULE2_MODULE_ROOT / ".venv"),
                 _venv_python(REPO_ROOT / ".venv"),
             ]
         )
@@ -79,12 +84,40 @@ def _reload_args(enabled: bool, service: str) -> list[str]:
     if not enabled:
         return []
     if service == "module3":
-        return ["--reload", "--reload-dir", "."]
+        return ["--reload", "--reload-dir", "app/modules/module3"]
     return ["--reload", "--reload-dir", "app"]
 
 
-def _service_runtime(service: str) -> tuple[Path, str, str]:
-    env = os.environ
+def _load_env_file(env: dict[str, str], path: Path) -> None:
+    target = path.resolve()
+    if not target.exists() or not target.is_file():
+        return
+
+    if dotenv_values is not None:
+        try:
+            parsed = dotenv_values(str(target))
+        except Exception:
+            parsed = {}
+        for key, value in parsed.items():
+            if not key or value is None:
+                continue
+            env.setdefault(str(key), str(value))
+        return
+
+    # Fallback parser when python-dotenv is unavailable.
+    for raw_line in target.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = str(raw_line or "").strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            continue
+        normalized_value = str(value or "").strip().strip('"').strip("'")
+        env.setdefault(normalized_key, normalized_value)
+
+
+def _service_runtime(service: str, env: dict[str, str]) -> tuple[Path, str, str]:
     if service in {"backend", "gateway"}:
         gateway_runtime_root = GATEWAY_ROOT if (GATEWAY_ROOT / "app" / "main.py").exists() else BACKEND_ROOT
         return (
@@ -94,18 +127,18 @@ def _service_runtime(service: str) -> tuple[Path, str, str]:
         )
     if service == "module2":
         return (
-            MODULE2_ROOT,
+            BACKEND_ROOT,
             str(env.get("MODULE2_HOST") or "0.0.0.0").strip() or "0.0.0.0",
             str(env.get("MODULE2_PORT") or "8010").strip() or "8010",
         )
     if service == "module3":
         return (
-            MODULE3_ROOT,
+            BACKEND_ROOT,
             str(env.get("MODULE3_HOST") or "0.0.0.0").strip() or "0.0.0.0",
             str(env.get("MODULE3_PORT") or "8001").strip() or "8001",
         )
     return (
-        MODULE4_ROOT,
+        BACKEND_ROOT,
         str(env.get("MODULE4_HOST") or "0.0.0.0").strip() or "0.0.0.0",
         str(env.get("MODULE4_PORT") or "8100").strip() or "8100",
     )
@@ -113,6 +146,14 @@ def _service_runtime(service: str) -> tuple[Path, str, str]:
 
 def _build_env(service: str) -> dict[str, str]:
     env = os.environ.copy()
+
+    # Load managed env files as baseline runtime configuration while still allowing
+    # explicit process environment overrides.
+    _load_env_file(env, (BACKEND_ROOT / ".env"))
+    _load_env_file(env, (MODULE2_MODULE_ROOT / ".env"))
+    _load_env_file(env, (MODULE3_MODULE_ROOT / ".env"))
+    _load_env_file(env, (MODULE4_ROOT / ".env"))
+
     runtime_root = Path(str(env.get("SMART_DOC_FLOW_RUNTIME_ROOT") or REPO_ROOT)).resolve()
     config_root = Path(str(env.get("SMART_DOC_FLOW_CONFIG_ROOT") or runtime_root)).resolve()
     data_root = Path(str(env.get("SMART_DOC_FLOW_DATA_ROOT") or DEFAULT_DATA_ROOT)).resolve()
@@ -121,11 +162,14 @@ def _build_env(service: str) -> dict[str, str]:
     env.setdefault("SMART_DOC_FLOW_CONFIG_ROOT", str(config_root))
     env.setdefault("SMART_DOC_FLOW_DATA_ROOT", str(data_root))
     env.setdefault("SMART_DOC_FLOW_GATEWAY_ENV_FILE", str((config_root / "backend" / ".env").resolve()))
-    env.setdefault("MODULE2_ENV_FILE", str((config_root / "backend" / "module2" / ".env").resolve()))
-    env.setdefault("MODULE3_ENV_FILE", str((config_root / "backend" / "module3" / ".env").resolve()))
+    env.setdefault(
+        "MODULE2_ENV_FILE",
+        str((config_root / "backend" / "app" / "modules" / "module2" / ".env").resolve()),
+    )
+    env.setdefault("MODULE3_ENV_FILE", str((config_root / "backend" / "app" / "modules" / "module3" / ".env").resolve()))
     env.setdefault(
         "SMART_DOC_FLOW_MODULE4_ENV_FILE",
-        str((config_root / "backend" / "module4" / ".env").resolve()),
+        str((config_root / "backend" / "app" / "modules" / "module4" / ".env").resolve()),
     )
     env.setdefault("GATEWAY_FRONTEND_DIST_DIR", str((runtime_root / "frontend" / "dist").resolve()))
     env.setdefault("AUTH_USERS_FILE", str((data_root / "auth" / "users.json").resolve()))
@@ -141,7 +185,9 @@ def _build_env(service: str) -> dict[str, str]:
         "MODULE2_LLM_DEBUG_DIR",
         str((data_root / "module2" / "runlogs" / "module2-llm-debug").resolve()),
     )
-    bundled_runtime_models = (runtime_root / "backend" / "module2" / ".cache" / "mineru_runtime_models").resolve()
+    bundled_runtime_models = (
+        runtime_root / "backend" / "app" / "modules" / "module2" / ".cache" / "mineru_runtime_models"
+    ).resolve()
     env.setdefault(
         "MODULE2_MINERU_RUNTIME_MODELS_DIR",
         str(
@@ -156,7 +202,7 @@ def _build_env(service: str) -> dict[str, str]:
     )
     env.setdefault(
         "MODULE4_GRAPHRAG_PROMPTS_ROOT",
-        str((runtime_root / "backend" / "module4" / "assets" / "prompts").resolve()),
+        str((runtime_root / "backend" / "app" / "modules" / "module4" / "assets" / "prompts").resolve()),
     )
 
     if service in {"backend", "gateway"}:
@@ -181,8 +227,16 @@ def main() -> int:
     if reexec_code is not None:
         return reexec_code
 
-    service_root, host, port = _service_runtime(args.service)
-    module_path = "main:app" if args.service == "module3" else "app.main:app"
+    env = _build_env(args.service)
+    service_root, host, port = _service_runtime(args.service, env)
+    if args.service == "module3":
+        module_path = "app.modules.module3.main:app"
+    elif args.service == "module2":
+        module_path = "app.modules.module2.main:app"
+    elif args.service == "module4":
+        module_path = "app.modules.module4.main:app"
+    else:
+        module_path = "app.main:app"
     command = [
         sys.executable,
         "-m",
@@ -203,7 +257,7 @@ def main() -> int:
     completed = subprocess.run(
         command,
         cwd=str(service_root),
-        env=_build_env(args.service),
+        env=env,
         check=False,
     )
     return int(completed.returncode)

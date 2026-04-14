@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 from app.core.config import Settings
-from app.modules.extraction.assistant1_runtime import build_assistant1_context_bundle
-from app.modules.extraction.config import ExtractionSettings
+from app.modules.module2.core.assistant1_runtime import build_assistant1_context_bundle
+from app.modules.module2.core.config import ExtractionSettings
 
 
 def _settings(tmp_path: Path) -> Settings:

@@ -8,12 +8,12 @@ from fastapi import FastAPI
 
 from app.core.config import Settings
 from app.core.lifespan import lifespan_context
-from app.modules.gateway.module4_sidecar_runtime import (
+from app.modules.module4.core.module4_sidecar_runtime import (
     Module4SidecarManager,
     Module4SidecarSettings,
     resolve_live_module4_upstream_url,
 )
-from app.modules.gateway.service import build_gateway_health, proxy_module4_request
+from app.services.gateway_service import build_gateway_health, proxy_module4_request
 
 
 def _settings(tmp_path: Path, *, upstream_url: str = "http://127.0.0.1:8100") -> Settings:
@@ -93,7 +93,7 @@ def test_resolve_live_module4_upstream_url_prefers_sidecar_when_requested(monkey
     settings = _settings(tmp_path)
 
     monkeypatch.setattr(
-        "app.modules.gateway.module4_sidecar_runtime.get_module4_sidecar_manager",
+        "app.modules.module4.core.module4_sidecar_runtime.get_module4_sidecar_manager",
         lambda: SimpleNamespace(ensure_ready=lambda _settings: "http://127.0.0.1:8100"),
     )
 
@@ -125,12 +125,19 @@ def test_proxy_module4_request_prefers_sidecar_url(monkeypatch, tmp_path: Path) 
         return {"ok": True}
 
     monkeypatch.setattr(
-        "app.modules.gateway.service.resolve_live_module4_upstream_url",
+        "app.services.gateway_service.resolve_live_module4_upstream_url",
         lambda settings_obj, ensure_sidecar=False: "http://127.0.0.1:8100",
     )
-    monkeypatch.setattr("app.modules.gateway.service.proxy_request", fake_proxy_request)
+    monkeypatch.setattr("app.services.gateway_service.proxy_request", fake_proxy_request)
 
-    result = asyncio.run(proxy_module4_request(request, settings, "/module4/graph"))
+    result = asyncio.run(
+        proxy_module4_request(
+            request,
+            settings,
+            "/module4/graph",
+            additional_headers={"X-Authenticated-User-Id": "user-1"},
+        )
+    )
 
     assert result == {"ok": True}
     assert proxy_calls == [("http://127.0.0.1:8100", "/module4/graph")]
@@ -144,7 +151,7 @@ def test_gateway_health_includes_module4_sidecar_payload(monkeypatch, tmp_path: 
     settings = _settings(tmp_path)
 
     monkeypatch.setattr(
-        "app.modules.gateway.service.get_module4_sidecar_manager",
+        "app.services.gateway_service.get_module4_sidecar_manager",
         lambda: SimpleNamespace(
             health_payload=lambda _settings: {
                 "requested_mode": "managed",
@@ -163,7 +170,7 @@ def test_gateway_health_includes_module4_sidecar_payload(monkeypatch, tmp_path: 
         ),
     )
     monkeypatch.setattr(
-        "app.modules.gateway.service.list_upstream_targets",
+        "app.services.gateway_service.list_upstream_targets",
         lambda _settings: (
             SimpleNamespace(name="module4", base_url="http://127.0.0.1:8100", health_path="/module4/healthz", mode="upstream"),
         ),

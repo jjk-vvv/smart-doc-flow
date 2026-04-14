@@ -20,7 +20,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 visual_runtime_limits_module = _load_module(
-    ["module2", "app", "core", "visual", "visual_pdf_bootstrap.py"],
+    ["app", "modules", "module2", "core", "visual", "visual_pdf_bootstrap.py"],
     "_smart_doc_flow_module2_visual_runtime_limits",
 )
 

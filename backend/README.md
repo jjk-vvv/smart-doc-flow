@@ -21,14 +21,14 @@ Current backend topology:
 - `backend/compat/auth_proxy/`
   - canonical target location for the legacy auth compatibility layer
   - current startup still points at `backend/auth` during migration compatibility
-- `backend/module2/`
-  - specialized extraction upstream runtime
-  - in FastAPI-first mode this runtime is now expected to be attached by the unified backend through the extraction sidecar manager unless `MODULE2_ENABLED=1` is explicitly restored
-- `backend/module4/`
+- `backend/app/modules/module2/`
+  - specialized extraction/assistant runtime under the unified FastAPI module tree
+  - in FastAPI-first mode this runtime is attached by the unified backend through the extraction sidecar manager unless `MODULE2_ENABLED=1` is explicitly restored
+- `backend/app/modules/module4/`
   - specialized graph/runtime upstream
   - in FastAPI-first mode this runtime is now expected to be attached by the unified gateway through the Module 4 sidecar manager unless `MODULE4_ENABLED=1` is explicitly restored
   - preferred Python runtime is now the repo-root `.venv-module4-py311`
-  - local `backend/module4/.venv` has been removed from the project layout
+  - legacy standalone `backend/module4` layout has been removed from the project layout
 
 Recommended runtime entrypoints:
 
@@ -80,7 +80,7 @@ Desktop runtime entrypoints:
   - default behavior is `AUTH_COMPAT_ENABLED=0`, `MODULE2_ENABLED=0`, `UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE=managed`, and `UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE=managed`
   - unified FastAPI becomes the single desktop backend entry, while extraction jobs and graph routes still preserve the original Module 2 and Module 4 runtime semantics through their managed sidecars
   - packaged desktop runtime now defaults `SMART_DOC_FLOW_DATA_ROOT` to Electron `userData/runtime-data`, so newly generated auth data, extraction artifacts, caches, and module4 workspaces are written into a user-writable data directory instead of the packaged app resources
-  - runtime history folders such as `module2/artifacts`, nested legacy `backend/module2/artifacts`, and `module4/workspaces` are intentionally excluded from packaging, so historical trace images and workspace outputs from the source tree are not baked into the desktop app
+  - runtime history folders such as `module2/artifacts` and `module4/workspaces` are intentionally excluded from packaging, so historical trace images and workspace outputs from the source tree are not baked into the desktop app
   - `SMART_DOC_FLOW_ELECTRON_LOG_FILE` can be used to persist Electron main-process startup logs during packaging smoke tests
   - `desktop:doctor` now also checks that the packaged Module 4 Python runtime exists and can import `graphrag`
   - `desktop:smoke` now probes `/module4/healthz` after gateway readiness so packaged graph runtime failures surface early
@@ -96,9 +96,9 @@ Configuration layering:
   - recommended authoritative config for the unified FastAPI backend
 - `backend/auth/.env`
   - compat proxy specific config
-- `backend/module2/.env`
+- `backend/app/modules/module2/.env`
   - module2 advanced upstream config
-- `backend/module4/.env`
+- `backend/app/modules/module4/.env`
   - module4 advanced upstream config
 
 FastAPI-first extraction sidecar controls:
@@ -134,8 +134,8 @@ Runtime env loading is now scope-aware:
 - for the FastAPI gateway, `backend/.env` is now later in precedence than the
   fallback scopes, so overlapping keys in `backend/.env` win
 - auth compat loads `backend/.env` plus `backend/auth/.env`
-- module2 loads `backend/.env` plus `backend/module2/.env`
-- module4 loads `backend/.env` plus `backend/module4/.env`
+- module2 loads `backend/.env` plus `backend/app/modules/module2/.env`
+- module4 loads `backend/.env` plus `backend/app/modules/module4/.env`
 - module4 startup now resolves directly to the repo-root `.venv-module4-py311`
 
 Data/storage direction:

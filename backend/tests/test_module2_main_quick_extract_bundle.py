@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_quick_extract_bundle_module = import_module("module2.app.bootstrap.quick_extract")
+main_quick_extract_bundle_module = import_module("app.modules.module2.bootstrap.quick_extract")
 
 
 def test_build_module2_main_quick_extract_bundle_exposes_numeric_and_table_fallback_helpers() -> None:

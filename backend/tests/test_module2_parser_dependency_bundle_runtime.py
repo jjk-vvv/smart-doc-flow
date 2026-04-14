@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-parser_dependency_bundle_runtime_module = import_module("module2.app.core.parsers.parser_bootstrap_runtime")
+parser_dependency_bundle_runtime_module = import_module("app.modules.module2.core.parsers.parser_bootstrap_runtime")
 
 ParserDependencyBundleRuntime = parser_dependency_bundle_runtime_module.ParserDependencyBundleRuntime
 

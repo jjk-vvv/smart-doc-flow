@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from app.core.config import Settings
 from app.modules.auth.composition import router as auth_router
+from app.modules.file_assets.api.router import router as file_assets_router
 from app.modules.frontend_static.router import router as frontend_static_router
 from app.modules.module1.composition import router as module1_router
 from app.modules.module2.composition import router as module2_router
@@ -38,7 +39,7 @@ def _load_module3_router(settings: Settings) -> APIRouter | None:
         return None
 
     try:
-        from app.modules.module3.router import router as module3_router
+        from app.modules.module3 import router as module3_router
     except Exception as exc:  # pragma: no cover - import safety for optional module wiring
         if mode == "required":
             raise RuntimeError("Module3 router registration failed in required mode.") from exc
@@ -50,6 +51,7 @@ def _load_module3_router(settings: Settings) -> APIRouter | None:
 
 _MODULE_ROUTE_REGISTRATIONS: tuple[ModuleRouteRegistration, ...] = (
     ModuleRouteRegistration("auth", _constant_router_loader(auth_router)),
+    ModuleRouteRegistration("file_assets", _constant_router_loader(file_assets_router)),
     ModuleRouteRegistration("module1", _constant_router_loader(module1_router)),
     ModuleRouteRegistration("module2", _constant_router_loader(module2_router)),
     ModuleRouteRegistration("module3", _load_module3_router),

@@ -14,8 +14,9 @@ from typing import Any
 def _load_module():
     module_path = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "services"
         / "extraction_request_service.py"
     )

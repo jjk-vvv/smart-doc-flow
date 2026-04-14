@@ -10,12 +10,12 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-parser_visual_payload_bootstrap_module = import_module("module2.app.core.parsers.parser_visual_payload_bootstrap_runtime")
+parser_visual_payload_bootstrap_module = import_module("app.modules.module2.core.parsers.parser_visual_payload_bootstrap_runtime")
 parser_visual_payload_bundle_module = parser_visual_payload_bootstrap_module
-content_normalization_module = import_module("module2.app.core.schema.content_normalization_runtime")
-figure_semantics_module = import_module("module2.app.core.visual.figure_semantics")
-figure_inference_module = import_module("module2.app.core.visual.figure_inference")
-table_header_module = import_module("module2.app.core.table.table_header_runtime")
+content_normalization_module = import_module("app.modules.module2.core.schema.content_normalization_runtime")
+figure_semantics_module = import_module("app.modules.module2.core.visual.figure_semantics")
+figure_inference_module = import_module("app.modules.module2.core.visual.figure_inference")
+table_header_module = import_module("app.modules.module2.core.table.table_header_runtime")
 
 ParserVisualPayloadBootstrapRuntime = parser_visual_payload_bootstrap_module.ParserVisualPayloadBootstrapRuntime
 ParserVisualPayloadBundleRuntime = parser_visual_payload_bundle_module.ParserVisualPayloadBundleRuntime

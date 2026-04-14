@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 table_vision_payload_module = _load_module(
-    ["module2", "app", "core", "table", "table_vision_payload.py"],
+    ["app", "modules", "module2", "core", "table", "table_vision_payload.py"],
     "_smart_doc_flow_module2_table_vision_payload",
 )
 

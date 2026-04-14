@@ -1,3 +1,7 @@
-from __future__ import annotations
+"""Module4 services package.
 
-from app.services.gateway_service import *  # noqa: F403
+This package intentionally avoids broad re-exports. Import concrete
+submodules directly (for example, ``app.services.query.runtime``).
+"""
+
+__all__: list[str] = []

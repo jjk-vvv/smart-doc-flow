@@ -9,7 +9,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-from module2.app.core.schema.field_naming import (
+from app.modules.module2.core.schema.field_naming import (
     detect_domain_template,
     infer_rule_backed_schema_fields,
     normalize_field_name,

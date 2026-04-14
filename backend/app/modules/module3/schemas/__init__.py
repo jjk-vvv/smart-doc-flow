@@ -1,3 +1,5 @@
 from __future__ import annotations
 
-from module3.schemas import *  # noqa: F403
+from .run_schemas import WebRunRequest
+
+__all__ = ["WebRunRequest"]

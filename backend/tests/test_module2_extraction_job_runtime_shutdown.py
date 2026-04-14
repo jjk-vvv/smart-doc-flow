@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 extraction_jobs_module = _load_module(
-    ["module2", "app", "services", "extraction_job_service.py"],
+    ["app", "modules", "module2", "services", "extraction_job_service.py"],
     "_smart_doc_flow_module2_extraction_jobs_service",
 )
 

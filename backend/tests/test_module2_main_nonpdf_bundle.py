@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_nonpdf_bundle_module = import_module("module2.app.bootstrap.nonpdf")
+main_nonpdf_bundle_module = import_module("app.modules.module2.bootstrap.nonpdf")
 
 
 def test_build_module2_main_nonpdf_bundle_exposes_expected_nonpdf_helpers() -> None:

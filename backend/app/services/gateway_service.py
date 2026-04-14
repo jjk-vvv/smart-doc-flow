@@ -14,7 +14,7 @@ from app.core.config import Settings
 from app.core.health import probe_json, probe_path
 from app.services.auth_service import get_auth_service
 from app.core.auth_tenant import resolve_authenticated_tenant
-from app.modules.gateway.module4_sidecar_runtime import (
+from app.modules.module4.core.module4_sidecar_runtime import (
     get_module4_sidecar_settings,
     get_module4_sidecar_manager,
     resolve_live_module4_upstream_url,

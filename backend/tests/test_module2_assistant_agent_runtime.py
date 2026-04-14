@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from module2.app.assistant_1.agent_runtime import Assistant1AgentRuntime
+from app.modules.module2.assistant_1.agent_runtime import Assistant1AgentRuntime
 
 
 def test_legacy_runtime_builds_multi_field_snapshot_answer_for_compound_question() -> None:

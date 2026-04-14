@@ -11,8 +11,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-parser_initialization_runtime_module = import_module("module2.app.core.parsers.parser_initialization_runtime")
-parser_module = import_module("module2.app.core.parser")
+parser_initialization_runtime_module = import_module("app.modules.module2.core.parsers.parser_initialization_runtime")
+parser_module = import_module("app.modules.module2.core.parser")
 
 
 class _BootstrapStub:

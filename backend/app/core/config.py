@@ -60,7 +60,7 @@ class Settings:
     module2_upstream_url: str
     module4_upstream_url: str
     module3_router_mode: str = "auto"
-    auth_tenant_mode: str = "compat_default"
+    auth_tenant_mode: str = "user_strict"
     auth_tenant_default_id: str = "default"
     gateway_health_probe_timeout_sec: float = 2.0
     gateway_startup_sidecar_grace_sec: float = 5.0
@@ -96,7 +96,7 @@ def get_settings() -> Settings:
             "auto",
             ("auto", "disabled", "required"),
         ),
-        auth_tenant_mode=_env_str("AUTH_TENANT_MODE", "compat_default"),
+        auth_tenant_mode=_env_str("AUTH_TENANT_MODE", "user_strict"),
         auth_tenant_default_id=_env_str("AUTH_TENANT_DEFAULT_ID", "default"),
         gateway_health_probe_timeout_sec=max(1.0, _env_float("GATEWAY_HEALTH_PROBE_TIMEOUT_SEC", 2.0)),
         gateway_startup_sidecar_grace_sec=max(

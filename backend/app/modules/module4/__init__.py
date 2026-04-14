@@ -1,4 +1,4 @@
-"""Module4 standardized package using compatibility adapters."""
+"""Module4 standardized package."""
 
 from .composition import build_router, router
 

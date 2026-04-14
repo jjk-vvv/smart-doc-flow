@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 
-document_pipeline_finalize_runtime_module = importlib.import_module("module2.app.core.pipeline.document_pipeline_stages_runtime")
+document_pipeline_finalize_runtime_module = importlib.import_module("app.modules.module2.core.pipeline.document_pipeline_stages_runtime")
 DocumentPipelineFinalizeRuntime = document_pipeline_finalize_runtime_module.DocumentPipelineFinalizeRuntime
 DocumentPipelineOutcome = document_pipeline_finalize_runtime_module.DocumentPipelineOutcome
 

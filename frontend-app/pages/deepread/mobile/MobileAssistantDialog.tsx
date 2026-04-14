@@ -390,17 +390,17 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
           >
             <div className="sticky top-0 z-10 border-b border-slate-200/80 bg-white/92 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl dark:border-white/[0.05] dark:bg-[#0B1120]/92">
               <div className="flex items-start justify-between gap-3">
-                <div className="flex min-w-0 items-start gap-1.5">
+                <div className="flex min-w-0 items-start gap-2">
                   <img
                     src={assistantBotIcon}
                     alt="Bot"
-                    className="mt-[2px] h-5 w-5 shrink-0 object-contain"
+                    className="h-5 w-5 shrink-0 translate-y-[2px] object-contain"
                   />
                   <div className="min-w-0">
                     <h3 className="truncate text-[18px] font-semibold leading-tight text-slate-900 dark:text-white">
                       智能助手
                     </h3>
-                    <p className="mt-1 truncate text-[13px] text-slate-500 dark:text-slate-400">
+                    <p className="mt-0.5 truncate text-[13px] text-slate-500 dark:text-slate-400">
                       {activeDoc?.file_name || '当前无解析文档'}
                     </p>
                   </div>
@@ -440,7 +440,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                   className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
                 >
                   {!hasActiveDoc ? (
-                    <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+                    <div className="flex h-full flex-col items-center justify-center px-4 pb-10 text-center">
                       <div className="mb-4">
                         <Bot size={48} className="text-[#D97757] dark:text-[#E2886A]" strokeWidth={1.5} />
                       </div>
@@ -452,7 +452,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                       </p>
                     </div>
                   ) : renderableAssistantDialog.length === 0 ? (
-                    <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+                    <div className="flex h-full flex-col items-center justify-center px-4 pb-10 text-center">
                       <div className="mb-4">
                         <Sparkles size={48} className="text-[#D97757] dark:text-[#E2886A]" strokeWidth={1.5} />
                       </div>
@@ -494,13 +494,13 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                   </div>
                 )}
 
-                <div className="px-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-3">
-                  <div className="rounded-[24px] border border-transparent bg-white px-3.5 pb-3 pt-3 shadow-[0_4px_18px_rgba(15,23,42,0.06)] transition-all focus-within:shadow-[0_8px_24px_rgba(15,23,42,0.12)] focus-within:ring-1 focus-within:ring-slate-200 dark:border-white/[0.05] dark:bg-[#1A1D24] dark:shadow-none dark:focus-within:ring-white/[0.1]">
+                <div className="px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-2">
+                  <div className="rounded-[24px] border border-transparent bg-white p-2.5 shadow-[0_4px_18px_rgba(15,23,42,0.06)] transition-all focus-within:shadow-[0_8px_24px_rgba(15,23,42,0.12)] focus-within:ring-1 focus-within:ring-slate-200 dark:border-white/[0.05] dark:bg-[#1A1D24] dark:shadow-none dark:focus-within:ring-white/[0.1]">
                     <AssistantComposerStatus
                       isLoading={assistantQueryLoading}
                       streamingMessage={latestStreamingAssistantMessage}
                     />
-                    <div className="mt-1 flex items-end gap-3">
+                    <div className="flex items-end gap-2">
                       <textarea
                         ref={assistantInputRef}
                         value={assistantInput}
@@ -512,9 +512,9 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                             void runAssistantInstruction();
                           }
                         }}
-                        placeholder="请输入你想让助手基于当前文档完成的任务..."
+                        placeholder={hasActiveDoc ? "输入任务指令或提问..." : "暂无可用文档"}
                         className={cn(
-                          'max-h-[160px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-1.5 text-[15px] leading-6 outline-none',
+                          'max-h-[140px] min-h-[36px] flex-1 resize-none bg-transparent px-1.5 py-[6px] text-[15px] leading-6 outline-none',
                           hasActiveDoc
                             ? 'text-slate-800 placeholder:text-slate-400 dark:text-slate-100'
                             : 'cursor-not-allowed text-slate-400 placeholder:text-slate-400 dark:text-slate-500',
@@ -525,7 +525,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                         onClick={() => void runAssistantInstruction()}
                         disabled={!hasActiveDoc || (!assistantQueryLoading && !assistantInput.trim())}
                         className={cn(
-                          'mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors',
+                          'flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full transition-colors',
                           !hasActiveDoc || (!assistantQueryLoading && !assistantInput.trim())
                             ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-white/[0.05] dark:text-slate-500'
                             : assistantQueryLoading
@@ -535,15 +535,11 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                         title={assistantQueryLoading ? '停止本次回答' : '发送'}
                         aria-label={assistantQueryLoading ? '停止本次回答' : '发送'}
                       >
-                        {assistantQueryLoading ? <X size={17} /> : <ArrowUp size={18} strokeWidth={2.5} />}
+                        {assistantQueryLoading ? <X size={16} /> : <ArrowUp size={18} strokeWidth={2.5} />}
                       </button>
                     </div>
-                    {!hasActiveDoc ? (
-                      <p className="mt-2 px-1 text-[11px] leading-5 text-slate-500 dark:text-slate-400">
-                        {assistantUnavailableMessage}
-                      </p>
-                    ) : assistantMessage && (
-                      <p className="mt-2 px-1 text-[11px] leading-5 text-slate-500 dark:text-slate-400">
+                    {assistantMessage && (
+                      <p className="mt-2 px-1.5 text-[11px] leading-5 text-red-500 dark:text-red-400">
                         {assistantMessage}
                       </p>
                     )}

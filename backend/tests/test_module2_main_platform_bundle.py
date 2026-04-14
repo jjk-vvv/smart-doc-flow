@@ -11,7 +11,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_platform_bundle_module = import_module("module2.app.bootstrap.platform")
+main_platform_bundle_module = import_module("app.modules.module2.bootstrap.platform")
 
 
 async def _run_parse(bundle) -> dict[str, object]:

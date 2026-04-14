@@ -4,7 +4,9 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from module2.app.runtime.app_callback_bundle import build_module2_app_callback_bundle
+from fastapi.responses import FileResponse
+
+from app.modules.module2.runtime.app_callback_bundle import build_module2_app_callback_bundle
 
 
 class _FakeArtifactFileRuntime:
@@ -375,3 +377,129 @@ def test_app_callback_bundle_skips_outbox_recovery_when_sync_disabled() -> None:
 
     assert "recover_outbox:200" not in events
     assert not any(item.startswith("scheduled:") for item in events)
+
+
+def test_app_callback_bundle_serves_file_asset_with_default_owner(monkeypatch, tmp_path: Path) -> None:
+    events: list[str] = []
+    source_file = (tmp_path / "file-assets" / "asset.txt").resolve()
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("file asset body", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "app.modules.module2.composition.app_callback_bundle.resolve_file_for_owner",
+        lambda file_id, owner_id: (
+            {
+                "file_id": file_id,
+                "filename": "asset.txt",
+                "mime_type": "text/plain",
+            },
+            source_file,
+        ),
+    )
+
+    bundle = build_module2_app_callback_bundle(
+        app_lifecycle_runtime=_FakeAppLifecycleRuntime(events),
+        cache_clear_runtime=_FakeCacheClearRuntime(),
+        artifact_file_runtime=_FakeArtifactFileRuntime(),
+        health_runtime=_FakeHealthRuntime(),
+        module2_bootstrap_runtime=_FakeBootstrapRuntime(events),
+        startup_task_runtime=_FakeStartupTaskRuntime(),
+        runtime_state_repository=_FakeStorage(events),
+        office_preview_runtime=_FakeOfficePreviewRuntime(),
+        module4_sync_config_runtime=_FakeModule4SyncConfigRuntime(enabled=False),
+        module4_sync_outbox_runtime=_FakeModule4SyncOutboxRuntime(events),
+        module4_sync_metrics_runtime=_FakeModule4SyncMetricsRuntime(),
+        module4_sync_task_runtime=_FakeModule4SyncTaskRuntime(events),
+        extraction_job_runtime=_FakeExtractionJobRuntime(events),
+        extraction_jobs={},
+        extraction_lock=asyncio.Lock(),
+        extraction_job_runtime_specs={},
+        extraction_job_tasks={},
+        extraction_job_persist_markers={},
+        clear_mineru_process_runtime_cache=lambda: None,
+        reset_process_pool=lambda reason: 0,
+        build_preflight_provider=lambda: {"provider_type": "openai_compatible"},
+        run_parse_in_process_pool=lambda **kwargs: asyncio.sleep(0),
+        schedule_module4_sync_outbox=lambda payload: None,
+        shutdown_process_pool=lambda: None,
+        python_executable="python.exe",
+        python_prefix="/venv",
+        python_base_prefix="/python",
+        python_venv_active=True,
+    )
+
+    head_response = bundle.serve_file_asset("fa_asset", "HEAD")
+    get_response = bundle.serve_file_asset("fa_asset", "GET")
+
+    assert head_response.status_code == 200
+    assert head_response.headers.get("content-type", "").startswith("text/plain")
+    assert head_response.headers.get("content-length") == str(source_file.stat().st_size)
+    assert isinstance(get_response, FileResponse)
+    assert get_response.status_code == 200
+
+
+def test_app_callback_bundle_serve_file_asset_prefers_request_owner(monkeypatch, tmp_path: Path) -> None:
+    events: list[str] = []
+    source_file = (tmp_path / "file-assets" / "owner.txt").resolve()
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("owner body", encoding="utf-8")
+
+    captured_owner: dict[str, str] = {}
+
+    def _resolve(file_id: str, owner_id: str):
+        captured_owner["file_id"] = file_id
+        captured_owner["owner_id"] = owner_id
+        return (
+            {
+                "file_id": file_id,
+                "filename": "owner.txt",
+                "mime_type": "text/plain",
+            },
+            source_file,
+        )
+
+    monkeypatch.setattr(
+        "app.modules.module2.composition.app_callback_bundle.resolve_file_for_owner",
+        _resolve,
+    )
+
+    bundle = build_module2_app_callback_bundle(
+        app_lifecycle_runtime=_FakeAppLifecycleRuntime(events),
+        cache_clear_runtime=_FakeCacheClearRuntime(),
+        artifact_file_runtime=_FakeArtifactFileRuntime(),
+        health_runtime=_FakeHealthRuntime(),
+        module2_bootstrap_runtime=_FakeBootstrapRuntime(events),
+        startup_task_runtime=_FakeStartupTaskRuntime(),
+        runtime_state_repository=_FakeStorage(events),
+        office_preview_runtime=_FakeOfficePreviewRuntime(),
+        module4_sync_config_runtime=_FakeModule4SyncConfigRuntime(enabled=False),
+        module4_sync_outbox_runtime=_FakeModule4SyncOutboxRuntime(events),
+        module4_sync_metrics_runtime=_FakeModule4SyncMetricsRuntime(),
+        module4_sync_task_runtime=_FakeModule4SyncTaskRuntime(events),
+        extraction_job_runtime=_FakeExtractionJobRuntime(events),
+        extraction_jobs={},
+        extraction_lock=asyncio.Lock(),
+        extraction_job_runtime_specs={},
+        extraction_job_tasks={},
+        extraction_job_persist_markers={},
+        clear_mineru_process_runtime_cache=lambda: None,
+        reset_process_pool=lambda reason: 0,
+        build_preflight_provider=lambda: {"provider_type": "openai_compatible"},
+        run_parse_in_process_pool=lambda **kwargs: asyncio.sleep(0),
+        schedule_module4_sync_outbox=lambda payload: None,
+        shutdown_process_pool=lambda: None,
+        python_executable="python.exe",
+        python_prefix="/venv",
+        python_base_prefix="/python",
+        python_venv_active=True,
+    )
+
+    request = SimpleNamespace(
+        headers={"X-Authenticated-Tenant-Id": "tenant-from-header"},
+        state=SimpleNamespace(authenticated_user=SimpleNamespace(tenant_id="tenant-from-state", user_id="user-1")),
+    )
+    response = bundle.serve_file_asset("fa_owner", "GET", request=request)
+
+    assert isinstance(response, FileResponse)
+    assert response.status_code == 200
+    assert captured_owner == {"file_id": "fa_owner", "owner_id": "tenant-from-state"}

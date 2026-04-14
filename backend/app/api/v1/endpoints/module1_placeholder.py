@@ -1,18 +1,3 @@
-from __future__ import annotations
+from app.modules.module1.api.endpoints.module1_placeholder import build_router, router
 
-from fastapi import APIRouter
-
-from app.services.module1_placeholder_service import build_placeholder_info
-
-
-def build_router() -> APIRouter:
-    router = APIRouter()
-
-    @router.get("/module1-placeholder/info")
-    async def module1_placeholder_info():
-        return build_placeholder_info()
-
-    return router
-
-
-router = build_router()
+__all__ = ["build_router", "router"]

@@ -1,3 +1,5 @@
-from __future__ import annotations
+"""Module4 repository exports."""
 
-from module4.app.repositories import *  # noqa: F403
+from ..db.storage import Module4Storage
+
+__all__ = ["Module4Storage"]

@@ -92,6 +92,21 @@ backend/module4/.runlogs/
 backend/module4/.runtime/
 backend/module4/.venv/
 backend/module4/runtime-data/
+backend/.migration-backups/
+backend/app/modules/module2/.cache/
+backend/app/modules/module2/.mcache/
+backend/app/modules/module2/.runlogs/
+backend/app/modules/module2/.runtime/
+backend/app/modules/module2/.codex-temp/
+backend/app/modules/module2/artifacts/
+backend/app/modules/module2/runtime-data/
+backend/app/modules/module4/workspaces/
+backend/app/modules/module4/.runlogs/
+backend/app/modules/module4/.runtime/
+backend/app/modules/module4/.venv/
+backend/app/modules/module4/runtime-data/
+datasets.zip
+datasets/**/case_repo*/
 
 # Exclude specific documents
 数据库操作步骤优化方案.md

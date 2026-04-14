@@ -21,7 +21,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 router_module = _load_module(
-    ["module2", "app", "api", "v1", "endpoints", "module4_sync.py"],
+    ["app", "modules", "module2", "api", "v1", "endpoints", "module4_sync.py"],
     "_smart_doc_flow_module2_api_v1_module4_sync_endpoint",
 )
 

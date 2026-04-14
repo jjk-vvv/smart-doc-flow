@@ -5,11 +5,11 @@ import json
 from pathlib import Path
 
 from app.core.config import Settings
-from app.modules.extraction.assistant1_runtime import (
+from app.modules.module2.core.assistant1_runtime import (
     ExtractionAssistant1Provider,
     NativeAssistant1Runtime,
 )
-from app.modules.extraction.config import ExtractionSettings
+from app.modules.module2.core.config import ExtractionSettings
 
 
 def _settings(tmp_path: Path) -> Settings:

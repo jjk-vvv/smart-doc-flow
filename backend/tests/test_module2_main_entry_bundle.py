@@ -14,7 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_entry_bundle_module = import_module("module2.app.bootstrap.entry")
+main_entry_bundle_module = import_module("app.modules.module2.bootstrap.entry")
 
 
 class _StorageStub:

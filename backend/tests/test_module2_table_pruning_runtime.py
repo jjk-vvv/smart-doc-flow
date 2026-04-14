@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 table_pruning_module = _load_module(
-    ["module2", "app", "core", "table", "table_pruning_runtime.py"],
+    ["app", "modules", "module2", "core", "table", "table_pruning_runtime.py"],
     "_smart_doc_flow_module2_table_pruning_runtime",
 )
 

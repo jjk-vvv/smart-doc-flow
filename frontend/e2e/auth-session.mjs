@@ -162,8 +162,8 @@ export async function loginForProtectedApp(context, appUrl, credentials = {}) {
 
 export async function openProtectedTab(page, appUrl, tab, options = {}) {
   const targetUrl = buildProtectedTabUrl(appUrl, tab);
-  const attempts = Math.max(1, Number(options.attempts || 3));
-  const retryDelayMs = Math.max(250, Number(options.retryDelayMs || 1200));
+  const attempts = Math.max(1, Number(options.attempts || 5));
+  const retryDelayMs = Math.max(250, Number(options.retryDelayMs || 1500));
   let lastError = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -175,6 +175,17 @@ export async function openProtectedTab(page, appUrl, tab, options = {}) {
       await page.waitForLoadState("networkidle", {
         timeout: options.networkIdleTimeout || 30_000,
       }).catch(() => {});
+      await page
+        .waitForFunction(
+          () => {
+            const root = document.getElementById("root");
+            const main = document.querySelector("main");
+            const bodyTextLength = String(document.body?.innerText || "").trim().length;
+            return Boolean(main) || Boolean(root && root.childElementCount > 0) || bodyTextLength > 24;
+          },
+          { timeout: options.mountTimeout || 20_000 },
+        )
+        .catch(() => {});
       const mountState = await readPageMountState(page);
       if (pageLooksMounted(mountState)) {
         return targetUrl;
@@ -196,5 +207,4 @@ export async function openProtectedTab(page, appUrl, tab, options = {}) {
   }
 
   throw lastError || new Error(`protected_tab_open_failed:${String(tab || "").trim()}`);
-  return targetUrl;
 }

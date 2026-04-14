@@ -1,3 +1,2 @@
-from __future__ import annotations
+"""Module4 integrations namespace."""
 
-from module4.app.integrations import *  # noqa: F403

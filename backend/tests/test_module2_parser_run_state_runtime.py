@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 parser_run_state_runtime_module = _load_module(
-    ["module2", "app", "core", "parsers", "parser_state_runtime.py"],
+    ["app", "modules", "module2", "core", "parsers", "parser_state_runtime.py"],
     "_smart_doc_flow_module2_parser_run_state_runtime",
 )
 

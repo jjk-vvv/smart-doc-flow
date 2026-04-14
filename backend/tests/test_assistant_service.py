@@ -6,9 +6,9 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from app.modules.assistant.config import AssistantSettings
-from app.modules.assistant.prompting import CHAT_FALLBACK_TEXT
-from app.modules.assistant.service import (
+from app.core.assistant_config import AssistantSettings
+from app.services.assistant_prompting import CHAT_FALLBACK_TEXT
+from app.services.assistant_service import (
     ASSISTANT_EMPTY_RESPONSE_TEXT,
     ASSISTANT_NO_KEY_TEXT,
     ASSISTANT_STREAM_ERROR_TEXT,

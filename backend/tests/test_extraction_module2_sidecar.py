@@ -4,9 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.core.config import Settings
-from app.modules.extraction.config import ExtractionSettings
-from app.modules.extraction.module2_shadow_runtime import get_shadow_extraction_job_status
-from app.modules.extraction.module2_sidecar_runtime import Module2SidecarManager, request_module2
+from app.modules.module2.core.config import ExtractionSettings
+from app.modules.module2.core.module2_shadow_runtime import get_shadow_extraction_job_status
+from app.modules.module2.core.module2_sidecar_runtime import Module2SidecarManager, request_module2
 
 
 def _settings(tmp_path: Path, *, upstream_url: str = "http://127.0.0.1:8010") -> Settings:
@@ -112,11 +112,11 @@ def test_request_module2_prefers_sidecar_url_when_enabled(monkeypatch, tmp_path:
             return {"ok": True}
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.get_module2_sidecar_manager",
+        "app.modules.module2.core.module2_sidecar_runtime.get_module2_sidecar_manager",
         lambda: SimpleNamespace(ensure_ready=lambda _settings: "http://127.0.0.1:8010"),
     )
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.requests.request",
+        "app.modules.module2.core.module2_sidecar_runtime.requests.request",
         lambda **kwargs: request_calls.append(kwargs) or FakeResponse(),
     )
 

@@ -12,7 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-document_dispatch_runtime_module = import_module("module2.app.core.parsers.parser_docx_bootstrap_runtime")
+document_dispatch_runtime_module = import_module("app.modules.module2.core.parsers.parser_docx_bootstrap_runtime")
 
 DocumentDispatchRuntime = document_dispatch_runtime_module.DocumentDispatchRuntime
 

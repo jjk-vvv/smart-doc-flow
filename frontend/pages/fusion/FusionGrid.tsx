@@ -1,4 +1,4 @@
-﻿﻿import React, {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, {
   useEffect,
   useId,
   useMemo,
@@ -36,7 +36,7 @@ import {
   cancelModule3Run,
   createModule3Run,
   fetchModule3RunStatus,
-  module3DocumentPreviewUrl,
+  fetchModule3DocumentPreviewText,
   module3RunDownloadUrl,
   saveModule3RunOutput,
   normalizeModule3Status,
@@ -84,7 +84,7 @@ type DocumentItem = {
   type: DocumentType;
   size: string;
   uploadTime: string;
-  path: string;
+  fileId: string | null;
   docsetId: string;
 };
 
@@ -100,7 +100,8 @@ type TaskItem = {
   docsetLabel: string;
   filled: number;
   total: number;
-  outputFilename?: string | null;
+  outputFileId?: string | null;
+  outputName?: string | null;
   error?: string | null;
 };
 
@@ -251,6 +252,15 @@ const basename = (value?: string | null): string => {
     name = name.replace(/^tpl_[a-f0-9a-z]+__/, "");
   }
   return name;
+};
+
+const getTaskOutputName = (task: {
+  outputName?: string | null;
+  templateName: string;
+}): string => {
+  const outputName = String(task.outputName || "").trim();
+  if (outputName) return outputName;
+  return basename(task.templateName);
 };
 
 const getTaskName = (index: number, total: number): string =>
@@ -685,12 +695,12 @@ const LuckysheetPreview = ({
   };
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col relative overflow-hidden bg-[#f8fafc] dark:bg-slate-950">
+    <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col relative overflow-hidden bg-slate-50 dark:bg-[#0B1120]">
       {toastMessage && (
         <div
           className={cn(
-            "absolute top-4 left-1/2 -translate-x-1/2 z-[2000] px-4 py-2 rounded shadow-lg text-sm font-medium text-white transition-opacity",
-            toastMessage.type === "success" ? "bg-emerald-600" : "bg-red-600",
+            "absolute top-4 left-1/2 -translate-x-1/2 z-[2000] px-4 py-2 rounded-[12px] shadow-lg text-[13px] font-medium text-white transition-opacity",
+            toastMessage.type === "success" ? "bg-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" : "bg-red-600 dark:bg-red-500/20 dark:text-red-400",
           )}
         >
           {toastMessage.text}
@@ -700,12 +710,12 @@ const LuckysheetPreview = ({
         <button
           onClick={handleSave}
           disabled={isSaving}
-          className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm shadow-sm transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100 text-white px-4 py-2 rounded-[10px] text-[13px] font-medium shadow-sm transition-colors disabled:opacity-50"
         >
           {isSaving ? (
-            <Loader2 size={16} className="animate-spin" />
+            <Loader2 size={15} className="animate-spin" />
           ) : (
-            <Save size={16} />
+            <Save size={15} />
           )}
           保存修改
         </button>
@@ -824,7 +834,7 @@ const SpreadsheetPreview = ({
         </div>
       </div>
 
-      <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-auto overflow-y-auto overscroll-contain custom-scrollbar">
+      <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-auto overflow-y-auto overscroll-contain scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10">
         <div className="min-w-full w-full max-w-full">
           <table className="w-max min-w-full border-collapse text-sm">
             <thead className="sticky top-0 z-10">
@@ -893,7 +903,8 @@ const updateTaskFromStatus = (
   fillRate: Number.isFinite(status.fill_rate)
     ? normalizeProgress(status.fill_rate)
     : task.fillRate,
-  outputFilename: status.output_filename ?? task.outputFilename ?? null,
+  outputFileId: status.output_file_id ?? task.outputFileId ?? null,
+  outputName: status.output_name ?? task.outputName ?? null,
   error: status.error ?? task.error ?? null,
   completedAt:
     status.completed_at ?? status.finished_at ?? task.completedAt ?? null,
@@ -1034,27 +1045,27 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
               onMouseEnter={() => handleMouseEnter(index, hasDropdown)}
               onMouseLeave={handleMouseLeave}
               className={cn(
-                "relative flex items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 sm:px-3 lg:px-4 py-2 sm:py-1.5 lg:py-2 text-xs sm:text-sm font-medium transition-colors duration-200 shrink-0 min-h-[36px] sm:min-h-0",
-                "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-800/80",
+                  "relative flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2.5 h-[26px] text-[12px] font-medium transition-colors duration-200 shrink-0",
+                "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80 dark:text-slate-300 dark:hover:text-white dark:hover:bg-white/[0.05]",
                 isDropdownOpen
-                  ? "bg-slate-100/80 text-slate-900 dark:bg-slate-800/80 dark:text-white"
+                  ? "bg-slate-100/80 text-slate-900 dark:bg-white/[0.05] dark:text-white"
                   : "",
                 option.disabled
                   ? "cursor-not-allowed opacity-50 hover:bg-transparent dark:hover:bg-transparent"
                   : "",
               )}
-              whileTap={{ scale: option.disabled ? 1 : 0.95 }}
+              whileTap={{ scale: option.disabled ? 1 : 0.98 }}
             >
-              <div className="relative z-10 flex items-center justify-center gap-1.5 sm:gap-2">
-                <Icon size={14} className="sm:w-4 sm:h-4" />
-                <span className="hidden sm:inline text-[15px] font-bold">
+              <div className="relative z-10 flex items-center justify-center gap-1.5">
+                <Icon size={14} className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline font-medium">
                   {option.label}
                 </span>
                 {hasDropdown && (
                   <ChevronDown
                     size={12}
                     className={cn(
-                      "transition-transform duration-200 sm:w-3.5 sm:h-3.5",
+                      "transition-transform duration-200 w-3 h-3",
                       isDropdownOpen ? "rotate-180" : "",
                     )}
                   />
@@ -1094,12 +1105,12 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
                     onMouseLeave={handleMouseLeave}
                   >
                     <motion.div
-                      initial={{ opacity: 0, y: -10 }}
+                      initial={{ opacity: 0, y: -4 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      transition={{ duration: 0.2 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.15 }}
                     >
-                      <div className="rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900 overflow-hidden">
+                      <div className="rounded-xl border border-slate-200/60 bg-white/95 backdrop-blur-xl shadow-[0_8px_30px_rgb(0,0,0,0.08)] dark:border-white/[0.1] dark:bg-[#0B1120]/95 dark:shadow-[0_8px_30px_rgb(0,0,0,0.4)] overflow-hidden">
                         {option.dropdownContent}
                       </div>
                     </motion.div>
@@ -1165,11 +1176,13 @@ const VerticalSlidingSelector = ({
 
   if (items.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-300 dark:border-slate-700">
+      <div className="flex h-full items-center justify-center rounded-2xl border border-slate-200 bg-slate-50/30 dark:border-white/[0.05] dark:bg-[#0B1120]">
         <div className="text-center text-sm text-slate-500 dark:text-slate-400">
-          <EmptyIcon size={32} className="mx-auto mb-2 text-slate-300" />
-          <p>{emptyTitle}</p>
-          {emptyHint ? <p className="mt-1 text-xs">{emptyHint}</p> : null}
+          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-white dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.05] shadow-sm">
+            <EmptyIcon size={24} className="text-slate-400 dark:text-slate-500" />
+          </div>
+          <p className="font-medium text-slate-700 dark:text-slate-300">{emptyTitle}</p>
+          {emptyHint ? <p className="mt-1.5 text-[13px] text-slate-500 dark:text-slate-400 max-w-[200px] leading-relaxed mx-auto">{emptyHint}</p> : null}
         </div>
       </div>
     );
@@ -1188,7 +1201,7 @@ const VerticalSlidingSelector = ({
         </span>
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
+      <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-white/[0.05] dark:bg-[#0B1120]">
         <div
           className={cn(
             "pointer-events-none absolute left-0 right-0 z-0 transition-all duration-200 ease-out",
@@ -1199,7 +1212,7 @@ const VerticalSlidingSelector = ({
             height: "44px",
           }}
         />
-        <div ref={listRef} className="h-full overflow-y-auto custom-scrollbar">
+        <div ref={listRef} className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10">
           {items.map((item, idx) => (
             <div
               key={item.id}
@@ -1208,11 +1221,11 @@ const VerticalSlidingSelector = ({
               }}
               onClick={() => onSelect(item.id)}
               className={cn(
-                "relative z-10 flex h-11 cursor-pointer items-center gap-3 border-b border-slate-100 px-3 transition-colors last:border-b-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50",
+                "relative z-10 flex h-11 cursor-pointer items-center gap-3 border-b border-slate-100 px-3 transition-colors last:border-b-0 hover:bg-slate-50 dark:border-white/[0.05] dark:hover:bg-white/[0.02]",
                 selectedId === item.id && toneStyle.activeText,
               )}
             >
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-medium text-slate-500 dark:bg-white/[0.04] dark:text-slate-400">
                 {idx + 1}
               </span>
               <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -1339,13 +1352,13 @@ export const FusionGrid: React.FC = () => {
   const templateItems: TemplateItem[] = templates;
   const documentItems: DocumentItem[] = useMemo(() => {
     if (!selectedDocsetRecord) return [];
-    return selectedDocsetRecord.files.map((file) => ({
-      id: `${selectedDocsetRecord.id}:${file.path}`,
+    return selectedDocsetRecord.files.map((file, index) => ({
+      id: `${selectedDocsetRecord.id}:${file.fileId || `${file.filename}:${index}`}`,
       name: file.filename,
       type: file.type as DocumentType,
       size: file.size,
       uploadTime: selectedDocsetRecord.uploadTime,
-      path: file.path,
+      fileId: file.fileId ?? null,
       docsetId: selectedDocsetRecord.id,
     }));
   }, [selectedDocsetRecord]);
@@ -1364,7 +1377,8 @@ export const FusionGrid: React.FC = () => {
         docsetLabel: task.docsetLabel,
         filled: task.filled,
         total: task.total,
-        outputFilename: task.outputFilename,
+        outputFileId: task.outputFileId,
+        outputName: task.outputName,
         error: task.error,
       })),
     [tasks],
@@ -1562,7 +1576,7 @@ export const FusionGrid: React.FC = () => {
         uploadTime: nowText(),
         files: response.files.map((file) => ({
           filename: file.filename,
-          path: file.path,
+          fileId: file.file_id ?? null,
           size: sizeByName.get(file.filename) ?? "未知大小",
           type: getDocumentType(file.filename) as FusionDocumentType,
         })),
@@ -1585,7 +1599,7 @@ export const FusionGrid: React.FC = () => {
   };
 
   const handleRequirementsChange = (
-    event: React.ChangeEvent<HTMLTextAreaElement>,
+    event: React.ChangeEvent<HTMLInputElement>,
   ) => {
     const nextValue = event.target.value;
     setGridState((current) => ({ ...current, draftRequirements: nextValue }));
@@ -1638,7 +1652,8 @@ export const FusionGrid: React.FC = () => {
           filled: 0,
           total: templateForRun.fields.length,
           fill_rate: 0,
-          output_filename: null,
+          output_file_id: null,
+          output_name: null,
           error: null,
         };
       }
@@ -1656,7 +1671,8 @@ export const FusionGrid: React.FC = () => {
         templateName: templateForRun.name,
         docsetId: docsetForRun.id,
         docsetLabel: `${docsetForRun.count} 个文件`,
-        outputFilename: status.output_filename ?? null,
+        outputFileId: status.output_file_id ?? null,
+        outputName: status.output_name ?? null,
         error: status.error ?? null,
       };
 
@@ -1809,24 +1825,18 @@ export const FusionGrid: React.FC = () => {
     }
   };
 
-  const loadTextPreview = async (path: string, fallbackContent: string) => {
-    const response = await fetch(module3DocumentPreviewUrl(path));
-    if (response.ok) {
-      const content = await response.text();
-      setPreviewSheets(null);
-      setPreviewContent(content);
-      return;
-    }
+  const loadTextPreview = async (fileId: string, fallbackContent: string) => {
+    const content = await fetchModule3DocumentPreviewText(fileId);
     setPreviewSheets(null);
-    setPreviewContent(fallbackContent);
+    setPreviewContent(content || fallbackContent);
   };
 
   const loadPreviewContent = async ({
-    path,
+    fileId,
     type,
     fallbackContent,
   }: {
-    path: string;
+    fileId: string;
     type: DocumentType;
     fallbackContent: string;
   }) => {
@@ -1835,7 +1845,7 @@ export const FusionGrid: React.FC = () => {
       setPreviewContent("");
       return;
     }
-    await loadTextPreview(path, fallbackContent);
+    await loadTextPreview(fileId, fallbackContent);
   };
 
   const handlePreviewTaskOutput = async (task: TaskItem) => {
@@ -1846,32 +1856,54 @@ export const FusionGrid: React.FC = () => {
       return;
     }
 
-    if (!task.outputFilename) {
-      setErrorMessage("该任务暂无输出文件");
+    let outputFileId = task.outputFileId ?? null;
+    let outputNameFromStatus = task.outputName ?? null;
+
+    if (!outputFileId) {
+      try {
+        const latestStatus = await fetchModule3RunStatus(task.id);
+        outputFileId = latestStatus.output_file_id ?? null;
+        outputNameFromStatus = latestStatus.output_name ?? outputNameFromStatus;
+        setGridState((current) => ({
+          ...current,
+          tasks: current.tasks.map((item) =>
+            item.id === task.id ? updateTaskFromStatus(item, latestStatus) : item,
+          ),
+        }));
+      } catch {
+        // Keep local values and show explicit error below if file_id remains missing.
+      }
+    }
+
+    if (!outputFileId) {
+      setErrorMessage("该任务暂无可预览输出（缺少 file_id，请先刷新任务）");
       return;
     }
 
+    const outputName =
+      String(outputNameFromStatus || "").trim() ||
+      getTaskOutputName(task);
+    const outputType = getDocumentType(outputName);
     setPreviewDocument({
       id: task.id,
-      name: basename(task.outputFilename),
-      type: getDocumentType(task.outputFilename),
+      name: outputName,
+      type: outputType,
       size: "未知",
       uploadTime: task.createdAt,
-      path: task.outputFilename,
+      fileId: outputFileId,
       docsetId: task.docsetId,
     });
     setIsPreviewLoading(true);
     setPreviewContent("");
     setPreviewSheets(null);
 
-    const outputType = getDocumentType(task.outputFilename);
     const fallbackContent =
-      `文件路径: ${task.outputFilename}\n文件名: ${basename(task.outputFilename)}\n\n` +
+      `file_id: ${outputFileId}\n文件名: ${outputName}\n\n` +
       "（预览功能需要后端支持文件内容读取接口）";
 
     try {
       await loadPreviewContent({
-        path: task.outputFilename,
+        fileId: outputFileId,
         type: outputType,
         fallbackContent,
       });
@@ -1885,115 +1917,121 @@ export const FusionGrid: React.FC = () => {
 
   // 模板上传下拉内容
   const templateDropdownContent = (
-    <div className="p-4 w-96">
-      <button
-        type="button"
-        onClick={() => templateInputRef.current?.click()}
-        className="group w-full rounded-xl border-2 border-dashed border-slate-300 py-5 px-4 text-center transition-all hover:border-blue-500 hover:bg-blue-50/30 dark:border-slate-600 dark:hover:border-blue-500 dark:hover:bg-blue-900/10 mb-3"
-      >
-        <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 transition-colors group-hover:bg-blue-100 dark:bg-slate-800 dark:group-hover:bg-blue-900/40">
-          {isUploadingTemplate ? (
-            <Loader2
-              size={28}
-              className="animate-spin text-slate-400 transition-colors group-hover:text-blue-600 dark:text-slate-500 dark:group-hover:text-blue-400"
-            />
-          ) : (
-            <UploadCloud
-              size={28}
-              className="text-slate-400 transition-colors group-hover:text-blue-600 dark:text-slate-500 dark:group-hover:text-blue-400"
-            />
-          )}
-        </div>
-        <p className="text-sm font-bold text-slate-600 transition-colors group-hover:text-blue-600 dark:text-slate-300 dark:group-hover:text-blue-400 mb-1.5">
-          {isUploadingTemplate ? "上传中..." : "点击上传模板"}
-        </p>
-        <p className="text-[11px] text-slate-400 mb-1">支持 XLSX, DOCX</p>
-        <p className="text-[10px] text-slate-400/80">每次最多上传 1 个文件</p>
-      </button>
+    <div className="p-3 w-[340px] flex flex-col gap-2">
+      {templateItems.length === 0 ? (
+        <button
+          type="button"
+          onClick={() => templateInputRef.current?.click()}
+          className="group w-full rounded-[16px] border border-dashed border-slate-300 py-6 px-4 text-center transition-all hover:border-blue-500 hover:bg-blue-50/30 dark:border-white/[0.1] dark:bg-white/[0.02] dark:hover:border-blue-500 dark:hover:bg-blue-500/10"
+        >
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm border border-slate-200/50 transition-colors group-hover:border-blue-200 dark:bg-white/[0.04] dark:border-white/[0.05] dark:group-hover:border-blue-500/30">
+            {isUploadingTemplate ? (
+              <Loader2
+                size={22}
+                className="animate-spin text-slate-400 transition-colors group-hover:text-blue-500 dark:text-slate-500 dark:group-hover:text-blue-400"
+              />
+            ) : (
+              <UploadCloud
+                size={22}
+                className="text-slate-400 transition-colors group-hover:text-blue-500 dark:text-slate-500 dark:group-hover:text-blue-400"
+              />
+            )}
+          </div>
+          <p className="text-[13px] font-medium text-slate-700 transition-colors group-hover:text-blue-600 dark:text-slate-300 dark:group-hover:text-blue-400 mb-1">
+            {isUploadingTemplate ? "上传中..." : "点击或拖拽上传模板"}
+          </p>
+          <p className="text-[11px] text-slate-400">支持 XLSX, DOCX</p>
+        </button>
+      ) : null}
 
       {/* 模板列表 */}
-      <div className="h-[280px] overflow-auto custom-scrollbar flex flex-col gap-1">
-        {templateItems.length === 0 ? (
-          <div className="flex-1 rounded border border-dashed border-slate-300 flex items-center justify-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
-            尚未上传模板
-          </div>
-        ) : (
-          templateItems.map((tpl) => (
-            <div
-              key={tpl.id}
-              onClick={() =>
-                setGridState((current) => ({
-                  ...current,
-                  selectedTemplateId: tpl.id,
-                }))
-              }
-              className={cn(
-                "flex items-center justify-between p-1.5 rounded cursor-pointer transition-colors text-xs",
-                selectedTemplateId === tpl.id
-                  ? "bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30"
-                  : "hover:bg-slate-50 dark:hover:bg-slate-800",
-              )}
-            >
-              <div className="flex items-center gap-1.5 min-w-0">
-                {tpl.name.toLowerCase().endsWith(".docx") ||
-                tpl.name.toLowerCase().endsWith(".doc") ? (
-                  <img
-                    src={wordIconUrl}
-                    alt="Word"
-                    className="w-4 h-4 object-contain shrink-0"
-                  />
-                ) : (
-                  <img
-                    src={excelIconUrl}
-                    alt="Excel"
-                    className="w-4 h-4 object-contain shrink-0"
-                  />
+      {templateItems.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {templateItems.map((tpl) => (
+            <div key={tpl.id} className="flex flex-col gap-1.5">
+              <div
+                onClick={() =>
+                  setGridState((current) => ({
+                    ...current,
+                    selectedTemplateId: tpl.id,
+                  }))
+                }
+                className={cn(
+                  "flex flex-col p-2.5 rounded-[16px] cursor-pointer transition-all border",
+                  selectedTemplateId === tpl.id
+                    ? "bg-white dark:bg-white/[0.04] border-blue-200/60 dark:border-blue-500/20 shadow-sm"
+                    : "bg-slate-50 border-transparent hover:bg-slate-100/50 dark:bg-white/[0.01] dark:hover:bg-white/[0.02]"
                 )}
-                <div className="min-w-0">
-                  <p className="truncate font-medium text-slate-900 dark:text-white text-xs">
-                    {tpl.name}
-                  </p>
-                  <p className="text-[10px] text-slate-500">{tpl.size}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleRemoveTemplate(tpl.id);
-                }}
-                className="p-0.5 hover:bg-red-100 dark:hover:bg-red-500/20 rounded text-slate-400 hover:text-red-600 transition-colors"
               >
-                <X size={12} />
-              </button>
-            </div>
-          ))
-        )}
-      </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    {tpl.name.toLowerCase().endsWith(".docx") ||
+                    tpl.name.toLowerCase().endsWith(".doc") ? (
+                      <img
+                        src={wordIconUrl}
+                        alt="Word"
+                        className="w-6 h-6 object-contain shrink-0"
+                      />
+                    ) : (
+                      <img
+                        src={excelIconUrl}
+                        alt="Excel"
+                        className="w-6 h-6 object-contain shrink-0"
+                      />
+                    )}
+                    <div className="min-w-0 flex flex-col gap-0.5">
+                      <p className="truncate font-medium text-slate-800 dark:text-slate-200 text-[13px] leading-none">
+                        {tpl.name}
+                      </p>
+                      <p className="text-[11px] text-slate-400 dark:text-slate-500 leading-none">
+                        {tpl.size}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0 ml-2">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        templateInputRef.current?.click();
+                      }}
+                      className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700/50 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+                      title="替换模板"
+                    >
+                      <UploadCloud size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleRemoveTemplate(tpl.id);
+                      }}
+                      className="p-1.5 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg text-slate-400 hover:text-red-500 transition-colors"
+                      title="删除"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
 
-      {/* 模板解析结构 */}
-      {selectedTemplateRecord && (
-        <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-          <h4 className="text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-            字段{" "}
-            <span className="text-[10px] font-normal text-slate-500">
-              ({selectedTemplateRecord.fields.length}个)
-            </span>
-          </h4>
-          <div className="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5">
-            <div className="h-8 overflow-y-auto custom-scrollbar">
-              <div className="flex flex-wrap gap-1">
-                {selectedTemplateRecord.fields.map((field, idx) => (
-                  <span
-                    key={`${field.key}-${idx}`}
-                    className="text-[10px] text-slate-500 dark:text-slate-400"
-                  >
-                    {field.header}
-                  </span>
-                ))}
+                {/* 模板解析结构 */}
+                {selectedTemplateRecord && selectedTemplateRecord.id === tpl.id && (
+                  <div className="mt-2.5 pt-2.5 border-t border-slate-100 dark:border-white/[0.05]">
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedTemplateRecord.fields.map((field, idx) => (
+                        <span
+                          key={`${field.key}-${idx}`}
+                          className="inline-flex items-center rounded-[6px] bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400"
+                        >
+                          {field.header}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
+          ))}
         </div>
       )}
     </div>
@@ -2029,115 +2067,134 @@ export const FusionGrid: React.FC = () => {
   };
 
   const docsetDropdownContent = (
-    <div className="p-4 w-96">
-      <div
-        onClick={() => docsetInputRef.current?.click()}
-        onDragOver={handleDocsetDragOver}
-        onDragLeave={handleDocsetDragLeave}
-        onDrop={handleDocsetDrop}
-        className={cn(
-          "group w-full rounded-xl border-2 border-dashed py-5 px-4 text-center transition-all cursor-pointer mb-3",
-          isDraggingDocset
-            ? "border-blue-500 bg-blue-50/50 dark:border-blue-400 dark:bg-blue-900/10"
-            : "border-slate-300 hover:border-blue-500 hover:bg-blue-50/30 dark:border-slate-600 dark:hover:border-blue-500 dark:hover:bg-blue-900/10",
-        )}
-      >
+    <div className="p-3 w-[340px] flex flex-col gap-2">
+      {documentItems.length === 0 ? (
         <div
+          onClick={() => docsetInputRef.current?.click()}
+          onDragOver={handleDocsetDragOver}
+          onDragLeave={handleDocsetDragLeave}
+          onDrop={handleDocsetDrop}
           className={cn(
-            "mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full transition-colors",
+            "group w-full rounded-[16px] border border-dashed py-6 px-4 text-center transition-all cursor-pointer",
             isDraggingDocset
-              ? "bg-blue-100 dark:bg-blue-900/40"
-              : "bg-slate-100 group-hover:bg-blue-100 dark:bg-slate-800 dark:group-hover:bg-blue-900/40",
+              ? "border-blue-500 bg-blue-50/50 dark:border-blue-400 dark:bg-blue-500/10"
+              : "border-slate-300 hover:border-blue-500 hover:bg-blue-50/30 dark:border-white/[0.1] dark:bg-white/[0.02] dark:hover:border-blue-500 dark:hover:bg-blue-500/10"
           )}
         >
-          {isUploadingDocset ? (
-            <Loader2
-              size={28}
-              className={cn(
-                "animate-spin transition-colors",
-                isDraggingDocset
-                  ? "text-blue-600 dark:text-blue-400"
-                  : "text-slate-400 group-hover:text-blue-600 dark:text-slate-500 dark:group-hover:text-blue-400",
-              )}
-            />
-          ) : (
-            <UploadCloud
-              size={28}
-              className={cn(
-                "transition-colors",
-                isDraggingDocset
-                  ? "text-blue-600 dark:text-blue-400"
-                  : "text-slate-400 group-hover:text-blue-600 dark:text-slate-500 dark:group-hover:text-blue-400",
-              )}
-            />
-          )}
-        </div>
-        <p
-          className={cn(
-            "text-sm font-bold transition-colors mb-1.5",
-            isDraggingDocset
-              ? "text-blue-600 dark:text-blue-400"
-              : "text-slate-600 group-hover:text-blue-600 dark:text-slate-300 dark:group-hover:text-blue-400",
-          )}
-        >
-          {isUploadingDocset
-            ? "上传中..."
-            : isDraggingDocset
-              ? "松开以上传"
-              : "点击或拖入上传文档"}
-        </p>
-        <p className="text-[11px] text-slate-400 mb-1">
-          支持 DOCX, XLSX, TXT, MD
-        </p>
-        <p className="text-[10px] text-slate-400/80">每次最多上传 5 个文件</p>
-      </div>
-
-      <div className="flex items-center justify-between gap-1 rounded border border-slate-200 px-2 py-1.5 text-[10px] text-slate-600 dark:border-slate-700 dark:text-slate-300 mb-2">
-        <div className="flex min-w-0 items-center gap-1">
-          <FolderOpen size={12} className="shrink-0 text-blue-500" />
-          <span className="truncate">
-            {selectedDocsetRecord
-              ? `文档集${docsets.length - docsets.findIndex((d) => d.id === selectedDocsetRecord.id)}(${selectedDocsetRecord.count}个)`
-              : "未上传"}
-          </span>
-        </div>
-        {docsets.length > 1 ? (
-          <div className="relative shrink-0">
-            <select
-              value={selectedDocsetId ?? ""}
-              onChange={(event) =>
-                setGridState((current) => ({
-                  ...current,
-                  selectedDocsetId: event.target.value || null,
-                }))
-              }
-              className="appearance-none rounded border border-slate-200 bg-white px-1 py-0.5 pr-4 text-[10px] text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-            >
-              {docsets.map((docset, index) => (
-                <option key={docset.id} value={docset.id}>
-                  文档集{docsets.length - index}
-                </option>
-              ))}
-            </select>
-            <ChevronDown
-              size={10}
-              className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-slate-400"
-            />
+          <div
+            className={cn(
+              "mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm border border-slate-200/50 transition-colors dark:bg-white/[0.04] dark:border-white/[0.05]",
+              isDraggingDocset
+                ? "border-blue-200 dark:border-blue-500/30"
+                : "group-hover:border-blue-200 dark:group-hover:border-blue-500/30"
+            )}
+          >
+            {isUploadingDocset ? (
+              <Loader2
+                size={22}
+                className={cn(
+                  "animate-spin transition-colors",
+                  isDraggingDocset
+                    ? "text-blue-500 dark:text-blue-400"
+                    : "text-slate-400 group-hover:text-blue-500 dark:text-slate-500 dark:group-hover:text-blue-400"
+                )}
+              />
+            ) : (
+              <UploadCloud
+                size={22}
+                className={cn(
+                  "transition-colors",
+                  isDraggingDocset
+                    ? "text-blue-500 dark:text-blue-400"
+                    : "text-slate-400 group-hover:text-blue-500 dark:text-slate-500 dark:group-hover:text-blue-400"
+                )}
+              />
+            )}
           </div>
-        ) : null}
-      </div>
+          <p
+            className={cn(
+              "text-[13px] font-medium transition-colors mb-1",
+              isDraggingDocset
+                ? "text-blue-600 dark:text-blue-400"
+                : "text-slate-700 group-hover:text-blue-600 dark:text-slate-300 dark:group-hover:text-blue-400"
+            )}
+          >
+            {isUploadingDocset
+              ? "上传中..."
+              : isDraggingDocset
+                ? "松开以上传"
+                : "点击或拖入上传文档"}
+          </p>
+          <p className="text-[11px] text-slate-400">支持 DOCX, XLSX, TXT, MD</p>
+          <p className="text-[10px] text-slate-400/80 mt-0.5">每次最多 5 个文件</p>
+        </div>
+      ) : null}
 
-      <div className="h-[280px] overflow-hidden">
-        <VerticalSlidingSelector
-          items={documentItems}
-          selectedId={selectedDocument}
-          onSelect={setSelectedDocument}
-          tone="purple"
-          emptyIcon={FolderOpen}
-          emptyTitle="无文档"
-          renderActions={(doc) => null}
-        />
-      </div>
+      {/* 当有文档时，显示紧凑的头部控制区 */}
+      {documentItems.length > 0 && (
+        <div className="flex items-center justify-between gap-1 rounded-[12px] border border-slate-200 px-2.5 py-2 text-[11px] text-slate-600 dark:border-white/[0.05] dark:bg-white/[0.02] dark:text-slate-300 shadow-sm bg-white dark:bg-[#0B1120]">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <FolderOpen size={14} className="shrink-0 text-blue-500" />
+            <span className="truncate font-medium">
+              {selectedDocsetRecord
+                ? `文档集${docsets.length - docsets.findIndex((d) => d.id === selectedDocsetRecord.id)}(${selectedDocsetRecord.count}个)`
+                : "未上传"}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {docsets.length > 1 ? (
+              <div className="relative shrink-0">
+                <select
+                  value={selectedDocsetId ?? ""}
+                  onChange={(event) =>
+                    setGridState((current) => ({
+                      ...current,
+                      selectedDocsetId: event.target.value || null,
+                    }))
+                  }
+                  className="appearance-none rounded-[6px] border border-slate-200 bg-slate-50 px-2 py-0.5 pr-5 text-[10px] font-medium text-slate-700 dark:border-white/[0.1] dark:bg-white/[0.05] dark:text-slate-200 transition-colors hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  {docsets.map((docset, index) => (
+                    <option key={docset.id} value={docset.id}>
+                      文档集{docsets.length - index}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  size={10}
+                  className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+              </div>
+            ) : null}
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                docsetInputRef.current?.click();
+              }}
+              className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700/50 rounded-[6px] text-blue-500 hover:text-blue-600 transition-colors flex items-center gap-1 bg-blue-50 dark:bg-blue-500/10"
+              title="追加文档"
+            >
+              <UploadCloud size={12} />
+              <span className="text-[10px] font-medium pr-0.5">追加</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {documentItems.length > 0 && (
+        <div className="h-[280px] overflow-hidden rounded-[16px] border border-slate-100 dark:border-white/[0.05] bg-slate-50/50 dark:bg-white/[0.01]">
+          <VerticalSlidingSelector
+            items={documentItems}
+            selectedId={selectedDocument}
+            onSelect={setSelectedDocument}
+            tone="purple"
+            emptyIcon={FolderOpen}
+            emptyTitle="无文档"
+            renderActions={(doc) => null}
+          />
+        </div>
+      )}
     </div>
   );
 
@@ -2186,23 +2243,23 @@ export const FusionGrid: React.FC = () => {
         typeof document !== "undefined" &&
         createPortal(
           <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-            <div className="relative w-full max-w-lg rounded-2xl bg-white shadow-2xl dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden">
-              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 px-6 py-4 bg-slate-50/50 dark:bg-slate-800/50">
-                <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <HelpCircle size={18} className="text-blue-500" />
+            <div className="relative w-full max-w-lg rounded-2xl bg-white shadow-[0_12px_40px_rgba(0,0,0,0.12)] dark:bg-[#0B1120] border border-slate-200/60 dark:border-white/[0.1] dark:shadow-[0_12px_40px_rgba(0,0,0,0.4)] flex flex-col overflow-hidden">
+              <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/[0.05] px-6 py-4 bg-transparent">
+                <h3 className="font-medium text-slate-800 dark:text-slate-200 flex items-center gap-2 text-[14px]">
+                  <HelpCircle size={16} className="text-slate-500" />
                   多源数据融合 - 使用说明
                 </h3>
                 <button
                   onClick={() => setIsHelpModalOpen(false)}
-                  className="rounded-full p-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300 transition-colors"
+                  className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/[0.05] dark:hover:text-slate-300 transition-colors"
                 >
-                  <X size={18} />
+                  <X size={16} />
                 </button>
               </div>
               <div className="px-6 py-6 overflow-y-auto">
-                <ol className="space-y-4 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                <ol className="space-y-5 text-[14px] leading-relaxed text-slate-600 dark:text-slate-300">
                   <li className="flex gap-3">
-                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-bold text-xs">
+                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 font-bold text-xs shadow-sm">
                       1
                     </span>
                     <div>
@@ -2214,7 +2271,7 @@ export const FusionGrid: React.FC = () => {
                     </div>
                   </li>
                   <li className="flex gap-3">
-                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-bold text-xs">
+                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 font-bold text-xs shadow-sm">
                       2
                     </span>
                     <div>
@@ -2226,7 +2283,7 @@ export const FusionGrid: React.FC = () => {
                     </div>
                   </li>
                   <li className="flex gap-3">
-                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-bold text-xs">
+                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 font-bold text-xs shadow-sm">
                       3
                     </span>
                     <div>
@@ -2237,7 +2294,7 @@ export const FusionGrid: React.FC = () => {
                     </div>
                   </li>
                   <li className="flex gap-3">
-                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-bold text-xs">
+                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 font-bold text-xs shadow-sm">
                       4
                     </span>
                     <div>
@@ -2248,7 +2305,7 @@ export const FusionGrid: React.FC = () => {
                     </div>
                   </li>
                   <li className="flex gap-3">
-                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-bold text-xs">
+                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 font-bold text-xs shadow-sm">
                       5
                     </span>
                     <div>
@@ -2259,7 +2316,7 @@ export const FusionGrid: React.FC = () => {
                     </div>
                   </li>
                   <li className="flex gap-3">
-                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 font-bold text-xs">
+                    <span className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 font-bold text-xs shadow-sm">
                       6
                     </span>
                     <div>
@@ -2271,14 +2328,14 @@ export const FusionGrid: React.FC = () => {
                   </li>
                 </ol>
               </div>
-              <div className="border-t border-slate-100 dark:border-slate-800 px-6 py-4 bg-slate-50 dark:bg-slate-900/50 flex justify-end">
-                <button
-                  onClick={() => setIsHelpModalOpen(false)}
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow-sm transition-colors"
-                >
-                  我知道了
-                </button>
-              </div>
+              <div className="border-t border-slate-200 dark:border-white/[0.05] px-6 py-4 bg-slate-50/50 dark:bg-[#0B1120] flex justify-end">
+                  <button
+                    onClick={() => setIsHelpModalOpen(false)}
+                    className="px-5 py-2 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-700 hover:to-blue-600 text-white text-[13px] font-medium rounded-lg shadow-sm hover:shadow transition-all"
+                  >
+                    我知道了
+                  </button>
+                </div>
             </div>
           </div>,
           document.body,
@@ -2300,19 +2357,26 @@ export const FusionGrid: React.FC = () => {
         onChange={handleDocsetUpload}
       />
 
-      <div className="flex min-w-0 flex-col justify-between gap-3 shrink-0 bg-[rgb(246,250,253)] dark:bg-[#0B1120]/90 backdrop-blur-xl border-b border-slate-200/60 dark:border-slate-700/60 px-4 lg:px-8 py-3 z-10 xl:flex-row xl:items-center xl:gap-4">
-        <div className="flex min-w-0 items-center justify-between w-full xl:w-auto">
-          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-            <div className="w-1.5 h-5 sm:h-6 bg-gradient-to-b from-blue-500 to-blue-700 rounded-full"></div>
-            <h1 className="truncate text-xl sm:text-2xl font-bold text-slate-900 dark:text-white font-['Microsoft_YaHei'] tracking-tight">
-              多源数据融合
-            </h1>
+      <motion.section
+        initial={{ opacity: 0, y: -12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+        className="relative z-10 shrink-0 bg-[#fbfcfd]/90 backdrop-blur-xl border-b border-slate-200/40 shadow-[0_2px_12px_rgba(0,0,0,0.03)] dark:bg-slate-950/95 dark:border-white/5 dark:shadow-[0_4px_16px_rgba(0,0,0,0.4)] pl-4 pr-0 py-2.5"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="min-w-[210px] flex-1">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="h-4 w-1 rounded-full bg-blue-600" />
+              <h1 className="truncate font-['Microsoft_YaHei'] text-[18px] font-bold tracking-tight text-slate-900 dark:text-white sm:text-[19px]">
+                多源数据融合
+              </h1>
+            </div>
+          </div>
+          <div className="flex min-w-0 items-center justify-end overflow-hidden pr-4 sm:pr-5 lg:pr-6">
+            <SegmentedControl options={segmentedOptions} />
           </div>
         </div>
-        <div className="w-full min-w-0 xl:w-auto overflow-hidden">
-          <SegmentedControl options={segmentedOptions} />
-        </div>
-      </div>
+      </motion.section>
 
       {errorMessage ? (
         <div className="shrink-0 border-b border-red-200 bg-red-50 px-6 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300">
@@ -2329,7 +2393,7 @@ export const FusionGrid: React.FC = () => {
         style={{ gridTemplateColumns: `${leftPanelWidth}% minmax(0, 1fr)` }}
       >
         {/* 左侧：任务记录 */}
-        <div className="box-border flex flex-col h-full min-h-0 min-w-0 border-r border-slate-200 dark:border-slate-800 bg-zinc-50/50 dark:bg-[#0B1120] relative">
+        <div className="box-border flex flex-col h-full min-h-0 min-w-0 border-r border-slate-200 dark:border-white/[0.05] bg-white dark:bg-[#0B1120] relative">
           {/* 拖拽手柄 */}
           <div
             className="absolute -right-1 top-0 bottom-0 w-2 cursor-ew-resize z-10 group"
@@ -2352,46 +2416,53 @@ export const FusionGrid: React.FC = () => {
           </div>
           <div className="flex flex-col h-full min-h-0 w-full">
             {/* 任务记录 */}
-            <div className="flex flex-col flex-1 min-h-0 bg-white dark:bg-slate-900 w-full">
-              <div className="flex items-center justify-between shrink-0 shadow-[0_2px_10px_rgba(0,0,0,0.05)] border-b border-slate-100 dark:border-slate-800 p-4 mb-2 z-10 bg-white dark:bg-slate-900 w-full">
-                <h3 className="font-bold text-slate-900 dark:text-white font-['Microsoft_YaHei'] flex items-center gap-2 text-[15px]">
-                  <HistoryIcon size={18} className="text-[#1296db]" />
+            <div className="flex flex-col flex-1 min-h-0 bg-transparent w-full">
+              <div className="flex items-center justify-between shrink-0 px-4 py-2 border-b border-slate-200 dark:border-white/[0.05] z-10 w-full bg-slate-50/30 dark:bg-[#0B1120]">
+                <h3 className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 text-[12px] uppercase tracking-wider">
+                  <HistoryIcon size={14} className="text-blue-500" />
                   任务记录
                 </h3>
               </div>
-              <div className="px-4 flex flex-col flex-1 min-h-0 pb-4 py-2">
-                <div className="mb-2 grid grid-cols-2 gap-1 shrink-0">
-                  <div className="rounded bg-sky-50/60 p-1.5 text-center dark:bg-sky-500/10">
-                    <div className="text-sm font-bold text-sky-600 dark:text-sky-400">
-                      {stats.total}
+              <div className="flex flex-col flex-1 min-h-0">
+                <div className="px-4 py-3 shrink-0 border-b border-slate-200 dark:border-white/[0.05]">
+                  <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 dark:bg-white/[0.04] rounded-lg">
+                    <div className="rounded-md bg-white shadow-sm dark:bg-white/[0.06] p-1.5 text-center flex items-baseline justify-center gap-1 transition-all">
+                      <div className="text-[13px] font-bold text-slate-700 dark:text-slate-200">
+                        {stats.total}
+                      </div>
+                      <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                        总任务
+                      </div>
                     </div>
-                    <div className="text-[10px] text-sky-600 dark:text-sky-400">
-                      总任务
-                    </div>
-                  </div>
-                  <div className="rounded bg-indigo-50/60 p-1.5 text-center dark:bg-indigo-500/10">
-                    <div className="text-sm font-bold text-indigo-600 dark:text-indigo-400 ">
-                      {stats.done}
-                    </div>
-                    <div className="text-[10px] text-indigo-600 dark:text-indigo-400">
-                      已完成
+                    <div className="rounded-md hover:bg-white/50 dark:hover:bg-white/[0.02] p-1.5 text-center flex items-baseline justify-center gap-1 transition-all cursor-pointer">
+                      <div className="text-[13px] font-bold text-blue-600 dark:text-blue-400">
+                        {stats.done}
+                      </div>
+                      <div className="text-[10px] font-medium text-blue-600/80 dark:text-blue-400/80">
+                        已完成
+                      </div>
                     </div>
                   </div>
                 </div>
-                <div className="flex-1 overflow-auto custom-scrollbar space-y-2">
+                <div className="flex-1 overflow-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10">
                   {taskItems.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                      暂无任务记录
+                    <div className="flex flex-col items-center justify-center h-48 bg-transparent">
+                      <div className="flex items-center justify-center w-14 h-14 rounded-full bg-slate-50 dark:bg-white/[0.02] mb-3 border border-slate-100 dark:border-white/[0.05]">
+                        <HistoryIcon size={24} className="text-slate-300 dark:text-slate-600" />
+                      </div>
+                      <span className="text-[13px] font-medium text-slate-500 dark:text-slate-400">
+                        暂无任务记录
+                      </span>
                     </div>
                   ) : (
                     taskItems.map((task) => (
                       <div
                         key={task.id}
                         className={cn(
-                          "p-3 rounded-xl transition-all duration-300 cursor-pointer",
+                          "group p-4 transition-all duration-200 cursor-pointer border-b border-slate-200 dark:border-white/[0.05] last:border-b-0",
                           selectedTaskId === task.id
-                            ? "bg-blue-50/50 dark:bg-blue-900/20"
-                            : "bg-white border-transparent hover:bg-slate-50/80 dark:bg-slate-900 dark:hover:bg-slate-800/50",
+                            ? "bg-blue-50/50 dark:bg-blue-500/10"
+                            : "bg-white hover:bg-slate-50 dark:bg-[#0B1120] dark:hover:bg-white/[0.02]",
                         )}
                         onClick={() =>
                           setGridState((current) => ({
@@ -2400,11 +2471,10 @@ export const FusionGrid: React.FC = () => {
                           }))
                         }
                       >
-                        <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-start justify-between gap-3">
                           {/* 左侧：文件大图标 */}
-                          <div className="flex-shrink-0">
-                            {task.outputFilename &&
-                            getDocumentType(task.outputFilename) === "docx" ? (
+                          <div className="flex-shrink-0 mt-0.5">
+                            {getDocumentType(getTaskOutputName(task)) === "docx" ? (
                               <img
                                 src={wordIconUrl}
                                 alt="Word"
@@ -2422,9 +2492,7 @@ export const FusionGrid: React.FC = () => {
                           {/* 中间：标题与状态 */}
                           <div className="flex-1 min-w-0 flex flex-col justify-center">
                             <span className="truncate font-semibold text-slate-800 dark:text-slate-100 text-sm mb-1.5">
-                              {task.outputFilename
-                                ? basename(task.outputFilename)
-                                : basename(task.templateName)}
+                              {getTaskOutputName(task)}
                             </span>
                             <div className="flex items-center gap-1.5">
                               <span
@@ -2460,8 +2528,8 @@ export const FusionGrid: React.FC = () => {
                           </div>
 
                           {/* 右侧：操作按钮及时间 */}
-                          <div className="flex flex-col items-end gap-2 shrink-0">
-                            <div className="flex items-center gap-0.5">
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                               {task.status === "running" ? (
                                 <button
                                   type="button"
@@ -2471,11 +2539,11 @@ export const FusionGrid: React.FC = () => {
                                   }}
                                   disabled={cancellingTaskIds.includes(task.id)}
                                   className={cn(
-                                    "p-1.5 rounded transition-colors",
-                                    cancellingTaskIds.includes(task.id)
-                                      ? "cursor-not-allowed text-amber-500"
-                                      : "text-slate-400 hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-500/20",
-                                  )}
+                                      "p-1.5 rounded-md transition-colors",
+                                      cancellingTaskIds.includes(task.id)
+                                        ? "cursor-not-allowed text-amber-500"
+                                        : "text-slate-400 hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-500/20",
+                                    )}
                                   title="取消任务"
                                 >
                                   {cancellingTaskIds.includes(task.id) ? (
@@ -2497,11 +2565,11 @@ export const FusionGrid: React.FC = () => {
                                       handlePreviewTaskOutput(task);
                                     }}
                                     className={cn(
-                                      "p-1.5 rounded transition-colors",
-                                      previewDocument?.id === task.id
-                                        ? "bg-blue-100 text-blue-600 dark:bg-blue-500/30 dark:text-blue-400"
-                                        : "text-slate-400 hover:bg-blue-100 hover:text-blue-600 dark:hover:bg-blue-500/20",
-                                    )}
+                                        "p-1.5 rounded-md transition-colors",
+                                        previewDocument?.id === task.id
+                                          ? "bg-blue-100 text-blue-600 dark:bg-blue-500/30 dark:text-blue-400"
+                                          : "text-slate-400 hover:bg-blue-100 hover:text-blue-600 dark:hover:bg-blue-500/20",
+                                      )}
                                     title="预览"
                                   >
                                     <Eye size={14} />
@@ -2514,7 +2582,7 @@ export const FusionGrid: React.FC = () => {
                                         module3RunDownloadUrl(task.id),
                                       );
                                     }}
-                                    className="p-1.5 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 rounded text-slate-400 hover:text-emerald-600 transition-colors"
+                                    className="p-1.5 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 rounded-md text-slate-400 hover:text-emerald-600 transition-colors"
                                     title="下载"
                                   >
                                     <Download size={14} />
@@ -2527,7 +2595,7 @@ export const FusionGrid: React.FC = () => {
                                   event.stopPropagation();
                                   handleRemoveTask(task.id);
                                 }}
-                                className="p-1.5 hover:bg-red-100 dark:hover:bg-red-500/20 rounded text-slate-400 hover:text-red-600 transition-colors"
+                                className="p-1.5 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-md text-slate-400 hover:text-red-600 transition-colors"
                                 title="删除"
                               >
                                 <Trash2 size={14} />
@@ -2548,103 +2616,105 @@ export const FusionGrid: React.FC = () => {
         </div>
 
         {/* 右侧：用户要求 + 文件预览 */}
-        <div className="box-border flex min-w-0 flex-col h-full min-h-0 overflow-hidden bg-white dark:bg-[#111827]">
-          {/* 用户要求 独立头部 */}
-          <div className="flex items-center justify-between shrink-0 shadow-[0_2px_10px_rgba(0,0,0,0.05)] border-b border-slate-100 dark:border-slate-800 p-4 mb-2 z-10 bg-white dark:bg-slate-900 w-full">
-            <h3 className="font-bold text-slate-900 dark:text-white font-['Microsoft_YaHei'] flex items-center gap-2 text-[15px]">
-              <NeedIcon size={18} className="text-[#6ec1ec]" />
-              用户要求
-            </h3>
-          </div>
-
-          <div className="flex min-w-0 flex-col h-full min-h-0 overflow-hidden w-full">
-            <div className="mb-6 shrink-0 px-4 lg:px-6 py-2">
-              <div className="flex min-w-0 flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:gap-4">
-                <textarea
+        <div className="flex-1 flex min-w-0 flex-col h-full min-h-0 bg-white dark:bg-[#0B1120]">
+            {/* 顶部输入与操作区 (内联化) */}
+            <div className="shrink-0 border-b border-slate-200 dark:border-white/[0.05] px-4 py-2 flex flex-col gap-3 bg-slate-50/30 dark:bg-[#0B1120]">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <NeedIcon size={14} className="text-slate-500 dark:text-slate-400" />
+                    <h3 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                      用户要求
+                    </h3>
+                  </div>
+                  <div className="flex flex-1 items-center gap-3 min-w-0">
+                <input
+                  type="text"
                   value={draftRequirements}
                   onChange={handleRequirementsChange}
                   maxLength={600}
-                  rows={1}
-                  placeholder="请输入你对这次填充的要求。"
-                  className="min-w-0 flex-1 resize-none rounded-lg border border-slate-200 bg-neutral-50 shadow-[inset_0_1px_2px_rgba(0,0,0,0.02)] px-4 py-2 text-sm leading-6 text-slate-700 outline-none transition-colors placeholder:text-slate-400 focus:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                  placeholder="请输入你对这次填充的要求（选填）"
+                  className="flex-1 rounded-lg border border-slate-200 dark:border-white/[0.1] bg-slate-50/50 dark:bg-white/[0.02] px-3 h-[36px] text-[13px] text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-blue-500/50 focus:bg-white dark:focus:bg-white/[0.04] focus:ring-4 focus:ring-blue-500/10 dark:focus:ring-blue-500/20 dark:text-slate-200 shadow-sm"
                 />
                 <motion.button
                   type="button"
-                  whileTap={{ scale: 0.98 }}
+                  whileTap={{ scale: 0.97 }}
                   onClick={handleStartRun}
                   disabled={!canStartRun}
                   className={cn(
-                    "w-full shrink-0 flex items-center justify-center gap-2 rounded-lg px-6 h-[42px] text-sm font-semibold text-white transition-all 2xl:w-auto",
+                    "shrink-0 flex items-center justify-center gap-2 rounded-lg px-6 h-[36px] text-[13px] font-medium transition-all shadow-sm",
                     canStartRun
-                      ? "bg-gradient-to-b from-[#60a5fa] to-[#3b82f6] shadow-[0_1px_3px_rgba(59,130,246,0.2)] hover:bg-[#0030c2] dark:bg-blue-600"
-                      : "cursor-not-allowed bg-slate-300 text-slate-100 shadow-none dark:bg-slate-700 dark:text-slate-400",
+                      ? "bg-gradient-to-b from-blue-500 to-blue-600 text-white hover:from-blue-600 hover:to-blue-700 shadow-blue-500/20 ring-1 ring-inset ring-white/20"
+                      : "cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-white/[0.02] dark:text-slate-500 dark:border dark:border-white/[0.05]",
                   )}
                 >
                   {isRunning ? (
-                    <Loader2 size={8} className="animate-spin" />
+                    <Loader2 size={14} className="animate-spin" />
                   ) : null}
                   开始填充
                 </motion.button>
               </div>
             </div>
+          </div>
 
-            {/* 文件预览 */}
-            <div className="flex min-w-0 flex-col flex-1 min-h-0">
-              <div className="mb-4 shrink-0">
-                <h3 className="font-bold text-slate-900 dark:text-white font-['Microsoft_YaHei'] flex items-center gap-2 text-[15px]">
-                  <LookIcon size={18} className="text-[#6ec1ec]" />
-                  文件预览
-                </h3>
-              </div>
-              <div className="flex-1 min-h-0 min-w-0 overflow-hidden overscroll-none border border-slate-200 dark:border-slate-800 bg-neutral-50 shadow-[inset_0_1px_2px_rgba(0,0,0,0.02)] dark:bg-slate-950 rounded-xl">
-                {isPreviewLoading ? (
-                  <div className="h-full flex items-center justify-center">
-                    <div className="flex items-center gap-2 text-slate-500">
-                      <Loader2 size={20} className="animate-spin" />
-                      <span className="text-sm">正在加载预览...</span>
-                    </div>
+          {/* 文件预览区 */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="shrink-0 border-b border-slate-200 dark:border-white/[0.05] px-4 py-2 flex items-center gap-1.5 bg-slate-50/30 dark:bg-[#0B1120]">
+              <LookIcon size={14} className="text-slate-500 dark:text-slate-400" />
+              <h3 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                文件预览
+              </h3>
+            </div>
+            <div className="flex-1 min-h-0 bg-white dark:bg-[#0B1120] relative">
+              {isPreviewLoading ? (
+                <div className="h-full flex flex-col items-center justify-center space-y-4">
+                  <Loader2 size={24} className="animate-spin text-slate-400" />
+                  <div className="text-center">
+                    <p className="text-[13px] font-medium text-slate-600 dark:text-slate-300">正在加载预览</p>
+                    <p className="text-[12px] text-slate-400 mt-1">请稍候，正在为您准备文档内容</p>
                   </div>
-                ) : previewDocument ? (
-                  <div className="flex h-full min-w-0 flex-col overflow-hidden">
-                    <div className="min-h-0 min-w-0 flex-1 overflow-hidden relative">
-                      {previewDocument.type === "xlsx" ? (
-                        <LuckysheetPreview
-                          document={previewDocument}
-                          content={
-                            previewContent || "（文件内容为空或无法预览）"
-                          }
-                          sheets={previewSheets}
-                        />
-                      ) : previewDocument.type === "docx" ? (
-                        <Module3WordPreview
-                          document={previewDocument}
-                          fallbackContent={
-                            previewContent || "（文件内容为空或无法预览）"
-                          }
-                        />
-                      ) : (
-                        <SpreadsheetPreview
-                          document={previewDocument}
-                          content={
-                            previewContent || "（文件内容为空或无法预览）"
-                          }
-                          sheets={previewSheets}
-                        />
-                      )}
-                    </div>
+                </div>
+              ) : previewDocument ? (
+                <div className="flex h-full min-w-0 flex-col overflow-hidden bg-white dark:bg-[#0B1120]">
+                  <div className="min-h-0 min-w-0 flex-1 overflow-hidden relative">
+                    {previewDocument.type === "xlsx" ? (
+                      <LuckysheetPreview
+                        document={previewDocument}
+                        content={
+                          previewContent || "（文件内容为空或无法预览）"
+                        }
+                        sheets={previewSheets}
+                      />
+                    ) : previewDocument.type === "docx" ? (
+                      <Module3WordPreview
+                        document={previewDocument}
+                        fallbackContent={
+                          previewContent || "（文件内容为空或无法预览）"
+                        }
+                      />
+                    ) : (
+                      <SpreadsheetPreview
+                        document={previewDocument}
+                        content={
+                          previewContent || "（文件内容为空或无法预览）"
+                        }
+                        sheets={previewSheets}
+                      />
+                    )}
                   </div>
-                ) : (
-                  <div className="h-full flex items-center justify-center">
-                    <div className="text-center text-sm text-slate-500 dark:text-slate-400">
-                      <Eye size={32} className="mx-auto mb-2 text-slate-300" />
-                      <p>请在左侧"任务记录"中点击</p>
-                      <p className="text-xs mt-1">
-                        已完成任务的预览按钮查看生成文件
-                      </p>
-                    </div>
+                </div>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center space-y-4 bg-slate-50/30 dark:bg-white/[0.01]">
+                  <div className="flex items-center justify-center w-16 h-16 rounded-full bg-slate-100 dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05] shadow-sm">
+                    <Eye size={32} className="text-slate-400 dark:text-slate-600" />
                   </div>
-                )}
-              </div>
+                  <div className="text-center">
+                    <h4 className="text-[14px] font-medium text-slate-600 dark:text-slate-300">暂无预览内容</h4>
+                    <p className="text-[12px] text-slate-400 dark:text-slate-500 mt-1.5 max-w-[220px] mx-auto leading-relaxed">
+                      请在左侧“任务记录”中点击已完成任务的预览按钮查看生成文件
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -1126,6 +1126,63 @@ const buildNeighborhoodIndex = (nodes: GraphRenderNode[], edges: GraphRenderEdge
 const hasQueryHitsInModel = (model: GraphRenderModel, queryHitSet: Set<string>) =>
   model.nodes.some((node) => queryHitSet.has(node.id));
 
+const cameraZoomBoundsForModel = (model: GraphRenderModel) => {
+  const deterministicOverview = model.mode === 'overview';
+  const denseOverview = deterministicOverview && (model.nodes.length > 120 || model.edges.length > 260);
+  const ultraDenseOverview = deterministicOverview && (model.nodes.length > 260 || model.edges.length > 700);
+  const minZoom = deterministicOverview
+    ? ultraDenseOverview
+      ? 0.14
+      : denseOverview
+        ? 0.2
+        : MIN_AUTO_FIT_ZOOM
+    : denseOverview
+      ? 0.28
+      : MIN_AUTO_FIT_ZOOM;
+  const maxZoom = deterministicOverview ? 0.95 : denseOverview ? 0.95 : MAX_AUTO_FIT_ZOOM;
+  const severeLowZoomThreshold = Math.max(0.06, Math.min(0.12, minZoom * 0.5));
+  return {
+    deterministicOverview,
+    denseOverview,
+    ultraDenseOverview,
+    minZoom,
+    maxZoom,
+    severeLowZoomThreshold,
+  };
+};
+
+const graphDataBoundsOf = (graphData: GraphData) => {
+  const nodes = Array.isArray(graphData.nodes) ? graphData.nodes : [];
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let count = 0;
+
+  nodes.forEach((node) => {
+    const style = asRecord((node as { style?: unknown }).style);
+    const x = Number(style.x);
+    const y = Number(style.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+    count += 1;
+  });
+
+  if (!count) return null;
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    spanX: maxX - minX,
+    spanY: maxY - minY,
+    nodeCount: count,
+  };
+};
+
 const datumIdOfEvent = (event: any) => {
   const data = event?.target?.__data__;
   if (data?.id) return String(data.id);
@@ -1355,6 +1412,7 @@ const Module4GraphCanvasG6Dynamic: React.FC<Module4GraphCanvasG6Props> = ({
   const [dynamicRenderFailed, setDynamicRenderFailed] = useState(false);
 
   const graphData = useMemo(() => buildGraphData(model, labelMode), [labelMode, model]);
+  const graphDataBounds = useMemo(() => graphDataBoundsOf(graphData), [graphData]);
   const neighborhoodIndex = useMemo(() => buildNeighborhoodIndex(model.nodes, model.edges), [model.nodes, model.edges]);
 
   useEffect(() => {
@@ -1372,12 +1430,14 @@ const Module4GraphCanvasG6Dynamic: React.FC<Module4GraphCanvasG6Props> = ({
       selectedEdgeId: selectedEdgeId || null,
       queryHitNodeCount: queryHitNodeIds.length,
       labelMode,
+      graphDataBounds,
       timestamp: new Date().toISOString(),
     };
   }, [
     dynamicRenderFailed,
     graphData.edges,
     graphData.nodes,
+    graphDataBounds,
     labelMode,
     model,
     queryHitNodeIds.length,
@@ -1441,6 +1501,7 @@ const Module4GraphCanvasG6Dynamic: React.FC<Module4GraphCanvasG6Props> = ({
     let graph: Graph | null = null;
     let lastWidth = 0;
     let lastHeight = 0;
+    let zoomGuardTimer: number | null = null;
     setTooltip((previous) => ({ ...previous, visible: false }));
 
     const applyPersistentElementState = () => {
@@ -1721,20 +1782,59 @@ const Module4GraphCanvasG6Dynamic: React.FC<Module4GraphCanvasG6Props> = ({
             }
 
             const currentModel = modelRef.current;
-            const deterministicOverview = currentModel.mode === 'overview';
-            const denseOverview = deterministicOverview && currentModel.nodes.length > 120;
-            const minZoom = deterministicOverview ? 0.06 : denseOverview ? 0.28 : MIN_AUTO_FIT_ZOOM;
-            const maxZoom = deterministicOverview ? 0.92 : denseOverview ? 0.95 : MAX_AUTO_FIT_ZOOM;
+            const bounds = cameraZoomBoundsForModel(currentModel);
             await Promise.resolve(graph.fitView());
             const currentZoom = typeof zoomableGraph.getZoom === 'function' ? zoomableGraph.getZoom() : 1;
-            if (currentZoom < minZoom && typeof zoomableGraph.zoomTo === 'function') {
-              await Promise.resolve(zoomableGraph.zoomTo?.(minZoom, false, { x: width / 2, y: height / 2 }));
-            } else if (currentZoom > maxZoom && typeof zoomableGraph.zoomTo === 'function') {
-              await Promise.resolve(zoomableGraph.zoomTo?.(maxZoom, false, { x: width / 2, y: height / 2 }));
+            if (currentZoom < bounds.minZoom && typeof zoomableGraph.zoomTo === 'function') {
+              await Promise.resolve(zoomableGraph.zoomTo?.(bounds.minZoom, false, { x: width / 2, y: height / 2 }));
+            } else if (currentZoom > bounds.maxZoom && typeof zoomableGraph.zoomTo === 'function') {
+              await Promise.resolve(zoomableGraph.zoomTo?.(bounds.maxZoom, false, { x: width / 2, y: height / 2 }));
+            }
+            if (typeof window !== 'undefined') {
+              const targetWindow = window as Window & { __module4CanvasDebug?: Record<string, unknown> };
+              targetWindow.__module4CanvasDebug = {
+                ...(targetWindow.__module4CanvasDebug || {}),
+                camera: {
+                  currentZoom,
+                  minZoom: bounds.minZoom,
+                  maxZoom: bounds.maxZoom,
+                  deterministicOverview: bounds.deterministicOverview,
+                  denseOverview: bounds.denseOverview,
+                  ultraDenseOverview: bounds.ultraDenseOverview,
+                  severeLowZoomThreshold: bounds.severeLowZoomThreshold,
+                },
+              };
             }
           } catch (error) {
             console.warn('[module4] post-render camera adjustment skipped', error);
           }
+
+          // Guard against rare cases where zoom snaps to an extreme low value,
+          // making the graph appear as "flash then disappear".
+          zoomGuardTimer = window.setInterval(() => {
+            if (disposed || !graph || !isGraphUsable(graph)) return;
+            const zoomableGraph = graph as Graph & {
+              getZoom?: () => number;
+              zoomTo?: (ratio: number, animation?: boolean, origin?: { x: number; y: number }) => Promise<void> | void;
+            };
+            if (typeof zoomableGraph.getZoom !== 'function' || typeof zoomableGraph.zoomTo !== 'function') return;
+            const currentZoom = zoomableGraph.getZoom();
+            if (!Number.isFinite(currentZoom)) return;
+            const currentModel = modelRef.current;
+            if (currentModel.mode !== 'overview') return;
+            const bounds = cameraZoomBoundsForModel(currentModel);
+            if (currentZoom >= bounds.severeLowZoomThreshold) return;
+
+            const hostWidth = Math.max(host.clientWidth || GRAPH_DEFAULT_WIDTH, GRAPH_MIN_WIDTH);
+            const hostHeight = Math.max(host.clientHeight || GRAPH_DEFAULT_HEIGHT, GRAPH_MIN_HEIGHT);
+            void Promise.resolve(graph.fitView())
+              .then(() => Promise.resolve(zoomableGraph.zoomTo?.(bounds.minZoom, false, { x: hostWidth / 2, y: hostHeight / 2 })))
+              .then(() => applyPostLayoutLabelVisibility())
+              .then(() => applyPersistentElementState())
+              .catch((error) => {
+                console.warn('[module4] zoom guard recovery skipped', error);
+              });
+          }, 1200);
 
           await applyPostLayoutLabelVisibility();
           applyPersistentElementState();
@@ -1751,6 +1851,7 @@ const Module4GraphCanvasG6Dynamic: React.FC<Module4GraphCanvasG6Props> = ({
     return () => {
       disposed = true;
       window.clearTimeout(timer);
+      if (zoomGuardTimer !== null) window.clearInterval(zoomGuardTimer);
       observer?.disconnect();
       graph?.off(NodeEvent.CLICK, onNodeClick);
       graph?.off(NodeEvent.POINTER_UP, onNodeClick);

@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.modules.module1_placeholder.router import router as placeholder_router
+from .endpoints.document import router as document_router
+from .endpoints.health import router as health_router
+from .endpoints.module1_placeholder import router as module1_placeholder_router
 
 
 def build_router() -> APIRouter:
     router = APIRouter()
-    router.include_router(placeholder_router)
+    router.include_router(document_router)
+    router.include_router(health_router)
+    # Keep placeholder metadata endpoint during migration window.
+    router.include_router(module1_placeholder_router)
     return router
 
 

@@ -9,7 +9,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-from module2.app.agent.graph import ExtractionGraph
+from app.modules.module2.agent.graph import ExtractionGraph
 
 
 def test_module2_agent_graph_text_rules_prefill_intro_and_numeric_fields() -> None:

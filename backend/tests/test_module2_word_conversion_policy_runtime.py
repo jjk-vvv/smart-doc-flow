@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 word_conversion_policy_runtime_module = _load_module(
-    ["module2", "app", "core", "format", "word_input_preparation_runtime.py"],
+    ["app", "modules", "module2", "core", "format", "word_input_preparation_runtime.py"],
     "_smart_doc_flow_module2_word_conversion_policy_runtime",
 )
 

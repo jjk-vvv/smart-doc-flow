@@ -20,7 +20,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 cached_restore_runtime_module = _load_module(
-    ["module2", "app", "core", "integration", "cached_extraction_restore_runtime.py"],
+    ["app", "modules", "module2", "core", "integration", "cached_extraction_restore_runtime.py"],
     "_smart_doc_flow_module2_cached_extraction_restore_runtime",
 )
 
@@ -77,7 +77,8 @@ def test_cached_extraction_restore_runtime_restores_payload_and_rebuilds_assista
     assert response.errors == ["oops", "42"]
     assert response.soft_warnings == ["seed"]
     assert response.trace_hits == [{"object_type": "field"}]
-    assert response.trace_stats == {"trace_hit_count": 1}
+    assert response.trace_stats["trace_hit_count"] == 1
+    assert response.trace_stats["trace_object_counts"]["field"] == 1
     assert response.diagnostics["promoted"] is True
     assert response.diagnostics["assistant_payload_artifact_path"] == "assistant_payload/hash123/payload.json"
     assert response.diagnostics["assistant_payload_version"] == "module2-assistant-payload-v1"

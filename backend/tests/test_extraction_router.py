@@ -9,7 +9,7 @@ from app.core.config import Settings
 from app.core.deps import get_settings
 from app.create_app import create_app
 from app.modules.auth.deps import AuthenticatedUser, require_authenticated_user
-from app.modules.extraction.service import get_extraction_service
+from app.services.extraction_service import get_extraction_service
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -113,8 +113,8 @@ class FakeExtractionService:
             "process_pool_reset_generation": 0,
         }
 
-    async def start_office_preview(self, settings, upload) -> dict:
-        del settings
+    async def start_office_preview(self, settings, request, upload) -> dict:
+        del settings, request
         file_bytes = await upload.read()
         payload = {
             "job_id": "preview_job_1",
@@ -126,8 +126,8 @@ class FakeExtractionService:
         self.preview_start_calls.append(payload)
         return payload
 
-    async def get_office_preview_status(self, settings, job_id: str) -> dict:
-        del settings
+    async def get_office_preview_status(self, settings, request, job_id: str) -> dict:
+        del settings, request
         self.preview_status_calls.append(job_id)
         return {
             "job_id": job_id,
@@ -237,8 +237,11 @@ def test_extract_office_preview_routes_delegate_to_service(tmp_path: Path) -> No
     assert fake_service.preview_status_calls == ["preview_job_1"]
 
 
-def test_extract_artifact_endpoint_serves_runtime_artifact_file(tmp_path: Path, monkeypatch) -> None:
+def test_extract_artifact_legacy_path_route_is_rejected(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path)
+    monkeypatch.setenv("AUTH_TENANT_MODE", "compat_default")
+    monkeypatch.setenv("AUTH_TENANT_DEFAULT_ID", "")
+    monkeypatch.setenv("UNIFIED_EXTRACT_ARTIFACT_TENANT_GUARD_MODE", "compat")
     monkeypatch.setenv("MODULE2_ARTIFACT_ROOT_DIR", str(settings.data_root_dir / "module2" / "artifacts"))
     artifact_path = settings.data_root_dir / "module2" / "artifacts" / "reports" / "demo.txt"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -251,13 +254,15 @@ def test_extract_artifact_endpoint_serves_runtime_artifact_file(tmp_path: Path, 
 
     app.dependency_overrides.clear()
 
-    assert response.status_code == 200
-    assert response.text == "hello artifact"
-    assert response.headers["content-type"].startswith("text/plain")
+    assert response.status_code == 410
+    assert "legacy artifact path route is disabled" in str(response.json().get("detail") or "")
 
 
-def test_extract_layout_preview_head_returns_file_metadata(tmp_path: Path, monkeypatch) -> None:
+def test_extract_layout_preview_legacy_path_route_is_rejected(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path)
+    monkeypatch.setenv("AUTH_TENANT_MODE", "compat_default")
+    monkeypatch.setenv("AUTH_TENANT_DEFAULT_ID", "")
+    monkeypatch.setenv("UNIFIED_EXTRACT_ARTIFACT_TENANT_GUARD_MODE", "compat")
     monkeypatch.setenv("MODULE2_ARTIFACT_ROOT_DIR", str(settings.data_root_dir / "module2" / "artifacts"))
     preview_path = settings.data_root_dir / "module2" / "artifacts" / "layout" / "preview.html"
     preview_path.parent.mkdir(parents=True, exist_ok=True)
@@ -271,10 +276,141 @@ def test_extract_layout_preview_head_returns_file_metadata(tmp_path: Path, monke
 
     app.dependency_overrides.clear()
 
+    assert response.status_code == 410
+
+
+def test_extract_artifact_by_file_id_endpoint_serves_file_asset(tmp_path: Path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
+    artifact_file = (tmp_path / "runtime-data" / "file-assets" / "demo.txt").resolve()
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file.write_text("hello by file id", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "app.services.extraction_service.resolve_file_for_owner",
+        lambda file_id, owner_id: (
+            {
+                "file_id": file_id,
+                "filename": "demo.txt",
+                "mime_type": "text/plain",
+            },
+            artifact_file,
+        ),
+    )
+
+    app = _build_app(settings)
+
+    with TestClient(app) as client:
+        response = client.get("/extract/artifact/by-file/fa_demo")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.text == "hello by file id"
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.headers.get("X-Extract-Resolved-Via") == "by-file"
+    assert response.headers.get("X-Extract-Legacy-Route-Mode") == "off"
+
+
+def test_extract_artifact_route_prefers_file_id_query_when_present(tmp_path: Path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
+    artifact_file = (tmp_path / "runtime-data" / "file-assets" / "prefer.txt").resolve()
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file.write_text("prefer file id", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "app.services.extraction_service.resolve_file_for_owner",
+        lambda file_id, owner_id: (
+            {
+                "file_id": file_id,
+                "filename": "prefer.txt",
+                "mime_type": "text/plain",
+            },
+            artifact_file,
+        ),
+    )
+
+    app = _build_app(settings)
+
+    with TestClient(app) as client:
+        response = client.get("/extract/artifact/path/that/does/not/exist.txt?file_id=fa_prefer")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.text == "prefer file id"
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.headers.get("Deprecation") is None
+    assert response.headers.get("X-Extract-Resolved-Via") == "by-file"
+    assert response.headers.get("X-Extract-Legacy-Route-Mode") == "off"
+
+
+def test_extract_layout_preview_by_file_id_head_returns_file_metadata(tmp_path: Path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
+    preview_file = (tmp_path / "runtime-data" / "file-assets" / "preview.html").resolve()
+    preview_file.parent.mkdir(parents=True, exist_ok=True)
+    preview_content = "<html><body>preview by file id</body></html>"
+    preview_file.write_text(preview_content, encoding="utf-8")
+
+    monkeypatch.setattr(
+        "app.services.extraction_service.resolve_file_for_owner",
+        lambda file_id, owner_id: (
+            {
+                "file_id": file_id,
+                "filename": "preview.html",
+                "mime_type": "text/html",
+            },
+            preview_file,
+        ),
+    )
+
+    app = _build_app(settings)
+
+    with TestClient(app) as client:
+        response = client.head("/extract/layout-preview/by-file/fa_preview")
+
+    app.dependency_overrides.clear()
+
     assert response.status_code == 200
     assert response.text == ""
     assert response.headers["content-length"] == str(len(preview_content.encode("utf-8")))
     assert response.headers["content-type"].startswith("text/html")
+    assert response.headers.get("X-Extract-Resolved-Via") == "by-file"
+    assert response.headers.get("X-Extract-Legacy-Route-Mode") == "off"
+
+
+def test_extract_artifact_legacy_path_mode_compat_still_rejects_legacy_route(tmp_path: Path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setenv("UNIFIED_EXTRACT_LEGACY_ARTIFACT_ROUTE_MODE", "compat")
+    monkeypatch.setenv("AUTH_TENANT_MODE", "compat_default")
+    monkeypatch.setenv("AUTH_TENANT_DEFAULT_ID", "")
+    monkeypatch.setenv("UNIFIED_EXTRACT_ARTIFACT_TENANT_GUARD_MODE", "compat")
+    monkeypatch.setenv("MODULE2_ARTIFACT_ROOT_DIR", str(settings.data_root_dir / "module2" / "artifacts"))
+
+    artifact_path = settings.data_root_dir / "module2" / "artifacts" / "reports" / "demo-compat.txt"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text("compat mode", encoding="utf-8")
+
+    app = _build_app(settings)
+    with TestClient(app) as client:
+        response = client.get("/extract/artifact/reports/demo-compat.txt")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 410
+    assert "legacy artifact path route is disabled" in str(response.json().get("detail") or "")
+
+
+def test_extract_artifact_legacy_path_mode_off_rejects_legacy_route(tmp_path: Path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setenv("UNIFIED_EXTRACT_LEGACY_ARTIFACT_ROUTE_MODE", "off")
+    app = _build_app(settings)
+
+    with TestClient(app) as client:
+        response = client.get("/extract/artifact/reports/demo-off.txt")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 410
+    assert "legacy artifact path route is disabled" in str(response.json().get("detail") or "")
 
 
 def test_extract_assistant1_stream_endpoint_passes_settings_and_payload(tmp_path: Path) -> None:

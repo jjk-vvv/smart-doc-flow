@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 block_index_module = _load_module(
-    ["module2", "app", "core", "pipeline", "block_index_runtime.py"],
+    ["app", "modules", "module2", "core", "pipeline", "block_index_runtime.py"],
     "_smart_doc_flow_module2_block_index_runtime",
 )
 

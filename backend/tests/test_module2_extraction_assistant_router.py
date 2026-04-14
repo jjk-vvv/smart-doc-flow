@@ -21,7 +21,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 router_module = _load_module(
-    ["module2", "app", "api", "v1", "endpoints", "extraction_assistant.py"],
+    ["app", "modules", "module2", "api", "v1", "endpoints", "extraction_assistant.py"],
     "_smart_doc_flow_module2_api_v1_extraction_assistant_endpoint",
 )
 
@@ -68,6 +68,8 @@ def test_extraction_assistant_router_streams_and_delegates_payload() -> None:
             "top_k": 6,
             "session_id": "session-1",
             "debug": True,
+            "resume_run_id": "",
+            "after_seq": 0,
             "extra_context": {},
             "client_supports_replace": True,
         }

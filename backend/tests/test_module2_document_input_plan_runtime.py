@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 document_flow_runtime_module = _load_module(
-    ["module2", "app", "core", "pipeline", "document_pipeline_runtime.py"],
+    ["app", "modules", "module2", "core", "pipeline", "document_pipeline_runtime.py"],
     "_smart_doc_flow_module2_document_pipeline_runtime_for_input_plan",
 )
 

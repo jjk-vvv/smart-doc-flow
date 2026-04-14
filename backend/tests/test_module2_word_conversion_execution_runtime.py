@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 
-word_conversion_execution_runtime_module = importlib.import_module("module2.app.core.format.word_input_preparation_runtime")
+word_conversion_execution_runtime_module = importlib.import_module("app.modules.module2.core.format.word_input_preparation_runtime")
 WordConversionExecutionRuntime = word_conversion_execution_runtime_module.WordConversionExecutionRuntime
 
 

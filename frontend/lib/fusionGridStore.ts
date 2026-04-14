@@ -13,7 +13,7 @@ export type FusionGridTemplateRecord = {
 
 export type FusionGridDocsetFileRecord = {
   filename: string;
-  path: string;
+  fileId?: string | null;
   size: string;
   type: FusionDocumentType;
 };
@@ -28,6 +28,7 @@ export type FusionGridDocsetRecord = {
 export type FusionGridTaskRecord = {
   id: string;
   createdAt: string;
+  completedAt?: string | null;
   status: Module3TaskStatus;
   fillRate: number;
   filled: number;
@@ -36,7 +37,8 @@ export type FusionGridTaskRecord = {
   templateName: string;
   docsetId: string;
   docsetLabel: string;
-  outputFilename?: string | null;
+  outputFileId?: string | null;
+  outputName?: string | null;
   error?: string | null;
 };
 
@@ -73,6 +75,7 @@ const isTaskStatus = (value: unknown): value is Module3TaskStatus =>
   value === "done" ||
   value === "failed" ||
   value === "pending" ||
+  value === "cancelled" ||
   value === "cancel_requested";
 
 const isTemplateField = (value: unknown): value is Module3TemplateField => {
@@ -114,9 +117,12 @@ const isDocsetFileRecord = (
   value: unknown,
 ): value is FusionGridDocsetFileRecord => {
   if (!isRecord(value)) return false;
+  const hasFileId =
+    typeof value.fileId === "string" && value.fileId.trim().length > 0;
   return (
     typeof value.filename === "string" &&
-    typeof value.path === "string" &&
+    hasFileId &&
+    (value.fileId == null || typeof value.fileId === "string") &&
     typeof value.size === "string" &&
     isDocumentType(value.type)
   );
@@ -146,7 +152,8 @@ const isTaskRecord = (value: unknown): value is FusionGridTaskRecord => {
     typeof value.templateName === "string" &&
     typeof value.docsetId === "string" &&
     typeof value.docsetLabel === "string" &&
-    (value.outputFilename == null || typeof value.outputFilename === "string") &&
+    (value.outputFileId == null || typeof value.outputFileId === "string") &&
+    (value.outputName == null || typeof value.outputName === "string") &&
     (value.error == null || typeof value.error === "string")
   );
 };

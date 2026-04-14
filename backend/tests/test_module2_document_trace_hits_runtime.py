@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-runtime_module = import_module("module2.app.runtime.document_trace_hits_runtime")
+runtime_module = import_module("app.modules.module2.runtime.document_trace_hits_runtime")
 DocumentTraceHitsRuntime = runtime_module.DocumentTraceHitsRuntime
 
 

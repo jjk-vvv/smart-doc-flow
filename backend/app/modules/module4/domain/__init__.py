@@ -1,3 +1,2 @@
-from __future__ import annotations
+"""Module4 domain layer namespace."""
 
-from module4.app.domain import *  # noqa: F403

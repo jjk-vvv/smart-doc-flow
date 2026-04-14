@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.modules.assistant.router import router as assistant_router
-from app.modules.extraction.router import router as extraction_router
+from .endpoints.assistant import router as assistant_router
+from .endpoints.extraction import router as extraction_router
 
 
 def build_router() -> APIRouter:

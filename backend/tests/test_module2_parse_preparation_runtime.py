@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 parse_preparation_runtime_module = _load_module(
-    ["module2", "app", "core", "pipeline", "document_pipeline_stages_runtime.py"],
+    ["app", "modules", "module2", "core", "pipeline", "document_pipeline_stages_runtime.py"],
     "_smart_doc_flow_module2_parse_preparation_runtime",
 )
 

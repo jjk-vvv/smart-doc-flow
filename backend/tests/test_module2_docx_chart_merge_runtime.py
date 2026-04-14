@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 docx_chart_merge_runtime_module = _load_module(
-    ["module2", "app", "core", "format", "docx_document_runtime.py"],
+    ["app", "modules", "module2", "core", "format", "docx_document_runtime.py"],
     "_smart_doc_flow_module2_docx_document_runtime_for_chart_merge",
 )
 

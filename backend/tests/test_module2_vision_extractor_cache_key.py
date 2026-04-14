@@ -59,7 +59,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 vision_extractor_module = _load_module(
-    ["module2", "app", "core", "visual", "vision_extractor.py"],
+    ["app", "modules", "module2", "core", "visual", "vision_extractor.py"],
     "_smart_doc_flow_module2.core.visual.vision_extractor",
 )
 

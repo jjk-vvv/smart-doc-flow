@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-parser_visual_execution_bundle_runtime_module = import_module("module2.app.core.parsers.parser_visual_execution_bootstrap_runtime")
+parser_visual_execution_bundle_runtime_module = import_module("app.modules.module2.core.parsers.parser_visual_execution_bootstrap_runtime")
 
 ParserVisualExecutionBundleRuntime = parser_visual_execution_bundle_runtime_module.ParserVisualExecutionBundleRuntime
 

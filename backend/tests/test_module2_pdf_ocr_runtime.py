@@ -22,7 +22,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 pdf_ocr_runtime_module = _load_module(
-    ["module2", "app", "core", "pdf", "pdf_ocr_runtime.py"],
+    ["app", "modules", "module2", "core", "pdf", "pdf_ocr_runtime.py"],
     "_smart_doc_flow_module2_pdf_ocr_runtime",
 )
 

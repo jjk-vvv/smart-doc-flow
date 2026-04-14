@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from module2.app.runtime.module4_sync_callback_bundle import build_module4_sync_callback_bundle
+from app.modules.module2.runtime.module4_sync_callback_bundle import build_module4_sync_callback_bundle
 
 
 class _FakeStorage:

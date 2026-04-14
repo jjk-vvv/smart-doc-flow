@@ -15,18 +15,18 @@ if str(BACKEND_ROOT) not in sys.path:
 def clear_unified_backend_caches():
     from app.core.config import get_settings
     from app.core.env import load_managed_env_files
-    from app.modules.assistant.service import get_assistant_service
+    from app.services.assistant_service import get_assistant_service
     from app.modules.auth.service import get_auth_service
-    from app.modules.extraction.artifact_runtime import get_extraction_artifact_runtime
-    from app.modules.extraction.assistant1_runtime import get_assistant1_facade
-    from app.modules.extraction.config import get_extraction_settings
-    from app.modules.extraction.module2_execution_facade import get_module2_execution_facade
-    from app.modules.extraction.module2_sidecar_runtime import (
+    from app.modules.module2.core.artifact_runtime import get_extraction_artifact_runtime
+    from app.modules.module2.core.assistant1_runtime import get_assistant1_facade
+    from app.modules.module2.core.config import get_extraction_settings
+    from app.modules.module2.core.module2_execution_facade import get_module2_execution_facade
+    from app.modules.module2.core.module2_sidecar_runtime import (
         clear_module2_upstream_resolution_cache,
         get_module2_sidecar_manager,
     )
-    from app.modules.extraction.service import get_extraction_service
-    from app.modules.gateway.module4_sidecar_runtime import (
+    from app.services.extraction_service import get_extraction_service
+    from app.modules.module4.core.module4_sidecar_runtime import (
         clear_module4_upstream_resolution_cache,
         get_module4_sidecar_manager,
         get_module4_sidecar_settings,

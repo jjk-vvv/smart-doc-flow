@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 visual_status_builder_module = _load_module(
-    ["module2", "app", "core", "visual", "visual_parse_orchestrator.py"],
+    ["app", "modules", "module2", "core", "visual", "visual_parse_orchestrator.py"],
     "_smart_doc_flow_module2_visual_status_builder",
 )
 

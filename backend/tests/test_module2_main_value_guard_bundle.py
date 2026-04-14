@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_value_guard_bundle_module = import_module("module2.app.bootstrap.quick_extract")
+main_value_guard_bundle_module = import_module("app.modules.module2.bootstrap.quick_extract")
 
 
 def test_build_module2_main_value_guard_bundle_identifies_low_value_quick_fallback_values() -> None:

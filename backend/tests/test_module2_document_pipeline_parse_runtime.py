@@ -5,7 +5,7 @@ import importlib
 from types import SimpleNamespace
 
 
-document_pipeline_parse_runtime_module = importlib.import_module("module2.app.core.pipeline.document_pipeline_stages_runtime")
+document_pipeline_parse_runtime_module = importlib.import_module("app.modules.module2.core.pipeline.document_pipeline_stages_runtime")
 DocumentPipelineParseRuntime = document_pipeline_parse_runtime_module.DocumentPipelineParseRuntime
 
 

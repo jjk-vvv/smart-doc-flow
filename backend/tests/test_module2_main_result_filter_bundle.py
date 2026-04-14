@@ -10,8 +10,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_result_filter_bundle_module = import_module("module2.app.bootstrap.result_filter")
-main_schema_fields_bundle_module = import_module("module2.app.bootstrap.schema_fields")
+main_result_filter_bundle_module = import_module("app.modules.module2.bootstrap.result_filter")
+main_schema_fields_bundle_module = import_module("app.modules.module2.bootstrap.schema_fields")
 
 
 def test_build_module2_main_result_filter_bundle_detects_low_value_result_values() -> None:

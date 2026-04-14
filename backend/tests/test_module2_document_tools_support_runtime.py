@@ -9,8 +9,9 @@ from types import SimpleNamespace
 def _load_module():
     module_path = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "services"
         / "document_tools_service.py"
     )

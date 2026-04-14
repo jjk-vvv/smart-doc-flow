@@ -23,7 +23,7 @@ def _load_module(module_name: str, relative_path: str):
 
 main_quality_bundle_module = _load_module(
     "_smart_doc_flow_test_main_quality_bundle",
-    "module2/app/bootstrap/quality_builder.py",
+    "app/modules/module2/bootstrap/quality_builder.py",
 )
 
 

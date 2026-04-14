@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 mineru_warmup_runtime_module = _load_module(
-    ["module2", "app", "core", "integration", "mineru_warmup_runtime.py"],
+    ["app", "modules", "module2", "core", "integration", "mineru_warmup_runtime.py"],
     "_smart_doc_flow_module2_mineru_warmup_runtime",
 )
 

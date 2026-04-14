@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.core.config import Settings
-from app.modules.extraction.module2_sidecar_runtime import (
+from app.modules.module2.core.module2_sidecar_runtime import (
     clear_module2_upstream_resolution_cache,
     module2_upstream_candidates,
     resolve_live_module2_upstream_url,
@@ -33,11 +33,11 @@ def test_module2_upstream_candidates_keep_configured_first_and_include_aliases(m
     settings = _settings(tmp_path)
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.get_extraction_settings",
+        "app.modules.module2.core.module2_sidecar_runtime.get_extraction_settings",
         lambda: type("ExtractionSettingsStub", (), {"module2_port_hint": ""})(),
     )
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime._preferred_local_host_aliases",
+        "app.modules.module2.core.module2_sidecar_runtime._preferred_local_host_aliases",
         lambda: ["LAPTOP-A62ILD72", "10.13.59.152"],
     )
 
@@ -56,7 +56,7 @@ def test_resolve_live_module2_upstream_url_prefers_healthy_host_alias(monkeypatc
     clear_module2_upstream_resolution_cache()
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.module2_upstream_candidates",
+        "app.modules.module2.core.module2_sidecar_runtime.module2_upstream_candidates",
         lambda _settings: [
             "http://LAPTOP-A62ILD72:8000",
             "http://127.0.0.1:8000",
@@ -71,7 +71,7 @@ def test_resolve_live_module2_upstream_url_prefers_healthy_host_alias(monkeypatc
         return {"ok": True, "base_url": base_url}
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.probe_module2_upstream",
+        "app.modules.module2.core.module2_sidecar_runtime.probe_module2_upstream",
         _fake_probe,
     )
 
@@ -86,7 +86,7 @@ def test_resolve_live_module2_upstream_url_reuses_cached_loopback_url_without_re
     clear_module2_upstream_resolution_cache()
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.module2_upstream_candidates",
+        "app.modules.module2.core.module2_sidecar_runtime.module2_upstream_candidates",
         lambda _settings: ["http://127.0.0.1:8000", "http://10.13.59.152:8000"],
     )
 
@@ -98,7 +98,7 @@ def test_resolve_live_module2_upstream_url_reuses_cached_loopback_url_without_re
         return {"ok": base_url == "http://127.0.0.1:8000", "base_url": base_url}
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.probe_module2_upstream",
+        "app.modules.module2.core.module2_sidecar_runtime.probe_module2_upstream",
         _fake_probe,
     )
 
@@ -118,7 +118,7 @@ def test_resolve_live_module2_upstream_url_switches_cached_alias_back_to_loopbac
     clear_module2_upstream_resolution_cache()
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.module2_upstream_candidates",
+        "app.modules.module2.core.module2_sidecar_runtime.module2_upstream_candidates",
         lambda _settings: ["http://10.13.59.152:8000", "http://127.0.0.1:8000"],
     )
 
@@ -130,7 +130,7 @@ def test_resolve_live_module2_upstream_url_switches_cached_alias_back_to_loopbac
         return {"ok": base_url == "http://10.13.59.152:8000", "base_url": base_url}
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.probe_module2_upstream",
+        "app.modules.module2.core.module2_sidecar_runtime.probe_module2_upstream",
         _probe_with_alias_priority,
     )
     resolved_alias = resolve_live_module2_upstream_url(settings, force_refresh=True)
@@ -142,7 +142,7 @@ def test_resolve_live_module2_upstream_url_switches_cached_alias_back_to_loopbac
         return {"ok": base_url == "http://127.0.0.1:8000", "base_url": base_url}
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_sidecar_runtime.probe_module2_upstream",
+        "app.modules.module2.core.module2_sidecar_runtime.probe_module2_upstream",
         _probe_loopback_healthy,
     )
     resolved_loopback = resolve_live_module2_upstream_url(settings, force_refresh=False)

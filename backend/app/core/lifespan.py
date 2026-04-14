@@ -9,9 +9,9 @@ from fastapi import FastAPI
 
 from app.core.config import get_settings
 from app.services.auth_service import get_auth_service
-from app.modules.extraction.config import get_extraction_settings
-from app.modules.extraction.module2_sidecar_runtime import get_module2_sidecar_manager
-from app.modules.gateway.module4_sidecar_runtime import (
+from app.modules.module2.core.config import get_extraction_settings
+from app.modules.module2.core.module2_sidecar_runtime import get_module2_sidecar_manager
+from app.modules.module4.core.module4_sidecar_runtime import (
     get_module4_sidecar_manager,
     get_module4_sidecar_settings,
 )

@@ -183,7 +183,7 @@ async function installMockRoutes(page, state) {
             python_bin_exists: true,
             graphrag_module_available: true,
             module_error_message: null,
-            prompt_assets_root: "D:/smart_doc_flow/smart-doc-flow/backend/module4/assets/prompts",
+            prompt_assets_root: "D:/smart_doc_flow/smart-doc-flow/backend/app/modules/module4/assets/prompts",
             prompt_assets_ok: true,
             missing_prompt_assets: [],
             config_missing_fields: [],

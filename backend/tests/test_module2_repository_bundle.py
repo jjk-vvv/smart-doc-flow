@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from module2.app.repositories import build_module2_repository_bundle
+from app.modules.module2.repositories import build_module2_repository_bundle
 
 
 class _FakeStorage:

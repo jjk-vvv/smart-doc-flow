@@ -30,7 +30,7 @@ import {
   buildGraphRAGOverviewModel,
   type GraphRenderBuildOptions,
 } from '../../features/knowledge-graph/graphragRenderAdapter';
-import type { GraphRenderEdge, GraphRenderMode, GraphRenderNode } from '../../features/knowledge-graph/graphragViewModel';
+import type { GraphRenderEdge, GraphRenderMode, GraphRenderModel, GraphRenderNode } from '../../features/knowledge-graph/graphragViewModel';
 import { getActiveExtractionFileHash } from '../../features/knowledge-graph/utils';
 
 const getFileIcon = (filename: string) => {
@@ -816,6 +816,18 @@ export const KnowledgeNexus: React.FC = () => {
     return buildGraphRAGOverviewModel(graphData, buildOptions);
   }, [buildOptions, drilldownEntityId, focusedCommunityId, graphData, renderMode]);
 
+  const lastNonEmptyRenderModelRef = useRef<GraphRenderModel | null>(null);
+  useEffect(() => {
+    if (renderModel.nodes.length > 0) lastNonEmptyRenderModelRef.current = renderModel;
+  }, [renderModel]);
+
+  const displayRenderModel = useMemo(() => {
+    if (renderModel.nodes.length > 0) return renderModel;
+    const lastModel = lastNonEmptyRenderModelRef.current;
+    if (loading && lastModel && lastModel.nodes.length > 0) return lastModel;
+    return renderModel;
+  }, [loading, renderModel]);
+
   const selectedNode = useMemo<GraphRenderNode | null>(() => {
     if (!selectedNodeId) return null;
     return renderModel.nodes.find((node) => node.id === selectedNodeId) || null;
@@ -1294,6 +1306,10 @@ export const KnowledgeNexus: React.FC = () => {
           return acc;
         }, {}),
       },
+      displayModelStats: {
+        nodeCount: displayRenderModel.nodes.length,
+        edgeCount: displayRenderModel.edges.length,
+      },
       query: {
         hasResult: Boolean(queryResult),
         linkedNodeIdsAll: queryLinkedNodeIdsAll.length,
@@ -1315,6 +1331,8 @@ export const KnowledgeNexus: React.FC = () => {
     graphData.nodes.length,
     graphData.stats?.by_node_type,
     graphData.stats?.by_relation_type,
+    displayRenderModel.edges.length,
+    displayRenderModel.nodes.length,
     hiddenQueryLinkedNodeIds.length,
     maxCommunityLevel,
     queryFocusIndex,
@@ -1719,7 +1737,7 @@ export const KnowledgeNexus: React.FC = () => {
                 <p className="text-[13px] text-red-600 dark:text-red-400">{error}</p>
               </div>
             </div>
-          ) : renderModel.nodes.length === 0 ? (
+          ) : displayRenderModel.nodes.length === 0 ? (
             <div className="flex h-full w-full items-center justify-center">
               <div className="flex flex-col items-center gap-3">
                 <span className="rounded-full bg-slate-100 p-3 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
@@ -1732,7 +1750,7 @@ export const KnowledgeNexus: React.FC = () => {
             </div>
           ) : (
             <Module4GraphCanvasG6
-              model={renderModel}
+              model={displayRenderModel}
               labelMode={labelMode}
               selectedNodeId={selectedNodeId}
               queryHitNodeIds={queryLinkedNodeIdsInView}

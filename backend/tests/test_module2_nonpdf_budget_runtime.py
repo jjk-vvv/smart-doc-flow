@@ -20,7 +20,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 nonpdf_budget_runtime_module = _load_module(
-    ["module2", "app", "core", "format", "nonpdf_budget_runtime.py"],
+    ["app", "modules", "module2", "core", "format", "nonpdf_budget_runtime.py"],
     "_smart_doc_flow_module2_nonpdf_budget_runtime",
 )
 

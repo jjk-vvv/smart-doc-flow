@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_geometry_bundle_module = import_module("module2.app.bootstrap.geometry")
+main_geometry_bundle_module = import_module("app.modules.module2.bootstrap.geometry")
 
 
 def test_build_module2_main_geometry_bundle_exposes_expected_geometry_helpers() -> None:

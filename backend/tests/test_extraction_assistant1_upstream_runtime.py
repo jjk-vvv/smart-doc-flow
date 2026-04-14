@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from fastapi.responses import Response, StreamingResponse
 
 from app.core.config import Settings
-from app.modules.extraction.assistant1_upstream_runtime import Assistant1UpstreamRuntime
-from app.modules.extraction.schemas import Assistant1ChatStreamRequest
+from app.modules.module2.core.assistant1_upstream_runtime import Assistant1UpstreamRuntime
+from app.modules.module2.schemas.extraction import Assistant1ChatStreamRequest
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -82,15 +82,15 @@ def test_upstream_runtime_returns_502_when_module2_is_unavailable(monkeypatch, t
     runtime = Assistant1UpstreamRuntime()
 
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.resolve_live_module2_upstream_url",
+        "app.modules.module2.core.assistant1_upstream_runtime.resolve_live_module2_upstream_url",
         lambda _settings, force_refresh=True: "",
     )
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.probe_module2_upstream",
+        "app.modules.module2.core.assistant1_upstream_runtime.probe_module2_upstream",
         lambda base_url, timeout_sec: {"ok": False, "base_url": base_url, "checked_at": 0.0},
     )
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.get_module2_sidecar_manager",
+        "app.modules.module2.core.assistant1_upstream_runtime.get_module2_sidecar_manager",
         lambda: SimpleNamespace(ensure_ready=lambda _settings: (_ for _ in ()).throw(RuntimeError("sidecar unavailable"))),
     )
 
@@ -116,11 +116,11 @@ def test_upstream_runtime_streams_sse_bytes_without_rewriting(monkeypatch, tmp_p
     )
 
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.resolve_live_module2_upstream_url",
+        "app.modules.module2.core.assistant1_upstream_runtime.resolve_live_module2_upstream_url",
         lambda _settings, force_refresh=True: "http://resolved-host:8000",
     )
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.probe_module2_upstream",
+        "app.modules.module2.core.assistant1_upstream_runtime.probe_module2_upstream",
         lambda base_url, timeout_sec: {
             "ok": str(base_url or "").strip() == "http://resolved-host:8000",
             "base_url": base_url,
@@ -128,7 +128,7 @@ def test_upstream_runtime_streams_sse_bytes_without_rewriting(monkeypatch, tmp_p
         },
     )
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.get_module2_sidecar_manager",
+        "app.modules.module2.core.assistant1_upstream_runtime.get_module2_sidecar_manager",
         lambda: SimpleNamespace(ensure_ready=lambda _settings: (_ for _ in ()).throw(AssertionError("should not call ensure_ready"))),
     )
 
@@ -141,7 +141,7 @@ def test_upstream_runtime_streams_sse_bytes_without_rewriting(monkeypatch, tmp_p
         return upstream_response
 
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.requests.post",
+        "app.modules.module2.core.assistant1_upstream_runtime.requests.post",
         _fake_post,
     )
 
@@ -206,11 +206,11 @@ def test_upstream_runtime_fetches_session_via_resolved_live_upstream(monkeypatch
     upstream_response = _FakeJsonUpstreamResponse()
 
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.resolve_live_module2_upstream_url",
+        "app.modules.module2.core.assistant1_upstream_runtime.resolve_live_module2_upstream_url",
         lambda _settings, force_refresh=True: "http://resolved-host:8000",
     )
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.probe_module2_upstream",
+        "app.modules.module2.core.assistant1_upstream_runtime.probe_module2_upstream",
         lambda base_url, timeout_sec: {
             "ok": True,
             "base_url": base_url,
@@ -226,7 +226,7 @@ def test_upstream_runtime_fetches_session_via_resolved_live_upstream(monkeypatch
         return upstream_response
 
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.requests.get",
+        "app.modules.module2.core.assistant1_upstream_runtime.requests.get",
         _fake_get,
     )
 
@@ -264,11 +264,11 @@ def test_upstream_runtime_prefers_direct_module2_port_for_loopback_proxy(monkeyp
     )
 
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.resolve_live_module2_upstream_url",
+        "app.modules.module2.core.assistant1_upstream_runtime.resolve_live_module2_upstream_url",
         lambda _settings, force_refresh=True: "http://127.0.0.1:8000",
     )
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.probe_module2_upstream",
+        "app.modules.module2.core.assistant1_upstream_runtime.probe_module2_upstream",
         lambda base_url, timeout_sec: {
             "ok": str(base_url or "").strip() == "http://127.0.0.1:8000",
             "base_url": base_url,
@@ -285,7 +285,7 @@ def test_upstream_runtime_prefers_direct_module2_port_for_loopback_proxy(monkeyp
         return upstream_response
 
     monkeypatch.setattr(
-        "app.modules.extraction.assistant1_upstream_runtime.requests.post",
+        "app.modules.module2.core.assistant1_upstream_runtime.requests.post",
         _fake_post,
     )
 

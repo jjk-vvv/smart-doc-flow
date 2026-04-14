@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.modules.gateway.router import router as gateway_router
+from .endpoints.gateway import router as gateway_router
 
 
 def build_router() -> APIRouter:

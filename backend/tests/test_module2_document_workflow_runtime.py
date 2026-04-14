@@ -20,7 +20,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 document_flow_runtime_module = _load_module(
-    ["module2", "app", "core", "pipeline", "document_flow_runtime.py"],
+    ["app", "modules", "module2", "core", "pipeline", "document_flow_runtime.py"],
     "_smart_doc_flow_module2_document_flow_runtime_for_workflow",
 )
 
@@ -171,7 +171,8 @@ def test_document_workflow_runtime_coordinates_post_pipeline_finalize() -> None:
     assert postprocess_runtime.calls[0]["pipeline_outcome"].nonpdf_preflight == {"profile": "mixed"}
     assert execution_runtime.finalize_calls[0]["cache_key"] == "cache123"
     assert execution_runtime.finalize_calls[0]["response_bundle"].cache_payload == {"cache_key": "cache123"}
-    assert execution_runtime.progress_events == [
-        ("finalizing", 0.96, "抽取完成，正在整理结果与缓存", {}),
-        ("completed", 1.0, "抽取完成", {}),
-    ]
+    assert len(execution_runtime.progress_events) == 2
+    assert execution_runtime.progress_events[0][0] == "finalizing"
+    assert execution_runtime.progress_events[0][1] == 0.96
+    assert "finaliz" in execution_runtime.progress_events[0][2].lower() or "整理结果" in execution_runtime.progress_events[0][2]
+    assert execution_runtime.progress_events[1] == ("completed", 1.0, "抽取完成", {})

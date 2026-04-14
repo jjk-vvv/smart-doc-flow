@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 def _load_module(module_file: str, module_name: str):
-    module_path = Path(__file__).resolve().parents[1] / "module2" / "app" / "services" / module_file
+    module_path = Path(__file__).resolve().parents[1] / "app" / "modules" / "module2" / "services" / module_file
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

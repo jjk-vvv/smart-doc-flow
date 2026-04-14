@@ -9,9 +9,9 @@ from starlette.requests import Request
 from starlette.datastructures import UploadFile
 
 from app.core.config import Settings
-from app.modules.extraction.config import ExtractionSettings
-from app.modules.extraction.module2_execution_facade import Module2ExecutionFacade
-from app.modules.extraction.module2_request_runtime import (
+from app.modules.module2.core.config import ExtractionSettings
+from app.modules.module2.core.module2_execution_facade import Module2ExecutionFacade
+from app.modules.module2.core.module2_request_runtime import (
     forward_module2_context_headers,
     normalize_cache_clear_scope,
     parse_schema_form_json,
@@ -177,7 +177,7 @@ def test_clear_cache_auto_mode_merges_subprocess_and_upstream(monkeypatch, tmp_p
 def test_health_payload_reports_subprocess_active_when_worker_exists(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     worker_path = (
-        settings.runtime_root_dir / "backend" / "app" / "modules" / "extraction" / "module2_compat_worker.py"
+        settings.runtime_root_dir / "backend" / "app" / "modules" / "module2" / "core" / "module2_compat_worker.py"
     )
     worker_path.parent.mkdir(parents=True, exist_ok=True)
     worker_path.write_text("print('ok')", encoding="utf-8")
@@ -256,7 +256,7 @@ def test_create_job_uses_sidecar_request_path(monkeypatch, tmp_path: Path) -> No
             return {"job_id": "extract_job_demo123", "status": "queued", "terminal": False}
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_upstream_runtime.request_module2",
+        "app.modules.module2.core.module2_upstream_runtime.request_module2",
         lambda *args, **kwargs: request_calls.append(dict(kwargs)) or FakeResponse(),
     )
 
@@ -286,7 +286,7 @@ def test_get_job_status_uses_sidecar_request_path(monkeypatch, tmp_path: Path) -
             return {"job_id": "extract_job_demo123", "status": "completed", "terminal": True}
 
     monkeypatch.setattr(
-        "app.modules.extraction.module2_upstream_runtime.request_module2",
+        "app.modules.module2.core.module2_upstream_runtime.request_module2",
         lambda *args, **kwargs: request_calls.append(dict(kwargs)) or FakeResponse(),
     )
 

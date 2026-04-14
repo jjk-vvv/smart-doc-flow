@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 startup_task_runtime_module = _load_module(
-    ["module2", "app", "core", "integration", "app_support_runtime.py"],
+    ["app", "modules", "module2", "core", "integration", "app_support_runtime.py"],
     "_smart_doc_flow_module2_startup_task_runtime",
 )
 

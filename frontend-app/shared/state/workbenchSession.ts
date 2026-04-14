@@ -4,6 +4,8 @@ export type PersistedWorkbenchFile = {
   size: number;
   lastModified: number;
   ext: string;
+  artifactFileId?: string;
+  artifactByFileUrl?: string;
   artifactUrl?: string;
   artifactPath?: string;
 };
@@ -22,6 +24,9 @@ export type PersistedExtractionJobFile = {
   stage: string;
   progress_ratio: number;
   message: string;
+  artifact_file_id?: string | null;
+  artifact_download_url?: string | null;
+  artifact_by_file_url?: string | null;
   artifact_path?: string | null;
   artifact_url?: string | null;
   error?: string;

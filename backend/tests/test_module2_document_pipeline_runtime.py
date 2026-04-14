@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 
-document_pipeline_runtime_module = importlib.import_module("module2.app.core.pipeline.document_pipeline_runtime")
+document_pipeline_runtime_module = importlib.import_module("app.modules.module2.core.pipeline.document_pipeline_runtime")
 
 DocumentPipelineRuntime = document_pipeline_runtime_module.DocumentPipelineRuntime
 DocumentPipelineInputBundle = document_pipeline_runtime_module.DocumentPipelineInputBundle

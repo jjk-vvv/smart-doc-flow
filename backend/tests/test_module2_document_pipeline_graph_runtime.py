@@ -5,7 +5,7 @@ import importlib
 from types import SimpleNamespace
 
 
-document_pipeline_graph_runtime_module = importlib.import_module("module2.app.core.pipeline.document_pipeline_stages_runtime")
+document_pipeline_graph_runtime_module = importlib.import_module("app.modules.module2.core.pipeline.document_pipeline_stages_runtime")
 DocumentPipelineGraphRuntime = document_pipeline_graph_runtime_module.DocumentPipelineGraphRuntime
 
 

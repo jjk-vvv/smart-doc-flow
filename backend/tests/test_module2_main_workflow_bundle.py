@@ -11,7 +11,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_workflow_bundle_module = import_module("module2.app.runtime.main_workflow_bundle")
+main_workflow_bundle_module = import_module("app.modules.module2.runtime.main_workflow_bundle")
 
 
 def test_build_module2_main_workflow_bundle_exposes_expected_runtime_fields() -> None:

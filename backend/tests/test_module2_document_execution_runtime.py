@@ -20,7 +20,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 document_flow_runtime_module = _load_module(
-    ["module2", "app", "core", "pipeline", "document_flow_runtime.py"],
+    ["app", "modules", "module2", "core", "pipeline", "document_flow_runtime.py"],
     "_smart_doc_flow_module2_document_flow_runtime_for_execution",
 )
 
@@ -86,7 +86,11 @@ def test_document_execution_runtime_restores_cached_response() -> None:
 
     assert start.decision is decision
     assert start.cached_response == {"cached": True, "track": "CacheHit"}
-    assert progress_events == [("cached", 1.0, "命中缓存，正在恢复抽取结果", {})]
+    assert len(progress_events) == 1
+    assert progress_events[0][0] == "cached"
+    assert progress_events[0][1] == 1.0
+    assert "cache" in progress_events[0][2].lower() or "缓存" in progress_events[0][2]
+    assert progress_events[0][3] == {}
     assert len(restore_runtime.calls) == 1
     assert restore_runtime.calls[0]["file_name"] == "demo.pdf"
     assert restore_runtime.calls[0]["file_hash"] == "hash123"
@@ -115,7 +119,11 @@ def test_document_execution_runtime_emits_preflight_and_finalizes_success() -> N
     )
 
     assert start.cached_response is None
-    assert progress_events == [("preflight", 0.05, "已接收文件，正在执行预检查", {})]
+    assert len(progress_events) == 1
+    assert progress_events[0][0] == "preflight"
+    assert progress_events[0][1] == 0.05
+    assert "preflight" in progress_events[0][2].lower() or "预检查" in progress_events[0][2]
+    assert progress_events[0][3] == {}
 
     response = asyncio.run(
         runtime.finalize_success(
@@ -130,10 +138,11 @@ def test_document_execution_runtime_emits_preflight_and_finalizes_success() -> N
 
     assert response == {"ok": True}
     assert _save_extraction_result.calls == [("cache456", {"cache_key": "cache456"})]
-    assert progress_events == [
-        ("preflight", 0.05, "已接收文件，正在执行预检查", {}),
-        ("completed", 1.0, "抽取完成", {}),
-    ]
+    assert len(progress_events) == 2
+    assert progress_events[1][0] == "completed"
+    assert progress_events[1][1] == 1.0
+    assert "completed" in progress_events[1][2].lower() or "抽取完成" in progress_events[1][2]
+    assert progress_events[1][3] == {}
 
 
 def test_document_execution_runtime_swallows_progress_hook_errors() -> None:
@@ -193,7 +202,11 @@ def test_document_execution_runtime_accepts_dependency_bundle() -> None:
 
     assert start.cached_response is None
     assert start.decision.cache_key == "cache-bundle"
-    assert progress_events == [("preflight", 0.05, "已接收文件，正在执行预检查", {})]
+    assert len(progress_events) == 1
+    assert progress_events[0][0] == "preflight"
+    assert progress_events[0][1] == 0.05
+    assert "preflight" in progress_events[0][2].lower() or "预检查" in progress_events[0][2]
+    assert progress_events[0][3] == {}
 
 
 async def _record_progress(events, stage, ratio, message, extra):

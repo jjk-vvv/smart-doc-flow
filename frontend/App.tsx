@@ -168,7 +168,7 @@ const App: React.FC = () => {
 
   const isFullPage = activeTab === 'guide';
   const isEdgeToEdgeWorkbench =
-    activeTab === 'deepread' || activeTab === 'deepread_extraction' || activeTab === 'nexus';
+    activeTab === 'deepread' || activeTab === 'deepread_extraction' || activeTab === 'nexus' || activeTab === 'fusion';
   const activeTabRequiresAuth = isProtectedTab(activeTab);
 
   const applyUserState = (nextUser: AuthUser) => {

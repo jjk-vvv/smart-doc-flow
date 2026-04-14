@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 
-from app.modules.extraction import summary_runtime
-from app.modules.extraction.schemas import (
+from app.modules.module2.core import summary_runtime
+from app.modules.module2.schemas.extraction import (
     DocumentExtractionResponse,
     SummarizeRequest,
     TraceLocateRequest,
 )
-from app.modules.extraction.summary_runtime import summarize_document, trace_locate
+from app.modules.module2.core.summary_runtime import summarize_document, trace_locate
 
 
 def test_extraction_summary_runtime_summarize_returns_non_empty_summary() -> None:

@@ -19,7 +19,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 stream_router_runtime_module = _load_module(
-    ["module2", "app", "core", "pipeline", "stream_router_runtime.py"],
+    ["app", "modules", "module2", "core", "pipeline", "stream_router_runtime.py"],
     "_smart_doc_flow_module2_stream_router_runtime",
 )
 

@@ -7,9 +7,9 @@ from types import SimpleNamespace
 from fastapi.responses import Response
 
 from app.core.config import Settings
-from app.modules.extraction.assistant1_runtime import Assistant1Facade
-from app.modules.extraction.config import ExtractionSettings
-from app.modules.extraction.schemas import Assistant1ChatStreamRequest
+from app.modules.module2.core.assistant1_runtime import Assistant1Facade
+from app.modules.module2.core.config import ExtractionSettings
+from app.modules.module2.schemas.extraction import Assistant1ChatStreamRequest
 
 
 def _settings(tmp_path: Path) -> Settings:

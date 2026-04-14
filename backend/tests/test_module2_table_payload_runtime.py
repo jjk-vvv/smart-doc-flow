@@ -20,7 +20,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 table_payload_module = _load_module(
-    ["module2", "app", "core", "table", "table_payload_runtime.py"],
+    ["app", "modules", "module2", "core", "table", "table_payload_runtime.py"],
     "_smart_doc_flow_module2_table_payload_runtime",
 )
 

@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 visual_execution_module = _load_module(
-    ["module2", "app", "core", "visual", "visual_execution_runtime.py"],
+    ["app", "modules", "module2", "core", "visual", "visual_execution_runtime.py"],
     "_smart_doc_flow_module2_visual_execution_runtime",
 )
 

@@ -11,7 +11,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_extraction_bundle_module = import_module("module2.app.bootstrap.extraction")
+main_extraction_bundle_module = import_module("app.modules.module2.bootstrap.extraction")
 
 
 class _GraphStub:
@@ -41,7 +41,7 @@ async def _enter_slots(bundle) -> None:
 
 def test_build_module2_main_extraction_bundle_exposes_expected_runtime_fields() -> None:
     bundle = main_extraction_bundle_module.build_module2_main_extraction_bundle(
-        module2_root=Path("backend/module2"),
+        module2_root=Path("backend/app/modules/module2"),
         check_cache=_unused_check_cache,
         find_recent_document_caches=_unused_find_recent_document_caches,
         graph=_GraphStub(),

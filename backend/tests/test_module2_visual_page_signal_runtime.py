@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 visual_planning_module = _load_module(
-    ["module2", "app", "core", "visual", "visual_planning_runtime.py"],
+    ["app", "modules", "module2", "core", "visual", "visual_planning_runtime.py"],
     "_smart_doc_flow_module2_visual_planning_runtime_for_page_signal",
 )
 

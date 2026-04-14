@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import parse_qs
@@ -30,8 +31,13 @@ class TenantResolution:
 def normalize_tenant_mode(raw_value: str) -> str:
     normalized = normalize_str(raw_value).lower()
     if normalized not in _TENANT_MODES:
-        return "compat_default"
+        return "user_strict"
     return normalized
+
+
+def _strict_mode_allow_legacy_fallback() -> bool:
+    raw_value = str(os.getenv("AUTH_TENANT_STRICT_ALLOW_LEGACY_FALLBACK", "0") or "").strip().lower()
+    return raw_value not in {"0", "false", "off", "no"}
 
 
 def resolve_authenticated_tenant(
@@ -105,18 +111,23 @@ def resolve_authenticated_tenant(
             default_tenant_id=default_tenant_id,
         )
 
-    tenant_id = resolved_explicit_tenant_id or header_tenant_id or default_tenant_id
-    source = "request" if resolved_explicit_tenant_id else "header" if header_tenant_id else "default"
-    return TenantResolution(
-        tenant_id=tenant_id,
-        mode=mode,
-        source=source,
-        requested_tenant_id=resolved_explicit_tenant_id,
-        header_tenant_id=header_tenant_id,
-        user_tenant_id=user_tenant_id,
-        default_tenant_id=default_tenant_id,
-    )
+    if _strict_mode_allow_legacy_fallback():
+        tenant_id = resolved_explicit_tenant_id or header_tenant_id or default_tenant_id
+        source = "request" if resolved_explicit_tenant_id else "header" if header_tenant_id else "default"
+        return TenantResolution(
+            tenant_id=tenant_id,
+            mode=mode,
+            source=f"{source}_legacy_fallback",
+            requested_tenant_id=resolved_explicit_tenant_id,
+            header_tenant_id=header_tenant_id,
+            user_tenant_id=user_tenant_id,
+            default_tenant_id=default_tenant_id,
+        )
 
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authenticated tenant identity is required in user_strict mode",
+    )
 
 def extract_authenticated_user_tenant(
     additional_headers: Mapping[str, str] | None = None,

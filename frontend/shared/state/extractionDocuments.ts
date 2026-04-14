@@ -16,6 +16,9 @@ export type TraceHit = {
   confidence?: number;
   locator?: Record<string, unknown>;
   bbox?: number[];
+  artifact_file_id?: string | null;
+  artifact_download_url?: string | null;
+  artifact_by_file_url?: string | null;
   artifact_path?: string | null;
   artifact_url?: string | null;
   match_reason?: string;

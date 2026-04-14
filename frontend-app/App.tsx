@@ -4,11 +4,6 @@ import { BookOpen, Database, FileSearch, Home, UserCircle2 } from 'lucide-react'
 
 import { AccountSecurityModal } from './components/AccountSecurityModal';
 import { AuthModal } from './components/AuthModal';
-import { MobileAvatarButton } from './components/MobileAvatarButton';
-import {
-  MobilePersonalDrawer,
-  type MobileDrawerItem,
-} from './components/MobilePersonalDrawer';
 import { MobileProfilePage } from './pages/profile/MobileProfilePage';
 import { Sidebar } from './components/Sidebar';
 import { cn } from './lib/utils';
@@ -37,8 +32,8 @@ type NormalizedTab = AppTab;
 const ACTIVE_TAB_KEY = 'smart_doc_flow.frontend_app.active_tab';
 const THEME_KEY = 'smart_doc_flow.frontend_app.theme';
 const ONBOARDING_KEY = 'smart_doc_flow.has_seen_onboarding';
+const AUTH_SESSION_HINT_KEY = 'smart_doc_flow.auth.session_hint';
 const MOBILE_BREAKPOINT = 1024;
-const MOBILE_DRAWER_EVENT = 'open-mobile-drawer';
 
 const normalizeMobileTab = (tab: NormalizedTab): NormalizedTab => {
   if (tab === 'nexus') return 'dashboard';
@@ -92,11 +87,6 @@ const syncActiveTabLocation = (activeTab: NormalizedTab): void => {
 
 const isProtectedTab = (tab: NormalizedTab): boolean => tab === 'deepread_extraction';
 
-const getAvatarText = (user: AuthUser): string => {
-  const source = String(user?.name || user?.email || '').trim();
-  return source ? source.slice(0, 1).toUpperCase() : '';
-};
-
 const readInitialTheme = (): boolean => {
   if (typeof window === 'undefined') return false;
   const stored = window.localStorage.getItem(THEME_KEY);
@@ -115,17 +105,17 @@ const readInitialTab = (): NormalizedTab => {
 
 const readInitialOnboarding = (): boolean => {
   if (typeof window === 'undefined') return false;
-  return window.localStorage.getItem(ONBOARDING_KEY) !== 'true';
+  if (window.localStorage.getItem(ONBOARDING_KEY) === 'true') return false;
+  const requestedTab = readRequestedTabFromUrl();
+  if (requestedTab && requestedTab !== 'dashboard') return false;
+  if (window.localStorage.getItem(AUTH_SESSION_HINT_KEY) === '1') return false;
+  return true;
 };
-
-const MOBILE_DRAWER_ITEMS: MobileDrawerItem[] = [
-  { id: 'guide', label: '操作指南', desc: '查看平台介绍与使用路径', icon: BookOpen },
-];
 
 const MOBILE_BOTTOM_TABS: Array<{
   id: 'dashboard' | 'deepread_extraction' | 'fusion' | 'mine';
   label: string;
-  icon: MobileDrawerItem['icon'];
+  icon: React.ElementType;
 }> = [
   { id: 'dashboard', label: '首页', icon: Home },
   { id: 'deepread_extraction', label: '提取', icon: FileSearch },
@@ -139,7 +129,6 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < MOBILE_BREAKPOINT : false,
   );
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showAccountSecurityModal, setShowAccountSecurityModal] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(() => readInitialOnboarding());
@@ -147,7 +136,6 @@ export default function App() {
   const [user, setUser] = useState<AuthUser>(null);
   const [authBootstrapDone, setAuthBootstrapDone] = useState(false);
   const [pendingProtectedTab, setPendingProtectedTab] = useState<NormalizedTab | null>(null);
-  const avatarText = useMemo(() => getAvatarText(user), [user]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
@@ -158,7 +146,6 @@ export default function App() {
     const handleResize = () => {
       const nextMobile = window.innerWidth < MOBILE_BREAKPOINT;
       setIsMobile(nextMobile);
-      if (!nextMobile) setDrawerOpen(false);
     };
 
     handleResize();
@@ -194,7 +181,6 @@ export default function App() {
   useEffect(() => {
     if (isMobile && activeTab === 'nexus') {
       setActiveTab('dashboard');
-      setDrawerOpen(false);
     }
   }, [activeTab, isMobile]);
 
@@ -214,12 +200,19 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
-    const openDrawer = () => setDrawerOpen(true);
-    window.addEventListener(MOBILE_DRAWER_EVENT, openDrawer);
-    return () => window.removeEventListener(MOBILE_DRAWER_EVENT, openDrawer);
-  }, []);
+    if (!authBootstrapDone || !user || !pendingProtectedTab) return;
+    const nextTab = isMobile ? normalizeMobileTab(pendingProtectedTab) : pendingProtectedTab;
+    startTransition(() => setActiveTab(nextTab));
+    setPendingProtectedTab(null);
+  }, [authBootstrapDone, isMobile, pendingProtectedTab, user]);
 
-  const openDrawer = useCallback(() => setDrawerOpen(true), []);
+  useEffect(() => {
+    if (!showOnboarding || !authBootstrapDone || !user) return;
+    if (activeTab === 'deepread_extraction') {
+      setShowOnboarding(false);
+    }
+  }, [activeTab, authBootstrapDone, showOnboarding, user]);
+
   const toggleTheme = useCallback(() => setIsDark((prev) => !prev), []);
 
   const handleTabChange = useCallback((next: AppTab) => {
@@ -227,20 +220,20 @@ export default function App() {
     if (isProtectedTab(normalized) && !user) {
       if (!authBootstrapDone) {
         startTransition(() => setActiveTab(normalized));
-        setDrawerOpen(false);
         return;
       }
       setPendingProtectedTab(normalized);
       setShowLoginModal(true);
-      setDrawerOpen(false);
       return;
     }
     startTransition(() => setActiveTab(normalized));
-    setDrawerOpen(false);
+    if (normalized === 'deepread_extraction' && user && showOnboarding) {
+      setShowOnboarding(false);
+    }
     if (normalized !== 'deepread_extraction') {
       setPendingProtectedTab(null);
     }
-  }, [authBootstrapDone, isMobile, user]);
+  }, [authBootstrapDone, isMobile, showOnboarding, user]);
 
   const handleLogout = useCallback(async () => {
     try {
@@ -249,7 +242,6 @@ export default function App() {
       console.error('Logout failed:', error);
     } finally {
       setUser(null);
-      setDrawerOpen(false);
       setShowAccountSecurityModal(false);
       setActiveTab('dashboard');
       setPendingProtectedTab(null);
@@ -305,7 +297,7 @@ export default function App() {
         return <DeepReadWorkbench isSidebarCollapsed={sidebarCollapsed} />;
       case 'fusion':
         return (
-          <div className="h-screen overflow-hidden p-4">
+          <div className="h-screen overflow-hidden">
             <FusionGrid />
           </div>
         );
@@ -327,7 +319,7 @@ export default function App() {
   const renderMobileContent = () => {
     switch (activeTab) {
       case 'dashboard':
-        return <MobileDashboard user={user} onNavigate={handleTabChange} onOpenDrawer={openDrawer} />;
+        return <MobileDashboard user={user} onNavigate={handleTabChange} />;
       case 'deepread_interaction':
         return <DocInteractionWorkbench />;
       case 'deepread_extraction':
@@ -366,7 +358,7 @@ export default function App() {
       case 'fusion':
         return <FusionGrid />;
       case 'nexus':
-        return <MobileDashboard user={user} onNavigate={handleTabChange} onOpenDrawer={openDrawer} />;
+        return <MobileDashboard user={user} onNavigate={handleTabChange} />;
       case 'guide':
         return <UserGuide onBackToDashboard={() => handleTabChange('dashboard')} />;
       case 'mine':
@@ -406,50 +398,12 @@ export default function App() {
         />
       )}
 
-      <AnimatePresence>
-        {drawerOpen && (
-          <MobilePersonalDrawer
-            user={user}
-            avatarText={avatarText}
-            isDark={isDark}
-            activeTab={activeTab}
-            items={MOBILE_DRAWER_ITEMS}
-            onClose={() => setDrawerOpen(false)}
-            onNavigate={(target) => handleTabChange(target as AppTab)}
-            onToggleTheme={toggleTheme}
-            onOpenAccountSecurity={() => {
-              setDrawerOpen(false);
-              user ? setShowAccountSecurityModal(true) : setShowLoginModal(true);
-            }}
-            onResetOnboarding={() => {
-              window.localStorage.removeItem(ONBOARDING_KEY);
-              setDrawerOpen(false);
-              setShowOnboarding(true);
-            }}
-            onLogin={() => {
-              setDrawerOpen(false);
-              setShowLoginModal(true);
-            }}
-            onLogout={handleLogout}
-          />
-        )}
-      </AnimatePresence>
-
       {isMobile ? (
         <div className="relative min-h-screen overflow-x-hidden">
-          {activeTab !== 'dashboard' && activeTab !== 'deepread_extraction' && activeTab !== 'mine' && (
-            <div className="pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-end px-4 pt-[max(1rem,env(safe-area-inset-top))]">
-              <MobileAvatarButton
-                avatarText={avatarText}
-                onClick={openDrawer}
-                className="pointer-events-auto shadow-sm dark:shadow-none"
-              />
-            </div>
-          )}
-          <div aria-hidden={drawerOpen}>{renderMobileContent()}</div>
+          <div>{renderMobileContent()}</div>
           {(
-            <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/80 bg-white/90 pb-[env(safe-area-inset-bottom)] shadow-sm backdrop-blur-2xl dark:border-white/[0.05] dark:bg-[#0B1120]/90">
-              <div className="mx-auto flex h-[56px] w-full max-w-md items-center justify-between px-6">
+            <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-4px_24px_rgba(15,23,42,0.02)] backdrop-blur-2xl dark:border-white/[0.04] dark:bg-[#0B1120]/95 dark:shadow-none">
+              <div className="mx-auto flex h-[56px] w-full max-w-md items-center justify-between px-2">
                 {MOBILE_BOTTOM_TABS.map((item) => {
                   const Icon = item.icon;
                   const active = activeTab === item.id;
@@ -459,13 +413,13 @@ export default function App() {
                       key={item.id}
                       type="button"
                       onClick={() => handleTabChange(item.id)}
-                      className="group relative flex h-full flex-1 flex-col items-center justify-center transition-transform active:scale-95"
+                      className="group relative flex h-full flex-1 flex-col items-center justify-center transition-transform active:scale-[0.96]"
                     >
                       <span className="relative z-10 flex flex-col items-center justify-center gap-1">
                         <div
                           className={cn(
-                            'relative flex h-[28px] w-[48px] items-center justify-center rounded-full transition-colors duration-300',
-                            active ? 'bg-cyan-50 dark:bg-cyan-900/30' : 'bg-transparent',
+                            'relative flex h-[28px] w-[56px] items-center justify-center rounded-[12px] transition-colors duration-300',
+                            active ? 'bg-cyan-50 dark:bg-cyan-500/10' : 'bg-transparent',
                           )}
                         >
                           <Icon
@@ -474,17 +428,17 @@ export default function App() {
                             className={cn(
                               'transition-colors duration-300',
                               active
-                                ? 'text-cyan-600 dark:text-cyan-300'
-                                : 'text-slate-500 group-hover:text-slate-700 dark:text-slate-400 dark:group-hover:text-slate-300'
+                                ? 'text-cyan-600 dark:text-cyan-400'
+                                : 'text-slate-400 group-hover:text-slate-600 dark:text-slate-500 dark:group-hover:text-slate-300'
                             )}
                           />
                         </div>
                         <span
                           className={cn(
-                            'text-[10px] transition-colors duration-300',
+                            'text-[11px] transition-colors duration-300',
                             active
-                              ? 'font-semibold text-cyan-700 dark:text-cyan-300'
-                              : 'font-medium text-slate-500 group-hover:text-slate-700 dark:text-slate-400 dark:group-hover:text-slate-300'
+                              ? 'font-bold text-cyan-700 dark:text-cyan-400'
+                              : 'font-medium text-slate-400 group-hover:text-slate-600 dark:text-slate-500 dark:group-hover:text-slate-300'
                           )}
                         >
                           {item.label}
@@ -512,7 +466,6 @@ export default function App() {
             setShowAccountSecurityModal={setShowAccountSecurityModal}
           />
           <main
-            aria-hidden={drawerOpen}
             className={cn(
               'min-h-screen flex-1 transition-[margin-left] duration-300 ease-in-out',
               sidebarCollapsed ? 'ml-[72px]' : 'ml-72',
@@ -525,5 +478,4 @@ export default function App() {
     </div>
   );
 }
-
 

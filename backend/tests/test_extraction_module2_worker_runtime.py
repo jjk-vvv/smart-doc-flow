@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 from app.core.config import Settings
-from app.modules.extraction.config import ExtractionSettings
-from app.modules.extraction.module2_worker_runtime import Module2WorkerRuntime
+from app.modules.module2.core.config import ExtractionSettings
+from app.modules.module2.core.module2_worker_runtime import Module2WorkerRuntime
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -136,7 +136,7 @@ def test_clear_cache_subprocess_serializes_scope(monkeypatch, tmp_path: Path) ->
 
 def test_module2_compat_worker_script_imports_successfully() -> None:
     repo_root = Path(__file__).resolve().parents[1].parent
-    worker_script = repo_root / "backend" / "app" / "modules" / "extraction" / "module2_compat_worker.py"
+    worker_script = repo_root / "backend" / "app" / "modules" / "module2" / "core" / "module2_compat_worker.py"
     script = "\n".join(
         [
             "import importlib.util",

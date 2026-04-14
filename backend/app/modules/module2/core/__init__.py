@@ -1,3 +1,5 @@
 from __future__ import annotations
 
-from app.modules.extraction.config import *  # noqa: F403
+from .config import ExtractionSettings, get_extraction_settings
+
+__all__ = ["ExtractionSettings", "get_extraction_settings"]

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.create_app import create_app
 from app.modules.auth.deps import AuthenticatedUser, require_authenticated_user
 from app.modules.auth.service import get_auth_service
-from app.modules.extraction.service import get_extraction_service
+from app.services.extraction_service import get_extraction_service
 
 
 def _fake_user() -> AuthenticatedUser:
@@ -123,7 +123,7 @@ def test_module4_proxy_forwards_authenticated_headers(monkeypatch) -> None:
         return JSONResponse({"ok": True})
 
     monkeypatch.setattr(
-        "app.modules.gateway.service.proxy_module4_request",
+        "app.services.gateway_service.proxy_module4_request",
         _fake_proxy_module4_request,
     )
     app.dependency_overrides[require_authenticated_user] = _fake_user
@@ -158,10 +158,10 @@ def test_module4_proxy_injects_default_tenant_header_in_compat_mode(monkeypatch)
         return JSONResponse({"ok": True})
 
     monkeypatch.setattr(
-        "app.modules.gateway.service.resolve_live_module4_upstream_url",
+        "app.services.gateway_service.resolve_live_module4_upstream_url",
         lambda settings, ensure_sidecar=False: "http://127.0.0.1:8100",
     )
-    monkeypatch.setattr("app.modules.gateway.service.proxy_request", _fake_proxy_request)
+    monkeypatch.setattr("app.services.gateway_service.proxy_request", _fake_proxy_request)
     app.dependency_overrides[require_authenticated_user] = _fake_user
 
     client = TestClient(app)
@@ -227,10 +227,10 @@ def test_module4_proxy_uses_authenticated_user_tenant_in_strict_mode(monkeypatch
         return JSONResponse({"ok": True})
 
     monkeypatch.setattr(
-        "app.modules.gateway.service.resolve_live_module4_upstream_url",
+        "app.services.gateway_service.resolve_live_module4_upstream_url",
         lambda settings, ensure_sidecar=False: "http://127.0.0.1:8100",
     )
-    monkeypatch.setattr("app.modules.gateway.service.proxy_request", _fake_proxy_request)
+    monkeypatch.setattr("app.services.gateway_service.proxy_request", _fake_proxy_request)
     app.dependency_overrides[require_authenticated_user] = _fake_user
 
     client = TestClient(app)

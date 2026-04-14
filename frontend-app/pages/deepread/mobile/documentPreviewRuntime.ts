@@ -4,6 +4,7 @@ import {
   toAbsoluteExtractUrl,
 } from '../../../shared/api/extraction';
 import type {
+  PersistedExtractionJobFile,
   PersistedWorkbenchFile,
   PersistedOfficePreviewState,
   WorkbenchSessionSnapshot,
@@ -12,21 +13,6 @@ import type {
 const restoredFileCache = new Map<string, File>();
 
 const normalizeFileName = (value: string): string => String(value || '').trim().toLowerCase();
-
-const toProxyableExtractPath = (value: string): string => {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  if (raw.startsWith('/extract/')) return raw;
-  if (!/^https?:\/\//i.test(raw)) return '';
-  try {
-    const parsed = new URL(raw);
-    return parsed.pathname.startsWith('/extract/')
-      ? `${parsed.pathname}${parsed.search || ''}${parsed.hash || ''}`
-      : '';
-  } catch {
-    return '';
-  }
-};
 
 const previewFileNameFromKey = (key: string): string => {
   const raw = String(key || '');
@@ -62,6 +48,131 @@ export const pickPersistedWorkbenchFile = (
   return candidates.find((item) => normalizeFileName(item.name) === target) ?? null;
 };
 
+const hasArtifactPointer = (
+  item: Pick<
+    PersistedExtractionJobFile,
+    'artifact_by_file_url' | 'artifact_file_id' | 'artifact_url'
+  >,
+): boolean => {
+  const directArtifactUrl = String(item.artifact_url || '').trim();
+  const normalizedDirectUrl = directArtifactUrl
+    ? resolveExtractArtifactUrlFromTraceHit({ artifact_url: directArtifactUrl }, '')
+    : '';
+  return Boolean(
+    String(item.artifact_by_file_url || '').trim()
+    || String(item.artifact_file_id || '').trim()
+    || normalizedDirectUrl
+  );
+};
+
+const pickExtractionJobFile = (
+  session: WorkbenchSessionSnapshot | null,
+  fileName: string,
+  fileHash = '',
+): PersistedExtractionJobFile | null => {
+  const targetName = normalizeFileName(fileName);
+  const targetHash = String(fileHash || '').trim();
+  const files = Array.isArray(session?.extractionJob?.files)
+    ? (session?.extractionJob?.files as PersistedExtractionJobFile[])
+    : [];
+  if (files.length === 0) return null;
+
+  if (targetHash) {
+    const byHash = files.find((item) => String(item.file_hash || '').trim() === targetHash);
+    if (byHash) return byHash;
+  }
+
+  if (targetName) {
+    const byName = files.find((item) => normalizeFileName(item.file_name) === targetName);
+    if (byName) return byName;
+  }
+
+  return null;
+};
+
+const toPersistedFileFromArtifactPayload = (
+  payload: {
+    fileName: string;
+    fileHash?: string;
+    artifactByFileUrl?: string;
+    artifactFileId?: string;
+    artifactPath?: string;
+    artifactUrl?: string;
+  },
+): PersistedWorkbenchFile | null => {
+  const fileName = String(payload.fileName || '').trim();
+  if (!fileName) return null;
+  const directArtifactUrl = String(payload.artifactUrl || '').trim();
+  const normalizedDirectUrl = directArtifactUrl
+    ? resolveExtractArtifactUrlFromTraceHit({ artifact_url: directArtifactUrl }, '')
+    : '';
+  const candidate: PersistedWorkbenchFile = {
+    key: `artifact:${String(payload.fileHash || normalizeFileName(fileName)).trim()}`,
+    name: fileName,
+    size: 0,
+    lastModified: Date.now(),
+    ext: getFileExtension(fileName),
+    artifactByFileUrl: String(payload.artifactByFileUrl || '').trim() || undefined,
+    artifactFileId: String(payload.artifactFileId || '').trim() || undefined,
+    artifactPath: undefined,
+    artifactUrl: normalizedDirectUrl || undefined,
+  };
+  const hasPointer = Boolean(
+    candidate.artifactByFileUrl
+    || candidate.artifactFileId
+    || candidate.artifactPath
+    || candidate.artifactUrl,
+  );
+  return hasPointer ? candidate : null;
+};
+
+export const pickPersistedWorkbenchFileFromExtractionJob = (
+  session: WorkbenchSessionSnapshot | null,
+  fileName: string,
+  fileHash = '',
+): PersistedWorkbenchFile | null => {
+  const matched = pickExtractionJobFile(session, fileName, fileHash);
+  if (!matched || !hasArtifactPointer(matched)) return null;
+  return toPersistedFileFromArtifactPayload({
+    fileName: String(matched.file_name || fileName || '').trim(),
+    fileHash: String(matched.file_hash || fileHash || '').trim() || undefined,
+    artifactByFileUrl: String(matched.artifact_by_file_url || '').trim(),
+    artifactFileId: String(matched.artifact_file_id || '').trim(),
+    artifactPath: undefined,
+    artifactUrl: String(matched.artifact_url || '').trim(),
+  });
+};
+
+export const pickPersistedWorkbenchFileFromDiagnostics = (
+  diagnostics: Record<string, unknown>,
+  fileName: string,
+  fileHash = '',
+): PersistedWorkbenchFile | null => {
+  const source = diagnostics || {};
+  const direct = toPersistedFileFromArtifactPayload({
+    fileName,
+    fileHash,
+    artifactByFileUrl: String(
+      source.source_artifact_by_file_url
+      || source.artifact_by_file_url
+      || '',
+    ).trim(),
+    artifactFileId: String(
+      source.source_artifact_file_id
+      || source.artifact_file_id
+      || '',
+    ).trim(),
+    artifactPath: undefined,
+    artifactUrl: String(
+      source.source_artifact_url
+      || source.artifact_url
+      || '',
+    ).trim(),
+  });
+  if (direct) return direct;
+  return null;
+};
+
 export const pickOfficePreviewByFileName = (
   previewMap: Record<string, PersistedOfficePreviewState>,
   fileName: string,
@@ -86,22 +197,25 @@ const buildRestoreCandidates = (
   preferredBase = '',
 ): string[] => {
   const resolvedBase = resolveExtractBase(preferredBase);
+  const byFileRelative = resolveExtractArtifactUrlFromTraceHit(
+    {
+      artifact_by_file_url: item.artifactByFileUrl,
+      artifact_file_id: item.artifactFileId,
+    },
+    '',
+  );
   const directUrl = String(item.artifactUrl || '').trim();
-  const directRelative = toProxyableExtractPath(directUrl);
-  const directAbsolute = directUrl ? toAbsoluteExtractUrl(directUrl, resolvedBase) : '';
-  const pathRelative = item.artifactPath
-    ? resolveExtractArtifactUrlFromTraceHit({ artifact_path: item.artifactPath }, '')
-    : '';
-  const pathAbsolute = pathRelative ? toAbsoluteExtractUrl(pathRelative, resolvedBase) : '';
+  const directRelative = resolveExtractArtifactUrlFromTraceHit({ artifact_url: directUrl }, '');
+  const directAbsolute = directRelative ? toAbsoluteExtractUrl(directRelative, resolvedBase) : '';
+  const byFileAbsolute = byFileRelative ? toAbsoluteExtractUrl(byFileRelative, resolvedBase) : '';
 
   return Array.from(
     new Set(
       [
+        byFileRelative,
+        byFileAbsolute,
         directRelative,
-        pathRelative,
         directAbsolute,
-        pathAbsolute,
-        directUrl,
       ].filter(Boolean),
     ),
   );

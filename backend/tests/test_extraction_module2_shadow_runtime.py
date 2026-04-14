@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from app.core.config import Settings
-from app.modules.extraction import module2_shadow_runtime as shadow_runtime
+from app.modules.module2.core import module2_shadow_runtime as shadow_runtime
 
 
 def _settings(tmp_path: Path) -> Settings:

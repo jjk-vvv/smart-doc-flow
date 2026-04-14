@@ -11,7 +11,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
-main_service_bundle_module = import_module("module2.app.bootstrap.service")
+main_service_bundle_module = import_module("app.modules.module2.bootstrap.service")
 
 
 class _Module4SyncConfigStub:

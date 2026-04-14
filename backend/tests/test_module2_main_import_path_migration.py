@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
 
 def test_module2_main_is_standard_entrypoint_without_compat_runtime_exports() -> None:
-    module2_main = Path(__file__).resolve().parents[1] / "module2" / "app" / "main.py"
+    module2_main = Path(__file__).resolve().parents[1] / "app" / "modules" / "module2" / "main.py"
     source = module2_main.read_text(encoding="utf-8")
 
     assert "from .composition.application import app, create_app" in source
@@ -23,8 +23,9 @@ def test_module2_main_is_standard_entrypoint_without_compat_runtime_exports() ->
 def test_module2_composition_application_owns_main_bootstrap_assembly() -> None:
     module2_application = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "composition"
         / "application.py"
     )
@@ -36,8 +37,9 @@ def test_module2_composition_application_owns_main_bootstrap_assembly() -> None:
 def test_module2_foundation_builder_bootstrap_adapter_delegates_to_service_layer() -> None:
     foundation_builder = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "bootstrap"
         / "foundation_builder.py"
     )
@@ -49,8 +51,9 @@ def test_module2_foundation_builder_bootstrap_adapter_delegates_to_service_layer
 def test_module2_foundation_bootstrap_surface_delegates_to_composition_layer() -> None:
     foundation_surface = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "bootstrap"
         / "foundation.py"
     )
@@ -62,8 +65,9 @@ def test_module2_foundation_bootstrap_surface_delegates_to_composition_layer() -
 def test_module2_runtime_package_prefers_composition_foundation_exports() -> None:
     runtime_init = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "runtime"
         / "__init__.py"
     )
@@ -76,8 +80,9 @@ def test_module2_runtime_package_prefers_composition_foundation_exports() -> Non
 def test_module2_foundation_service_builder_prefers_service_bundles_for_migrated_clusters() -> None:
     foundation_builder = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "services"
         / "extraction"
         / "foundation_builder.py"
@@ -115,8 +120,9 @@ def test_module2_foundation_service_builder_prefers_service_bundles_for_migrated
 def test_module2_schema_pipeline_service_builder_prefers_service_bundles_for_migrated_clusters() -> None:
     schema_pipeline_builder = (
         Path(__file__).resolve().parents[1]
-        / "module2"
         / "app"
+        / "modules"
+        / "module2"
         / "services"
         / "schema"
         / "schema_pipeline_builder.py"
@@ -142,7 +148,7 @@ def test_module2_schema_pipeline_service_builder_prefers_service_bundles_for_mig
 
 
 def test_module2_schema_subbundle_bootstrap_builders_delegate_to_service_layer() -> None:
-    bootstrap_dir = Path(__file__).resolve().parents[1] / "module2" / "app" / "bootstrap"
+    bootstrap_dir = Path(__file__).resolve().parents[1] / "app" / "modules" / "module2" / "bootstrap"
     service_import_assertions = {
         "document_io_builder.py": "from ..services.extraction import document_io_builder as _service_module",
         "entry_builder.py": "from ..services.extraction import entry_builder as _service_module",
@@ -174,14 +180,7 @@ def test_module2_schema_subbundle_bootstrap_builders_delegate_to_service_layer()
         assert expected_import in source
 
 
-def test_module2_tools_import_app_from_composition_application() -> None:
-    module2_root = Path(__file__).resolve().parents[1] / "module2"
-    tool_paths = [
-        module2_root / "tools" / "extract_job_regression.py",
-        module2_root / "tools" / "run_frontend_streaming_check.py",
-    ]
+def test_module2_legacy_shell_directory_removed() -> None:
+    legacy_module2_root = Path(__file__).resolve().parents[1] / "module2"
+    assert not legacy_module2_root.exists()
 
-    for tool_path in tool_paths:
-        source = tool_path.read_text(encoding="utf-8")
-        assert "from app.composition.application import app" in source
-        assert "from app.main import app" not in source

@@ -30,6 +30,8 @@ import {
   formatPreviewMetric,
   getFileExtension,
   pickOfficePreviewByFileName,
+  pickPersistedWorkbenchFileFromDiagnostics,
+  pickPersistedWorkbenchFileFromExtractionJob,
   pickPersistedWorkbenchFile,
   restoreWorkbenchFile,
   toRecord,
@@ -71,24 +73,30 @@ const resolveMarkdownArtifactUrl = (
   preferredBase: string,
 ): string => {
   const diagnostics = toRecord(document?.diagnostics);
+  const byFileResolved = resolveExtractArtifactUrlFromTraceHit(
+    {
+      artifact_by_file_url: String(
+        diagnostics.assistant1_source_markdown_artifact_by_file_url
+        || diagnostics.markdown_artifact_by_file_url
+        || '',
+      ).trim(),
+      artifact_file_id: String(
+        diagnostics.assistant1_source_markdown_artifact_file_id
+        || diagnostics.markdown_artifact_file_id
+        || '',
+      ).trim(),
+    },
+    preferredBase,
+  );
+  if (byFileResolved) return byFileResolved;
+
   const direct = String(
     diagnostics.assistant1_source_markdown_artifact_url
     || diagnostics.markdown_artifact_url
     || '',
   ).trim();
   if (direct) return toAbsoluteExtractUrl(direct, preferredBase);
-
-  const artifactPath = String(
-    diagnostics.assistant1_source_markdown_artifact_path
-    || diagnostics.markdown_artifact_path
-    || '',
-  ).trim();
-  if (!artifactPath) return '';
-
-  return resolveExtractArtifactUrlFromTraceHit(
-    { artifact_path: artifactPath },
-    preferredBase,
-  );
+  return '';
 };
 
 const resolveImageArtifactUrl = (
@@ -96,6 +104,27 @@ const resolveImageArtifactUrl = (
   preferredBase: string,
 ): string => {
   const diagnostics = toRecord(document?.diagnostics);
+  const byFileResolved = resolveExtractArtifactUrlFromTraceHit(
+    {
+      artifact_by_file_url: String(
+        diagnostics.image_preview_by_file_url
+        || diagnostics.preview_by_file_url
+        || diagnostics.source_artifact_by_file_url
+        || diagnostics.artifact_by_file_url
+        || '',
+      ).trim(),
+      artifact_file_id: String(
+        diagnostics.image_preview_file_id
+        || diagnostics.preview_file_id
+        || diagnostics.source_artifact_file_id
+        || diagnostics.artifact_file_id
+        || '',
+      ).trim(),
+    },
+    preferredBase,
+  );
+  if (byFileResolved) return byFileResolved;
+
   const directCandidates = [
     diagnostics.image_preview_url,
     diagnostics.preview_url,
@@ -106,21 +135,6 @@ const resolveImageArtifactUrl = (
     const raw = String(candidate || '').trim();
     if (raw) return toAbsoluteExtractUrl(raw, preferredBase);
   }
-
-  const pathCandidates = [
-    diagnostics.source_artifact_path,
-    diagnostics.artifact_path,
-  ];
-  for (const candidate of pathCandidates) {
-    const raw = String(candidate || '').trim();
-    if (!raw) continue;
-    const resolved = resolveExtractArtifactUrlFromTraceHit(
-      { artifact_path: raw },
-      preferredBase,
-    );
-    if (resolved) return resolved;
-  }
-
   return '';
 };
 
@@ -162,6 +176,23 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
     () => pickPersistedWorkbenchFile(workbenchSession, activeDoc?.file_name || ''),
     [activeDoc?.file_name, workbenchSession],
   );
+  const extractionJobFile = useMemo(
+    () => pickPersistedWorkbenchFileFromExtractionJob(
+      workbenchSession,
+      activeDoc?.file_name || '',
+      String(activeDoc?.file_hash || '').trim(),
+    ),
+    [activeDoc?.file_hash, activeDoc?.file_name, workbenchSession],
+  );
+  const diagnosticsFile = useMemo(
+    () => pickPersistedWorkbenchFileFromDiagnostics(
+      toRecord(activeDoc?.diagnostics),
+      activeDoc?.file_name || '',
+      String(activeDoc?.file_hash || '').trim(),
+    ),
+    [activeDoc?.diagnostics, activeDoc?.file_hash, activeDoc?.file_name],
+  );
+  const restoreCandidateFile = matchedSessionFile || extractionJobFile || diagnosticsFile;
 
   useEffect(() => {
     let cancelled = false;
@@ -174,7 +205,7 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
       };
     }
 
-    if (!matchedSessionFile) {
+    if (!restoreCandidateFile) {
       setSourceFile(null);
       setSourceLoading(false);
       setSourceError('');
@@ -187,7 +218,7 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
       setSourceLoading(true);
       setSourceError('');
       try {
-        const restored = await restoreWorkbenchFile(matchedSessionFile, preferredBase);
+        const restored = await restoreWorkbenchFile(restoreCandidateFile, preferredBase);
         if (cancelled) return;
         setSourceFile(restored);
       } catch (error) {
@@ -205,11 +236,13 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
     };
   }, [
     activeSourceFile,
-    matchedSessionFile?.artifactPath,
-    matchedSessionFile?.artifactUrl,
-    matchedSessionFile?.key,
-    matchedSessionFile?.lastModified,
-    matchedSessionFile?.name,
+    restoreCandidateFile?.artifactByFileUrl,
+    restoreCandidateFile?.artifactFileId,
+    restoreCandidateFile?.artifactPath,
+    restoreCandidateFile?.artifactUrl,
+    restoreCandidateFile?.key,
+    restoreCandidateFile?.lastModified,
+    restoreCandidateFile?.name,
     preferredBase,
   ]);
 

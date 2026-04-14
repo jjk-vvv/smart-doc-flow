@@ -18,7 +18,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 post_parse_artifact_runtime_module = _load_module(
-    ["module2", "app", "core", "pipeline", "document_postprocess_runtime.py"],
+    ["app", "modules", "module2", "core", "pipeline", "document_postprocess_runtime.py"],
     "_smart_doc_flow_module2_post_parse_artifact_runtime",
 )
 

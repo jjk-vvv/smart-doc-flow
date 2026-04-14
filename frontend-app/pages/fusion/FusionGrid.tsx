@@ -1,516 +1,1609 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { AlertCircle, ArrowRight, CheckCircle2, Download, Search, Table, X } from "lucide-react";
-import { AnimatePresence, motion } from "framer-motion";
-import { cn } from "../../lib/utils";
+﻿﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  readExtractionDocuments,
-  readExtractionUpdatedAt,
-  subscribeExtractionUpdates,
-  type ExtractionDocument,
-  type ExtractionEntity,
-} from "../../shared/state/extractionDocuments";
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ChevronDown,
+  CheckCircle2,
+  Clock3,
+  Download,
+  Eye,
+  FolderOpen,
+  HelpCircle,
+  Loader2,
+  PanelLeft,
+  Play,
+  RefreshCw,
+  Trash2,
+  UploadCloud,
+  X,
+  XCircle,
+} from "lucide-react";
+import {
+  cancelModule3Run,
+  createModule3Run,
+  fetchModule3DocumentPreviewText,
+  fetchModule3RunStatus,
+  module3RunDownloadUrl,
+  normalizeModule3Status,
+  uploadModule3Docset,
+  uploadModule3Template,
+  type Module3RunStatusResponse,
+  type Module3TaskStatus,
+} from "../../lib/module3Api";
+import {
+  readFusionGridState,
+  writeFusionGridState,
+  type FusionDocumentType,
+  type FusionGridDocsetRecord,
+  type FusionGridState,
+  type FusionGridTaskRecord,
+  type FusionGridTemplateRecord,
+} from "../../lib/fusionGridStore";
+import { Module3ExcelPreview } from "./Module3ExcelPreview";
+import { Module3WordPreview } from "./Module3WordPreview";
+import excelIconUrl from "../../assets/xlsx.png";
+import mdIconUrl from "../../assets/md.png";
+import txtIconUrl from "../../assets/txt.png";
+import wordIconUrl from "../../assets/WORD.png";
 
-type RowStatus = "VERIFIED" | "MISMATCH" | "PENDING";
-type SortBy = "CONF_DESC" | "CONF_ASC" | "FIELD";
-
-type GridRow = {
+type PreviewDocument = {
   id: string;
-  item: string;
-  valueText: string;
-  numericValue: number | null;
-  dateText: string;
-  sourceDoc: string;
-  confidence: number;
-  status: RowStatus;
+  name: string;
+  fileId: string | null;
+  type: FusionDocumentType;
+  runId?: string;
 };
 
-const currencySymbols = /[¥￥$€£]/g;
-const thousandsSeparators = /[,，\s]/g;
-const nonNumeric = /[^0-9.\-()]/g;
-
-const toNumeric = (value: unknown): number | null => {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value !== "string") return null;
-
-  const raw = value.trim();
-  if (!raw) return null;
-
-  const isNegativeWrapped = raw.startsWith("(") && raw.endsWith(")");
-  const cleaned = raw
-    .replace(currencySymbols, "")
-    .replace(thousandsSeparators, "")
-    .replace(nonNumeric, "");
-  if (!cleaned) return null;
-
-  const parsed = Number(cleaned.replace(/[()]/g, ""));
-  if (!Number.isFinite(parsed)) return null;
-  return isNegativeWrapped ? -Math.abs(parsed) : parsed;
+type FloatingRunNotice = {
+  taskId: string;
+  taskName: string;
+  phase: "running" | "done";
 };
 
-const toDateText = (value: unknown): string => {
-  const text = typeof value === "string" ? value : String(value ?? "");
-  const trimmed = text.trim();
-  if (!trimmed) return "--";
-  const hit = trimmed.match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/);
-  return hit ? hit[0] : "--";
+const cn = (...values: Array<string | false | null | undefined>) =>
+  values.filter(Boolean).join(" ");
+
+const nowText = () =>
+  new Date().toLocaleString("zh-CN", {
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+const formatBytes = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "未知大小";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+  const value = bytes / 1024 ** index;
+  return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 };
 
-const toRows = (documents: ExtractionDocument[]): GridRow[] => {
-  const rows: GridRow[] = [];
+const getDocumentType = (filename: string): FusionDocumentType => {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "xlsx") return "xlsx";
+  if (ext === "docx") return "docx";
+  if (ext === "txt") return "txt";
+  if (ext === "md") return "md";
+  return "other";
+};
 
-  for (const doc of documents) {
-    const fileBase = doc.file_name || "未知文档";
-    for (const [fieldName, entity] of Object.entries(doc.result || {})) {
-      const e = entity as ExtractionEntity;
-      const value = e.value;
-      const numericValue = toNumeric(value);
-      const confidence = Number(e.confidence || 0);
-      const status: RowStatus =
-        value == null
-          ? "PENDING"
-          : confidence >= 0.8 && Boolean(e.source_ref_id)
-            ? "VERIFIED"
-            : "MISMATCH";
+const basename = (value?: string | null) => {
+  if (!value) return "";
+  const name = value.split(/[\\/]/).pop() ?? value;
+  return name.replace(/^tpl_[a-z0-9]+__/, "");
+};
 
-      rows.push({
-        id: `${doc.file_hash || fileBase}-${fieldName}`,
-        item: fieldName,
-        valueText: value == null ? "空值" : String(value),
-        numericValue,
-        dateText: toDateText(value),
-        sourceDoc: fileBase,
-        confidence,
-        status,
-      });
-    }
+const getTaskOutputName = (task: {
+  outputName?: string | null;
+  templateName: string;
+}) => {
+  const outputName = String(task.outputName || "").trim();
+  if (outputName) return outputName;
+  return basename(task.templateName);
+};
+
+const canPreviewByRunType = (type: FusionDocumentType): boolean =>
+  type === "docx" || type === "xlsx";
+
+const fileIconAsset = (type: FusionDocumentType) => {
+  if (type === "docx") {
+    return { src: wordIconUrl, alt: "Word" } as const;
   }
-
-  return rows;
-};
-
-const statusLabel = (status: RowStatus): string => {
-  if (status === "VERIFIED") return "已校验";
-  if (status === "MISMATCH") return "待复核";
-  return "待补全";
-};
-
-const sortRows = (rows: GridRow[], sortBy: SortBy): GridRow[] => {
-  const list = [...rows];
-  if (sortBy === "FIELD") {
-    list.sort((a, b) => a.item.localeCompare(b.item));
-    return list;
+  if (type === "xlsx") {
+    return { src: excelIconUrl, alt: "Excel" } as const;
   }
-  if (sortBy === "CONF_ASC") {
-    list.sort((a, b) => a.confidence - b.confidence);
-    return list;
+  if (type === "md") {
+    return { src: mdIconUrl, alt: "Markdown" } as const;
   }
-  list.sort((a, b) => b.confidence - a.confidence);
-  return list;
+  return { src: txtIconUrl, alt: "Text" } as const;
 };
+
+const FileTypeIcon = ({
+  type,
+  className,
+}: {
+  type: FusionDocumentType;
+  className?: string;
+}) => {
+  const icon = fileIconAsset(type);
+  return (
+    <img
+      src={icon.src}
+      alt={icon.alt}
+      className={cn("h-6 w-6 shrink-0 object-contain", className)}
+    />
+  );
+};
+
+const taskMeta = (status: Module3TaskStatus) => {
+  switch (status) {
+    case "done":
+      return [
+        "已完成",
+        "bg-emerald-100 text-emerald-700",
+        <CheckCircle2 size={14} key="i" />,
+      ] as const;
+    case "running":
+      return [
+        "执行中",
+        "bg-blue-100 text-blue-700",
+        <Loader2 size={14} className="animate-spin" key="i" />,
+      ] as const;
+    case "cancelled":
+      return [
+        "已取消",
+        "bg-amber-100 text-amber-700",
+        <XCircle size={14} key="i" />,
+      ] as const;
+    case "failed":
+      return [
+        "失败",
+        "bg-red-100 text-red-700",
+        <XCircle size={14} key="i" />,
+      ] as const;
+    default:
+      return [
+        "等待中",
+        "bg-slate-100 text-slate-700",
+        <Clock3 size={14} key="i" />,
+      ] as const;
+  }
+};
+
+const updateTask = (
+  task: FusionGridTaskRecord,
+  status: Module3RunStatusResponse,
+): FusionGridTaskRecord => ({
+  ...task,
+  status: normalizeModule3Status(status.status, status.error),
+  fillRate: Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        (status.fill_rate <= 1 ? status.fill_rate * 100 : status.fill_rate) ||
+          0,
+      ),
+    ),
+  ),
+  filled: Number.isFinite(status.filled) ? status.filled : task.filled,
+  total: Number.isFinite(status.total) ? status.total : task.total,
+  outputFileId: status.output_file_id ?? task.outputFileId ?? null,
+  outputName: status.output_name ?? task.outputName ?? null,
+  error: status.error ?? null,
+});
+
+const PlainPreview = ({
+  title,
+  content,
+}: {
+  title: string;
+  content: string;
+}) => (
+  <div className="flex min-h-[320px] flex-col">
+    <div className="border-b border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
+      {title}
+    </div>
+    <pre className="min-h-[320px] overflow-auto whitespace-pre-wrap break-words px-4 py-4 text-[13px] leading-6 text-slate-700">
+      {content || "（文件内容为空或无法预览）"}
+    </pre>
+  </div>
+);
+
+const BottomSheet = ({
+  title,
+  subtitle,
+  onClose,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) => (
+  <div className="fixed inset-0 z-[55] flex items-end bg-black/40 p-3 sm:items-center sm:justify-center">
+    <div className="flex max-h-[min(84vh,760px)] w-full max-w-md flex-col overflow-hidden rounded-t-[32px] sm:rounded-[32px] bg-white shadow-2xl dark:bg-[#1A1D24]">
+      <div className="flex items-start justify-between gap-3 px-6 pb-4 pt-6 relative">
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1.5 rounded-full bg-slate-200 sm:hidden dark:bg-white/10" />
+        <div className="min-w-0">
+          <h3 className="mt-2 text-[20px] font-bold text-slate-900 dark:text-slate-100">{title}</h3>
+          {subtitle ? (
+            <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-1 rounded-full bg-slate-100 p-2 text-slate-500 active:scale-95 transition-transform dark:bg-white/5 dark:text-slate-400"
+          aria-label={`关闭${title}`}
+          title={`关闭${title}`}
+        >
+          <X size={18} />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-6 pb-6 pt-2">{children}</div>
+    </div>
+  </div>
+);
 
 export const FusionGrid: React.FC = () => {
-  const [selectedRows, setSelectedRows] = useState<string[]>([]);
-  const [documents, setDocuments] = useState<ExtractionDocument[]>([]);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"ALL" | RowStatus>("ALL");
-  const [query, setQuery] = useState("");
-  const [sortBy, setSortBy] = useState<SortBy>("CONF_DESC");
+  const [gridState, setGridState] = useState<FusionGridState>(() =>
+    readFusionGridState(),
+  );
+  const [previewDocument, setPreviewDocument] =
+    useState<PreviewDocument | null>(null);
+  const [previewContent, setPreviewContent] = useState("");
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [infoMessage, setInfoMessage] = useState(
+    "按模板、文档、要求、任务、结果的顺序完成填充。",
+  );
+  const [errorMessage, setErrorMessage] = useState("");
+  const [isUploadingTemplate, setIsUploadingTemplate] = useState(false);
+  const [isUploadingDocset, setIsUploadingDocset] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isTemplatePanelOpen, setIsTemplatePanelOpen] = useState(false);
+  const [isDocsetPanelOpen, setIsDocsetPanelOpen] = useState(false);
+  const [isCurrentDocsetOpen, setIsCurrentDocsetOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarFullWidth, setIsSidebarFullWidth] = useState(false);
+  const [isTaskPanelOpen, setIsTaskPanelOpen] = useState(false);
+  const [floatingRunNotice, setFloatingRunNotice] =
+    useState<FloatingRunNotice | null>(null);
+  const [collapsedRunningNoticeTaskId, setCollapsedRunningNoticeTaskId] =
+    useState<string | null>(null);
+  const [isFloatingRunNoticeVisible, setIsFloatingRunNoticeVisible] =
+    useState(false);
+  const [cancellingTaskIds, setCancellingTaskIds] = useState<string[]>([]);
+  const templateInputRef = useRef<HTMLInputElement>(null);
+  const docsetInputRef = useRef<HTMLInputElement>(null);
+
+  const templates = gridState.templates;
+  const docsets = gridState.docsets;
+  const tasks = gridState.tasks;
+  const selectedTemplate = useMemo(
+    () =>
+      templates.find((item) => item.id === gridState.selectedTemplateId) ??
+      null,
+    [templates, gridState.selectedTemplateId],
+  );
+  const selectedDocset = useMemo(
+    () =>
+      docsets.find((item) => item.id === gridState.selectedDocsetId) ?? null,
+    [docsets, gridState.selectedDocsetId],
+  );
+  const selectedTask = useMemo(
+    () => tasks.find((item) => item.id === gridState.selectedTaskId) ?? null,
+    [tasks, gridState.selectedTaskId],
+  );
+  const latestTemplate = templates[0] ?? null;
+  const latestTask = tasks[0] ?? null;
+
+  const latestOutput =
+    latestTask?.status === "done"
+      ? (() => {
+          const outputName = getTaskOutputName(latestTask);
+          const outputType = getDocumentType(outputName);
+          if (!latestTask.outputFileId && !canPreviewByRunType(outputType)) {
+            return null;
+          }
+          return {
+            id: latestTask.id,
+            name: outputName,
+            fileId: latestTask.outputFileId ?? null,
+            type: outputType,
+            runId: latestTask.id,
+          };
+        })()
+      : null;
+
+  const selectedOutput =
+    selectedTask?.status === "done"
+      ? (() => {
+          const outputName = getTaskOutputName(selectedTask);
+          const outputType = getDocumentType(outputName);
+          if (!selectedTask.outputFileId && !canPreviewByRunType(outputType)) {
+            return null;
+          }
+          return {
+            id: selectedTask.id,
+            name: outputName,
+            fileId: selectedTask.outputFileId ?? null,
+            type: outputType,
+            runId: selectedTask.id,
+          };
+        })()
+      : null;
 
   useEffect(() => {
-    const load = () => {
-      setDocuments(readExtractionDocuments());
-      setUpdatedAt(readExtractionUpdatedAt());
-    };
-    load();
-    return subscribeExtractionUpdates(load);
-  }, []);
-
-  const allRows = useMemo(() => toRows(documents), [documents]);
-
-  const searchedRows = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    if (!keyword) return allRows;
-    return allRows.filter((row) => {
-      return (
-        row.item.toLowerCase().includes(keyword) ||
-        row.valueText.toLowerCase().includes(keyword) ||
-        row.sourceDoc.toLowerCase().includes(keyword)
-      );
-    });
-  }, [allRows, query]);
-
-  const filteredRows = useMemo(
-    () => (filter === "ALL" ? searchedRows : searchedRows.filter((row) => row.status === filter)),
-    [filter, searchedRows]
-  );
-
-  const rows = useMemo(() => sortRows(filteredRows, sortBy), [filteredRows, sortBy]);
-  const latestDocName = useMemo(
-    () => (documents[0]?.file_name ? documents[0].file_name : "暂无文档"),
-    [documents]
-  );
-  const updatedAtText = useMemo(
-    () => (updatedAt ? new Date(updatedAt).toLocaleString() : "--"),
-    [updatedAt]
-  );
-  const totalAmount = useMemo(
-    () => rows.reduce((acc, row) => acc + (row.numericValue == null ? 0 : row.numericValue), 0),
-    [rows]
-  );
-  const verifiedCount = useMemo(
-    () => rows.filter((row) => row.status === "VERIFIED").length,
-    [rows]
-  );
-
-  const visibleRowIds = useMemo(() => rows.map((row) => row.id), [rows]);
-  const selectedCount = selectedRows.length;
-  const allVisibleSelected = useMemo(
-    () => visibleRowIds.length > 0 && visibleRowIds.every((id) => selectedRows.includes(id)),
-    [selectedRows, visibleRowIds]
-  );
+    writeFusionGridState(gridState);
+  }, [gridState]);
 
   useEffect(() => {
-    setSelectedRows((prev) => prev.filter((id) => rows.some((row) => row.id === id)));
-  }, [rows]);
+    setGridState((current) => ({
+      ...current,
+      selectedTemplateId: current.templates.some(
+        (item) => item.id === current.selectedTemplateId,
+      )
+        ? current.selectedTemplateId
+        : (current.templates[0]?.id ?? null),
+      selectedDocsetId: current.docsets.some(
+        (item) => item.id === current.selectedDocsetId,
+      )
+        ? current.selectedDocsetId
+        : (current.docsets[0]?.id ?? null),
+      selectedTaskId: current.tasks.some(
+        (item) => item.id === current.selectedTaskId,
+      )
+        ? current.selectedTaskId
+        : (current.tasks[0]?.id ?? null),
+    }));
+  }, [templates, docsets, tasks]);
 
-  const toggleRow = (id: string) => {
-    setSelectedRows((prev) =>
-      prev.includes(id) ? prev.filter((rowId) => rowId !== id) : [...prev, id]
-    );
-  };
-
-  const toggleSelectAllVisible = () => {
-    if (allVisibleSelected) {
-      setSelectedRows((prev) => prev.filter((id) => !visibleRowIds.includes(id)));
+  useEffect(() => {
+    if (!floatingRunNotice) return;
+    const task = tasks.find((item) => item.id === floatingRunNotice.taskId);
+    if (!task) return;
+    if (floatingRunNotice.phase === "running" && task.status === "done") {
+      setFloatingRunNotice({
+        taskId: task.id,
+        taskName: getTaskOutputName(task),
+        phase: "done",
+      });
+      setCollapsedRunningNoticeTaskId(null);
       return;
     }
-    setSelectedRows((prev) => Array.from(new Set([...prev, ...visibleRowIds])));
+    if (
+      floatingRunNotice.phase === "running" &&
+      (task.status === "failed" || task.status === "cancelled")
+    ) {
+      setFloatingRunNotice(null);
+    }
+  }, [floatingRunNotice, tasks]);
+
+  useEffect(() => {
+    if (!collapsedRunningNoticeTaskId) return;
+    const task = tasks.find((item) => item.id === collapsedRunningNoticeTaskId);
+    if (!task) {
+      setCollapsedRunningNoticeTaskId(null);
+      return;
+    }
+    if (task.status === "done") {
+      setFloatingRunNotice({
+        taskId: task.id,
+        taskName: getTaskOutputName(task),
+        phase: "done",
+      });
+      setCollapsedRunningNoticeTaskId(null);
+      return;
+    }
+    if (task.status === "failed" || task.status === "cancelled") {
+      setCollapsedRunningNoticeTaskId(null);
+    }
+  }, [collapsedRunningNoticeTaskId, tasks]);
+
+  useEffect(() => {
+    if (!floatingRunNotice) {
+      setIsFloatingRunNoticeVisible(false);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      setIsFloatingRunNoticeVisible(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [floatingRunNotice?.taskId]);
+
+  const dismissFloatingRunNotice = () => {
+    setIsFloatingRunNoticeVisible(false);
+    window.setTimeout(() => {
+      setFloatingRunNotice(null);
+    }, 240);
   };
 
-  const downloadJson = () => {
-    const selectedSet = new Set(selectedRows);
-    const exportRows = selectedSet.size > 0 ? rows.filter((row) => selectedSet.has(row.id)) : rows;
-    const payload = {
-      documents,
-      rows: exportRows,
-      exportedAt: new Date().toISOString(),
-      selectionMode: selectedSet.size > 0 ? "selected_rows" : "visible_rows",
-    };
+  useEffect(() => {
+    if (floatingRunNotice?.phase !== "done") return;
+    const timer = window.setTimeout(() => {
+      dismissFloatingRunNotice();
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [floatingRunNotice]);
 
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `fusion-grid-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+  useEffect(() => {
+    const ids = tasks
+      .filter((item) => item.status === "running")
+      .map((item) => item.id);
+    if (ids.length === 0) return;
+    const timer = window.setInterval(() => {
+      ids.forEach((id) => {
+        fetchModule3RunStatus(id)
+          .then((status) => {
+            setGridState((current) => ({
+              ...current,
+              tasks: current.tasks.map((item) =>
+                item.id === id ? updateTask(item, status) : item,
+              ),
+            }));
+          })
+          .catch(() => undefined);
+      });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [tasks]);
+
+  useEffect(() => {
+    if (!selectedDocset) setIsCurrentDocsetOpen(false);
+  }, [selectedDocset]);
+
+  useEffect(() => {
+    if (
+      !previewDocument &&
+      !isSidebarOpen &&
+      !isHelpOpen &&
+      !isTemplatePanelOpen &&
+      !isDocsetPanelOpen &&
+      !isCurrentDocsetOpen
+    ) {
+      return;
+    }
+    const { style: bodyStyle } = document.body;
+    const { style: htmlStyle } = document.documentElement;
+    const previousBodyOverflow = bodyStyle.overflow;
+    const previousBodyPosition = bodyStyle.position;
+    const previousBodyTop = bodyStyle.top;
+    const previousBodyWidth = bodyStyle.width;
+    const previousBodyLeft = bodyStyle.left;
+    const previousBodyRight = bodyStyle.right;
+    const previousHtmlOverflow = htmlStyle.overflow;
+    const previousHtmlOverscrollBehavior = htmlStyle.overscrollBehavior;
+    const scrollY = window.scrollY;
+    bodyStyle.overflow = "hidden";
+    bodyStyle.position = "fixed";
+    bodyStyle.top = `-${scrollY}px`;
+    bodyStyle.left = "0";
+    bodyStyle.right = "0";
+    bodyStyle.width = "100%";
+    htmlStyle.overflow = "hidden";
+    htmlStyle.overscrollBehavior = "none";
+    return () => {
+      bodyStyle.overflow = previousBodyOverflow;
+      bodyStyle.position = previousBodyPosition;
+      bodyStyle.top = previousBodyTop;
+      bodyStyle.width = previousBodyWidth;
+      bodyStyle.left = previousBodyLeft;
+      bodyStyle.right = previousBodyRight;
+      htmlStyle.overflow = previousHtmlOverflow;
+      htmlStyle.overscrollBehavior = previousHtmlOverscrollBehavior;
+      window.scrollTo(0, scrollY);
+    };
+  }, [
+    isCurrentDocsetOpen,
+    isDocsetPanelOpen,
+    isHelpOpen,
+    isSidebarOpen,
+    isTemplatePanelOpen,
+    previewDocument,
+  ]);
+
+  const loadPreview = async (document: PreviewDocument) => {
+    const fallback = `文件名: ${document.name}\nfile_id: ${document.fileId ?? "unknown"}`;
+    if (document.type === "docx" || document.type === "xlsx") {
+      setPreviewContent(fallback);
+      return;
+    }
+    if (!document.fileId) {
+      setPreviewContent(fallback);
+      return;
+    }
+    try {
+      const text = await fetchModule3DocumentPreviewText(document.fileId);
+      setPreviewContent(text || fallback);
+    } catch {
+      setPreviewContent(fallback);
+    }
+  };
+
+  const openPreview = async (document: PreviewDocument) => {
+    if (previewDocument?.id === document.id) {
+      setPreviewDocument(null);
+      setPreviewContent("");
+      return;
+    }
+    setPreviewDocument(document);
+    setPreviewContent("");
+    setIsPreviewLoading(true);
+    await loadPreview(document);
+    setIsPreviewLoading(false);
+  };
+
+  const removeTemplate = (id: string) =>
+    setGridState((current) => ({
+      ...current,
+      templates: current.templates.filter((item) => item.id !== id),
+      selectedTemplateId:
+        current.selectedTemplateId === id ? null : current.selectedTemplateId,
+    }));
+
+  const removeDocset = (id: string) =>
+    setGridState((current) => ({
+      ...current,
+      docsets: current.docsets.filter((item) => item.id !== id),
+      selectedDocsetId:
+        current.selectedDocsetId === id ? null : current.selectedDocsetId,
+    }));
+
+  const removeTask = (id: string) =>
+    setGridState((current) => ({
+      ...current,
+      tasks: current.tasks.filter((item) => item.id !== id),
+      selectedTaskId:
+        current.selectedTaskId === id ? null : current.selectedTaskId,
+    }));
+
+  const handleTemplateUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setErrorMessage("");
+    setInfoMessage("正在上传模板并解析字段。");
+    setIsUploadingTemplate(true);
+    try {
+      const response = await uploadModule3Template(file);
+      const record: FusionGridTemplateRecord = {
+        id: response.template_id,
+        name: file.name,
+        backendFilename: response.filename,
+        size: formatBytes(file.size),
+        uploadTime: nowText(),
+        fields: response.fields,
+      };
+      setGridState((current) => ({
+        ...current,
+        templates: [
+          record,
+          ...current.templates.filter((item) => item.id !== record.id),
+        ],
+        selectedTemplateId: record.id,
+      }));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "模板上传失败");
+    } finally {
+      setIsUploadingTemplate(false);
+    }
+  };
+
+  const handleDocsetUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const files = event.target.files ? Array.from(event.target.files) : [];
+    event.target.value = "";
+    if (files.length === 0) return;
+    setErrorMessage("");
+    setInfoMessage(`正在上传 ${files.length} 个文档。`);
+    setIsUploadingDocset(true);
+    try {
+      const response = await uploadModule3Docset(files);
+      const sizeMap = new Map(
+        files.map((file) => [file.name, formatBytes(file.size)] as const),
+      );
+      const record: FusionGridDocsetRecord = {
+        id: response.doc_set_id,
+        count: response.count,
+        uploadTime: nowText(),
+        files: response.files.map((file) => ({
+          filename: file.filename,
+          fileId: file.file_id ?? null,
+          size: sizeMap.get(file.filename) ?? "未知大小",
+          type: getDocumentType(file.filename),
+        })),
+      };
+      setGridState((current) => ({
+        ...current,
+        docsets: [
+          record,
+          ...current.docsets.filter((item) => item.id !== record.id),
+        ],
+        selectedDocsetId: record.id,
+      }));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "文档上传失败");
+    } finally {
+      setIsUploadingDocset(false);
+    }
+  };
+
+  const handleStartRun = async () => {
+    if (!selectedTemplate) return setErrorMessage("请先上传并选择模板。");
+    if (!selectedDocset) return setErrorMessage("请先上传并选择文档集。");
+    setErrorMessage("");
+    setInfoMessage("正在创建填充任务。");
+    setIsRunning(true);
+    try {
+      const run = await createModule3Run({
+        template_id: selectedTemplate.id,
+        doc_set_id: selectedDocset.id,
+        prompt: gridState.draftRequirements.trim() || undefined,
+      });
+      let status: Module3RunStatusResponse | null = null;
+      try {
+        status = await fetchModule3RunStatus(run.run_id);
+      } catch {}
+      const nextTask: FusionGridTaskRecord = {
+        id: run.run_id,
+        createdAt: nowText(),
+        status: normalizeModule3Status(
+          status?.status ?? run.status,
+          status?.error,
+        ),
+        fillRate: Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round(
+              (status?.fill_rate ?? 0) <= 1
+                ? (status?.fill_rate ?? 0) * 100
+                : (status?.fill_rate ?? 0),
+            ),
+          ),
+        ),
+        filled: status?.filled ?? 0,
+        total: status?.total ?? selectedDocset.count,
+        templateId: selectedTemplate.id,
+        templateName: selectedTemplate.name,
+        docsetId: selectedDocset.id,
+        docsetLabel: `${selectedDocset.count} 个文件`,
+        outputFileId: status?.output_file_id ?? null,
+        outputName: status?.output_name ?? null,
+        error: status?.error ?? null,
+      };
+      setGridState((current) => ({
+        ...current,
+        tasks: [
+          nextTask,
+          ...current.tasks.filter((item) => item.id !== nextTask.id),
+        ],
+        selectedTaskId: nextTask.id,
+      }));
+      setFloatingRunNotice({
+        taskId: nextTask.id,
+        taskName: getTaskOutputName(nextTask),
+        phase: nextTask.status === "done" ? "done" : "running",
+      });
+      setCollapsedRunningNoticeTaskId(null);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "任务创建失败");
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const handleRefreshAll = async () => {
+    if (tasks.length === 0) return;
+    setIsRefreshing(true);
+    try {
+      const refreshed = await Promise.all(
+        tasks.map(async (task) => ({
+          taskId: task.id,
+          status: await fetchModule3RunStatus(task.id),
+        })),
+      );
+      const map = new Map(refreshed.map((item) => [item.taskId, item.status]));
+      setGridState((current) => ({
+        ...current,
+        tasks: current.tasks.map((task) =>
+          map.get(task.id) ? updateTask(task, map.get(task.id)!) : task,
+        ),
+      }));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "刷新失败");
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const handleCancelTask = async (taskId: string) => {
+    setCancellingTaskIds((current) =>
+      current.includes(taskId) ? current : [...current, taskId],
+    );
+    setGridState((current) => ({
+      ...current,
+      tasks: current.tasks.map((task) =>
+        task.id === taskId
+          ? {
+              ...task,
+              status: "cancelled",
+              error: "正在取消任务...",
+            }
+          : task,
+      ),
+    }));
+    try {
+      await cancelModule3Run(taskId);
+    } catch (error) {
+      setGridState((current) => ({
+        ...current,
+        tasks: current.tasks.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                status: "running",
+                error: null,
+              }
+            : task,
+        ),
+      }));
+      setErrorMessage(error instanceof Error ? error.message : "取消失败");
+    } finally {
+      setCancellingTaskIds((current) => current.filter((id) => id !== taskId));
+    }
+  };
+
+  const stats = {
+    total: tasks.length,
+    done: tasks.filter((item) => item.status === "done").length,
+    failed: tasks.filter((item) => item.status === "failed").length,
   };
 
   return (
-    <div className="relative flex h-[calc(100vh-4.5rem)] flex-col overflow-hidden rounded-[32px] bg-white shadow-[0_4px_24px_rgba(0,0,0,0.03)] dark:bg-slate-900">
-      <div className="pointer-events-none absolute -right-20 -top-20 z-0 h-[300px] w-[300px] rounded-full bg-[#C5F1F3]/40 blur-[80px] dark:bg-cyan-500/10" />
-      <div className="pointer-events-none absolute -left-20 top-40 z-0 h-[250px] w-[250px] rounded-full bg-blue-100/40 blur-[80px] dark:bg-blue-500/10" />
+    <div className="min-h-screen overflow-x-hidden bg-[#EAF7F8] pb-[env(safe-area-inset-bottom)] dark:bg-[#0B1120]">
+      <input
+        ref={templateInputRef}
+        type="file"
+        accept=".xlsx,.docx"
+        className="hidden"
+        onChange={handleTemplateUpload}
+        aria-label="上传模板文件"
+        title="上传模板文件"
+      />
+      <input
+        ref={docsetInputRef}
+        type="file"
+        multiple
+        accept=".xlsx,.docx,.txt,.md"
+        className="hidden"
+        onChange={handleDocsetUpload}
+        aria-label="上传文档集文件"
+        title="上传文档集文件"
+      />
 
-      <div className="relative z-10 flex h-20 shrink-0 items-center justify-between gap-3 border-b border-slate-100/60 bg-white/60 px-5 backdrop-blur-xl dark:border-slate-800/60 dark:bg-slate-900/60">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-[18px] bg-gradient-to-br from-emerald-50 to-teal-50 text-emerald-500 shadow-[0_2px_10px_rgba(16,185,129,0.05)] dark:from-emerald-500/20 dark:to-teal-500/20 dark:text-emerald-400">
-            <Table size={20} strokeWidth={2.5} />
-          </div>
-          <div className="min-w-0">
-            <h2 className="flex items-center gap-2 truncate text-[17px] font-bold tracking-tight text-[#11323B] dark:text-slate-100">
-              {latestDocName}
-              <span
+      {floatingRunNotice ? (
+        <div className="pointer-events-none fixed inset-x-0 top-4 z-[65] flex justify-center px-4">
+          <div
+            className={cn(
+              "pointer-events-auto origin-top flex w-full max-w-[420px] items-center justify-between gap-3 rounded-full border bg-white/95 px-4 py-3 shadow-lg backdrop-blur transition-[opacity,transform] duration-300 ease-out",
+              isFloatingRunNoticeVisible
+                ? "scale-100 opacity-100"
+                : "scale-x-95 scale-y-75 opacity-0",
+              floatingRunNotice.phase === "done"
+                ? "border-emerald-200 shadow-emerald-100"
+                : "border-sky-200 shadow-sky-100",
+            )}
+          >
+            <div className="min-w-0">
+              <p
                 className={cn(
-                  "h-2 w-2 rounded-full",
-                  rows.length > 0 ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" : "bg-slate-300"
+                  "flex items-center gap-2 text-sm font-semibold",
+                  floatingRunNotice.phase === "done"
+                    ? "text-emerald-700"
+                    : "text-sky-700",
                 )}
-              />
-            </h2>
-            <div className="mt-1 flex items-center gap-2">
-              <span className="text-[12px] font-medium text-[#64748B] dark:text-slate-400">
-                最近更新：{updatedAtText}
-              </span>
+              >
+                {floatingRunNotice.phase === "done" ? (
+                  <CheckCircle2 size={16} />
+                ) : (
+                  <Loader2 size={16} className="animate-spin" />
+                )}
+                {floatingRunNotice.phase === "done" ? "填充完成" : "正在填充"}
+              </p>
+              <p className="truncate text-xs pl-6 text-slate-500">
+                {floatingRunNotice.phase === "done"
+                  ? "请点击左侧栏查看任务详情"
+                  : floatingRunNotice.taskName}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (floatingRunNotice.phase === "running") {
+                  setCollapsedRunningNoticeTaskId(floatingRunNotice.taskId);
+                  dismissFloatingRunNotice();
+                  return;
+                }
+                dismissFloatingRunNotice();
+                setIsSidebarOpen(false);
+                setIsSidebarFullWidth(false);
+              }}
+              className={cn(
+                "inline-flex h-10 shrink-0 items-center gap-2 rounded-full px-4 text-sm font-medium",
+                floatingRunNotice.phase === "done"
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-sky-100 text-sky-700",
+              )}
+            >
+              <ArrowUp size={16} />
+              收起
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {isHelpOpen ? (
+        <BottomSheet
+          title="模块三使用说明"
+          onClose={() => setIsHelpOpen(false)}
+        >
+          <div className="space-y-3 text-sm leading-6 text-slate-600">
+            <p>1. 先上传模板，再上传文档集。</p>
+            <p>2. 用户要求里写筛选、格式和保留规则。</p>
+            <p>3. 在任务区刷新、取消、预览和下载结果。</p>
+            <p>4. DOCX 与 XLSX 结果会进入全屏结构化预览。</p>
+          </div>
+        </BottomSheet>
+      ) : null}
+
+      {isTemplatePanelOpen ? (
+        <BottomSheet
+          title="模板管理"
+          subtitle="上传、切换和查看当前模板字段。"
+          onClose={() => setIsTemplatePanelOpen(false)}
+        >
+          <button
+            type="button"
+            onClick={() => templateInputRef.current?.click()}
+            className="flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-300 px-4 py-5 text-center"
+          >
+            {isUploadingTemplate ? (
+              <Loader2 size={24} className="animate-spin text-slate-400" />
+            ) : (
+              <UploadCloud size={24} className="text-slate-400" />
+            )}
+            <span className="mt-3 text-sm font-semibold text-slate-800">
+              {isUploadingTemplate ? "模板上传中..." : "上传模板"}
+            </span>
+          </button>
+          {templates.length > 1 ? (
+            <select
+              value={gridState.selectedTemplateId ?? latestTemplate?.id ?? ""}
+              onChange={(event) =>
+                setGridState((current) => ({
+                  ...current,
+                  selectedTemplateId: event.target.value || null,
+                }))
+              }
+              className="mt-4 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none"
+              aria-label="选择模板"
+              title="选择模板"
+            >
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <div className="mt-4 space-y-2">
+            {selectedTemplate ? (
+              <div className="rounded-[22px] border border-sky-300 bg-sky-50 px-3 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-900">
+                      {selectedTemplate.name}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {selectedTemplate.size} · {selectedTemplate.fields.length}{" "}
+                      个字段
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeTemplate(selectedTemplate.id)}
+                    className="rounded-full p-2 text-slate-400"
+                    aria-label="删除当前模板"
+                    title="删除当前模板"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-[24px] border-2 border-dashed border-slate-200 bg-white/40 px-4 py-6 text-center text-[14px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/5">
+                暂无模板
+              </div>
+            )}
+          </div>
+        </BottomSheet>
+      ) : null}
+
+      {isDocsetPanelOpen ? (
+        <BottomSheet
+          title="文档集管理"
+          subtitle="上传文档、切换文档集并查看当前文件清单。"
+          onClose={() => setIsDocsetPanelOpen(false)}
+        >
+          <button
+            type="button"
+            onClick={() => docsetInputRef.current?.click()}
+            className="flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-300 px-4 py-5 text-center"
+          >
+            {isUploadingDocset ? (
+              <Loader2 size={24} className="animate-spin text-slate-400" />
+            ) : (
+              <FolderOpen size={24} className="text-slate-400" />
+            )}
+            <span className="mt-3 text-sm font-semibold text-slate-800">
+              {isUploadingDocset ? "文档上传中..." : "上传文档集"}
+            </span>
+          </button>
+          {docsets.length > 1 ? (
+            <select
+              value={gridState.selectedDocsetId ?? ""}
+              onChange={(event) =>
+                setGridState((current) => ({
+                  ...current,
+                  selectedDocsetId: event.target.value || null,
+                }))
+              }
+              className="mt-4 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none"
+              aria-label="选择文档集"
+              title="选择文档集"
+            >
+              {docsets.map((docset, index) => (
+                <option key={docset.id} value={docset.id}>
+                  文档集 {docsets.length - index} · {docset.count} 个文件
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <div className="mt-4 space-y-2">
+            {selectedDocset ? (
+              selectedDocset.files.map((file) => (
+                <div
+                  key={`${selectedDocset.id}:${file.fileId || file.filename}`}
+                  className="flex items-center gap-3 rounded-[20px] border border-slate-200 bg-slate-50 px-3 py-3"
+                >
+                  <FileTypeIcon type={file.type} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-slate-900">
+                      {file.filename}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">{file.size}</p>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-[24px] border-2 border-dashed border-slate-200 bg-white/40 px-4 py-6 text-center text-[14px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/5">
+                暂无文档集
+              </div>
+            )}
+          </div>
+        </BottomSheet>
+      ) : null}
+
+      {isCurrentDocsetOpen && selectedDocset ? (
+        <BottomSheet
+          title="当前文档集"
+          subtitle={`${selectedDocset.count} 个文件 · ${selectedDocset.uploadTime}`}
+          onClose={() => setIsCurrentDocsetOpen(false)}
+        >
+          <div className="space-y-2">
+            {selectedDocset.files.map((file) => (
+              <div
+                key={`${selectedDocset.id}:${file.fileId || file.filename}`}
+                className="flex items-center gap-3 rounded-[20px] border border-slate-200 bg-slate-50 px-3 py-3"
+              >
+                <FileTypeIcon type={file.type} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-slate-900">
+                    {file.filename}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">{file.size}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </BottomSheet>
+      ) : null}
+
+      {previewDocument ? (
+        <div className="fixed inset-0 z-[70] flex flex-col bg-[#f6f9fc]">
+          <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/96 px-4 pb-4 pt-[max(14px,env(safe-area-inset-top))] backdrop-blur">
+            <div className="flex items-center justify-between gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setPreviewDocument(null)}
+                className="inline-flex h-11 min-w-[78px] items-center justify-center gap-2 rounded-2xl px-3 text-sm font-medium text-slate-700"
+              >
+                <ArrowLeft size={16} />
+                返回
+              </button>
+              <div className="min-w-0 flex-1 text-center">
+                <p className="truncate text-lg font-semibold text-slate-900">
+                  {previewDocument.name}
+                </p>
+              </div>
+              <div className="h-11 min-w-[78px] shrink-0" aria-hidden="true" />
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto pb-[max(12px,env(safe-area-inset-bottom))]">
+            <div className="h-full overflow-hidden bg-neutral-50">
+              {isPreviewLoading ? (
+                <div className="flex min-h-[calc(100vh-120px)] items-center justify-center px-6">
+                  <div className="flex items-center gap-2 text-sm text-slate-500">
+                    <Loader2 size={20} className="animate-spin" />
+                    <span>正在加载预览...</span>
+                  </div>
+                </div>
+              ) : previewDocument.type === "docx" ? (
+                <Module3WordPreview
+                  document={{
+                    id: previewDocument.runId ?? previewDocument.id,
+                    name: previewDocument.name,
+                  }}
+                  fallbackContent={
+                    previewContent ||
+                    `文件名: ${previewDocument.name}\nfile_id: ${previewDocument.fileId ?? "unknown"}`
+                  }
+                />
+              ) : previewDocument.type === "xlsx" && previewDocument.runId ? (
+                <Module3ExcelPreview
+                  document={{
+                    id: previewDocument.runId,
+                    name: previewDocument.name,
+                  }}
+                  fallbackContent={
+                    previewContent ||
+                    `文件名: ${previewDocument.name}\nfile_id: ${previewDocument.fileId ?? "unknown"}`
+                  }
+                />
+              ) : (
+                <PlainPreview
+                  title={previewDocument.name}
+                  content={previewContent}
+                />
+              )}
             </div>
           </div>
         </div>
+      ) : null}
 
-        <div className="flex shrink-0 items-center gap-3">
-          <div className="relative hidden sm:block">
-            <Search
-              size={15}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-[#64748B] dark:text-slate-400"
-            />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索字段 / 值 / 来源文档"
-              className="h-10 w-64 rounded-full border-none bg-[#F2F5F8] pl-9 pr-4 text-[13px] text-[#11323B] outline-none transition-all focus:bg-[#E6F7F9] focus:ring-2 focus:ring-cyan-500/20 dark:bg-slate-800 dark:text-slate-200 dark:focus:bg-slate-700"
-            />
+      <div
+        className={cn(
+          "fixed inset-0 z-30 bg-slate-950/35 transition-opacity duration-300",
+          isSidebarOpen
+            ? "pointer-events-auto opacity-100"
+            : "pointer-events-none opacity-0",
+        )}
+        onClick={() => {
+          setIsSidebarOpen(false);
+          setIsSidebarFullWidth(false);
+        }}
+      />
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 flex flex-col overflow-visible border-none bg-[#F8FAFC]/95 shadow-2xl shadow-slate-900/10 px-4 pb-[max(20px,env(safe-area-inset-bottom))] pt-4 backdrop-blur-xl transition-transform duration-300 dark:bg-[#0B1120]/95 dark:shadow-none",
+          isSidebarFullWidth ? "w-full max-w-none" : "w-[82vw] max-w-[320px]",
+          isSidebarOpen ? "translate-x-0" : "-translate-x-full",
+        )}
+      >
+        {isSidebarOpen ? (
+          <button
+            type="button"
+            onClick={() => setIsSidebarFullWidth((current) => !current)}
+            className="absolute -right-5 top-1/2 z-20 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-md text-slate-500 transition-transform active:scale-95 dark:bg-[#1A1D24] dark:text-slate-300"
+            aria-label={isSidebarFullWidth ? "收缩任务中心" : "展开任务中心"}
+            title={isSidebarFullWidth ? "收缩任务中心" : "展开任务中心"}
+          >
+            {isSidebarFullWidth ? (
+              <ArrowLeft size={18} />
+            ) : (
+              <ArrowRight size={18} />
+            )}
+          </button>
+        ) : null}
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="mt-1 text-2xl font-bold text-slate-950">任务中心</h2>
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              在这里查看和打开任务结果。
+            </p>
           </div>
-
-          <select
-            value={sortBy}
-            title="选择排序方式"
-            aria-label="选择排序方式"
-            onChange={(event) => setSortBy(event.target.value as SortBy)}
-            className="h-10 rounded-full border-none bg-[#F2F5F8] px-4 text-[13px] font-medium text-[#11323B] outline-none transition-all hover:bg-[#E6F7F9] dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 cursor-pointer"
-          >
-            <option value="CONF_DESC">置信度降序</option>
-            <option value="CONF_ASC">置信度升序</option>
-            <option value="FIELD">字段名排序</option>
-          </select>
-
           <button
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F2F5F8] text-[#64748B] transition-all hover:bg-emerald-50 hover:text-emerald-600 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-400"
-            onClick={downloadJson}
-            title="导出结构化数据"
+            type="button"
+            onClick={() => {
+              setIsSidebarOpen(false);
+              setIsSidebarFullWidth(false);
+            }}
+            className="rounded-full p-2 text-slate-400"
+            aria-label="关闭任务中心"
+            title="关闭任务中心"
           >
-            <Download size={18} strokeWidth={2.5} />
+            <X size={18} />
           </button>
         </div>
-      </div>
-
-      <div className="relative z-10 flex shrink-0 items-center justify-between border-b border-slate-100/60 bg-white/40 px-5 py-3 backdrop-blur-md dark:border-slate-700/60 dark:bg-slate-900/40">
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-          <button
-            className={cn(
-              "whitespace-nowrap rounded-full px-4 py-2 text-[13px] font-bold transition-all",
-              filter === "ALL" ? "bg-[#11323B] text-white shadow-md dark:bg-cyan-500 dark:text-white" : "bg-[#F2F5F8] text-[#64748B] hover:bg-[#E6F7F9] dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700"
-            )}
-            onClick={() => setFilter("ALL")}
-          >
-            全部
-          </button>
-          <button
-            className={cn(
-              "whitespace-nowrap rounded-full px-4 py-2 text-[13px] font-bold transition-all",
-              filter === "VERIFIED"
-                ? "bg-emerald-50 text-emerald-600 shadow-sm dark:bg-emerald-500/20 dark:text-emerald-300"
-                : "bg-[#F2F5F8] text-[#64748B] hover:bg-[#E6F7F9] dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700"
-            )}
-            onClick={() => setFilter("VERIFIED")}
-          >
-            已校验
-          </button>
-          <button
-            className={cn(
-              "whitespace-nowrap rounded-full px-4 py-2 text-[13px] font-bold transition-all",
-              filter === "MISMATCH" ? "bg-amber-50 text-amber-600 shadow-sm dark:bg-amber-500/20 dark:text-amber-300" : "bg-[#F2F5F8] text-[#64748B] hover:bg-[#E6F7F9] dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700"
-            )}
-            onClick={() => setFilter("MISMATCH")}
-          >
-            待复核
-          </button>
-          <button
-            className={cn(
-              "whitespace-nowrap rounded-full px-4 py-2 text-[13px] font-bold transition-all",
-              filter === "PENDING" ? "bg-slate-100 text-slate-600 shadow-sm dark:bg-slate-700 dark:text-slate-300" : "bg-[#F2F5F8] text-[#64748B] hover:bg-[#E6F7F9] dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700"
-            )}
-            onClick={() => setFilter("PENDING")}
-          >
-            待补全
-          </button>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {selectedCount > 0 && (
-            <button
-              onClick={() => setSelectedRows([])}
-              className="flex h-8 items-center gap-1.5 rounded-full bg-rose-50 px-3 text-[12px] font-semibold text-rose-600 transition hover:bg-rose-100 dark:bg-rose-500/10 dark:text-rose-400 dark:hover:bg-rose-500/20"
-            >
-              <X size={14} />
-              清空选择
-            </button>
-          )}
-          <span className="rounded-full bg-[#F2F5F8] px-3 py-1.5 text-[12px] font-semibold text-[#64748B] dark:bg-slate-800 dark:text-slate-400">
-            行数：{rows.length}
-          </span>
-        </div>
-      </div>
-
-      <div className="relative z-10 flex-1 overflow-auto bg-slate-50/30 pb-28 dark:bg-slate-900/30 custom-scrollbar">
-        <table className="w-full border-collapse text-left">
-          <thead className="sticky top-0 z-20 border-b border-slate-100 bg-white/90 text-[12px] font-bold uppercase tracking-wider text-[#64748B] shadow-sm backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/90 dark:text-slate-400">
-            <tr>
-              <th className="w-16 p-4 text-center">
-                <button
-                  className={cn(
-                    "mx-auto flex h-5 w-5 items-center justify-center rounded-md border-2 transition-colors",
-                    allVisibleSelected
-                      ? "border-cyan-500 bg-cyan-500 text-white"
-                      : "border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-800"
-                  )}
-                  onClick={toggleSelectAllVisible}
-                  title={allVisibleSelected ? "取消全选当前可见行" : "全选当前可见行"}
+        <div
+          className="mt-5 min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-4 pr-1 touch-pan-y [-webkit-overflow-scrolling:touch]"
+        >
+          <div className="space-y-3">
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { label: "总任务", value: stats.total, tone: "bg-slate-100" },
+                { label: "已完成", value: stats.done, tone: "bg-emerald-50" },
+                { label: "失败", value: stats.failed, tone: "bg-red-50" },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  className={cn("rounded-2xl px-3 py-3 text-center", item.tone)}
                 >
-                  {allVisibleSelected && <CheckCircle2 size={14} strokeWidth={3} />}
-                </button>
-              </th>
-              <th className="p-4">字段</th>
-              <th className="p-4">值</th>
-              <th className="p-4">日期</th>
-              <th className="p-4">来源文档</th>
-              <th className="p-4">置信度</th>
-              <th className="p-4">状态</th>
-              <th className="w-10 p-4" />
-            </tr>
-          </thead>
-
-          <tbody className="text-[14px]">
-            <AnimatePresence>
-              {rows.map((row, index) => (
-                <motion.tr
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: Math.min(0.3, index * 0.01) }}
-                  key={row.id}
-                  onClick={() => toggleRow(row.id)}
+                  <div className="text-lg font-bold text-slate-900">
+                    {item.value}
+                  </div>
+                  <div className="text-[11px] text-slate-500">{item.label}</div>
+                </div>
+              ))}
+            </div>
+            {tasks.map((task) => {
+              const isCancelling = cancellingTaskIds.includes(task.id);
+              const [label, badge, icon] = isCancelling
+                ? ([
+                    "取消中",
+                    "bg-amber-100 text-amber-700",
+                    <Loader2 size={14} className="animate-spin" key="i" />,
+                  ] as const)
+                : taskMeta(task.status);
+              const previewName = getTaskOutputName(task);
+              const previewType = getDocumentType(previewName);
+              const previewTarget =
+                task.status === "done" &&
+                (Boolean(task.outputFileId) || canPreviewByRunType(previewType))
+                  ? {
+                      id: task.id,
+                      name: previewName,
+                      fileId: task.outputFileId ?? null,
+                      type: previewType,
+                      runId: task.id,
+                    }
+                  : null;
+              return (
+                <div
+                  key={task.id}
+                  onClick={() =>
+                    setGridState((current) => ({
+                      ...current,
+                      selectedTaskId: task.id,
+                    }))
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setGridState((current) => ({
+                        ...current,
+                        selectedTaskId: task.id,
+                      }));
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
                   className={cn(
-                    "group relative cursor-pointer border-b border-slate-100/60 transition-all hover:bg-[#F2F5F8]/50 dark:border-slate-800/60 dark:hover:bg-slate-800/40",
-                    selectedRows.includes(row.id) && "bg-cyan-50/40 dark:bg-cyan-900/10"
+                    "w-full rounded-[28px] p-5 text-left transition-all active:scale-[0.98] border-none",
+                    gridState.selectedTaskId === task.id
+                      ? "bg-white shadow-md ring-2 ring-cyan-500/20 dark:bg-white/10 dark:ring-cyan-400/30"
+                      : "bg-white/60 shadow-sm dark:bg-white/5",
                   )}
+                  aria-label={`任务 ${getTaskOutputName(task)}，状态 ${label}`}
                 >
-                  <td className="relative p-4 text-center">
-                    {selectedRows.includes(row.id) && (
-                      <motion.div
-                        layoutId="active-row-indicator"
-                        className="absolute bottom-2 left-0 top-2 w-1.5 rounded-r-full bg-cyan-500"
-                      />
-                    )}
+                  <div className="flex items-start gap-3">
+                    <FileTypeIcon
+                      type={getDocumentType(getTaskOutputName(task))}
+                      className="mt-0.5"
+                    />
                     <div
                       className={cn(
-                        "mx-auto flex h-5 w-5 items-center justify-center rounded-md border-2 transition-colors",
-                        selectedRows.includes(row.id)
-                          ? "border-cyan-500 bg-cyan-500 text-white"
-                          : "border-slate-300 bg-white group-hover:border-cyan-300 dark:border-slate-600 dark:bg-slate-800 dark:group-hover:border-cyan-700"
+                        "min-w-0 flex-1",
+                        isSidebarFullWidth && "flex items-start gap-4",
                       )}
                     >
-                      {selectedRows.includes(row.id) && <CheckCircle2 size={14} strokeWidth={3} />}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-slate-900">
+                              {getTaskOutputName(task)}
+                            </p>
+                            <div
+                              className={cn(
+                                "mt-1 text-[11px] text-slate-500",
+                                isSidebarFullWidth
+                                  ? "flex flex-col items-start gap-1"
+                                  : "flex flex-wrap items-center gap-2",
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
+                                  badge,
+                                )}
+                              >
+                                {icon}
+                                {label}
+                              </span>
+                              <span>{task.fillRate}%</span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              removeTask(task.id);
+                            }}
+                            className="rounded-full p-2 text-slate-400"
+                            aria-label="删除任务"
+                            title="删除任务"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                        {!isSidebarFullWidth ? (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {task.status === "running" ? (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleCancelTask(task.id);
+                                }}
+                                disabled={cancellingTaskIds.includes(task.id)}
+                                className="inline-flex min-h-[40px] items-center gap-2 rounded-2xl bg-amber-100 px-3 text-xs font-medium text-amber-700 disabled:opacity-50"
+                                aria-label="取消任务"
+                                title="取消任务"
+                              >
+                                {cancellingTaskIds.includes(task.id) ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <X size={14} />
+                                )}
+                                取消
+                              </button>
+                            ) : null}
+                            {previewTarget ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setIsSidebarOpen(false);
+                                    void openPreview(previewTarget);
+                                  }}
+                                  className="inline-flex min-h-[40px] items-center gap-2 rounded-2xl bg-slate-100 px-3 text-xs font-medium text-slate-700"
+                                  aria-label="预览结果"
+                                  title="预览结果"
+                                >
+                                  <Eye size={14} />
+                                  预览
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    window.location.assign(
+                                      module3RunDownloadUrl(task.id),
+                                    );
+                                  }}
+                                  className="inline-flex min-h-[40px] items-center gap-2 rounded-2xl bg-emerald-100 px-3 text-xs font-medium text-emerald-700"
+                                  aria-label="下载结果"
+                                  title="下载结果"
+                                >
+                                  <Download size={14} />
+                                  下载
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        <p className="mt-3 text-[11px] text-slate-400">
+                          {task.createdAt}
+                        </p>
+                      </div>
+                        {isSidebarFullWidth ? (
+                          <div className="flex shrink-0 flex-wrap items-center gap-2 self-center">
+                            {task.status === "running" ? (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                event.stopPropagation();
+                                void handleCancelTask(task.id);
+                              }}
+                              disabled={cancellingTaskIds.includes(task.id)}
+                              className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-2xl bg-amber-100 px-3 text-xs font-medium text-amber-700 disabled:opacity-50"
+                              aria-label="取消任务"
+                              title="取消任务"
+                            >
+                              {cancellingTaskIds.includes(task.id) ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <X size={14} />
+                              )}
+                              取消
+                            </button>
+                          ) : null}
+                          {previewTarget ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setIsSidebarOpen(false);
+                                  void openPreview(previewTarget);
+                                }}
+                                className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-2xl bg-slate-100 px-3 text-xs font-medium text-slate-700"
+                                aria-label="预览结果"
+                                title="预览结果"
+                              >
+                                <Eye size={14} />
+                                预览
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  window.location.assign(
+                                    module3RunDownloadUrl(task.id),
+                                  );
+                                }}
+                                className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-2xl bg-emerald-100 px-3 text-xs font-medium text-emerald-700"
+                                aria-label="下载结果"
+                                title="下载结果"
+                              >
+                                <Download size={14} />
+                                下载
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
-                  </td>
-                  <td className="p-4 font-semibold text-[#11323B] transition-colors group-hover:text-cyan-700 dark:text-slate-200 dark:group-hover:text-cyan-400">
-                    {row.item}
-                  </td>
-                  <td className="max-w-[300px] truncate p-4 font-semibold text-[#64748B] dark:text-slate-300">
-                    {row.numericValue == null
-                      ? row.valueText
-                      : row.numericValue.toLocaleString(undefined, {
-                          maximumFractionDigits: 2,
-                        })}
-                  </td>
-                  <td className="p-4 font-medium text-[#64748B] dark:text-slate-400">
-                    {row.dateText}
-                  </td>
-                  <td className="p-4">
-                    <span className="flex max-w-[260px] w-fit items-center gap-2 rounded-[10px] bg-[#F2F5F8] px-2.5 py-1.5 text-[12px] font-semibold text-[#64748B] transition-colors group-hover:bg-blue-50 group-hover:text-blue-600 dark:bg-slate-800 dark:text-slate-400 dark:group-hover:bg-blue-500/10 dark:group-hover:text-blue-300">
-                      <span className="h-4 w-1.5 rounded-full bg-blue-400/50" />
-                      <span className="truncate">{row.sourceDoc}</span>
-                    </span>
-                  </td>
-                  <td className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="h-2 w-24 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${row.confidence * 100}%` }}
-                          transition={{ duration: 0.5, delay: Math.min(0.25, index * 0.01) }}
-                          className={cn(
-                            "h-full rounded-full shadow-sm",
-                            row.confidence > 0.9
-                              ? "bg-emerald-400"
-                              : row.confidence > 0.8
-                                ? "bg-amber-400"
-                                : "bg-rose-400"
-                          )}
-                        />
-                      </div>
-                      <span
-                        className={cn(
-                          "text-[12px] font-bold",
-                          row.confidence > 0.9
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : row.confidence > 0.8
-                              ? "text-amber-600 dark:text-amber-400"
-                              : "text-rose-600 dark:text-rose-400"
-                        )}
-                      >
-                        {Math.floor(row.confidence * 100)}%
-                      </span>
-                    </div>
-                  </td>
-                  <td className="p-4">
-                    {row.status === "VERIFIED" ? (
-                      <div className="flex w-fit items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">
-                        <CheckCircle2 size={14} /> {statusLabel(row.status)}
-                      </div>
-                    ) : row.status === "MISMATCH" ? (
-                      <div className="flex w-fit items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
-                        <AlertCircle size={14} /> {statusLabel(row.status)}
-                      </div>
-                    ) : (
-                      <div className="flex w-fit items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                        {statusLabel(row.status)}
-                      </div>
-                    )}
-                  </td>
-                  <td className="p-4 text-center opacity-0 transition-opacity group-hover:opacity-100">
-                    <button 
-                      title="查看详情"
-                      aria-label="查看详情"
-                      className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-[#64748B] shadow-sm hover:text-[#11323B] dark:bg-slate-700 dark:text-slate-300 dark:hover:text-white"
-                    >
-                      <ArrowRight size={16} strokeWidth={2.5} />
-                    </button>
-                  </td>
-                </motion.tr>
-              ))}
-            </AnimatePresence>
-
-            {rows.length === 0 && (
-              <tr className="border-b border-slate-100/60 dark:border-slate-800/60">
-                <td colSpan={8} className="p-16 text-center">
-                  <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[#F2F5F8] dark:bg-slate-800">
-                    <Table size={28} className="text-[#64748B] dark:text-slate-500" />
                   </div>
-                  <p className="text-[15px] font-medium text-[#11323B] dark:text-slate-200">暂无融合结果</p>
-                  <p className="mt-1 text-[13px] text-[#64748B] dark:text-slate-400">请先在“解析”页完成文档抽取</p>
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </aside>
 
-      <div className="absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-6 rounded-full bg-white/80 px-6 py-3 shadow-[0_8px_30px_rgba(0,0,0,0.06)] backdrop-blur-2xl transition-transform duration-300 hover:-translate-y-1 dark:bg-slate-800/90">
-        <div className="flex items-center gap-2.5">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
-          </span>
-          <span className="text-[12px] font-bold tracking-wide text-[#11323B] dark:text-slate-200">
-            引擎在线
-          </span>
-        </div>
-        <div className="h-5 w-[1.5px] bg-slate-200 dark:bg-slate-700" />
-        <div className="flex items-center gap-5 text-[12px] font-semibold text-[#64748B] dark:text-slate-400">
-          <span>
-            已选：<span className="text-[#11323B] dark:text-slate-100">{selectedCount}</span>
-          </span>
-          <span>
-            已校验：<span className="text-emerald-600 dark:text-emerald-400">{verifiedCount}</span>
-          </span>
-        </div>
-        <div className="h-5 w-[1.5px] bg-slate-200 dark:bg-slate-700" />
-        <div className="flex gap-5 text-[12px] font-semibold text-[#64748B] dark:text-slate-400">
-          <span>
-            合计：
-            <span className="text-[#11323B] dark:text-slate-100">
-              {totalAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-            </span>
-          </span>
-          <span>行数：{rows.length}</span>
+      <div className="mx-auto flex w-full max-w-[460px] flex-col px-4 pb-8 pt-[max(16px,env(safe-area-inset-top))]">
+        <header className="sticky top-0 z-20 -mx-4 px-4 pb-4 backdrop-blur-md bg-[#EAF7F8]/80 dark:bg-[#0B1120]/80">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="mt-3 text-[30px] font-black tracking-tight text-slate-950 dark:text-slate-100">
+                多源数据融合
+              </h1>
+            </div>
+            <div className="mt-3 flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsHelpOpen(true)}
+                className="flex h-11 w-11 items-center justify-center rounded-[20px] bg-white text-slate-500 shadow-sm dark:bg-white/5 dark:text-slate-300"
+                aria-label="打开使用说明"
+                title="打开使用说明"
+              >
+                <HelpCircle size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSidebarFullWidth(false);
+                  setIsSidebarOpen(true);
+                }}
+                className="flex h-11 w-11 items-center justify-center rounded-[20px] bg-white text-slate-500 shadow-sm dark:bg-white/5 dark:text-slate-300"
+                aria-label="打开任务中心"
+                title="打开任务中心"
+              >
+                <PanelLeft size={18} />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div className="space-y-4 pt-4">
+          <section className="mb-10">
+            <div className="mb-4">
+              <h2 className="mt-1 text-[22px] font-bold text-slate-950 dark:text-slate-100">
+                资源准备
+              </h2>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setIsTemplatePanelOpen(true)}
+                className="group relative flex min-h-[100px] flex-col items-start justify-between overflow-hidden rounded-[28px] bg-white p-5 text-left shadow-sm active:scale-[0.98] transition-transform dark:bg-white/5"       
+              >
+                <div className="absolute -right-4 -top-4 h-24 w-24 rounded-full bg-sky-50/50 blur-2xl dark:bg-sky-900/20" />
+                <div className="flex w-full items-center justify-between gap-3 relative z-10">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-[16px] bg-sky-50 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300">
+                    {isUploadingTemplate ? (
+                      <Loader2 size={20} className="animate-spin" />
+                    ) : (
+                      <UploadCloud size={20} />
+                    )}
+                  </div>
+                </div>
+                <div className="mt-3 relative z-10">
+                  <p className="text-[15px] font-bold text-slate-900 dark:text-slate-100">        
+                    模板管理
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsDocsetPanelOpen(true)}
+                className="group relative flex min-h-[100px] flex-col items-start justify-between overflow-hidden rounded-[28px] bg-white p-5 text-left shadow-sm active:scale-[0.98] transition-transform dark:bg-white/5"       
+              >
+                <div className="absolute -right-4 -top-4 h-24 w-24 rounded-full bg-indigo-50/50 blur-2xl dark:bg-indigo-900/20" />
+                <div className="flex w-full items-center justify-between gap-3 relative z-10">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-[16px] bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300">
+                    {isUploadingDocset ? (
+                      <Loader2 size={20} className="animate-spin" />
+                    ) : (
+                      <FolderOpen size={20} />
+                    )}
+                  </div>
+                </div>
+                <div className="mt-3 relative z-10">
+                  <p className="text-[15px] font-bold text-slate-900 dark:text-slate-100">        
+                    文档集管理
+                  </p>
+                </div>
+              </button>
+            </div>
+            <div className="mt-4 grid gap-3">
+              {selectedTemplate ? (
+                <div
+                  onClick={() => setIsTemplatePanelOpen(true)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setIsTemplatePanelOpen(true);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  className="flex w-full items-center justify-between gap-3 overflow-hidden rounded-[24px] bg-white shadow-sm px-4 py-3.5 text-left dark:bg-white/5"
+                  aria-label={`查看模板 ${selectedTemplate.name}`}
+                >
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <p className="min-w-0 truncate text-sm font-semibold text-slate-900">
+                        {selectedTemplate.name}
+                      </p>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {selectedTemplate.size} · {selectedTemplate.fields.length}{" "}
+                      个字段
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeTemplate(selectedTemplate.id);
+                    }}
+                    className="shrink-0 rounded-full p-2 text-slate-400"
+                    aria-label="删除已选模板"
+                    title="删除已选模板"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ) : (
+                <div className="rounded-[24px] border-2 border-dashed border-slate-200 bg-white/40 px-4 py-6 text-center text-[14px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/5">
+                  暂无模板
+                </div>
+              )}
+              {selectedDocset ? (
+                <div className="overflow-hidden rounded-[24px] bg-white shadow-sm dark:bg-white/5">
+                  <div className="flex items-center justify-between gap-3 px-3 py-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-slate-900">
+                        当前文档集
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {selectedDocset.count} 个文件 ·{" "}
+                        {selectedDocset.uploadTime}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setIsCurrentDocsetOpen((current) => !current)
+                      }
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-slate-400"
+                      aria-label={isCurrentDocsetOpen ? "收起文档集" : "展开文档集"}
+                      title={isCurrentDocsetOpen ? "收起文档集" : "展开文档集"}
+                      aria-expanded={isCurrentDocsetOpen}
+                    >
+                      <ChevronDown size={16} />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-[24px] border-2 border-dashed border-slate-200 bg-white/40 px-4 py-6 text-center text-[14px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/5">
+                  暂无文档集
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="mt-12">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-[22px] font-bold text-slate-950 dark:text-slate-100">用户要求</h2>
+              </div>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
+                {gridState.draftRequirements.length}/600
+              </span>
+            </div>
+            <textarea
+              value={gridState.draftRequirements}
+              onChange={(event) =>
+                setGridState((current) => ({
+                  ...current,
+                  draftRequirements: event.target.value,
+                }))
+              }
+              maxLength={600}
+              rows={4}
+              placeholder="例如：只保留 2025 年山东相关数据，金额统一保留两位小数。"
+              className="min-h-[100px] w-full resize-none rounded-[24px] border-none bg-white shadow-sm px-5 py-4 text-sm leading-6 text-slate-700 outline-none placeholder:text-slate-400 focus:ring-4 focus:ring-cyan-500/10 dark:bg-white/5 dark:text-slate-200 dark:focus:ring-cyan-400/20"
+              aria-label="用户要求"
+              title="用户要求"
+            />
+            <button
+              type="button"
+              onClick={handleStartRun}
+              disabled={isRunning || !selectedTemplate || !selectedDocset}
+              className="mt-6 flex h-[56px] w-full items-center justify-center gap-2 rounded-full bg-slate-900 text-[16px] font-bold text-white shadow-lg shadow-slate-900/20 active:scale-[0.98] transition-transform disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:shadow-none"
+            >
+              {isRunning ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Play size={16} />
+              )}
+              {isRunning ? "创建中..." : "开始填充"}
+            </button>
+            {errorMessage ? (
+              <p className="mt-2 rounded-2xl bg-red-50 px-3 py-2 text-xs text-red-600">
+                {errorMessage}
+              </p>
+            ) : null}
+          </section>
         </div>
       </div>
     </div>

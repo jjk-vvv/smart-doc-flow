@@ -21,7 +21,7 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 office_pdf_module = _load_module(
-    ["module2", "app", "core", "format", "office_pdf.py"],
+    ["app", "modules", "module2", "core", "format", "office_pdf.py"],
     "_smart_doc_flow_module2_office_pdf_runtime",
 )
 
