@@ -40,7 +40,7 @@ export type Module3DocsetUploadResponse = {
 export type Module3RunRequest = {
   template_id: string;
   doc_set_id: string;
-  user_requirements?: string;
+  prompt?: string;
 };
 
 export type Module3RunResponse = {
@@ -305,7 +305,7 @@ export const createModule3Run = async (
     body: JSON.stringify({
       template_id: payload.template_id,
       doc_set_id: payload.doc_set_id,
-      prompt: payload.user_requirements ?? "",
+      prompt: payload.prompt ?? "",
     }),
   });
 

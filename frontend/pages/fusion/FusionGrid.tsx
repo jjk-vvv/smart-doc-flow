@@ -28,6 +28,10 @@ import {
 import { motion } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import "luckysheet/dist/plugins/css/pluginsCss.css";
+import "luckysheet/dist/plugins/plugins.css";
+import "luckysheet/dist/css/luckysheet.css";
+import "luckysheet/dist/assets/iconfont/iconfont.css";
 import {
   cancelModule3Run,
   createModule3Run,
@@ -116,6 +120,113 @@ type PreviewSheet = {
   name: string;
   rows: string[][];
   kind: "sheet" | "table" | "text";
+};
+
+type LuckysheetRuntime = {
+  create?: (config: Record<string, unknown>) => void;
+  destroy?: () => void;
+  getAllSheets?: () => Array<Record<string, unknown>>;
+};
+
+type JQueryCompat = Record<string, unknown> & {
+  isArray?: (value: unknown) => boolean;
+  isFunction?: (value: unknown) => boolean;
+  isNumeric?: (value: unknown) => boolean;
+  trim?: (value: unknown) => string;
+  type?: (value: unknown) => string;
+  fn?: Record<string, unknown>;
+};
+
+let luckysheetRuntimePromise: Promise<LuckysheetRuntime> | null = null;
+
+const resolveLuckysheetRuntime = (moduleExport: unknown): LuckysheetRuntime | null => {
+  if (!moduleExport || typeof moduleExport !== "object") return null;
+  const value = moduleExport as Record<string, unknown>;
+  const direct = value as LuckysheetRuntime;
+  if (typeof direct.create === "function") return direct;
+
+  const named = value.luckysheet as LuckysheetRuntime | undefined;
+  if (named && typeof named.create === "function") return named;
+
+  const defaultExport = value.default as Record<string, unknown> | undefined;
+  if (!defaultExport || typeof defaultExport !== "object") return null;
+  const defaultRuntime = defaultExport as LuckysheetRuntime;
+  if (typeof defaultRuntime.create === "function") return defaultRuntime;
+  const nested = defaultExport.luckysheet as LuckysheetRuntime | undefined;
+  if (nested && typeof nested.create === "function") return nested;
+  return null;
+};
+
+const installJQueryCompat = (raw: unknown): void => {
+  const jq = raw as JQueryCompat;
+  if (!jq || (typeof jq !== "function" && typeof jq !== "object")) return;
+
+  if (typeof jq.isArray !== "function") {
+    jq.isArray = (value: unknown) => Array.isArray(value);
+  }
+  if (typeof jq.isFunction !== "function") {
+    jq.isFunction = (value: unknown) => typeof value === "function";
+  }
+  if (typeof jq.isNumeric !== "function") {
+    jq.isNumeric = (value: unknown) => {
+      if (typeof value === "number") return Number.isFinite(value);
+      if (typeof value === "string" && value.trim() !== "") {
+        return Number.isFinite(Number(value));
+      }
+      return false;
+    };
+  }
+  if (typeof jq.trim !== "function") {
+    jq.trim = (value: unknown) => String(value ?? "").trim();
+  }
+  if (typeof jq.type !== "function") {
+    jq.type = (value: unknown) =>
+      Object.prototype.toString.call(value).slice(8, -1).toLowerCase();
+  }
+  if (jq.fn && typeof jq.fn.mousewheel !== "function") {
+    jq.fn.mousewheel = function mousewheelShim(this: unknown): unknown {
+      return this;
+    };
+  }
+};
+
+const ensureLuckysheetRuntime = async (): Promise<LuckysheetRuntime> => {
+  if (typeof window === "undefined") {
+    throw new Error("当前环境不支持 Excel 预览");
+  }
+
+  const currentRuntime = (window as any).luckysheet as LuckysheetRuntime | undefined;
+  if (currentRuntime && typeof currentRuntime.create === "function") {
+    return currentRuntime;
+  }
+
+  if (!luckysheetRuntimePromise) {
+    luckysheetRuntimePromise = (async () => {
+      const jqMod = await import("jquery");
+      const jqValue = (jqMod as { default?: unknown }).default ?? jqMod;
+      installJQueryCompat(jqValue);
+      (window as any).$ = jqValue;
+      (window as any).jQuery = jqValue;
+
+      await import("luckysheet/dist/plugins/js/plugin.js");
+      const luckysheetModule = await import("luckysheet/dist/luckysheet.umd.js");
+      const runtime =
+        ((window as any).luckysheet as LuckysheetRuntime | undefined) ||
+        resolveLuckysheetRuntime(luckysheetModule);
+
+      if (!runtime || typeof runtime.create !== "function") {
+        throw new Error("Luckysheet 初始化失败");
+      }
+
+      (window as any).luckysheet = runtime;
+      return runtime;
+    })().catch((error) => {
+      luckysheetRuntimePromise = null;
+      throw error;
+    });
+  }
+
+  return luckysheetRuntimePromise;
 };
 
 const formatBytes = (bytes: number): string => {
@@ -538,6 +649,8 @@ const LuckysheetPreview = ({
     text: string;
     type: "success" | "error";
   } | null>(null);
+  const [isBootingSheet, setIsBootingSheet] = useState(false);
+  const [sheetError, setSheetError] = useState("");
 
   const sheets = useMemo(
     () =>
@@ -549,65 +662,85 @@ const LuckysheetPreview = ({
 
   useEffect(() => {
     if (!containerRef.current) return;
-    const luckysheet = (window as any).luckysheet;
-    if (!luckysheet) {
-      console.warn("Luckysheet is not loaded");
-      return;
-    }
+    let cancelled = false;
+    setIsBootingSheet(true);
+    setSheetError("");
 
-    const luckysheetData = sheets.map((sheet, index) => {
-      const celldata: any[] = [];
-      sheet.rows.forEach((row, rIndex) => {
-        row.forEach((cell, cIndex) => {
-          if (cell !== undefined && cell !== null && cell !== "") {
-            celldata.push({
-              r: rIndex,
-              c: cIndex,
-              v: { v: cell, m: cell },
+    const mountLuckysheet = async () => {
+      try {
+        const luckysheet = await ensureLuckysheetRuntime();
+        if (cancelled || !containerRef.current) return;
+
+        const luckysheetData = sheets.map((sheet, index) => {
+          const celldata: any[] = [];
+          sheet.rows.forEach((row, rIndex) => {
+            row.forEach((cell, cIndex) => {
+              if (cell !== undefined && cell !== null && cell !== "") {
+                celldata.push({
+                  r: rIndex,
+                  c: cIndex,
+                  v: { v: cell, m: cell },
+                });
+              }
             });
-          }
+          });
+
+          return {
+            name: sheet.name,
+            index: index.toString(),
+            order: index,
+            status: index === 0 ? 1 : 0,
+            celldata,
+          };
         });
-      });
 
-      return {
-        name: sheet.name,
-        index: index.toString(),
-        order: index,
-        status: index === 0 ? 1 : 0,
-        celldata: celldata,
-      };
-    });
+        try {
+          luckysheet.destroy?.();
+        } catch {
+          // Ignore stale singleton cleanup failures.
+        }
 
-    try {
-      luckysheet.destroy();
-    } catch (e) {
-      // Ignore
-    }
+        luckysheet.create?.({
+          container: containerRef.current.id,
+          data: luckysheetData,
+          showinfobar: false,
+          showtoolbar: true,
+          showsheetbar: true,
+          showstatisticBar: true,
+          enableAddRow: true,
+          enableAddBackTop: true,
+          lang: "zh",
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setSheetError(error instanceof Error ? error.message : "Excel 预览加载失败");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsBootingSheet(false);
+        }
+      }
+    };
 
-    luckysheet.create({
-      container: containerRef.current.id,
-      data: luckysheetData,
-      showinfobar: false,
-      showtoolbar: true,
-      showsheetbar: true,
-      showstatisticBar: true,
-      enableAddRow: true,
-      enableAddBackTop: true,
-      lang: "zh",
-    });
+    void mountLuckysheet();
 
     return () => {
+      cancelled = true;
       try {
-        luckysheet.destroy();
-      } catch (e) {
-        // Ignore
+        ((window as any).luckysheet as LuckysheetRuntime | undefined)?.destroy?.();
+      } catch {
+        // Ignore stale singleton cleanup failures.
       }
     };
   }, [sheets]);
 
   const handleSave = async () => {
     const luckysheet = (window as any).luckysheet;
-    if (!luckysheet) return;
+    if (!luckysheet) {
+      setToastMessage({ text: "Excel 预览尚未加载完成", type: "error" });
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
 
     setIsSaving(true);
     try {
@@ -667,7 +800,7 @@ const LuckysheetPreview = ({
       <div className="absolute top-2 right-[20px] z-[1000]">
         <button
           onClick={handleSave}
-          disabled={isSaving}
+          disabled={isSaving || isBootingSheet || Boolean(sheetError)}
           className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100 text-white px-4 py-2 rounded-[10px] text-[13px] font-medium shadow-sm transition-colors disabled:opacity-50"
         >
           {isSaving ? (
@@ -678,6 +811,25 @@ const LuckysheetPreview = ({
           保存修改
         </button>
       </div>
+      {(isBootingSheet || sheetError) && (
+        <div className="absolute inset-0 z-[900] flex items-center justify-center bg-white/90 px-6 text-center dark:bg-[#0B1120]/90">
+          <div className="max-w-[360px] space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-slate-900">
+            {isBootingSheet ? (
+              <Loader2 size={24} className="mx-auto animate-spin text-slate-500" />
+            ) : (
+              <AlertCircle size={24} className="mx-auto text-red-500" />
+            )}
+            <div className="text-[14px] font-medium text-slate-800 dark:text-slate-100">
+              {isBootingSheet ? "正在加载 Excel 预览组件" : "Excel 预览加载失败"}
+            </div>
+            {sheetError && (
+              <div className="text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
+                {sheetError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div
         id="luckysheet-container"
         ref={containerRef}
