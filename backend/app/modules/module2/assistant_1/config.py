@@ -58,6 +58,20 @@ def _resolve_module2_path(raw_value: str, default_path: Path) -> Path:
     return candidate_module2
 
 
+def _sanitize_embedding_base_url(raw_value: str) -> str:
+    value = str(raw_value or "").strip().rstrip("/")
+    if not value:
+        return value
+    lower = value.lower()
+    # Misconfiguration guard: users sometimes copy the chat generation URL
+    # into embedding base. Normalize it back to provider root.
+    marker = "/v1beta/models/"
+    if ":generatecontent" in lower and marker in lower:
+        index = lower.index(marker)
+        return value[:index].rstrip("/")
+    return value
+
+
 @dataclass(frozen=True)
 class Assistant1Settings:
     module2_root: Path
@@ -143,6 +157,15 @@ class Assistant1Settings:
             "ASSISTANT1_TAVILY_SEARCH_URL",
             default="https://api.tavily.com/search",
         ).strip() or "https://api.tavily.com/search"
+        embedding_base_url = _sanitize_embedding_base_url(
+            _env(
+                "ASSISTANT1_EMBEDDING_BASE",
+                "ASSISTANT1_EMBEDDING_BASE_URL",
+                "MODULE2_LLM_BASE_URL",
+                "MODULE2_LLM_API_BASE_URL",
+                default="https://generativelanguage.googleapis.com",
+            )
+        ) or "https://generativelanguage.googleapis.com"
 
         return cls(
             module2_root=MODULE2_ROOT,
@@ -159,13 +182,7 @@ class Assistant1Settings:
                 "GOOGLE_API_KEY",
                 default="",
             ),
-            embedding_base_url=_env(
-                "ASSISTANT1_EMBEDDING_BASE",
-                "ASSISTANT1_EMBEDDING_BASE_URL",
-                "MODULE2_LLM_API_BASE_URL",
-                "MODULE2_LLM_BASE_URL",
-                default="https://generativelanguage.googleapis.com",
-            ),
+            embedding_base_url=embedding_base_url,
             embedding_model=_env(
                 "ASSISTANT1_EMBEDDING_MODEL",
                 default="gemini-embedding-001",

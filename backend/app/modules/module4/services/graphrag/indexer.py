@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -722,6 +723,79 @@ def _detect_runtime_binary_incompatibility(log_path: Path) -> str | None:
     )
 
 
+def _detect_retryable_process_failure(log_path: Path) -> str | None:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return None
+    lower = text.lower()
+
+    cache_missing_signature = (
+        ("no such file or directory" in lower or "filenotfounderror" in lower)
+        and "cache" in lower
+        and "summarize_descriptions" in lower
+    )
+    if cache_missing_signature:
+        return "cache_missing_summarize_descriptions"
+
+    rate_limited_signature = (
+        "ratelimiterror" in lower
+        or "error code: 429" in lower
+        or "http 429" in lower
+        or ("failed to validate embedding model" in lower and "429" in lower)
+    )
+    if rate_limited_signature:
+        return "provider_rate_limited"
+
+    return None
+
+
+def _resolve_workspace_subdir(workspace_dir: Path, raw_value: str, fallback: str) -> Path | None:
+    value = str(raw_value or "").strip() or fallback
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = (workspace_dir / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    try:
+        candidate.relative_to(workspace_dir)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _reset_workspace_runtime_dirs(
+    *,
+    workspace_dir: Path,
+    workspace_env: Dict[str, str],
+    reset_cache: bool,
+    reset_output: bool,
+) -> List[str]:
+    touched: List[str] = []
+
+    if reset_cache:
+        cache_dir = _resolve_workspace_subdir(
+            workspace_dir,
+            str(workspace_env.get("GRAPHRAG_CACHE_DIR") or "cache"),
+            "cache",
+        )
+        if cache_dir is not None:
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir, ignore_errors=True)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            touched.append(str(cache_dir))
+
+    if reset_output:
+        output_dir = _resolve_workspace_subdir(workspace_dir, "output", "output")
+        if output_dir is not None:
+            if output_dir.exists():
+                shutil.rmtree(output_dir, ignore_errors=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            touched.append(str(output_dir))
+
+    return touched
+
+
 @dataclass(frozen=True)
 class GraphRAGIndexResult:
     command: List[str]
@@ -1095,6 +1169,20 @@ class GraphRAGIndexer:
         style = _runtime_style(workspace_env)
         allow_retry_skip_community_reports = _retry_skip_community_reports_enabled(workspace_env)
         community_retry_workflow = "create_final_community_reports" if style == "legacy" else "create_community_reports"
+        process_retry_max_attempts_raw = str(
+            os.getenv("MODULE4_GRAPHRAG_RETRY_PROCESS_MAX_ATTEMPTS", "1")
+        ).strip()
+        try:
+            process_retry_max_attempts = max(0, int(process_retry_max_attempts_raw or "1"))
+        except ValueError:
+            process_retry_max_attempts = 1
+        process_retry_backoff_raw = str(
+            os.getenv("MODULE4_GRAPHRAG_RETRY_PROCESS_BACKOFF_SEC", "8")
+        ).strip()
+        try:
+            process_retry_backoff_sec = max(0.0, float(process_retry_backoff_raw or "8"))
+        except ValueError:
+            process_retry_backoff_sec = 8.0
 
         log_path = workspace_dir / "graphrag-index.log"
         if _is_deterministic_execution_mode(execution_mode):
@@ -1214,6 +1302,45 @@ class GraphRAGIndexer:
                             f"\n# module4 retry: skip_workflows=[\"{community_retry_workflow}\"] due to unstable community report JSON\n"
                         )
                     completed = _execute()
+            if completed.returncode != 0 and process_retry_max_attempts > 0:
+                reason_labels = {
+                    "cache_missing_summarize_descriptions": "cache file miss under summarize_descriptions",
+                    "provider_rate_limited": "provider rate limited (429)",
+                }
+                for attempt in range(1, process_retry_max_attempts + 1):
+                    retry_reason = _detect_retryable_process_failure(log_path)
+                    if retry_reason is None:
+                        break
+
+                    reset_cache = retry_reason == "cache_missing_summarize_descriptions"
+                    reset_output = True
+                    touched_dirs = _reset_workspace_runtime_dirs(
+                        workspace_dir=workspace_dir,
+                        workspace_env=workspace_env,
+                        reset_cache=reset_cache,
+                        reset_output=reset_output,
+                    )
+                    reason_label = reason_labels.get(retry_reason, retry_reason)
+                    backoff_sec = process_retry_backoff_sec * attempt if retry_reason == "provider_rate_limited" else 0.0
+                    with log_path.open("a", encoding="utf-8") as log_file:
+                        touched_text = ", ".join(touched_dirs) if touched_dirs else "(none)"
+                        log_file.write(
+                            "\n# module4 retry: "
+                            f"attempt={attempt}/{process_retry_max_attempts} "
+                            f"reason={reason_label} "
+                            f"reset_cache={str(reset_cache).lower()} "
+                            f"reset_output={str(reset_output).lower()} "
+                            f"touched={touched_text}\n"
+                        )
+                        if backoff_sec > 0:
+                            log_file.write(
+                                f"# module4 retry: provider backoff {backoff_sec:.1f}s before re-run\n"
+                            )
+                    if backoff_sec > 0:
+                        time.sleep(backoff_sec)
+                    completed = _execute()
+                    if completed.returncode == 0:
+                        break
             if completed.returncode != 0:
                 binary_incompat_message = _detect_runtime_binary_incompatibility(log_path)
                 if binary_incompat_message:

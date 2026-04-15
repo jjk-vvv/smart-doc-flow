@@ -39,6 +39,68 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
   const [viewportHeight, setViewportHeight] = useState(0);
   const [renderedPageCount, setRenderedPageCount] = useState(0);
 
+  const swapLoopbackHost = (hostname: string): string | null => {
+    const normalized = String(hostname || '').trim().toLowerCase();
+    if (normalized === 'localhost') return '127.0.0.1';
+    if (normalized === '127.0.0.1') return 'localhost';
+    return null;
+  };
+
+  const buildPdfFetchCandidates = (targetSrc: string): string[] => {
+    const normalizedSrc = String(targetSrc || '').trim();
+    if (!normalizedSrc) return [];
+
+    const candidates: string[] = [];
+    const push = (value: string) => {
+      const normalized = String(value || '').trim();
+      if (!normalized) return;
+      if (candidates.includes(normalized)) return;
+      candidates.push(normalized);
+    };
+
+    push(normalizedSrc);
+
+    if (/^https?:\/\//i.test(normalizedSrc)) {
+      try {
+        const parsed = new URL(normalizedSrc);
+        const swappedHost = swapLoopbackHost(parsed.hostname);
+        if (swappedHost) {
+          const swapped = new URL(parsed.toString());
+          swapped.hostname = swappedHost;
+          push(swapped.toString());
+        }
+        if (parsed.pathname.startsWith('/extract/')) {
+          push(`${parsed.pathname}${parsed.search}${parsed.hash}`);
+        }
+      } catch {
+        // ignore malformed URL and keep existing candidates
+      }
+      return candidates;
+    }
+
+    if (normalizedSrc.startsWith('/')) {
+      if (typeof window !== 'undefined') {
+        const origin = String(window.location.origin || '').trim();
+        if (origin) {
+          push(`${origin}${normalizedSrc}`);
+          try {
+            const parsedOrigin = new URL(origin);
+            const swappedHost = swapLoopbackHost(parsedOrigin.hostname);
+            if (swappedHost) {
+              const swappedOrigin = new URL(parsedOrigin.toString());
+              swappedOrigin.hostname = swappedHost;
+              push(`${swappedOrigin.origin}${normalizedSrc}`);
+            }
+          } catch {
+            // ignore invalid origin
+          }
+        }
+      }
+    }
+
+    return candidates;
+  };
+
   const resolvePdfDocumentSource = async (targetSrc: string, signal: AbortSignal) => {
     const normalizedSrc = String(targetSrc || '').trim();
     if (!normalizedSrc) {
@@ -58,23 +120,35 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
       };
     }
 
-    const response = await fetch(normalizedSrc, {
-      credentials: 'include',
-      cache: 'no-store',
-      signal,
-    });
-    if (!response.ok) {
-      throw new Error(`PDF preview request failed (${response.status})`);
+    const candidates = buildPdfFetchCandidates(normalizedSrc);
+    const failures: string[] = [];
+    for (const candidate of candidates) {
+      try {
+        const response = await fetch(candidate, {
+          credentials: 'include',
+          cache: 'no-store',
+          signal,
+        });
+        if (!response.ok) {
+          failures.push(`${candidate} -> HTTP ${response.status}`);
+          continue;
+        }
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength <= 0) {
+          failures.push(`${candidate} -> empty body`);
+          continue;
+        }
+        return {
+          data: new Uint8Array(buffer),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'request failed';
+        failures.push(`${candidate} -> ${message}`);
+      }
     }
 
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength <= 0) {
-      throw new Error('PDF preview file is empty');
-    }
-
-    return {
-      data: new Uint8Array(buffer),
-    };
+    const summary = failures.slice(0, 3).join(' | ');
+    throw new Error(summary ? `PDF preview request failed: ${summary}` : 'PDF preview request failed');
   };
 
   const syncVisiblePage = () => {

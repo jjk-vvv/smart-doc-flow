@@ -4,6 +4,7 @@ import json
 from urllib.parse import urlparse
 
 import requests
+from requests.exceptions import HTTPError, RequestException
 
 from .config import Assistant1Settings
 
@@ -41,6 +42,11 @@ class GeminiEmbeddingClient:
 
     def _embed_openai(self, texts: list[str]) -> list[list[float]]:
         url = self._openai_embeddings_url()
+        if self._looks_like_generation_endpoint(url):
+            raise RuntimeError(
+                "OpenAI-style embedding base points to a generation endpoint. "
+                "Please set ASSISTANT1_EMBEDDING_BASE/ASSISTANT1_EMBEDDING_BASE_URL to the provider root or embeddings endpoint."
+            )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -53,12 +59,25 @@ class GeminiEmbeddingClient:
                 "input": batch,
                 "dimensions": self.dimensions,
             }
-            response = requests.post(url, headers=headers, json=payload, timeout=self.timeout_sec)
-            response.raise_for_status()
-            data = response.json()
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=self.timeout_sec)
+                response.raise_for_status()
+            except (HTTPError, RequestException) as exc:
+                self._raise_embedding_request_error(mode="openai", url=url, exc=exc)
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"OpenAI-style embedding response is not valid JSON "
+                    f"(model={self.model}, url={url}, status={response.status_code}). "
+                    f"response={self._response_excerpt(response)}"
+                ) from exc
             embeddings = data.get("data", [])
             if not isinstance(embeddings, list) or len(embeddings) != len(batch):
-                raise RuntimeError(f"unexpected OpenAI-style embedding response: {json.dumps(data, ensure_ascii=False)[:500]}")
+                raise RuntimeError(
+                    f"unexpected OpenAI-style embedding response (model={self.model}, url={url}): "
+                    f"{json.dumps(data, ensure_ascii=False)[:500]}"
+                )
             ordered = sorted(embeddings, key=lambda item: int(item.get("index", 0) or 0))
             for item in ordered:
                 vector = item.get("embedding", [])
@@ -80,9 +99,19 @@ class GeminiEmbeddingClient:
             "taskType": task_type,
             "outputDimensionality": self.dimensions,
         }
-        response = requests.post(url, headers=headers, json=payload, timeout=self.timeout_sec)
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=self.timeout_sec)
+            response.raise_for_status()
+        except (HTTPError, RequestException) as exc:
+            self._raise_embedding_request_error(mode="native", url=url, exc=exc)
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Native embedding response is not valid JSON "
+                f"(model={self.model}, url={url}, status={response.status_code}). "
+                f"response={self._response_excerpt(response)}"
+            ) from exc
         vector = None
         if isinstance(data.get("embedding"), dict):
             vector = data["embedding"].get("values")
@@ -91,7 +120,10 @@ class GeminiEmbeddingClient:
             if isinstance(first, dict):
                 vector = first.get("values")
         if not isinstance(vector, list):
-            raise RuntimeError(f"unexpected native embedding response: {json.dumps(data, ensure_ascii=False)[:500]}")
+            raise RuntimeError(
+                f"unexpected native embedding response (model={self.model}, url={url}): "
+                f"{json.dumps(data, ensure_ascii=False)[:500]}"
+            )
         return [float(value) for value in vector]
 
     def _resolve_endpoint_style(self) -> str:
@@ -100,6 +132,13 @@ class GeminiEmbeddingClient:
             return style
         parsed = urlparse(self.base_url)
         path = parsed.path.rstrip("/").lower()
+        model_lower = self.model.lower()
+        if ":embedcontent" in path or ":generatecontent" in path or "/v1beta/models/" in path:
+            return "native"
+        # Many Gemini-compatible providers publish a provider root ending with /v1.
+        # If model naming already indicates Gemini, default to native endpoint style.
+        if path.endswith("/v1") and "gemini" in model_lower:
+            return "native"
         if path.endswith("/v1") or path.endswith("/embeddings") or "/openai" in path:
             return "openai"
         return "native"
@@ -114,6 +153,9 @@ class GeminiEmbeddingClient:
             return self.base_url
         base = self.base_url
         lower = base.lower()
+        if ":generatecontent" in lower and "/v1beta/models/" in lower:
+            provider_root = base[: lower.index("/v1beta/models/")]
+            return f"{provider_root}/v1beta/models/{self.model}:embedContent"
         if lower.endswith("/v1beta") or "/v1beta/" in lower:
             return f"{base}/models/{self.model}:embedContent"
         # Accept provider bases written as ".../v1" (common in OpenAI-style configs)
@@ -122,3 +164,44 @@ class GeminiEmbeddingClient:
             provider_root = base[:-3]
             return f"{provider_root}/v1beta/models/{self.model}:embedContent"
         return f"{base}/v1beta/models/{self.model}:embedContent"
+
+    @staticmethod
+    def _looks_like_generation_endpoint(url: str) -> bool:
+        lower = (url or "").lower()
+        return (
+            ":generatecontent" in lower
+            or lower.endswith("/chat/completions")
+            or lower.endswith("/responses")
+        )
+
+    @staticmethod
+    def _response_excerpt(response: requests.Response | None, *, limit: int = 380) -> str:
+        if response is None:
+            return ""
+        try:
+            text = (response.text or "").strip()
+        except Exception:
+            return ""
+        if not text:
+            return ""
+        compact = text.replace("\r", " ").replace("\n", " ")
+        if len(compact) > limit:
+            return compact[:limit] + "..."
+        return compact
+
+    def _raise_embedding_request_error(self, *, mode: str, url: str, exc: Exception) -> None:
+        status_code = "n/a"
+        response_excerpt = ""
+        if isinstance(exc, HTTPError):
+            response = exc.response
+            if response is not None:
+                status_code = str(response.status_code)
+                response_excerpt = self._response_excerpt(response)
+        message = (
+            f"Gemini embedding request failed (mode={mode}, model={self.model}, "
+            f"endpoint_style={self._resolve_endpoint_style()}, url={url}, "
+            f"timeout_sec={self.timeout_sec}, status={status_code})."
+        )
+        if response_excerpt:
+            message = f"{message} response={response_excerpt}"
+        raise RuntimeError(message) from exc

@@ -1,6 +1,5 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, {
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -15,12 +14,9 @@ import {
   Download,
   Eye,
   File as FileIcon,
-  FileSpreadsheet,
-  FileText,
   FolderOpen,
   HelpCircle,
   Loader2,
-  Search,
   RefreshCw,
   Table,
   Trash2,
@@ -292,44 +288,6 @@ const getTaskStatusDot = (status: TaskStatus) => {
   }
 };
 
-const getStatusColor = (status: TaskStatus) => {
-  switch (status) {
-    case "done":
-      return "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400";
-    case "running":
-      return "bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400";
-    case "cancelled":
-      return "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400";
-    case "failed":
-      return "bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400";
-    default:
-      return "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
-  }
-};
-
-const getStatusIcon = (status: TaskStatus) => {
-  switch (status) {
-    case "done":
-      return (
-        <CheckCircle
-          size={14}
-          className="text-emerald-600 dark:text-emerald-400"
-        />
-      );
-    case "running":
-      return (
-        <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent dark:border-blue-400" />
-      );
-    case "cancelled":
-      return (
-        <XCircle size={14} className="text-amber-600 dark:text-amber-400" />
-      );
-    case "failed":
-      return <XCircle size={14} className="text-red-600 dark:text-red-400" />;
-    default:
-      return <Clock size={14} className="text-slate-500" />;
-  }
-};
 
 const getStatusText = (status: TaskStatus) => {
   switch (status) {
@@ -1011,7 +969,7 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
   };
 
   // 处理下拉菜单内部的鼠标进入
-  const handleDropdownMouseEnter = (index: number) => {
+  const handleDropdownMouseEnter = () => {
     if (closeTimeoutRef.current) {
       clearTimeout(closeTimeoutRef.current);
       closeTimeoutRef.current = null;
@@ -1028,7 +986,6 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
         {options.map((option, index) => {
           const Icon = option.icon;
           const hasDropdown = !!option.dropdownContent;
-          const isLocked = lockedDropdownIndex === index;
           const isDropdownOpen = currentOpenIndex === index;
 
           return (
@@ -1101,7 +1058,7 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
                       top: position.top,
                       zIndex: 9999,
                     }}
-                    onMouseEnter={() => handleDropdownMouseEnter(index)}
+                    onMouseEnter={handleDropdownMouseEnter}
                     onMouseLeave={handleMouseLeave}
                   >
                     <motion.div
@@ -1129,7 +1086,6 @@ const VerticalSlidingSelector = ({
   items,
   selectedId,
   onSelect,
-  tone,
   emptyIcon: EmptyIcon,
   emptyTitle,
   emptyHint,
@@ -1138,7 +1094,7 @@ const VerticalSlidingSelector = ({
   items: DocumentItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  tone: VerticalSelectorTone;
+  tone?: VerticalSelectorTone;
   emptyIcon: React.ComponentType<{ size?: number; className?: string }>;
   emptyTitle: string;
   emptyHint?: string;
@@ -1147,36 +1103,15 @@ const VerticalSlidingSelector = ({
   const listRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  const toneStyle =
-    tone === "purple"
-      ? {
-          highlight:
-            "bg-blue-50 dark:bg-blue-500/10 border-l-4 border-blue-500",
-          activeText: "text-blue-700 dark:text-blue-300",
-          action:
-            "hover:bg-blue-100 dark:hover:bg-blue-500/20 hover:text-blue-600 dark:hover:text-blue-400",
-        }
-      : {
-          highlight:
-            "bg-cyan-50 dark:bg-cyan-500/10 border-l-4 border-cyan-500",
-          activeText: "text-cyan-700 dark:text-cyan-300",
-          action:
-            "hover:bg-cyan-100 dark:hover:bg-cyan-500/20 hover:text-cyan-600 dark:hover:text-cyan-400",
-        };
-
   useEffect(() => {
     if (!selectedId) return;
     const node = itemRefs.current[selectedId];
     node?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [selectedId, items]);
 
-  const scrollList = (direction: number) => {
-    listRef.current?.scrollBy({ top: direction * 132, behavior: "smooth" });
-  };
-
   if (items.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center rounded-2xl border border-slate-200 bg-slate-50/30 dark:border-white/[0.05] dark:bg-[#0B1120]">
+      <div className="flex h-full items-center justify-center rounded-[16px] border border-slate-200 bg-slate-50/30 dark:border-white/[0.05] dark:bg-[#0B1120]">
         <div className="text-center text-sm text-slate-500 dark:text-slate-400">
           <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-white dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.05] shadow-sm">
             <EmptyIcon size={24} className="text-slate-400 dark:text-slate-500" />
@@ -1188,32 +1123,11 @@ const VerticalSlidingSelector = ({
     );
   }
 
-  const selectedIndex = Math.max(
-    0,
-    items.findIndex((item) => item.id === selectedId),
-  );
-
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-slate-500 dark:text-slate-400">
-          第 {selectedIndex + 1} / {items.length} 个
-        </span>
-      </div>
-
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-white/[0.05] dark:bg-[#0B1120]">
-        <div
-          className={cn(
-            "pointer-events-none absolute left-0 right-0 z-0 transition-all duration-200 ease-out",
-            toneStyle.highlight,
-          )}
-          style={{
-            top: `${selectedIndex * 44}px`,
-            height: "44px",
-          }}
-        />
-        <div ref={listRef} className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10">
-          {items.map((item, idx) => (
+    <div className="flex h-full min-h-0 flex-col bg-slate-50/30 dark:bg-white/[0.01] rounded-[16px] p-1.5">
+      <div ref={listRef} className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10 pr-1">
+        <div className="flex flex-col gap-1">
+          {items.map((item) => (
             <div
               key={item.id}
               ref={(node) => {
@@ -1221,30 +1135,35 @@ const VerticalSlidingSelector = ({
               }}
               onClick={() => onSelect(item.id)}
               className={cn(
-                "relative z-10 flex h-11 cursor-pointer items-center gap-3 border-b border-slate-100 px-3 transition-colors last:border-b-0 hover:bg-slate-50 dark:border-white/[0.05] dark:hover:bg-white/[0.02]",
-                selectedId === item.id && toneStyle.activeText,
+                "group relative flex cursor-pointer items-center justify-between gap-3 rounded-[12px] p-2.5 transition-all border",
+                selectedId === item.id
+                  ? "bg-white dark:bg-white/[0.04] shadow-sm border-blue-200/60 dark:border-blue-500/20"
+                  : "border-transparent hover:bg-slate-100/50 dark:hover:bg-white/[0.02]"
               )}
             >
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-medium text-slate-500 dark:bg-white/[0.04] dark:text-slate-400">
-                {idx + 1}
-              </span>
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                {getFileIcon(item.type)}
-                <p className="truncate text-sm font-medium">{item.name}</p>
+              <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                <div className="shrink-0 flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 dark:bg-white/[0.04]">
+                  {getFileIcon(item.type)}
+                </div>
+                <div className="flex flex-col min-w-0 gap-0.5">
+                  <p className={cn(
+                    "truncate text-[13px] font-medium leading-none",
+                    selectedId === item.id ? "text-blue-600 dark:text-blue-400" : "text-slate-700 dark:text-slate-300"
+                  )}>{item.name}</p>
+                  <p className="text-[11px] text-slate-400 dark:text-slate-500 leading-none">{item.size || "未知大小"}</p>
+                </div>
               </div>
-              {renderActions ? (
+              
+              {renderActions && (
                 <div
-                  className="flex items-center gap-1"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                  }}
+                  className={cn(
+                    "shrink-0 flex items-center gap-1 transition-opacity",
+                    selectedId === item.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                  )}
+                  onClick={(event) => event.stopPropagation()}
                 >
                   {renderActions(item)}
                 </div>
-              ) : (
-                <span className="shrink-0 text-xs text-slate-400 dark:text-slate-500">
-                  {item.size}
-                </span>
               )}
             </div>
           ))}
@@ -1775,6 +1694,25 @@ export const FusionGrid: React.FC = () => {
     setInfoMessage("模板已从当前页面缓存中移除，后端文件不会删除。");
   };
 
+  const handleRemoveDocument = (docsetId: string, documentId: string) => {
+    setGridState((current) => ({
+      ...current,
+      docsets: current.docsets.map((docset) => {
+        if (docset.id === docsetId) {
+          return {
+            ...docset,
+            files: docset.files.filter((file, index) => {
+              const fileCompositeId = `${docsetId}:${file.fileId || `${file.filename}:${index}`}`;
+              return fileCompositeId !== documentId;
+            }),
+          };
+        }
+        return docset;
+      }),
+    }));
+    setInfoMessage("文档已从当前页面缓存中移除。");
+  };
+
   const handleRemoveTask = (taskId: string) => {
     setGridState((current) => ({
       ...current,
@@ -2183,7 +2121,7 @@ export const FusionGrid: React.FC = () => {
       )}
 
       {documentItems.length > 0 && (
-        <div className="h-[280px] overflow-hidden rounded-[16px] border border-slate-100 dark:border-white/[0.05] bg-slate-50/50 dark:bg-white/[0.01]">
+        <div className="h-[280px] min-h-0">
           <VerticalSlidingSelector
             items={documentItems}
             selectedId={selectedDocument}
@@ -2191,7 +2129,21 @@ export const FusionGrid: React.FC = () => {
             tone="purple"
             emptyIcon={FolderOpen}
             emptyTitle="无文档"
-            renderActions={(doc) => null}
+            renderActions={(doc) => (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (selectedDocsetId) {
+                    handleRemoveDocument(selectedDocsetId, doc.id);
+                  }
+                }}
+                className="p-1.5 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg text-slate-400 hover:text-red-500 transition-colors"
+                title="删除文档"
+              >
+                <X size={14} />
+              </button>
+            )}
           />
         </div>
       )}
