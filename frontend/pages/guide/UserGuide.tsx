@@ -1,4 +1,4 @@
-﻿﻿﻿import React, {
+﻿import React, {
   useState,
   useEffect,
   useRef,
@@ -9,17 +9,11 @@ import {
   Menu,
   X,
   Play,
-  Database,
-  GitBranch,
   FileText,
   FileSpreadsheet,
   FileCode,
   FileImage,
   File,
-  Lock,
-  RefreshCw,
-  Zap,
-  ShieldCheck,
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -28,23 +22,19 @@ import {
   AnimatePresence,
   useScroll,
   useTransform,
+  type TargetAndTransition,
   type Variants,
 } from "framer-motion";
-import { Label } from "recharts";
-import deepreadWorkbenchImage from "../../assets/deepread-workbench.svg";
-import knowledgeGraphImage from "../../assets/knowledge-graph.svg";
-import documentFlowImage from "../../assets/文档.png";
 
+import guideLogo from "../../userguide_images/logo.png";
+import section1MainImage from "../../userguide_images/生成办公场景图片 (4).png";
+import sec2_1 from "../../userguide_images/sec2_1.png";
+import sec2_2 from "../../userguide_images/sec2_2.png";
+import sec2_3 from "../../userguide_images/sec2_3.png";
+import sec2_4 from "../../userguide_images/sec2_4.png";
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
-
-type ByteStyleCard = {
-  title: string;
-  desc: string;
-  gradient: string;
-  icon: string;
-};
 
 type GuideNavId =
   | "overview"
@@ -61,506 +51,8 @@ type GuideNavItem = {
   action?: "back";
 };
 
-const clampGuidePointer = (value: number): number =>
-  Math.max(0, Math.min(1, value));
-
-type GuideParticleDash = {
-  angle: number;
-  radius: number;
-  length: number;
-  thickness: number;
-  opacity: number;
-  depth: number;
-  sway: number;
-  phase: number;
-  color: string;
-};
-
-type GuideParticleBody = GuideParticleDash & {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  homeX: number;
-  homeY: number;
-  collisionRadius: number;
-};
-
-type GuideAmbientSpeck = {
-  x: number;
-  y: number;
-  radius: number;
-  opacity: number;
-  color: string;
-  driftX: number;
-  driftY: number;
-  phase: number;
-};
-
-const createGuideParticleDashes = (count: number): GuideParticleDash[] => {
-  let seed = 17;
-  const rand = () => {
-    const value = Math.sin(seed * 78.233) * 43758.5453123;
-    seed += 1;
-    return value - Math.floor(value);
-  };
-
-  return Array.from({ length: count }, () => {
-    const angle = rand() * Math.PI * 2;
-    const violetBias = Math.cos(angle) * 0.5 + 0.5;
-    const accentChance = rand();
-    let color = "#2f63ff";
-
-    if (accentChance > 0.985) {
-      color = "#d75aa0";
-    } else if (violetBias > 0.72 || accentChance > 0.9) {
-      color = rand() > 0.5 ? "#6d58ff" : "#7f63ff";
-    } else {
-      color = rand() > 0.55 ? "#2456ff" : "#3d6cff";
-    }
-
-    return {
-      angle,
-      radius: 0.24 + Math.pow(rand(), 0.92) * 0.82,
-      length: 1.6 + rand() * 6.2,
-      thickness: 0.85 + rand() * 1.35,
-      opacity: 0.18 + rand() * 0.7,
-      depth: 0.35 + rand() * 0.95,
-      sway: (rand() - 0.5) * 0.95,
-      phase: rand() * Math.PI * 2,
-      color,
-    };
-  });
-};
-
-const createGuideAmbientSpecks = (count: number): GuideAmbientSpeck[] => {
-  let seed = 211;
-  const rand = () => {
-    const value = Math.sin(seed * 53.121) * 24634.63451;
-    seed += 1;
-    return value - Math.floor(value);
-  };
-
-  return Array.from({ length: count }, () => {
-    const tint = rand();
-    let color = "rgba(76, 112, 255, 1)";
-    if (tint > 0.9) {
-      color = "rgba(204, 108, 180, 1)";
-    } else if (tint > 0.72) {
-      color = "rgba(131, 103, 255, 1)";
-    } else if (tint < 0.18) {
-      color = "rgba(160, 178, 210, 1)";
-    }
-    return {
-      x: rand(),
-      y: rand(),
-      radius: 0.9 + rand() * 2.4,
-      opacity: 0.08 + rand() * 0.22,
-      color,
-      driftX: (rand() - 0.5) * 18,
-      driftY: (rand() - 0.5) * 18,
-      phase: rand() * Math.PI * 2,
-    };
-  });
-};
-
-const createGuideEdgeSpecks = (count: number): GuideAmbientSpeck[] => {
-  let seed = 977;
-  const rand = () => {
-    const value = Math.sin(seed * 61.913) * 18643.13571;
-    seed += 1;
-    return value - Math.floor(value);
-  };
-
-  return Array.from({ length: count }, () => {
-    const edgeZone = rand();
-    let x = rand();
-    let y = rand();
-
-    if (edgeZone < 0.25) {
-      x = rand() * 0.14;
-      y = rand();
-    } else if (edgeZone < 0.5) {
-      x = 0.86 + rand() * 0.14;
-      y = rand();
-    } else if (edgeZone < 0.75) {
-      x = rand();
-      y = rand() * 0.14;
-    } else {
-      x = rand();
-      y = 0.86 + rand() * 0.14;
-    }
-
-    const tint = rand();
-    let color = "rgba(84, 118, 255, 1)";
-    if (tint > 0.88) {
-      color = "rgba(204, 116, 184, 1)";
-    } else if (tint > 0.68) {
-      color = "rgba(136, 112, 255, 1)";
-    } else if (tint < 0.16) {
-      color = "rgba(186, 198, 226, 1)";
-    }
-
-    return {
-      x,
-      y,
-      radius: 0.7 + rand() * 2.1,
-      opacity: 0.1 + rand() * 0.22,
-      color,
-      driftX: (rand() - 0.5) * 12,
-      driftY: (rand() - 0.5) * 12,
-      phase: rand() * Math.PI * 2,
-    };
-  });
-};
-
-const CapabilitiesInteractiveBackdrop: React.FC<{ active: boolean }> = ({
-  active,
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const dashes = useMemo(() => createGuideParticleDashes(560), []);
-  const ambientSpecks = useMemo(() => createGuideAmbientSpecks(180), []);
-  const edgeSpecks = useMemo(() => createGuideEdgeSpecks(220), []);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || typeof window === "undefined") {
-      return;
-    }
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return;
-    }
-
-    const reduceMotion = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
-    const pointer = {
-      x: 0.5,
-      y: 0.5,
-      targetX: 0.5,
-      targetY: 0.5,
-    };
-
-    let animationFrame = 0;
-    let canvasWidth = 0;
-    let canvasHeight = 0;
-    let deviceScale = 1;
-    let particles: GuideParticleBody[] = [];
-
-    const buildParticles = () => {
-      const centerX = canvasWidth * 0.5;
-      const centerY = canvasHeight * 0.5;
-      const radiusBase = Math.hypot(canvasWidth, canvasHeight) * 0.58;
-      const verticalScale = 0.98;
-
-      particles = dashes.map((dash, index) => {
-        const homeRadius = dash.radius * radiusBase;
-        const homeX = centerX + Math.cos(dash.angle) * homeRadius;
-        const homeY =
-          centerY + Math.sin(dash.angle) * homeRadius * verticalScale;
-        const jitterAngle = dash.angle + index * 0.071;
-        const jitter = 14 + dash.depth * 24;
-        return {
-          ...dash,
-          homeX,
-          homeY,
-          x: homeX + Math.cos(jitterAngle) * jitter,
-          y: homeY + Math.sin(jitterAngle) * jitter,
-          vx: 0,
-          vy: 0,
-          collisionRadius: Math.max(
-            2.6,
-            dash.length * 0.7 + dash.thickness * 0.9,
-          ),
-        };
-      });
-    };
-
-    const resizeCanvas = () => {
-      const bounds = canvas.getBoundingClientRect();
-      canvasWidth = Math.max(1, Math.round(bounds.width));
-      canvasHeight = Math.max(1, Math.round(bounds.height));
-      deviceScale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-      canvas.width = Math.round(canvasWidth * deviceScale);
-      canvas.height = Math.round(canvasHeight * deviceScale);
-      context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
-      buildParticles();
-    };
-
-    const renderFrame = (timestamp: number) => {
-      pointer.x += (pointer.targetX - pointer.x) * 0.11;
-      pointer.y += (pointer.targetY - pointer.y) * 0.11;
-
-      context.clearRect(0, 0, canvasWidth, canvasHeight);
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, canvasWidth, canvasHeight);
-
-      const sceneCenterX = canvasWidth * 0.5;
-      const sceneCenterY = canvasHeight * 0.5;
-      const pointerPixelX = pointer.x * canvasWidth;
-      const pointerPixelY = pointer.y * canvasHeight;
-      const centerSafeWidth = Math.min(canvasWidth * 0.56, 920);
-      const centerSafeHeight = Math.min(canvasHeight * 0.4, 360);
-      const centerSafeRadiusX = centerSafeWidth * 0.5;
-      const centerSafeRadiusY = centerSafeHeight * 0.5;
-      const pointerInfluence = Math.hypot(canvasWidth, canvasHeight) * 0.24;
-
-      const halo = context.createRadialGradient(
-        sceneCenterX,
-        sceneCenterY,
-        Math.min(canvasWidth, canvasHeight) * 0.08,
-        sceneCenterX,
-        sceneCenterY,
-        Math.min(canvasWidth, canvasHeight) * 0.44,
-      );
-      halo.addColorStop(0, "rgba(255,255,255,1)");
-      halo.addColorStop(0.26, "rgba(255,255,255,0.985)");
-      halo.addColorStop(0.62, "rgba(249,251,255,0.92)");
-      halo.addColorStop(1, "rgba(255,255,255,1)");
-      context.fillStyle = halo;
-      context.fillRect(0, 0, canvasWidth, canvasHeight);
-
-      for (const speck of ambientSpecks) {
-        const driftWave = timestamp * 0.00022 + speck.phase;
-        const x =
-          speck.x * canvasWidth +
-          Math.cos(driftWave) * speck.driftX +
-          (pointer.x - 0.5) * 22;
-        const y =
-          speck.y * canvasHeight +
-          Math.sin(driftWave * 1.13) * speck.driftY +
-          (pointer.y - 0.5) * 16;
-
-        context.beginPath();
-        context.fillStyle = speck.color;
-        context.globalAlpha = speck.opacity;
-        context.arc(x, y, speck.radius, 0, Math.PI * 2);
-        context.fill();
-      }
-
-      for (const speck of edgeSpecks) {
-        const driftWave = timestamp * 0.00018 + speck.phase;
-        const x =
-          speck.x * canvasWidth +
-          Math.cos(driftWave) * speck.driftX +
-          (pointer.x - 0.5) * 10;
-        const y =
-          speck.y * canvasHeight +
-          Math.sin(driftWave * 1.08) * speck.driftY +
-          (pointer.y - 0.5) * 8;
-
-        context.beginPath();
-        context.fillStyle = speck.color;
-        context.globalAlpha = speck.opacity;
-        context.arc(x, y, speck.radius, 0, Math.PI * 2);
-        context.fill();
-      }
-
-      for (const particle of particles) {
-        const homeForce = reduceMotion ? 0.016 : 0.028;
-        let ax = (particle.homeX - particle.x) * homeForce;
-        let ay = (particle.homeY - particle.y) * homeForce;
-
-        const driftWave = timestamp * 0.00055 + particle.phase;
-        ax += Math.cos(driftWave) * 0.02 * particle.depth;
-        ay += Math.sin(driftWave * 1.13) * 0.018 * particle.depth;
-
-        const dxPointer = particle.x - pointerPixelX;
-        const dyPointer = particle.y - pointerPixelY;
-        const pointerDistance = Math.hypot(dxPointer, dyPointer) || 1;
-        if (pointerDistance < pointerInfluence) {
-          const influence = 1 - pointerDistance / pointerInfluence;
-          const repel = 0.46 * particle.depth * influence;
-          ax += (dxPointer / pointerDistance) * repel;
-          ay += (dyPointer / pointerDistance) * repel;
-          ax += (-dyPointer / pointerDistance) * 0.062 * influence;
-          ay += (dxPointer / pointerDistance) * 0.062 * influence;
-          ax += (pointer.x - 0.5) * 0.08 * particle.depth * influence;
-          ay += (pointer.y - 0.5) * 0.08 * particle.depth * influence;
-        }
-
-        const dxSafe = particle.x - sceneCenterX;
-        const dySafe = particle.y - sceneCenterY;
-        const safeMetric =
-          (dxSafe * dxSafe) / (centerSafeRadiusX * centerSafeRadiusX) +
-          (dySafe * dySafe) / (centerSafeRadiusY * centerSafeRadiusY);
-        if (safeMetric < 1.12) {
-          const safeNorm = Math.sqrt(safeMetric) || 0.0001;
-          const push = (1.18 - safeMetric) * 0.42;
-          ax += (dxSafe / (centerSafeRadiusX * safeNorm)) * push;
-          ay += (dySafe / (centerSafeRadiusY * safeNorm)) * push;
-        }
-
-        particle.vx += ax;
-        particle.vy += ay;
-        particle.vx *= reduceMotion ? 0.86 : 0.948;
-        particle.vy *= reduceMotion ? 0.86 : 0.948;
-      }
-
-      for (let i = 0; i < particles.length; i += 1) {
-        const current = particles[i];
-        for (let j = i + 1; j < particles.length; j += 1) {
-          const other = particles[j];
-          const dx = other.x - current.x;
-          const dy = other.y - current.y;
-          const distance = Math.hypot(dx, dy) || 0.0001;
-          const minDistance =
-            current.collisionRadius + other.collisionRadius + 1.2;
-
-          if (distance >= minDistance) {
-            continue;
-          }
-
-          const nx = dx / distance;
-          const ny = dy / distance;
-          const overlap = minDistance - distance;
-          const separation = overlap * 0.5;
-
-          current.x -= nx * separation;
-          current.y -= ny * separation;
-          other.x += nx * separation;
-          other.y += ny * separation;
-
-          const relativeVelocityX = other.vx - current.vx;
-          const relativeVelocityY = other.vy - current.vy;
-          const normalVelocity =
-            relativeVelocityX * nx + relativeVelocityY * ny;
-
-          if (normalVelocity < 0) {
-            const bounce = 0.58;
-            const impulse = (-(1 + bounce) * normalVelocity) / 2;
-            current.vx -= impulse * nx;
-            current.vy -= impulse * ny;
-            other.vx += impulse * nx;
-            other.vy += impulse * ny;
-          }
-        }
-      }
-
-      for (const particle of particles) {
-        particle.x += particle.vx;
-        particle.y += particle.vy;
-
-        if (particle.x < 0) {
-          particle.x = 0;
-          particle.vx *= -0.56;
-        } else if (particle.x > canvasWidth) {
-          particle.x = canvasWidth;
-          particle.vx *= -0.56;
-        }
-
-        if (particle.y < 0) {
-          particle.y = 0;
-          particle.vy *= -0.56;
-        } else if (particle.y > canvasHeight) {
-          particle.y = canvasHeight;
-          particle.vy *= -0.56;
-        }
-
-        const distanceFromCenter = Math.hypot(
-          particle.x - sceneCenterX,
-          particle.y - sceneCenterY,
-        );
-        const maxRadius = Math.hypot(canvasWidth, canvasHeight) * 0.72;
-        const centerFade = clampGuidePointer(
-          (distanceFromCenter -
-            Math.min(centerSafeRadiusX, centerSafeRadiusY) * 0.76) /
-            132,
-        );
-        const edgeFade = clampGuidePointer(
-          (maxRadius * 1.16 - distanceFromCenter) / 260,
-        );
-        const visibility = centerFade * edgeFade;
-
-        if (visibility <= 0.01) {
-          continue;
-        }
-
-        const speed = Math.hypot(particle.vx, particle.vy);
-        const rotation =
-          Math.atan2(particle.vy || 0.0001, particle.vx || 0.0001) +
-          Math.PI / 2 +
-          particle.sway * 0.26;
-        const dashLength = particle.length * (1 + Math.min(0.85, speed * 0.4));
-        const alpha =
-          particle.opacity * visibility * (0.76 + Math.min(0.24, speed * 0.12));
-
-        context.save();
-        context.translate(particle.x, particle.y);
-        context.rotate(rotation);
-        context.strokeStyle = particle.color;
-        context.globalAlpha = alpha;
-        context.lineWidth = particle.thickness;
-        context.lineCap = "round";
-        context.beginPath();
-        context.moveTo(-dashLength / 2, 0);
-        context.lineTo(dashLength / 2, 0);
-        context.stroke();
-        context.restore();
-      }
-
-      animationFrame = window.requestAnimationFrame(renderFrame);
-    };
-
-    const updatePointer = (clientX: number, clientY: number) => {
-      pointer.targetX = clampGuidePointer(clientX / window.innerWidth);
-      pointer.targetY = clampGuidePointer(clientY / window.innerHeight);
-    };
-
-    const resetPointer = () => {
-      pointer.targetX = 0.5;
-      pointer.targetY = 0.5;
-    };
-
-    const handlePointerMove = (event: PointerEvent) => {
-      if (!active) {
-        return;
-      }
-      updatePointer(event.clientX, event.clientY);
-    };
-
-    resizeCanvas();
-    animationFrame = window.requestAnimationFrame(renderFrame);
-
-    window.addEventListener("resize", resizeCanvas);
-    window.addEventListener("pointermove", handlePointerMove, {
-      passive: true,
-    });
-    window.addEventListener("pointerdown", handlePointerMove, {
-      passive: true,
-    });
-    window.addEventListener("pointerleave", resetPointer);
-    window.addEventListener("blur", resetPointer);
-
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      window.removeEventListener("resize", resizeCanvas);
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerdown", handlePointerMove);
-      window.removeEventListener("pointerleave", resetPointer);
-      window.removeEventListener("blur", resetPointer);
-    };
-  }, [active, ambientSpecks, dashes, edgeSpecks]);
-
-  return (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none">
-      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
-      <div
-        className="absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(circle at center, rgba(255,255,255,0) 0%, rgba(255,255,255,0) 28%, rgba(255,255,255,0.38) 52%, rgba(255,255,255,0.78) 74%, rgba(255,255,255,0.98) 100%)",
-        }}
-      />
-    </div>
-  );
-};
-
 interface UserGuideProps {
   onBackToDashboard?: () => void;
-  onOpenLogin?: () => void;
 }
 
 const GuideSectiondemonstration: React.FC<{
@@ -855,10 +347,7 @@ const GuideSectiondemonstration: React.FC<{
   );
 };
 
-export const UserGuide: React.FC<UserGuideProps> = ({
-  onBackToDashboard,
-  onOpenLogin,
-}) => {
+export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
   const [currentSection, setCurrentSection] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeNavId, setActiveNavId] = useState<GuideNavId>("overview");
@@ -1052,9 +541,28 @@ export const UserGuide: React.FC<UserGuideProps> = ({
             >
               寻找最强大的
               <br className="hidden lg:block" />
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#3f82ff] via-[#60a5fa] to-[#3f82ff] bg-[length:200%_auto] animate-gradient">
+              <motion.span
+                className="inline-block text-transparent bg-clip-text drop-shadow-[0_0_22px_rgba(96,165,250,0.34)]"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(90deg, #2563eb 0%, #3b82f6 45%, #2563eb 100%), radial-gradient(circle at 28% 46%, #ffffff 0%, rgba(240,249,255,1) 10%, rgba(147,197,253,0.96) 23%, rgba(59,130,246,0.16) 38%, transparent 52%), radial-gradient(circle at 72% 58%, rgba(255,255,255,1) 0%, rgba(219,234,254,0.98) 12%, rgba(96,165,250,0.74) 25%, rgba(37,99,235,0.14) 40%, transparent 54%)",
+                  backgroundSize: "100% 100%, 145% 112%, 165% 122%",
+                }}
+                animate={{
+                  backgroundPosition: [
+                    "0% 0%, -70% 42%, -120% 62%",
+                    "0% 0%, 125% 36%, 145% 48%",
+                    "0% 0%, 220% 58%, 260% 38%",
+                  ],
+                }}
+                transition={{
+                  duration: 5.2,
+                  ease: "linear",
+                  repeat: Infinity,
+                }}
+              >
                 智能文档
-              </span>
+              </motion.span>
               <span>平台</span>
             </motion.h1>
 
@@ -1096,176 +604,29 @@ export const UserGuide: React.FC<UserGuideProps> = ({
             viewport={{ once: true }}
             className="relative w-full perspective-[2000px] flex items-center justify-center lg:justify-end"
           >
-            <div className="bg-white rounded-[24px] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.1)] border border-gray-100 p-8 w-full max-w-[640px] relative z-10">
-              {/* Header */}
-              <div className="flex items-center justify-between mb-8">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-[#1f2937] rounded-xl flex items-center justify-center overflow-hidden">
-                    <svg
-                      width="24"
-                      height="24"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
-                    >
-                      <path d="M12 4L4 20H20L12 4Z" fill="white" />
-                    </svg>
-                  </div>
-                  <h3 className="text-xl font-medium text-[#1f2937]">
-                    AI Impact Report
-                  </h3>
-                </div>
-                <div className="text-sm text-gray-500 font-medium">
-                  Powered by span-detect-1
-                </div>
+            <div className="relative z-10 h-[360px] w-full max-w-[640px] md:h-[430px]">
+              <div className="absolute left-1/2 top-1/2 z-10 h-[108%] w-[112%] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[24px] border border-white/80 bg-white shadow-[0_24px_70px_-20px_rgba(13,28,46,0.32)]">
+                <img
+                  src={section1MainImage}
+                  alt="智能文档平台"
+                  className="h-full w-full origin-top scale-[1.12] object-cover"
+                />
               </div>
 
-              {/* Inner Card */}
-              <div className="bg-[#fafafa] rounded-[16px] border border-gray-100 p-8">
-                <div className="flex items-center justify-center gap-2 mb-10 cursor-pointer hover:text-gray-900 transition-colors group">
-                  <span className="text-sm font-medium text-gray-600 group-hover:text-gray-900">
-                    Baseline vs. Comparison
-                  </span>
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="text-gray-400 group-hover:text-gray-900"
-                  >
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </div>
+              <div className="absolute -left-24 top-[54%] z-20 h-[48%] w-[34%] -translate-y-1/2 overflow-hidden rounded-2xl border border-white/90 bg-white shadow-[0_22px_55px_-24px_rgba(13,28,46,0.4)]">
+                <img
+                  src={sec2_3}
+                  alt="自动表格回填"
+                  className="h-full w-full object-cover"
+                />
+              </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                  {/* Metric 1 */}
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">
-                      ADOPTION
-                    </span>
-                    <span className="text-xs font-medium text-gray-600 mb-3">
-                      AI code ratio
-                    </span>
-                    <div className="flex items-baseline gap-2 mb-4">
-                      <span className="text-2xl font-medium text-[#16a34a]">
-                        35%
-                      </span>
-                      <span className="text-[10px] font-bold text-[#16a34a]">
-                        +6%
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Metric 2 */}
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">
-                      VELOCITY
-                    </span>
-                    <span className="text-xs font-medium text-gray-600 mb-3">
-                      PR throughput
-                    </span>
-                    <div className="flex items-baseline gap-2 mb-4 whitespace-nowrap">
-                      <span className="text-2xl font-medium text-[#16a34a]">
-                        55% <span className="text-base">faster</span>
-                      </span>
-                      <span className="text-[10px] font-bold text-[#16a34a]">
-                        +8%
-                      </span>
-                    </div>
-                    <div className="space-y-2 mt-2">
-                      <div>
-                        <div className="text-[10px] text-gray-500 mb-1">
-                          Comparison
-                        </div>
-                        <div className="bg-[#dcfce7] text-[#166534] text-xs font-medium px-2 py-1 rounded w-fit">
-                          1,258 PRS
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] text-gray-500 mb-1">
-                          Baseline
-                        </div>
-                        <div className="bg-gray-100 text-gray-600 text-xs font-medium px-2 py-1 rounded w-fit">
-                          812 PRS
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Metric 3 */}
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">
-                      CODE REVIEW
-                    </span>
-                    <span className="text-xs font-medium text-gray-600 mb-3">
-                      Review cycles
-                    </span>
-                    <div className="flex items-baseline gap-2 mb-4 whitespace-nowrap">
-                      <span className="text-2xl font-medium text-[#ea580c]">
-                        17% <span className="text-base">more</span>
-                      </span>
-                      <span className="text-[10px] font-bold text-[#ea580c]">
-                        +3%
-                      </span>
-                    </div>
-                    <div className="space-y-2 mt-2">
-                      <div>
-                        <div className="text-[10px] text-gray-500 mb-1">
-                          Comparison
-                        </div>
-                        <div className="bg-[#ffedd5] text-[#9a3412] text-xs font-medium px-2 py-1 rounded w-fit">
-                          1.4
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] text-gray-500 mb-1">
-                          Baseline
-                        </div>
-                        <div className="bg-gray-100 text-gray-600 text-xs font-medium px-2 py-1 rounded w-fit">
-                          1.2
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Metric 4 */}
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">
-                      QUALITY
-                    </span>
-                    <span className="text-xs font-medium text-gray-600 mb-3 whitespace-nowrap">
-                      Est. bug density
-                    </span>
-                    <div className="flex items-baseline gap-2 mb-4 whitespace-nowrap">
-                      <span className="text-2xl font-medium text-[#dc2626]">
-                        9% <span className="text-base">higher</span>
-                      </span>
-                      <span className="text-[10px] font-bold text-[#dc2626]">
-                        +3%
-                      </span>
-                    </div>
-                    <div className="space-y-2 mt-2">
-                      <div>
-                        <div className="text-[10px] text-gray-500 mb-1">AI</div>
-                        <div className="bg-[#fee2e2] text-[#991b1b] text-xs font-medium px-2 py-1 rounded w-fit">
-                          2.5%
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] text-gray-500 mb-1">
-                          Human
-                        </div>
-                        <div className="bg-gray-100 text-gray-600 text-xs font-medium px-2 py-1 rounded w-fit">
-                          2.3%
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+              <div className="absolute -right-24 top-[85%] z-20 h-[66%] w-[34%] -translate-y-1/2 overflow-hidden rounded-2xl border border-white/90 bg-white shadow-[0_22px_55px_-24px_rgba(13,28,46,0.4)]">
+                <img
+                  src={sec2_4}
+                  alt="知识图谱分析"
+                  className="h-full w-full object-cover"
+                />
               </div>
             </div>
           </motion.div>
@@ -1360,45 +721,56 @@ export const UserGuide: React.FC<UserGuideProps> = ({
       offset: ["start start", "end end"],
     });
 
+    const features = useMemo(
+      () => [
+        {
+          title: "传统文档操作繁琐，自然语言指令易歧义且破坏格式",
+          description:
+            "传统办公软件依赖层级菜单与机械点击，操作繁琐、打断思维流；自然语言指令易产生歧义，且常因结构解析不足破坏文档格式，影响办公效率与文档合规性。",
+          image: sec2_1,
+        },
+        {
+          title: "传统提取方式不稳定，同时数据安全难以保障",
+          description:
+            "传统模板式提取易因版式变动失效，纯大模型提取易产生幻觉、数据失真，同时企业敏感数据上云存在隐私泄露与合规风险，安全难以保障。",
+          image: sec2_2,
+        },
+        {
+          title: "人工填表耗时易错，表格结构复杂且字段对齐困难",
+          description:
+            "工作人员通常需要在多个高分辨率屏幕之间频繁切换，从冗长文档中肉眼寻找对应数据，然后手动复制、校验并粘贴至目标表格的特定单元格中，是办公自动化流转中耗时最长、认知负荷最重且最易引发人为错误的环节之一。",
+          image: sec2_3,
+        },
+        {
+          title: "各行业结构信息分散，联系构建难且可视化易混乱",
+          description:
+            "各行业企业内部数据分散形成信息孤岛，缺乏有效关联；构建联系时实体关系难提取、易出错，可视化展示易因节点繁多出现混乱，不便使用。",
+          image: sec2_4,
+        },
+      ],
+      [],
+    );
+    const featureCount = features.length;
+    const shouldContainFeatureImage = (index: number) => index < 2;
     const [activeIndex, setActiveIndex] = useState(0);
 
     useEffect(() => {
       return scrollYProgress.onChange((latest) => {
-        if (latest < 0.25) setActiveIndex(0);
-        else if (latest < 0.75) setActiveIndex(1);
-        else setActiveIndex(2);
+        const nextIndex = Math.min(
+          featureCount - 1,
+          Math.max(0, Math.floor(latest * featureCount)),
+        );
+        setActiveIndex((current) =>
+          current === nextIndex ? current : nextIndex,
+        );
       });
-    }, [scrollYProgress]);
-
-    const features = [
-      {
-        title: "还在靠人工复制粘贴填表，浪费大量人力？",
-        description:
-          "由于传统办公缺少自动化工具，只能手动抄录。我们平台通过自动抽取 + 自动填充，上传模板和文件即可一键生成结果，完全替代重复人工劳动。",
-        image:
-          "https://images.unsplash.com/photo-1551288049-bebda4e38f71?q=80&w=800&auto=format&fit=crop",
-      },
-      {
-        title: "处理不同格式文档需要切换一堆软件，效率极低？",
-        description:
-          "我们平台提供了全格式一站式能力，只需一个模块便可以支持 Word/PDF/TXT/MD/CSV/XLSX/ 图片全格式，覆盖转换、识别、分析、编辑。",
-        image:
-          "https://images.unsplash.com/photo-1551288049-bebda4e38f71?q=80&w=800&auto=format&fit=crop",
-      },
-      {
-        title: "检查填写结果要下载？",
-        description:
-          "我们平台支持预览填写后的文件，极大地节省了用户的时间，简化了繁琐的操作。",
-        image:
-          "https://images.unsplash.com/photo-1600880292203-757bb62b4baf?q=80&w=800&auto=format&fit=crop",
-      },
-    ];
+    }, [featureCount, scrollYProgress]);
 
     return (
       <div className="w-full relative bg-white z-20 flex flex-col items-center my-36">
         {/* 背景：点阵底纹 */}
         <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:24px_24px] [mask-image:radial-gradient(ellipse_60%_60%_at_50%_50%,#000_70%,transparent_100%)] opacity-70" />
+          <div className="absolute inset-0 bg-[radial-gradient(#dfe4e8_1px,transparent_1.2px)] [background-size:24px_24px] [mask-image:radial-gradient(ellipse_60%_60%_at_50%_50%,#000_70%,transparent_100%)] opacity-70" />
         </div>
 
         {/* 标题部分 */}
@@ -1420,7 +792,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({
           {/* 左侧：粘性固定图片 (45%) */}
           <div className="sticky top-0 h-screen w-[45%] flex flex-col justify-center py-20">
             {/* 玻璃态展架容器 (Glassmorphism Frame) - 缩小最大高度和整体缩放 */}
-            <div className="relative w-full aspect-square max-h-[70vh] rounded-[3rem] bg-slate-50/50 backdrop-blur-2xl border border-white/20 isolate overflow-hidden mx-auto">
+            <div className="group relative w-full aspect-square max-h-[70vh] rounded-[3rem] bg-slate-50/50 backdrop-blur-2xl border border-white/20 isolate overflow-hidden mx-auto">
               {/* 底层动态环境光 (基于原图提取的真实光晕) */}
               <div className="absolute inset-0 -z-10 pointer-events-none overflow-hidden rounded-[3rem]">
                 {features.map((feature, i) => (
@@ -1453,41 +825,40 @@ export const UserGuide: React.FC<UserGuideProps> = ({
                 ))}
               </div>
 
-              {/* 悬浮双层边框影像容器 (Double-layered Floating Image) - 定位在右下角形成溢出裁切 */}
-              <div className="absolute top-10 left-10 md:top-14 md:left-14 lg:top-15 lg:left-20 w-full h-full rounded-[2rem] md:rounded-[2.5rem] p-2 md:p-3 bg-white/40 backdrop-blur-2xl border-[2px] border-white/80 shadow-[-20px_-20px_60px_-15px_rgba(0,0,0,0.15)] isolate transition-transform duration-700 ease-out hover:scale-[1.02]">
-                {/* 内层内容容器 */}
-                <div className="relative w-full h-full rounded-2xl md:rounded-[2rem] overflow-hidden bg-white ring-1 ring-black/5 shadow-inner isolate group">
-                  {/* 层叠式布局：使用 Framer Motion 的 animate 动态控制 opacity，消除剧烈形变 */}
-                  {features.map((feature, i) => (
-                    <motion.img
-                      key={i}
-                      src={feature.image}
-                      alt={feature.title}
-                      loading="eager"
-                      initial={false}
-                      animate={{
-                        opacity: activeIndex === i ? 1 : 0,
-                        scale: activeIndex === i ? 1 : 1.02,
-                      }}
-                      transition={{
-                        duration: 0.8,
-                        ease: [0.22, 1, 0.36, 1],
-                        // 让当前图片立即开始显示，非当前图片延迟消失，形成交叉淡入淡出消除白闪
-                        opacity: {
-                          delay: activeIndex === i ? 0 : 0.1,
-                          duration: 0.8,
-                          ease: [0.22, 1, 0.36, 1],
-                        },
-                      }}
-                      className="absolute inset-0 w-full h-full object-cover origin-center transition-transform duration-700 ease-out group-hover:scale-[1.05]"
-                      style={{
-                        willChange: "opacity, transform",
-                        zIndex: activeIndex === i ? 10 : 1, // 确保当前激活层在最上，同时非激活层不会立刻掉到底部
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
+              {/* 图片层直接放在外部容器内，避免额外白色双框 */}
+              {features.map((feature, i) => (
+                <motion.img
+                  key={i}
+                  src={feature.image}
+                  alt={feature.title}
+                  loading="eager"
+                  initial={false}
+                  animate={{
+                    opacity: activeIndex === i ? 1 : 0,
+                    scale: activeIndex === i ? 1 : 1.02,
+                  }}
+                  transition={{
+                    duration: 0.8,
+                    ease: [0.22, 1, 0.36, 1],
+                    // 让当前图片立即开始显示，非当前图片延迟消失，形成交叉淡入淡出消除白闪
+                    opacity: {
+                      delay: activeIndex === i ? 0 : 0.1,
+                      duration: 0.8,
+                      ease: [0.22, 1, 0.36, 1],
+                    },
+                  }}
+                  className={cn(
+                    "absolute inset-0 origin-center transition-transform duration-700 ease-out",
+                    shouldContainFeatureImage(i)
+                      ? "m-auto h-full w-wull object-contain group-hover:scale-[1.02]"
+                      : "h-full w-full object-cover group-hover:scale-[1.05]",
+                  )}
+                  style={{
+                    willChange: "opacity, transform",
+                    zIndex: activeIndex === i ? 10 : 1,
+                  }}
+                />
+              ))}
             </div>
           </div>
 
@@ -1504,15 +875,28 @@ export const UserGuide: React.FC<UserGuideProps> = ({
                 )}
 
                 <motion.div
+                  aria-hidden="true"
+                  initial={false}
+                  animate={{
+                    opacity: activeIndex === i ? 0.22 : 0.08,
+                    scale: activeIndex === i ? 1 : 0.96,
+                  }}
+                  transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+                  className="pointer-events-none absolute right-4 top-1/2 z-0 -translate-y-1/2 select-none text-[18rem] font-bold leading-none text-[#9bb9f5]"
+                >
+                  ?
+                </motion.div>
+
+                <motion.div
                   initial={false}
                   animate={{
                     opacity: activeIndex === i ? 1 : 0.2,
                     y: activeIndex === i ? 0 : 20,
                   }}
                   transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-                  className="pl-8 md:pl-16 pr-8 transition-all duration-500"
+                  className="relative z-10 pl-8 md:pl-16 pr-8 transition-all duration-500"
                 >
-                  <h3 className="text-3xl lg:text-[2.75rem] text-[#111827] mb-6 leading-[1.2] tracking-wide font-normal">
+                  <h3 className="text-3xl lg:text-[2.5rem] text-[#111827] mb-6 leading-[1.2] tracking-wide font-normal">
                     {feature.title}
                   </h3>
                   <p className="text-lg lg:text-[1.125rem] text-[#4b5563] leading-[1.6] tracking-wide">
@@ -1538,7 +922,11 @@ export const UserGuide: React.FC<UserGuideProps> = ({
               <div className="h-64 sm:h-80 relative overflow-hidden">
                 <img
                   src={feature.image}
-                  className="w-full h-full object-cover"
+                  className={cn(
+                    shouldContainFeatureImage(i)
+                      ? "absolute inset-0 m-auto h-[86%] w-[86%] object-contain"
+                      : "h-full w-full object-cover",
+                  )}
                   alt={feature.title}
                 />
               </div>
@@ -1564,6 +952,88 @@ export const UserGuide: React.FC<UserGuideProps> = ({
       container: containerRef,
       offset: ["start end", "end start"],
     });
+    const documentBackgrounds = [
+      {
+        top: "7%",
+        side: "left",
+        offset: "4%",
+        width: 92,
+        height: 118,
+        rotate: -12,
+        opacity: 0.28,
+        variant: "text",
+      },
+      {
+        top: "17%",
+        side: "right",
+        offset: "5%",
+        width: 108,
+        height: 136,
+        rotate: 10,
+        opacity: 0.24,
+        variant: "table",
+      },
+      {
+        top: "28%",
+        side: "left",
+        offset: "1%",
+        width: 118,
+        height: 148,
+        rotate: 8,
+        opacity: 0.22,
+        variant: "chart",
+      },
+      {
+        top: "40%",
+        side: "right",
+        offset: "3%",
+        width: 86,
+        height: 112,
+        rotate: -9,
+        opacity: 0.26,
+        variant: "checklist",
+      },
+      {
+        top: "54%",
+        side: "left",
+        offset: "6%",
+        width: 104,
+        height: 132,
+        rotate: -6,
+        opacity: 0.2,
+        variant: "table",
+      },
+      {
+        top: "67%",
+        side: "right",
+        offset: "1%",
+        width: 124,
+        height: 154,
+        rotate: 12,
+        opacity: 0.22,
+        variant: "text",
+      },
+      {
+        top: "80%",
+        side: "left",
+        offset: "3%",
+        width: 88,
+        height: 116,
+        rotate: 9,
+        opacity: 0.24,
+        variant: "checklist",
+      },
+      {
+        top: "90%",
+        side: "right",
+        offset: "6%",
+        width: 96,
+        height: 124,
+        rotate: -11,
+        opacity: 0.2,
+        variant: "chart",
+      },
+    ] as const;
 
     return (
       <div
@@ -1578,6 +1048,103 @@ export const UserGuide: React.FC<UserGuideProps> = ({
           <div className="absolute top-[0%] right-[20%] w-[50%] h-[40%] bg-[#efe8ff] rounded-[100%] mix-blend-multiply filter blur-[140px] opacity-70 transform -rotate-12" />
           {/* Diagonal light from top-center */}
           <div className="absolute top-[5%] left-[20%] w-[60%] h-[50%] bg-[#f4f8ff] rounded-[100%] filter blur-[120px] opacity-80 transform -rotate-12" />
+        </div>
+
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 z-0 hidden overflow-hidden sm:block"
+        >
+          {documentBackgrounds.map((item, index) => (
+            <div
+              key={index}
+              className="absolute rounded-md border border-gray-300/65 bg-gray-200/70 shadow-[0_18px_45px_rgba(15,23,42,0.07)] backdrop-blur-[1px]"
+              style={
+                {
+                  top: item.top,
+                  [item.side]: item.offset,
+                  width: item.width,
+                  height: item.height,
+                  opacity: item.opacity,
+                  transform: `rotate(${item.rotate}deg)`,
+                } as React.CSSProperties
+              }
+            >
+              <div className="absolute right-0 top-0 h-6 w-6 rounded-bl-md border-b border-l border-gray-300/65 bg-gray-200/75" />
+              {item.variant === "text" && (
+                <div className="absolute left-4 right-4 top-8 space-y-2">
+                  <div className="h-1.5 w-3/5 rounded-full bg-gray-400/70" />
+                  <div className="h-1 w-full rounded-full bg-gray-400/55" />
+                  <div className="h-1 w-4/5 rounded-full bg-gray-400/50" />
+                  <div className="h-1 w-11/12 rounded-full bg-gray-400/45" />
+                  <div className="h-1 w-2/3 rounded-full bg-gray-400/40" />
+                </div>
+              )}
+              {item.variant === "table" && (
+                <div className="absolute left-4 right-4 top-8">
+                  <div className="mb-2 flex items-center gap-1.5">
+                    <div className="h-2.5 w-2.5 rounded-sm bg-gray-400/55" />
+                    <div className="h-1.5 w-1/2 rounded-full bg-gray-400/60" />
+                  </div>
+                  <div className="overflow-hidden rounded-[3px] border border-gray-400/30">
+                    {Array.from({ length: 5 }).map((_, rowIndex) => (
+                      <div
+                        key={rowIndex}
+                        className="grid grid-cols-[1.15fr_0.75fr_0.9fr] border-b border-gray-400/25 last:border-b-0"
+                      >
+                        {Array.from({ length: 3 }).map((_, cellIndex) => (
+                          <div
+                            key={cellIndex}
+                            className={cn(
+                              "h-4 border-r border-gray-400/25 last:border-r-0 px-1.5 py-1",
+                              rowIndex === 0
+                                ? "bg-gray-400/38"
+                                : rowIndex % 2 === 0
+                                  ? "bg-gray-300/24"
+                                  : "bg-gray-200/20",
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                "h-1 rounded-full bg-gray-500/38",
+                                cellIndex === 1 ? "w-3/5" : "w-4/5",
+                                rowIndex === 0 && "bg-gray-500/52",
+                              )}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {item.variant === "checklist" && (
+                <div className="absolute left-4 right-4 top-8 space-y-3">
+                  {Array.from({ length: 4 }).map((_, rowIndex) => (
+                    <div key={rowIndex} className="flex items-center gap-2">
+                      <div className="h-2.5 w-2.5 rounded-[2px] border border-gray-400/60 bg-gray-300/35" />
+                      <div
+                        className={cn(
+                          "h-1 rounded-full bg-gray-400/55",
+                          rowIndex % 2 === 0 ? "w-4/5" : "w-2/3",
+                        )}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {item.variant === "chart" && (
+                <div className="absolute left-4 right-4 top-8">
+                  <div className="mb-3 h-1.5 w-1/2 rounded-full bg-gray-400/65" />
+                  <div className="flex h-14 items-end gap-2 border-b border-l border-gray-400/30 pl-2">
+                    <div className="h-5 w-3 rounded-t-sm bg-gray-400/40" />
+                    <div className="h-9 w-3 rounded-t-sm bg-gray-400/55" />
+                    <div className="h-7 w-3 rounded-t-sm bg-gray-400/45" />
+                    <div className="h-12 w-3 rounded-t-sm bg-gray-400/62" />
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
 
         <motion.h1
@@ -1615,9 +1182,9 @@ export const UserGuide: React.FC<UserGuideProps> = ({
             className="order-1 lg:order-1 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
           >
             <img
-              src={deepreadWorkbenchImage}
+              src=""
               className="w-full h-full object-cover"
-              alt="智能文档解析"
+              alt="文档智能操作"
             />
           </motion.div>
           {/* Text Right */}
@@ -1636,8 +1203,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({
               智能文档解析
             </h2>
             <p className="text-lg text-[#434655] leading-relaxed max-w-lg font-['Inter',sans-serif]">
-              支持 PDF / DOCX / XLSX / TXT / MD
-              多格式文档批量上传，按自定义字段规则自动完成结构化抽取，并返回字段值、置信度和来源定位。
+              基于自然语言处理与文档结构理解技术，将用户对文档的编辑、排版、格式调整、内容提取等操作需求，通过自然语言指令进行解析与转化，自动执行相应操作。
             </p>
           </motion.div>
         </div>
@@ -1657,11 +1223,10 @@ export const UserGuide: React.FC<UserGuideProps> = ({
               核心功能
             </div>
             <h2 className="text-4xl md:text-5xl font-bold text-[#0d1c2e] leading-tight font-['Inter',sans-serif] tracking-[-0.02em]">
-              模板回填
+              非结构化信息提取
             </h2>
             <p className="text-lg text-[#434655] leading-relaxed max-w-lg font-['Inter',sans-serif]">
-              支持上传一个模板和一组资料文档，自动识别模板字段，从多份文档中匹配候选答案并回填到
-              Excel 或 Word，生成可预览、可下载的结果文件。
+              自动识别用户导入的非结构化文档，利用人工智能技术提取文件中的关键信息、实体数据或用户指定内容，并进行规范的数据库存储操作。
             </p>
           </motion.div>
           {/* Image Right */}
@@ -1672,11 +1237,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({
             variants={gatherRightVariants}
             className="order-1 lg:order-2 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
           >
-            <img
-              src={documentFlowImage}
-              className="w-full h-full object-cover"
-              alt="模板回填"
-            />
+            <img src="" className="w-full h-full object-cover" alt="模板回填" />
           </motion.div>
         </div>
 
@@ -1690,11 +1251,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({
             variants={gatherLeftVariants}
             className="order-1 lg:order-1 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
           >
-            <img
-              src={knowledgeGraphImage}
-              className="w-full h-full object-cover"
-              alt="知识图谱"
-            />
+            <img src="" className="w-full h-full object-cover" alt="知识图谱" />
           </motion.div>
           {/* Text Right */}
           <motion.div
@@ -1709,11 +1266,48 @@ export const UserGuide: React.FC<UserGuideProps> = ({
               核心功能
             </div>
             <h2 className="text-4xl md:text-5xl font-bold text-[#0d1c2e] leading-tight font-['Inter',sans-serif] tracking-[-0.02em]">
+              数据填充
+            </h2>
+            <p className="text-lg text-[#434655] leading-relaxed max-w-lg font-['Inter',sans-serif]">
+              自动从各类文档中提取信息，智能匹配目标表格字段，精准填入对应单元格，同时支持简单计算与格式保留，快速完成数据回填，大幅减少人工复制粘贴，提升填表效率与准确率。
+            </p>
+          </motion.div>
+        </div>
+
+        {/* Feature 4: Assistant */}
+        <div className="relative z-10 w-full max-w-[1440px] px-6 lg:px-16 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+          {/* Text Left */}
+          <motion.div
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true }}
+            variants={gatherLeftVariants}
+            className="order-2 lg:order-1 flex flex-col items-start space-y-6 pr-0 lg:pr-12"
+          >
+            <div className="flex items-center gap-2 text-[#0058be] font-semibold tracking-[0.05em] uppercase text-sm font-['Inter',sans-serif]">
+              <span className="w-8 h-[2px] bg-[#0058be]" />
+              核心功能
+            </div>
+            <h2 className="text-4xl md:text-5xl font-bold text-[#0d1c2e] leading-tight font-['Inter',sans-serif] tracking-[-0.02em]">
               知识图谱
             </h2>
             <p className="text-lg text-[#434655] leading-relaxed max-w-lg font-['Inter',sans-serif]">
-              把文档、字段、风险和证据组织成可视化关系网络，帮助用户从“单篇文档抽取”升级到“跨对象关联分析”。
+              自动抽取文档中的关键信息与关联关系，构建企业知识图谱，打破各部门信息孤岛；同时实现图谱动态更新与清晰可视化展示，方便直观查询、分析和利用数据。
             </p>
+          </motion.div>
+          {/* Image Right */}
+          <motion.div
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true }}
+            variants={gatherRightVariants}
+            className="order-1 lg:order-2 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
+          >
+            <img
+              src=""
+              className="w-full h-full object-cover"
+              alt="全局智能助手"
+            />
           </motion.div>
         </div>
       </div>
@@ -1721,14 +1315,19 @@ export const UserGuide: React.FC<UserGuideProps> = ({
   };
 
   const SectionCTA = () => {
-    const containerRef = useRef<HTMLDivElement>(null);
+    const ctaSectionRef = useRef<HTMLDivElement>(null);
+    const backgroundTextRef = useRef<HTMLDivElement>(null);
+    const backgroundSweepTimerRef = useRef<number | null>(null);
+    const hasBackgroundSweepPlayedRef = useRef(false);
     const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+    const [isBackgroundSweepActive, setIsBackgroundSweepActive] =
+      useState(false);
     const [isH2TypingComplete, setIsH2TypingComplete] = useState(false);
     const [isPTypingComplete, setIsPTypingComplete] = useState(false);
 
     const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
+      if (!backgroundTextRef.current || isBackgroundSweepActive) return;
+      const rect = backgroundTextRef.current.getBoundingClientRect();
 
       // Calculate mouse position relative to the center of the text container
       // This ensures the radial gradient center exactly matches the cursor tip
@@ -1738,8 +1337,47 @@ export const UserGuide: React.FC<UserGuideProps> = ({
       });
     };
 
+    useEffect(() => {
+      const target = ctaSectionRef.current;
+      if (!target || typeof IntersectionObserver === "undefined") {
+        return;
+      }
+
+      const observer = new IntersectionObserver(
+        ([entry]) => {
+          if (!entry?.isIntersecting || hasBackgroundSweepPlayedRef.current) {
+            return;
+          }
+
+          hasBackgroundSweepPlayedRef.current = true;
+          setIsBackgroundSweepActive(true);
+
+          backgroundSweepTimerRef.current = window.setTimeout(() => {
+            setIsBackgroundSweepActive(false);
+            backgroundSweepTimerRef.current = null;
+          }, 1600);
+        },
+        {
+          root: containerRef.current,
+          threshold: 0.35,
+        },
+      );
+
+      observer.observe(target);
+
+      return () => {
+        observer.disconnect();
+        if (backgroundSweepTimerRef.current) {
+          window.clearTimeout(backgroundSweepTimerRef.current);
+        }
+      };
+    }, []);
+
     return (
-      <div className="w-full mt-20 flex justify-center bg-white relative z-40 flex-1">
+      <div
+        ref={ctaSectionRef}
+        className="w-full mt-20 flex justify-center bg-white relative z-40 flex-1"
+      >
         <motion.div
           initial="hidden"
           whileInView="visible"
@@ -1838,7 +1476,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({
 
           {/* Background Text Watermark (Flashlight Effect) */}
           <div
-            ref={containerRef}
+            ref={backgroundTextRef}
             onMouseMove={handleMouseMove}
             onMouseLeave={() => setMousePosition({ x: -1000, y: -1000 })}
             className="absolute inset-x-0 bottom-0 translate-y-[45%] md:translate-y-[35%] flex items-center justify-center select-none z-0 overflow-hidden w-full pointer-events-auto h-[40vw] max-h-[600px]"
@@ -1847,20 +1485,64 @@ export const UserGuide: React.FC<UserGuideProps> = ({
               {/* 底层文字：只有轮廓，浅灰色 */}
               <span className="inline-block text-[#cdcdcd53]">SmartDoc</span>
 
-              {/* 上层文字：手电筒高亮效果 */}
-              <span
-                className="absolute left-0 top-0 w-full h-full inline-flex items-center justify-center bg-clip-text text-transparent bg-[#86b4ff] pointer-events-none"
-                style={{
-                  WebkitMaskImage: `radial-gradient(circle 5vw at ${mousePosition.x}px ${mousePosition.y}px, black 0%, transparent 100%)`,
-                  maskImage: `radial-gradient(circle 5vw at ${mousePosition.x}px ${mousePosition.y}px, black 0%, transparent 100%)`,
-                  WebkitMaskSize: "100% 100%",
-                  maskSize: "100% 100%",
-                  WebkitMaskRepeat: "no-repeat",
-                  maskRepeat: "no-repeat",
-                }}
-              >
-                SmartDoc
-              </span>
+              <AnimatePresence mode="wait">
+                {isBackgroundSweepActive ? (
+                  <motion.span
+                    key="sweep"
+                    className="absolute left-0 top-0 w-full h-full inline-flex items-center justify-center bg-clip-text text-transparent bg-[#86b4ff] pointer-events-none"
+                    style={{
+                      WebkitMaskImage:
+                        "linear-gradient(90deg, transparent 0%, black 35%, black 65%, transparent 100%)",
+                      maskImage:
+                        "linear-gradient(90deg, transparent 0%, black 35%, black 65%, transparent 100%)",
+                      WebkitMaskSize: "34% 100%",
+                      maskSize: "34% 100%",
+                      WebkitMaskRepeat: "no-repeat",
+                      maskRepeat: "no-repeat",
+                    }}
+                    initial={
+                      {
+                        opacity: 0,
+                        WebkitMaskPosition: "-45% 0%",
+                        maskPosition: "-45% 0%",
+                      } as TargetAndTransition
+                    }
+                    animate={
+                      {
+                        opacity: 1,
+                        WebkitMaskPosition: "145% 0%",
+                        maskPosition: "145% 0%",
+                      } as TargetAndTransition
+                    }
+                    exit={{ opacity: 0 }}
+                    transition={{
+                      duration: 1.6,
+                      ease: "linear",
+                    }}
+                  >
+                    SmartDoc
+                  </motion.span>
+                ) : (
+                  <motion.span
+                    key="flashlight"
+                    className="absolute left-0 top-0 w-full h-full inline-flex items-center justify-center bg-clip-text text-transparent bg-[#86b4ff] pointer-events-none"
+                    style={{
+                      WebkitMaskImage: `radial-gradient(circle 5vw at ${mousePosition.x}px ${mousePosition.y}px, black 0%, transparent 100%)`,
+                      maskImage: `radial-gradient(circle 5vw at ${mousePosition.x}px ${mousePosition.y}px, black 0%, transparent 100%)`,
+                      WebkitMaskSize: "100% 100%",
+                      maskSize: "100% 100%",
+                      WebkitMaskRepeat: "no-repeat",
+                      maskRepeat: "no-repeat",
+                    }}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    SmartDoc
+                  </motion.span>
+                )}
+              </AnimatePresence>
             </h1>
           </div>
 
@@ -1877,7 +1559,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({
                 visible: {
                   opacity: 1,
                   transition: {
-                    staggerChildren: 0.2,
+                    staggerChildren: 0.1,
                   },
                 },
               }}
@@ -1933,7 +1615,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({
                   },
                 }}
               >
-                {"准备好提升团队效率了吗？立即体验智能文档流转平台，开启高效工作"
+                {"准备好提升团队效率了吗？立即体验文枢智动，开启高效工作"
                   .split("")
                   .map((char, index) => (
                     <motion.span
@@ -1973,17 +1655,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({
             </div>
 
             <div className="flex items-center gap-4">
-              <button
-                type="button"
-                onClick={() => {
-                  if (onOpenLogin) {
-                    onOpenLogin();
-                    return;
-                  }
-                  onBackToDashboard?.();
-                }}
-                className="px-6 py-2.5 rounded-full bg-white text-[#0d1c2e] font-semibold border border-[#e2e8f0] shadow-sm hover:bg-gray-50 transition-all text-sm h-[44px]"
-              >
+              <button className="px-6 py-2.5 rounded-full bg-white text-[#0d1c2e] font-semibold border border-[#e2e8f0] shadow-sm hover:bg-gray-50 transition-all text-sm h-[44px]">
                 登录账号
               </button>
               <button
@@ -2036,9 +1708,16 @@ export const UserGuide: React.FC<UserGuideProps> = ({
             className="flex items-center gap-6 xl:gap-10 cursor-pointer"
             onClick={() => handleGuideNavClick(guideNavItems[0])}
           >
-            <div className="text-xl md:text-2xl font-bold tracking-tight flex items-center whitespace-nowrap">
-              <span className="hidden md:inline-block text-[#0d1c2e] ml-38">
-                智能文档流转平台
+            <div className="text-xl md:text-2xl font-bold tracking-tight flex items-center gap-3 whitespace-nowrap md:ml-38">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-transparent">
+                <img
+                  src={guideLogo}
+                  alt="文枢智动"
+                  className="h-9 w-9 bg-transparent object-contain"
+                />
+              </span>
+              <span className="hidden md:inline-block text-[#0d1c2e]">
+                文枢智动
               </span>
               <span className="md:hidden text-[#0d1c2e]">SmartDoc</span>
             </div>
