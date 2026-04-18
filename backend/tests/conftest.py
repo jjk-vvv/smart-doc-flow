@@ -15,8 +15,9 @@ if str(BACKEND_ROOT) not in sys.path:
 def clear_unified_backend_caches():
     from app.core.config import get_settings
     from app.core.env import load_managed_env_files
-    from app.services.assistant_service import get_assistant_service
-    from app.modules.auth.service import get_auth_service
+    from app.modules.module2.services.api.assistant_service import get_assistant_service
+    from app.modules.platform_assistant.services.chat_service import get_platform_assistant_service
+    from app.services.auth_service import get_auth_service
     from app.modules.module2.core.artifact_runtime import get_extraction_artifact_runtime
     from app.modules.module2.core.assistant1_runtime import get_assistant1_facade
     from app.modules.module2.core.config import get_extraction_settings
@@ -25,7 +26,7 @@ def clear_unified_backend_caches():
         clear_module2_upstream_resolution_cache,
         get_module2_sidecar_manager,
     )
-    from app.services.extraction_service import get_extraction_service
+    from app.modules.module2.services.api.extraction_service import get_extraction_service
     from app.modules.module4.core.module4_sidecar_runtime import (
         clear_module4_upstream_resolution_cache,
         get_module4_sidecar_manager,
@@ -37,6 +38,7 @@ def clear_unified_backend_caches():
     asyncio.run(get_auth_service().shutdown())
     get_auth_service.cache_clear()
     get_assistant_service.cache_clear()
+    get_platform_assistant_service.cache_clear()
     get_assistant1_facade.cache_clear()
     get_module2_execution_facade.cache_clear()
     get_module2_sidecar_manager().shutdown_started_process(wait_timeout_sec=0.5)
@@ -55,6 +57,7 @@ def clear_unified_backend_caches():
     asyncio.run(get_auth_service().shutdown())
     get_auth_service.cache_clear()
     get_assistant_service.cache_clear()
+    get_platform_assistant_service.cache_clear()
     get_assistant1_facade.cache_clear()
     get_module2_execution_facade.cache_clear()
     get_module2_sidecar_manager().shutdown_started_process(wait_timeout_sec=0.5)

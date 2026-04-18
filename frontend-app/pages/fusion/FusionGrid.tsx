@@ -1,4 +1,4 @@
-﻿﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -26,13 +26,18 @@ import {
   fetchModule3RunStatus,
   module3RunDownloadUrl,
   normalizeModule3Status,
+  parseModule3MissingResource,
   uploadModule3Docset,
   uploadModule3Template,
   type Module3RunStatusResponse,
   type Module3TaskStatus,
 } from "../../lib/module3Api";
 import {
+  clearFusionGridStateStorage,
+  createEmptyFusionGridState,
   readFusionGridState,
+  readFusionGridOwnerScope,
+  writeFusionGridOwnerScope,
   writeFusionGridState,
   type FusionDocumentType,
   type FusionGridDocsetRecord,
@@ -40,6 +45,7 @@ import {
   type FusionGridTaskRecord,
   type FusionGridTemplateRecord,
 } from "../../lib/fusionGridStore";
+import { getCurrentUser } from "../../shared/api/auth";
 import { Module3ExcelPreview } from "./Module3ExcelPreview";
 import { Module3WordPreview } from "./Module3WordPreview";
 import excelIconUrl from "../../assets/xlsx.png";
@@ -108,6 +114,17 @@ const getTaskOutputName = (task: {
   const outputName = String(task.outputName || "").trim();
   if (outputName) return outputName;
   return basename(task.templateName);
+};
+
+const resolveModule3OwnerScope = async (): Promise<string> => {
+  try {
+    const payload = await getCurrentUser();
+    const user = payload?.user;
+    const candidate = String(user?.tenantId || user?.id || "anonymous").trim();
+    return candidate || "anonymous";
+  } catch {
+    return "anonymous";
+  }
 };
 
 const canPreviewByRunType = (type: FusionDocumentType): boolean =>
@@ -349,6 +366,26 @@ export const FusionGrid: React.FC = () => {
   }, [gridState]);
 
   useEffect(() => {
+    let active = true;
+
+    resolveModule3OwnerScope().then((ownerScope) => {
+      if (!active) return;
+      const previousOwnerScope = readFusionGridOwnerScope();
+      if (previousOwnerScope && previousOwnerScope !== ownerScope) {
+        clearFusionGridStateStorage();
+        setGridState(createEmptyFusionGridState());
+        setErrorMessage("");
+        setInfoMessage("已切换到当前账号对应的填表工作区。");
+      }
+      writeFusionGridOwnerScope(ownerScope);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     setGridState((current) => ({
       ...current,
       selectedTemplateId: current.templates.some(
@@ -568,6 +605,35 @@ export const FusionGrid: React.FC = () => {
         current.selectedTaskId === id ? null : current.selectedTaskId,
     }));
 
+  const dropMissingRunDependency = (
+    kind: "template" | "docset",
+    missingId: string,
+  ) => {
+    setGridState((current) => {
+      if (kind === "template") {
+        const templates = current.templates.filter((item) => item.id !== missingId);
+        return {
+          ...current,
+          templates,
+          selectedTemplateId:
+            current.selectedTemplateId === missingId
+              ? (templates[0]?.id ?? null)
+              : current.selectedTemplateId,
+        };
+      }
+
+      const docsets = current.docsets.filter((item) => item.id !== missingId);
+      return {
+        ...current,
+        docsets,
+        selectedDocsetId:
+          current.selectedDocsetId === missingId
+            ? (docsets[0]?.id ?? null)
+            : current.selectedDocsetId,
+      };
+    });
+  };
+
   const handleTemplateUpload = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
@@ -701,7 +767,18 @@ export const FusionGrid: React.FC = () => {
       });
       setCollapsedRunningNoticeTaskId(null);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "任务创建失败");
+      const missingResource = parseModule3MissingResource(error);
+      if (missingResource?.kind === "template") {
+        dropMissingRunDependency("template", missingResource.id);
+        setInfoMessage("检测到失效模板缓存，已自动从当前列表中移除。");
+        setErrorMessage("当前模板已失效或不属于当前登录账号，请重新上传模板后再试。");
+      } else if (missingResource?.kind === "docset") {
+        dropMissingRunDependency("docset", missingResource.id);
+        setInfoMessage("检测到失效文档集缓存，已自动从当前列表中移除。");
+        setErrorMessage("当前文档集已失效或不属于当前登录账号，请重新上传文档后再试。");
+      } else {
+        setErrorMessage(error instanceof Error ? error.message : "任务创建失败");
+      }
     } finally {
       setIsRunning(false);
     }
@@ -775,7 +852,7 @@ export const FusionGrid: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-[#EAF7F8] pb-[env(safe-area-inset-bottom)] dark:bg-[#0B1120]">
+    <div className="min-h-screen overflow-x-hidden bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] pb-[env(safe-area-inset-bottom)] dark:from-slate-900 dark:via-slate-900 dark:to-slate-950">
       <input
         ref={templateInputRef}
         type="file"
@@ -880,16 +957,23 @@ export const FusionGrid: React.FC = () => {
           <button
             type="button"
             onClick={() => templateInputRef.current?.click()}
-            className="flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-300 px-4 py-5 text-center"
+            className="group flex w-full items-center gap-3 rounded-[24px] bg-slate-50/80 px-5 py-4 text-left transition-colors active:bg-slate-100 dark:bg-white/5 dark:active:bg-white/10"
           >
-            {isUploadingTemplate ? (
-              <Loader2 size={24} className="animate-spin text-slate-400" />
-            ) : (
-              <UploadCloud size={24} className="text-slate-400" />
-            )}
-            <span className="mt-3 text-sm font-semibold text-slate-800">
-              {isUploadingTemplate ? "模板上传中..." : "上传模板"}
-            </span>
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-sky-500 shadow-[0_2px_8px_rgba(14,165,233,0.12)] transition-transform group-active:scale-95 dark:bg-white/10 dark:text-sky-400">
+              {isUploadingTemplate ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : (
+                <UploadCloud size={18} />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="block text-[15px] font-semibold text-slate-800 dark:text-slate-100">
+                {isUploadingTemplate ? "模板解析上传中..." : "上传新的模板"}
+              </span>
+              <span className="mt-0.5 block text-[13px] text-slate-500 dark:text-slate-400">
+                支持 .docx, .xlsx 格式文件
+              </span>
+            </div>
           </button>
           {templates.length > 1 ? (
             <select
@@ -936,7 +1020,7 @@ export const FusionGrid: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div className="rounded-[24px] border-2 border-dashed border-slate-200 bg-white/40 px-4 py-6 text-center text-[14px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/5">
+              <div className="py-6 text-center text-[13px] font-medium text-slate-400 dark:text-slate-500">
                 暂无模板
               </div>
             )}
@@ -953,16 +1037,23 @@ export const FusionGrid: React.FC = () => {
           <button
             type="button"
             onClick={() => docsetInputRef.current?.click()}
-            className="flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-300 px-4 py-5 text-center"
+            className="group flex w-full items-center gap-3 rounded-[24px] bg-slate-50/80 px-5 py-4 text-left transition-colors active:bg-slate-100 dark:bg-white/5 dark:active:bg-white/10"
           >
-            {isUploadingDocset ? (
-              <Loader2 size={24} className="animate-spin text-slate-400" />
-            ) : (
-              <FolderOpen size={24} className="text-slate-400" />
-            )}
-            <span className="mt-3 text-sm font-semibold text-slate-800">
-              {isUploadingDocset ? "文档上传中..." : "上传文档集"}
-            </span>
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-indigo-500 shadow-[0_2px_8px_rgba(99,102,241,0.12)] transition-transform group-active:scale-95 dark:bg-white/10 dark:text-indigo-400">
+              {isUploadingDocset ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : (
+                <FolderOpen size={18} />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="block text-[15px] font-semibold text-slate-800 dark:text-slate-100">
+                {isUploadingDocset ? "文档集上传中..." : "上传文档集文件"}
+              </span>
+              <span className="mt-0.5 block text-[13px] text-slate-500 dark:text-slate-400">
+                支持多选 .pdf, .docx 等文件
+              </span>
+            </div>
           </button>
           {docsets.length > 1 ? (
             <select
@@ -1001,7 +1092,7 @@ export const FusionGrid: React.FC = () => {
                 </div>
               ))
             ) : (
-              <div className="rounded-[24px] border-2 border-dashed border-slate-200 bg-white/40 px-4 py-6 text-center text-[14px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/5">
+              <div className="py-6 text-center text-[13px] font-medium text-slate-400 dark:text-slate-500">
                 暂无文档集
               </div>
             )}
@@ -1398,44 +1489,45 @@ export const FusionGrid: React.FC = () => {
         </div>
       </aside>
 
-      <div className="mx-auto flex w-full max-w-[460px] flex-col px-4 pb-8 pt-[max(16px,env(safe-area-inset-top))]">
-        <header className="sticky top-0 z-20 -mx-4 px-4 pb-4 backdrop-blur-md bg-[#EAF7F8]/80 dark:bg-[#0B1120]/80">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="mt-3 text-[30px] font-black tracking-tight text-slate-950 dark:text-slate-100">
-                多源数据融合
-              </h1>
-            </div>
-            <div className="mt-3 flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setIsHelpOpen(true)}
-                className="flex h-11 w-11 items-center justify-center rounded-[20px] bg-white text-slate-500 shadow-sm dark:bg-white/5 dark:text-slate-300"
-                aria-label="打开使用说明"
-                title="打开使用说明"
-              >
-                <HelpCircle size={18} />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsSidebarFullWidth(false);
-                  setIsSidebarOpen(true);
-                }}
-                className="flex h-11 w-11 items-center justify-center rounded-[20px] bg-white text-slate-500 shadow-sm dark:bg-white/5 dark:text-slate-300"
-                aria-label="打开任务中心"
-                title="打开任务中心"
-              >
-                <PanelLeft size={18} />
-              </button>
-            </div>
+      <div className="mx-auto flex w-full max-w-[460px] flex-col px-4 pb-[120px] pt-[max(16px,env(safe-area-inset-top))]">
+        <header className="relative z-20 flex items-center justify-between gap-3 pb-6 pt-1">
+          <div className="min-w-0 flex flex-col gap-1">
+            <h1 className="text-[26px] font-bold tracking-tight text-slate-900 dark:text-white">
+              自定义<span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-600 to-sky-500 dark:from-cyan-400 dark:to-sky-400">智能填表</span>
+            </h1>
+            <p className="text-[13px] text-slate-500/90 dark:text-slate-400">
+              多源文档数据融合与结构化提取
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsHelpOpen(true)}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/60 text-slate-600 shadow-sm backdrop-blur-md transition-all active:scale-95 dark:bg-white/10 dark:text-slate-300 dark:shadow-none"
+              aria-label="打开使用说明"
+              title="打开使用说明"
+            >
+              <HelpCircle size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsSidebarFullWidth(false);
+                setIsSidebarOpen(true);
+              }}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/60 text-slate-600 shadow-sm backdrop-blur-md transition-all active:scale-95 dark:bg-white/10 dark:text-slate-300 dark:shadow-none"
+              aria-label="打开任务中心"
+              title="打开任务中心"
+            >
+              <PanelLeft size={18} />
+            </button>
           </div>
         </header>
 
-        <div className="space-y-4 pt-4">
-          <section className="mb-10">
+        <div className="space-y-4">
+          <section className="mb-8">
             <div className="mb-4">
-              <h2 className="mt-1 text-[22px] font-bold text-slate-950 dark:text-slate-100">
+              <h2 className="mt-1 text-[20px] font-bold text-slate-900 dark:text-slate-100">
                 资源准备
               </h2>
             </div>
@@ -1443,20 +1535,18 @@ export const FusionGrid: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsTemplatePanelOpen(true)}
-                className="group relative flex min-h-[100px] flex-col items-start justify-between overflow-hidden rounded-[28px] bg-white p-5 text-left shadow-sm active:scale-[0.98] transition-transform dark:bg-white/5"       
+                className="group relative flex h-[72px] items-center justify-start overflow-hidden rounded-[20px] bg-white px-4 text-left shadow-sm active:scale-[0.98] transition-transform dark:bg-white/5"       
               >
                 <div className="absolute -right-4 -top-4 h-24 w-24 rounded-full bg-sky-50/50 blur-2xl dark:bg-sky-900/20" />
-                <div className="flex w-full items-center justify-between gap-3 relative z-10">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-[16px] bg-sky-50 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300">
+                <div className="flex w-full items-center gap-3 relative z-10">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] bg-sky-50 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300">
                     {isUploadingTemplate ? (
-                      <Loader2 size={20} className="animate-spin" />
+                      <Loader2 size={18} className="animate-spin" />
                     ) : (
-                      <UploadCloud size={20} />
+                      <UploadCloud size={18} />
                     )}
                   </div>
-                </div>
-                <div className="mt-3 relative z-10">
-                  <p className="text-[15px] font-bold text-slate-900 dark:text-slate-100">        
+                  <p className="text-[14px] font-bold text-slate-900 dark:text-slate-100">        
                     模板管理
                   </p>
                 </div>
@@ -1464,20 +1554,18 @@ export const FusionGrid: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsDocsetPanelOpen(true)}
-                className="group relative flex min-h-[100px] flex-col items-start justify-between overflow-hidden rounded-[28px] bg-white p-5 text-left shadow-sm active:scale-[0.98] transition-transform dark:bg-white/5"       
+                className="group relative flex h-[72px] items-center justify-start overflow-hidden rounded-[20px] bg-white px-4 text-left shadow-sm active:scale-[0.98] transition-transform dark:bg-white/5"       
               >
                 <div className="absolute -right-4 -top-4 h-24 w-24 rounded-full bg-indigo-50/50 blur-2xl dark:bg-indigo-900/20" />
-                <div className="flex w-full items-center justify-between gap-3 relative z-10">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-[16px] bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300">
+                <div className="flex w-full items-center gap-3 relative z-10">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300">
                     {isUploadingDocset ? (
-                      <Loader2 size={20} className="animate-spin" />
+                      <Loader2 size={18} className="animate-spin" />
                     ) : (
-                      <FolderOpen size={20} />
+                      <FolderOpen size={18} />
                     )}
                   </div>
-                </div>
-                <div className="mt-3 relative z-10">
-                  <p className="text-[15px] font-bold text-slate-900 dark:text-slate-100">        
+                  <p className="text-[14px] font-bold text-slate-900 dark:text-slate-100">        
                     文档集管理
                   </p>
                 </div>
@@ -1522,11 +1610,7 @@ export const FusionGrid: React.FC = () => {
                     <Trash2 size={14} />
                   </button>
                 </div>
-              ) : (
-                <div className="rounded-[24px] border-2 border-dashed border-slate-200 bg-white/40 px-4 py-6 text-center text-[14px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/5">
-                  暂无模板
-                </div>
-              )}
+              ) : null}
               {selectedDocset ? (
                 <div className="overflow-hidden rounded-[24px] bg-white shadow-sm dark:bg-white/5">
                   <div className="flex items-center justify-between gap-3 px-3 py-3">
@@ -1544,27 +1628,29 @@ export const FusionGrid: React.FC = () => {
                       onClick={() =>
                         setIsCurrentDocsetOpen((current) => !current)
                       }
-                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-slate-400"
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition-colors active:bg-slate-200 dark:bg-white/10 dark:text-slate-400"
                       aria-label={isCurrentDocsetOpen ? "收起文档集" : "展开文档集"}
                       title={isCurrentDocsetOpen ? "收起文档集" : "展开文档集"}
                       aria-expanded={isCurrentDocsetOpen}
                     >
-                      <ChevronDown size={16} />
+                      <ChevronDown
+                        size={16}
+                        className={cn(
+                          "transition-transform duration-200",
+                          isCurrentDocsetOpen && "rotate-180"
+                        )}
+                      />
                     </button>
                   </div>
                 </div>
-              ) : (
-                <div className="rounded-[24px] border-2 border-dashed border-slate-200 bg-white/40 px-4 py-6 text-center text-[14px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/5">
-                  暂无文档集
-                </div>
-              )}
+              ) : null}
             </div>
           </section>
 
-          <section className="mt-12">
+          <section className="mt-8">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-[22px] font-bold text-slate-950 dark:text-slate-100">用户要求</h2>
+                <h2 className="text-[20px] font-bold text-slate-900 dark:text-slate-100">用户要求</h2>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
                 {gridState.draftRequirements.length}/600
@@ -1581,7 +1667,7 @@ export const FusionGrid: React.FC = () => {
               maxLength={600}
               rows={4}
               placeholder="例如：只保留 2025 年山东相关数据，金额统一保留两位小数。"
-              className="min-h-[100px] w-full resize-none rounded-[24px] border-none bg-white shadow-sm px-5 py-4 text-sm leading-6 text-slate-700 outline-none placeholder:text-slate-400 focus:ring-4 focus:ring-cyan-500/10 dark:bg-white/5 dark:text-slate-200 dark:focus:ring-cyan-400/20"
+              className="min-h-[120px] w-full resize-none rounded-[24px] border border-slate-200/50 bg-white shadow-[0_2px_12px_rgba(15,23,42,0.03)] px-5 py-5 text-[15px] leading-relaxed text-slate-700 outline-none placeholder:text-slate-400 focus:ring-4 focus:ring-cyan-500/15 focus:border-cyan-200 transition-all dark:bg-white/5 dark:text-slate-200 dark:border-white/10 dark:focus:ring-cyan-400/20"
               aria-label="用户要求"
               title="用户要求"
             />
@@ -1589,7 +1675,7 @@ export const FusionGrid: React.FC = () => {
               type="button"
               onClick={handleStartRun}
               disabled={isRunning || !selectedTemplate || !selectedDocset}
-              className="mt-6 flex h-[56px] w-full items-center justify-center gap-2 rounded-full bg-slate-900 text-[16px] font-bold text-white shadow-lg shadow-slate-900/20 active:scale-[0.98] transition-transform disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:shadow-none"
+              className="mt-6 flex h-[56px] w-full items-center justify-center gap-2 rounded-full bg-gradient-to-r from-cyan-400 to-sky-500 text-[16px] font-bold text-white shadow-[0_8px_20px_rgba(6,182,212,0.25)] active:scale-[0.98] transition-all disabled:cursor-not-allowed disabled:opacity-50 disabled:from-slate-200 disabled:to-slate-200 disabled:text-slate-400 disabled:shadow-none dark:from-cyan-500 dark:to-sky-600 dark:text-white dark:disabled:from-slate-800 dark:disabled:to-slate-800 dark:disabled:text-slate-500"
             >
               {isRunning ? (
                 <Loader2 size={16} className="animate-spin" />

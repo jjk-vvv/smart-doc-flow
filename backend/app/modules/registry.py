@@ -9,10 +9,11 @@ from fastapi import APIRouter
 from app.core.config import Settings
 from app.modules.auth.composition import router as auth_router
 from app.modules.file_assets.api.router import router as file_assets_router
-from app.modules.frontend_static.router import router as frontend_static_router
+from app.modules.frontend_static.api.router import router as frontend_static_router
 from app.modules.module1.composition import router as module1_router
 from app.modules.module2.composition import router as module2_router
 from app.modules.module4.composition import router as module4_router
+from app.modules.platform_assistant.composition import router as platform_assistant_router
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ _MODULE_ROUTE_REGISTRATIONS: tuple[ModuleRouteRegistration, ...] = (
     ModuleRouteRegistration("module2", _constant_router_loader(module2_router)),
     ModuleRouteRegistration("module3", _load_module3_router),
     ModuleRouteRegistration("module4", _constant_router_loader(module4_router)),
+    ModuleRouteRegistration("platform_assistant", _constant_router_loader(platform_assistant_router)),
     ModuleRouteRegistration("frontend_static", _constant_router_loader(frontend_static_router)),
 )
 

@@ -115,6 +115,7 @@ def test_module4_query_search_endpoint_augments_context_artifact_links(monkeypat
         neo4j_graph_projector_getter=lambda: object(),
         graphrag_indexer_getter=lambda: object(),
         tenant_from_request=lambda _request, candidate=None: str(candidate or "tenant-a"),
+        validate_internal_request=lambda _request=None: None,
         parse_csv_list=lambda value: [item.strip() for item in str(value or "").split(",") if item.strip()],
         submit_ingest_job=lambda *_args, **_kwargs: None,  # not used in this test
         schedule_rebuild_job=lambda *_args, **_kwargs: None,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 
@@ -33,31 +32,14 @@ class SyncCallbackBundle:
 
 def build_sync_callback_bundle(
     *,
-    outbox_repository: Any | None = None,
-    legacy_storage: Any | None = None,
+    outbox_repository: Any,
     module4_sync_config_runtime,
     module4_sync_outbox_runtime,
     module4_sync_task_runtime,
     module4_sync_metrics_runtime,
-    **legacy_kwargs: Any,
 ) -> SyncCallbackBundle:
-    if "storage" in legacy_kwargs:
-        if legacy_storage is not None:
-            raise TypeError("Pass only one of legacy_storage=... or storage=...")
-        legacy_storage = legacy_kwargs.pop("storage")
-    if legacy_kwargs:
-        unexpected = ", ".join(sorted(legacy_kwargs))
-        raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-    if outbox_repository is None and legacy_storage is not None:
-        warnings.warn(
-            "build_sync_callback_bundle(storage=...) is deprecated; "
-            "pass outbox_repository=... instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    resolved_outbox_repository = outbox_repository or legacy_storage
-    if resolved_outbox_repository is None:
-        raise ValueError("outbox_repository or legacy_storage is required")
+    if outbox_repository is None:
+        raise ValueError("outbox_repository is required")
 
     def _schedule_outbox(outbox_id: str) -> None:
         key = str(outbox_id or "").strip()
@@ -126,10 +108,10 @@ def build_sync_callback_bundle(
         return True
 
     async def _list_outbox_rows(**kwargs) -> List[Dict[str, Any]]:
-        return await resolved_outbox_repository.list_graph_sync_outbox(**kwargs)
+        return await outbox_repository.list_graph_sync_outbox(**kwargs)
 
     async def _get_outbox_row(outbox_id: str) -> Optional[Dict[str, Any]]:
-        return await resolved_outbox_repository.get_graph_sync_outbox(outbox_id)
+        return await outbox_repository.get_graph_sync_outbox(outbox_id)
 
     def _build_list_response(**kwargs) -> Dict[str, Any]:
         return module4_sync_outbox_runtime.list_response(**kwargs)
@@ -162,22 +144,18 @@ Module4SyncCallbackBundle = SyncCallbackBundle
 
 def build_module4_sync_callback_bundle(
     *,
-    outbox_repository: Any | None = None,
-    legacy_storage: Any | None = None,
+    outbox_repository: Any,
     module4_sync_config_runtime=None,
     module4_sync_outbox_runtime=None,
     module4_sync_task_runtime=None,
     module4_sync_metrics_runtime=None,
-    **legacy_kwargs: Any,
 ) -> Module4SyncCallbackBundle:
     return build_sync_callback_bundle(
         outbox_repository=outbox_repository,
-        legacy_storage=legacy_storage,
         module4_sync_config_runtime=module4_sync_config_runtime,
         module4_sync_outbox_runtime=module4_sync_outbox_runtime,
         module4_sync_task_runtime=module4_sync_task_runtime,
         module4_sync_metrics_runtime=module4_sync_metrics_runtime,
-        **legacy_kwargs,
     )
 
 

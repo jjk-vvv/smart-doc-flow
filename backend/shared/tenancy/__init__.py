@@ -1,2 +1,0 @@
-"""Cross-service tenancy primitives."""
-

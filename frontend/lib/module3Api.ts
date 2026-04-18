@@ -41,11 +41,17 @@ export type Module3RunRequest = {
   template_id: string;
   doc_set_id: string;
   prompt?: string;
+  user_requirements?: string;
 };
 
 export type Module3RunResponse = {
   run_id: string;
   status: string;
+};
+
+export type Module3MissingResource = {
+  kind: "template" | "docset" | "run";
+  id: string;
 };
 
 export type Module3RunStatusResponse = {
@@ -64,6 +70,50 @@ export type Module3RunStatusResponse = {
   finished_at?: string;
   template_id?: string;
   doc_set_id?: string;
+};
+
+export type Module3OverviewSummary = {
+  templateCount: number;
+  docsetCount: number;
+  runCount: number;
+  runningCount: number;
+  doneCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  outputReadyCount: number;
+};
+
+export type Module3OverviewRun = {
+  runId: string;
+  status: string;
+  filled: number;
+  total: number;
+  fillRate: number;
+  templateId?: string | null;
+  docSetId?: string | null;
+  outputFileId?: string | null;
+  outputName?: string | null;
+  error?: string | null;
+  updatedAt?: string | null;
+};
+
+export type Module3OverviewOutput = {
+  runId: string;
+  outputFileId: string;
+  outputName: string;
+  downloadUrl: string;
+  previewUrl: string;
+  updatedAt?: string | null;
+};
+
+export type Module3OverviewResponse = {
+  ok: boolean;
+  ownerId: string;
+  generatedAt: string;
+  summary: Module3OverviewSummary;
+  activeRun?: Module3OverviewRun | null;
+  recentRuns: Module3OverviewRun[];
+  recentOutputs: Module3OverviewOutput[];
 };
 
 export type Module3WorkbookSheet = {
@@ -205,12 +255,6 @@ const resolveModule3BaseUrl = (): string => {
       ? String(import.meta.env?.VITE_MODULE3_API_BASE ?? "").trim()
       : "";
   if (envBase) return trimTrailingSlash(envBase);
-  if (typeof window !== "undefined" && import.meta.env?.DEV) {
-    const protocol = window.location.protocol || "http:";
-    const hostname = window.location.hostname || "127.0.0.1";
-    const module3Port = String(import.meta.env?.VITE_MODULE3_PORT ?? "").trim() || "8001";
-    return `${protocol}//${hostname}:${module3Port}/module3`;
-  }
   return "/module3";
 };
 
@@ -223,6 +267,15 @@ const module3Fetch = (path: string, init: RequestInit = {}): Promise<Response> =
     credentials: "include",
     ...init,
   });
+
+export const fetchModule3Overview = async (limit = 6): Promise<Module3OverviewResponse> => {
+  const response = await module3Fetch(`/overview?limit=${encodeURIComponent(String(limit))}`);
+  if (!response.ok) {
+    const detail = (await response.text()).trim();
+    throw new Error(detail || `HTTP ${response.status}`);
+  }
+  return (await response.json()) as Module3OverviewResponse;
+};
 
 const describeDetailItem = (value: unknown): string => {
   if (!value || typeof value !== "object") return "请求格式错误";
@@ -251,6 +304,41 @@ const readJson = async <T>(response: Response): Promise<T> => {
     throw new Error(await readModule3Error(response));
   }
   return response.json() as Promise<T>;
+};
+
+const extractResourceId = (message: string, prefix: string): string => {
+  const match = message.match(new RegExp(`${prefix}_[a-z0-9]+`, "i"));
+  return match?.[0] ?? "";
+};
+
+export const parseModule3MissingResource = (
+  value: unknown,
+): Module3MissingResource | null => {
+  const message =
+    value instanceof Error
+      ? value.message
+      : typeof value === "string"
+        ? value
+        : "";
+  const normalized = message.trim();
+  if (!normalized) return null;
+
+  const templateId = extractResourceId(normalized, "tpl");
+  if (templateId) {
+    return { kind: "template", id: templateId };
+  }
+
+  const docsetId = extractResourceId(normalized, "docset");
+  if (docsetId) {
+    return { kind: "docset", id: docsetId };
+  }
+
+  const runId = extractResourceId(normalized, "run");
+  if (runId && normalized.toLowerCase().includes("run")) {
+    return { kind: "run", id: runId };
+  }
+
+  return null;
 };
 
 export const normalizeModule3Status = (
@@ -305,7 +393,7 @@ export const createModule3Run = async (
     body: JSON.stringify({
       template_id: payload.template_id,
       doc_set_id: payload.doc_set_id,
-      prompt: payload.prompt ?? "",
+      prompt: payload.prompt ?? payload.user_requirements ?? "",
     }),
   });
 

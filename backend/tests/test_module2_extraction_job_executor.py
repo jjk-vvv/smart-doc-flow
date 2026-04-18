@@ -1,29 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import logging
-import sys
 from dataclasses import dataclass
 from pathlib import Path
+from importlib import import_module
 
 
-def _load_module(module_file: str, module_name: str):
-    module_path = Path(__file__).resolve().parents[1] / "app" / "modules" / "module2" / "services" / module_file
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-executor_module = _load_module("extraction_executor_service.py", "_smart_doc_flow_module2_extraction_job_executor_service")
-job_runtime_module = _load_module(
-    "extraction_job_service.py",
-    "_smart_doc_flow_module2_extraction_job_service_for_executor",
-)
-ExtractionJobExecutor = executor_module.ExtractionJobExecutor
+executor_module = import_module("app.modules.module2.services.extraction.executor")
+job_runtime_module = import_module("app.modules.module2.services.extraction.job")
+ExtractionJobExecutionService = executor_module.ExtractionJobExecutionService
 ExtractionJobRuntime = job_runtime_module.ExtractionJobRuntime
 
 
@@ -155,7 +141,7 @@ def test_extraction_job_executor_run_file_task_success(tmp_path: Path) -> None:
         sync_calls.append(dict(kwargs))
         return True
 
-    executor = ExtractionJobExecutor(
+    executor = ExtractionJobExecutionService(
         extraction_job_runtime=runtime,
         module4_sync_callback_bundle=_FakeModule4SyncCallbackBundle(
             enqueue_for_seed=_enqueue_document_sync_for_seed
@@ -205,7 +191,7 @@ def test_extraction_job_executor_run_job_finalizes_and_syncs_batch(tmp_path: Pat
         final_sync_calls.append(dict(kwargs))
         return kwargs.get("mode") == "final_batch"
 
-    executor = ExtractionJobExecutor(
+    executor = ExtractionJobExecutionService(
         extraction_job_runtime=runtime,
         module4_sync_callback_bundle=_FakeModule4SyncCallbackBundle(
             enqueue_for_seed=_enqueue_document_sync_for_seed

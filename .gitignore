@@ -68,6 +68,10 @@ instance/
 .pytest_cache/
 .pytest_tmp/
 auth/
+!backend/app/modules/auth/
+!backend/app/modules/auth/**
+backend/app/modules/auth/**/__pycache__/
+backend/app/modules/auth/**/*.pyc
 
 # Runtime data directories (D-class, auto-created by application)
 /module2/

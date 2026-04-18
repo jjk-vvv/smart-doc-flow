@@ -1,44 +1,30 @@
 from __future__ import annotations
 
-import warnings
 from datetime import datetime
+import warnings
 from typing import Any, Dict, List, Optional
 
 
 class Module4SyncOutboxRepository:
     """Repository wrapper for module4 sync outbox persistence operations."""
 
-    def __init__(self, *, legacy_storage: Any | None = None, **legacy_kwargs: Any) -> None:
-        if "storage" in legacy_kwargs:
-            if legacy_storage is not None:
-                raise TypeError("Pass only one of legacy_storage=... or storage=...")
-            legacy_storage = legacy_kwargs.pop("storage")
-            warnings.warn(
-                "Module4SyncOutboxRepository(storage=...) is deprecated; "
-                "pass legacy_storage=... instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if legacy_kwargs:
-            unexpected = ", ".join(sorted(legacy_kwargs))
-            raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-        if legacy_storage is None:
-            raise ValueError("legacy_storage is required")
-        self._legacy_storage = legacy_storage
+    def __init__(self, *, storage: Any | None = None) -> None:
+        if storage is None:
+            raise ValueError("storage is required")
+        self._storage = storage
 
     @property
     def legacy_storage(self) -> Any:
-        return self._legacy_storage
-
-    @property
-    def storage(self) -> Any:
         warnings.warn(
-            "Module4SyncOutboxRepository.storage is deprecated; "
-            "use Module4SyncOutboxRepository.legacy_storage instead.",
+            "Module4SyncOutboxRepository.legacy_storage is deprecated; use Module4SyncOutboxRepository.storage instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self._legacy_storage
+        return self._storage
+
+    @property
+    def storage(self) -> Any:
+        return self._storage
 
     async def upsert_graph_sync_outbox(
         self,
@@ -52,7 +38,7 @@ class Module4SyncOutboxRepository:
         file_hash: Optional[str] = None,
         max_attempts: int = 3,
     ) -> Optional[Dict[str, Any]]:
-        return await self._legacy_storage.upsert_graph_sync_outbox(
+        return await self._storage.upsert_graph_sync_outbox(
             tenant_id=tenant_id,
             source=source,
             source_batch_key=source_batch_key,
@@ -64,13 +50,13 @@ class Module4SyncOutboxRepository:
         )
 
     async def get_graph_sync_outbox(self, outbox_id: str) -> Optional[Dict[str, Any]]:
-        return await self._legacy_storage.get_graph_sync_outbox(outbox_id)
+        return await self._storage.get_graph_sync_outbox(outbox_id)
 
     async def list_graph_sync_outbox(self, **kwargs: Any) -> List[Dict[str, Any]]:
-        return await self._legacy_storage.list_graph_sync_outbox(**kwargs)
+        return await self._storage.list_graph_sync_outbox(**kwargs)
 
     async def claim_graph_sync_outbox(self, outbox_id: str) -> Optional[Dict[str, Any]]:
-        return await self._legacy_storage.claim_graph_sync_outbox(outbox_id)
+        return await self._storage.claim_graph_sync_outbox(outbox_id)
 
     async def mark_graph_sync_outbox_delivered(
         self,
@@ -78,7 +64,7 @@ class Module4SyncOutboxRepository:
         outbox_id: str,
         response_payload: Dict[str, Any],
     ) -> None:
-        await self._legacy_storage.mark_graph_sync_outbox_delivered(
+        await self._storage.mark_graph_sync_outbox_delivered(
             outbox_id=outbox_id,
             response_payload=response_payload,
         )
@@ -90,17 +76,17 @@ class Module4SyncOutboxRepository:
         error_message: str,
         next_attempt_at: datetime,
     ) -> None:
-        await self._legacy_storage.requeue_graph_sync_outbox(
+        await self._storage.requeue_graph_sync_outbox(
             outbox_id=outbox_id,
             error_message=error_message,
             next_attempt_at=next_attempt_at,
         )
 
     async def mark_graph_sync_outbox_failed(self, *, outbox_id: str, error_message: str) -> None:
-        await self._legacy_storage.mark_graph_sync_outbox_failed(
+        await self._storage.mark_graph_sync_outbox_failed(
             outbox_id=outbox_id,
             error_message=error_message,
         )
 
     async def recover_pending_graph_sync_outbox(self, *, limit: int = 200) -> List[Dict[str, Any]]:
-        return await self._legacy_storage.recover_pending_graph_sync_outbox(limit=limit)
+        return await self._storage.recover_pending_graph_sync_outbox(limit=limit)

@@ -2,22 +2,28 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Tuple
 
-from dotenv import load_dotenv
+from app.core.env import load_managed_env_files
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+load_managed_env_files(scopes=("module1", "backend"))
 
 
 def _cors_origins() -> Tuple[List[str], bool]:
     raw = os.getenv(
         "MODULE1_CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:3002,http://localhost:5173",
+        (
+            "http://localhost:3000,"
+            "http://127.0.0.1:3000,"
+            "http://localhost:3002,"
+            "http://127.0.0.1:3002,"
+            "http://localhost:5173,"
+            "http://127.0.0.1:5173"
+        ),
     )
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     if not origins:
-        origins = ["http://localhost:3000"]
+        origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
     allow_all = "*" in origins
     return origins, allow_all
 

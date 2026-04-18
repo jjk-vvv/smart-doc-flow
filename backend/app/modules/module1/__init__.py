@@ -1,5 +1,5 @@
-"""Module1 compatibility package with standardized layering."""
+from __future__ import annotations
 
-from .composition import build_router, router
+from .composition import build_app, build_router, router
 
-__all__ = ["build_router", "router"]
+__all__ = ["build_app", "build_router", "router"]

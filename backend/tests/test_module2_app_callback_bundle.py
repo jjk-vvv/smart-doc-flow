@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from fastapi.responses import FileResponse
 
-from app.modules.module2.runtime.app_callback_bundle import build_module2_app_callback_bundle
+from app.modules.module2.composition.app_callback_bundle import build_module2_app_callback_bundle
 
 
 class _FakeArtifactFileRuntime:

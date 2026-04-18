@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
 
 from ..services.document.tools import DocumentToolsRuntime
-from ..services.extraction.executor import ExtractionJobExecutor
+from ..services.extraction.executor import ExtractionJobExecutionService
 from ..services.extraction.job import ExtractionJobRuntime
-from ..services.extraction.request import ExtractionRequestRuntime
+from ..services.extraction.request import ExtractionRequestService
 from ..services.preview.office import OfficePreviewRequestRuntime
 from .cache_clear import Module2CacheClearRuntime
 
@@ -43,8 +43,8 @@ BoundedEnvIntFn = Callable[..., int]
 class Module2HttpRuntimeBundle:
     cache_clear_runtime: Module2CacheClearRuntime
     extraction_job_runtime: ExtractionJobRuntime
-    extraction_job_executor: ExtractionJobExecutor
-    extraction_request_runtime: ExtractionRequestRuntime
+    extraction_job_executor: ExtractionJobExecutionService
+    extraction_request_runtime: ExtractionRequestService
     office_preview_request_runtime: OfficePreviewRequestRuntime
     document_tools_runtime: DocumentToolsRuntime
     extraction_jobs: Dict[str, Any]
@@ -111,14 +111,14 @@ def build_module2_http_runtime_bundle(
     extraction_job_file_semaphore = asyncio.Semaphore(
         bounded_env_int("MODULE2_JOB_FILE_CONCURRENCY", 3, maximum=8)
     )
-    extraction_job_executor = ExtractionJobExecutor(
+    extraction_job_executor = ExtractionJobExecutionService(
         extraction_job_runtime=extraction_job_runtime,
         module4_sync_callback_bundle=module4_sync_callback_bundle,
         file_semaphore=extraction_job_file_semaphore,
         process_single_doc_bytes=process_single_doc_bytes,
         logger=logger,
     )
-    extraction_request_runtime = ExtractionRequestRuntime(
+    extraction_request_runtime = ExtractionRequestService(
         process_single_doc_bytes=process_single_doc_bytes,
         parse_schema_form_json=parse_schema_form_json,
         write_artifact_bytes=write_artifact_bytes,

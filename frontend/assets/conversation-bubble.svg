@@ -1,0 +1,29 @@
+<svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bubbleBg" x1="16" y1="14" x2="78" y2="82" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <linearGradient id="bubbleGlow" x1="27" y1="28" x2="68" y2="67" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EFF6FF" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#DBEAFE" stop-opacity="0.78"/>
+    </linearGradient>
+    <filter id="bubbleShadow" x="4" y="8" width="88" height="84" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="6"/>
+      <feGaussianBlur stdDeviation="6"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.113725 0 0 0 0 0.305882 0 0 0 0 0.847059 0 0 0 0.24 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+  <g filter="url(#bubbleShadow)">
+    <path d="M20 28C20 20.268 26.268 14 34 14H62C69.732 14 76 20.268 76 28V49C76 56.732 69.732 63 62 63H47.845C45.967 63 44.137 63.598 42.621 64.708L29.296 74.461C27.333 75.898 24.548 74.498 24.548 72.066V64.195C21.875 61.644 20 57.889 20 53.695V28Z" fill="url(#bubbleBg)"/>
+    <path d="M32 31C32 28.791 33.791 27 36 27H60C62.209 27 64 28.791 64 31V46C64 48.209 62.209 50 60 50H45.903C44.939 50 44.003 50.349 43.271 50.983L38.338 55.253C36.387 56.942 33.333 55.555 33.333 52.974V50.357C32.488 49.634 32 48.577 32 47.455V31Z" fill="url(#bubbleGlow)" fill-opacity="0.18"/>
+    <circle cx="38" cy="39" r="4.5" fill="#EFF6FF"/>
+    <circle cx="48" cy="39" r="4.5" fill="#EFF6FF"/>
+    <circle cx="58" cy="39" r="4.5" fill="#EFF6FF"/>
+  </g>
+</svg>

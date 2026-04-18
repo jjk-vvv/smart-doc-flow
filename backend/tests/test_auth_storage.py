@@ -27,7 +27,6 @@ def _auth_settings(tmp_path: Path) -> AuthSettings:
         login_lock_ms=900000,
         is_prod=False,
         users_file=tmp_path / "users.json",
-        legacy_users_file=tmp_path / "legacy-users.json",
         sms_provider="",
         ihuyi_api_id="",
         ihuyi_api_key="",

@@ -1,4 +1,5 @@
 import { buildApiUrl, ensureOk, resolveApiBase } from './client';
+import { getCurrentUser } from './auth';
 
 export type Module4GraphNode = {
   node_id: string;
@@ -291,11 +292,64 @@ const resolveModule4ApiBase = (): string => {
   return resolveApiBase(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
 };
 
-const module4Fetch = (path: string, init: RequestInit = {}) => {
+type Module4AuthHeaders = Record<string, string>;
+
+let module4AuthHeadersCache: Module4AuthHeaders | null = null;
+let module4AuthHeadersPromise: Promise<Module4AuthHeaders> | null = null;
+
+const resolveModule4AuthHeaders = async (): Promise<Module4AuthHeaders> => {
+  if (module4AuthHeadersCache) {
+    return module4AuthHeadersCache;
+  }
+  if (module4AuthHeadersPromise) {
+    return module4AuthHeadersPromise;
+  }
+
+  module4AuthHeadersPromise = (async () => {
+    try {
+      const payload = await getCurrentUser();
+      const user = payload?.user;
+      const userId = String(user?.id || '').trim();
+      const tenantId = String(user?.tenantId || userId).trim();
+      const headers: Module4AuthHeaders = {};
+      if (userId) headers['X-Authenticated-User-Id'] = userId;
+      if (tenantId) {
+        headers['X-Authenticated-Tenant-Id'] = tenantId;
+        headers['X-Tenant-Id'] = tenantId;
+      }
+      module4AuthHeadersCache = headers;
+      return headers;
+    } catch {
+      module4AuthHeadersCache = {};
+      return {};
+    } finally {
+      module4AuthHeadersPromise = null;
+    }
+  })();
+
+  return module4AuthHeadersPromise;
+};
+
+const withModule4AuthHeaders = async (init: RequestInit = {}): Promise<RequestInit> => {
+  const mergedHeaders = new Headers(init.headers || undefined);
+  const authHeaders = await resolveModule4AuthHeaders();
+  Object.entries(authHeaders).forEach(([key, value]) => {
+    if (value && !mergedHeaders.has(key)) {
+      mergedHeaders.set(key, value);
+    }
+  });
+  return {
+    ...init,
+    headers: mergedHeaders,
+  };
+};
+
+const module4Fetch = async (path: string, init: RequestInit = {}) => {
   const { url } = buildApiUrl(path, resolveModule4ApiBase());
+  const initWithHeaders = await withModule4AuthHeaders(init);
   return fetch(url, {
     credentials: 'include',
-    ...init,
+    ...initWithHeaders,
   });
 };
 

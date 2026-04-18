@@ -16,7 +16,7 @@ class ParserInitializationRuntime:
     ) -> None:
         mineru_layout_extractor_factory = getattr(parser, "_mineru_layout_extractor_factory", None)
         if mineru_layout_extractor_factory is None:
-            from ..layout_mineru import MineruLayoutExtractor
+            from ..integration.mineru_layout import MineruLayoutExtractor
 
             mineru_layout_extractor_factory = MineruLayoutExtractor
         roi_cropper_factory = getattr(parser, "_roi_cropper_factory", None)
@@ -240,7 +240,7 @@ class ParserInitializationRuntime:
             setattr(parser, attr_name, runtime_value)
 
     def _init_vision_transport_foundations(self, *, parser: Any) -> None:
-        from ..llm_provider import resolve_llm_native_api_url
+        from ...integrations.llm.provider import resolve_llm_native_api_url
 
         for attr_name, runtime_value in parser._parser_vision_transport_bootstrap_runtime.build_vision_transport_runtime_attrs(
             parser_vision_bundle_runtime=parser._parser_vision_bundle_runtime,

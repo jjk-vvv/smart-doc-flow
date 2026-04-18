@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
-from app.create_app import create_app
 from app.core.assistant_config import AssistantSettings
-from app.services.assistant_service import AssistantService, get_assistant_service
-from app.modules.auth.deps import AuthenticatedUser, require_authenticated_user
+from app.core.auth_deps import AuthenticatedUser, require_authenticated_user
+from app.factory import create_app
+from app.modules.platform_assistant.services.chat_service import (
+    PlatformAssistantService,
+    get_platform_assistant_service,
+)
 
 
 class FakeProvider:
@@ -56,16 +62,16 @@ def _fake_user() -> AuthenticatedUser:
     )
 
 
-def test_chat_health_endpoint_returns_unified_payload() -> None:
+def test_platform_assistant_health_endpoint_returns_unified_payload() -> None:
     app = create_app()
-    service = AssistantService(
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=False),
         provider=FakeProvider(configured=False),
     )
-    app.dependency_overrides[get_assistant_service] = lambda: service
+    app.dependency_overrides[get_platform_assistant_service] = lambda: service
 
     with TestClient(app) as client:
-        response = client.get("/api/chat/health")
+        response = client.get("/api/platform-assistant/health")
 
     app.dependency_overrides.clear()
 
@@ -73,24 +79,94 @@ def test_chat_health_endpoint_returns_unified_payload() -> None:
     payload = response.json()
     assert payload["ok"] is True
     assert payload["model"] == "gpt-5-mini"
+    assert payload["config"]["canonicalPrefix"] == "PLATFORM_ASSISTANT"
+    assert payload["config"]["supportsLegacyFallback"] is False
+    assert payload["config"]["legacyConfigFallbackEnabled"] is False
+    assert payload["config"]["ignoredLegacyCompat"] is False
     assert payload["unicodeSmoke"]["enabled"] is False
+    assert payload["route"] == "/api/platform-assistant/health"
 
 
-def test_chat_endpoint_streams_text_event_stream_response() -> None:
+def test_platform_assistant_diagnostics_endpoint_returns_detailed_payload_for_authenticated_user() -> None:
     app = create_app()
-    service = AssistantService(
+    service = PlatformAssistantService(
+        settings=_assistant_settings(smoke_test_enabled=False),
+        provider=FakeProvider(configured=False),
+    )
+    app.dependency_overrides[get_platform_assistant_service] = lambda: service
+    app.dependency_overrides[require_authenticated_user] = _fake_user
+
+    with TestClient(app) as client:
+        response = client.get("/api/platform-assistant/diagnostics")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["service"] == "platform_assistant"
+    assert payload["model"] == "gpt-5-mini"
+    assert payload["config"]["canonicalPrefix"] == "PLATFORM_ASSISTANT"
+    assert payload["unicodeSmoke"]["enabled"] is False
+    assert payload["route"] == "/api/platform-assistant/diagnostics"
+
+
+def test_platform_assistant_bootstrap_endpoint_returns_structured_page_payload() -> None:
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/api/platform-assistant/bootstrap?tab=doc-processing")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["assistant"]["chatPath"] == "/api/platform-assistant/chat"
+    assert payload["assistant"]["healthPath"] == "/api/platform-assistant/health"
+    assert payload["assistant"]["diagnosticsPath"] == "/api/platform-assistant/diagnostics"
+    assert payload["assistant"]["catalogPath"] == "/api/platform-assistant/catalog"
+    assert payload["page"]["tab"] == "doc-processing"
+    assert isinstance(payload["page"]["cue"], str)
+    assert isinstance(payload["page"]["starter"]["steps"], list)
+    assert payload["page"]["starter"]["primaryAction"]["targetTab"] == "doc-processing"
+    assert payload["page"]["starter"]["secondaryAction"]["targetTab"] == "deepread_extraction"
+    assert payload["page"]["primaryPromptCount"] == 2
+    assert payload["page"]["prompts"][0]["id"] == "doc-processing-upload"
+    assert payload["page"]["prompts"][0]["answer"]["primaryAction"]["targetTab"] == "doc-processing"
+
+
+def test_platform_assistant_catalog_endpoint_returns_all_structured_pages() -> None:
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/api/platform-assistant/catalog")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["assistant"]["catalogPath"] == "/api/platform-assistant/catalog"
+    assert isinstance(payload["pages"], list)
+    assert len(payload["pages"]) >= 6
+    page_tabs = {page["tab"] for page in payload["pages"]}
+    assert "dashboard" in page_tabs
+    assert "doc-processing" in page_tabs
+    assert "deepread_extraction" in page_tabs
+
+
+def test_platform_assistant_chat_endpoint_streams_text_event_stream_response() -> None:
+    app = create_app()
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=False),
         provider=FakeProvider(configured=True, stream_chunks=["你", "好"]),
     )
-    app.dependency_overrides[get_assistant_service] = lambda: service
+    app.dependency_overrides[get_platform_assistant_service] = lambda: service
     app.dependency_overrides[require_authenticated_user] = _fake_user
 
     with TestClient(app) as client:
         response = client.post(
-            "/api/chat",
+            "/api/platform-assistant/chat",
             json={
                 "messages": [{"role": "user", "content": "你好"}],
-                "platformContext": "系统状态正常",
+                "context": {"activeTab": "doc-processing", "pageCue": "system_status:ok"},
             },
         )
 
@@ -102,3 +178,49 @@ def test_chat_endpoint_streams_text_event_stream_response() -> None:
     assert '0:"你"' in response.text
     assert '0:"好"' in response.text
     assert '0:"[DONE]"' in response.text
+
+
+def test_platform_assistant_chat_overwrites_client_supplied_session_meta() -> None:
+    app = create_app()
+    captured_payload: dict[str, object] = {}
+
+    class CapturingService:
+        def stream_chat(self, payload: dict[str, object]) -> StreamingResponse:
+            captured_payload.update(payload)
+
+            def _stream() -> Iterator[str]:
+                yield ":ka\n\n"
+                yield '0:"[DONE]"\n'
+
+            return StreamingResponse(_stream(), media_type="text/event-stream")
+
+    app.dependency_overrides[get_platform_assistant_service] = lambda: CapturingService()
+    app.dependency_overrides[require_authenticated_user] = _fake_user
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/platform-assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "你好"}],
+                "context": {
+                    "activeTab": "doc-processing",
+                    "pageCue": "local-cue",
+                    "sessionMeta": {
+                        "userId": "forged-user",
+                        "tenantId": "forged-tenant",
+                        "requestId": "forged-request",
+                    },
+                },
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    context = captured_payload["context"]
+    assert isinstance(context, dict)
+    session_meta = context["sessionMeta"]
+    assert isinstance(session_meta, dict)
+    assert session_meta["userId"] == "user-123"
+    assert session_meta["tenantId"] == "user-123"
+    assert session_meta["requestId"] == "sess-123"

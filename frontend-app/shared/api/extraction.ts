@@ -55,7 +55,14 @@ const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
   return candidates.length > 0 ? candidates : [''];
 };
 
-const shouldRetryByStatus = (status: number): boolean => status === 404 || status === 502 || status === 503 || status === 504;
+const shouldRetryByStatus = (status: number): boolean =>
+  status === 401 ||
+  status === 403 ||
+  status === 404 ||
+  status === 410 ||
+  status === 502 ||
+  status === 503 ||
+  status === 504;
 
 const shouldRetryByError = (error: unknown): boolean => {
   if (!(error instanceof Error)) return false;
@@ -132,6 +139,10 @@ export const resolveExtractArtifactUrlFromTraceHit = (
     locator.artifact_by_file_url,
     locator.table_artifact_by_file_url,
     locator.dataframe_artifact_by_file_url,
+    locator.figure_artifact_by_file_url,
+    locator.screenshot_by_file_url,
+    locator.image_by_file_url,
+    locator.preview_by_file_url,
   ];
   for (const candidate of locatorByFileUrlCandidates) {
     const direct = String(candidate || '').trim();
@@ -142,6 +153,10 @@ export const resolveExtractArtifactUrlFromTraceHit = (
     locator.artifact_file_id,
     locator.table_artifact_file_id,
     locator.dataframe_artifact_file_id,
+    locator.figure_artifact_file_id,
+    locator.screenshot_file_id,
+    locator.image_file_id,
+    locator.preview_file_id,
   ];
   for (const candidate of locatorByFileIdCandidates) {
     const byFileRoute = toArtifactByFileRoute(candidate);
@@ -154,6 +169,9 @@ export const resolveExtractArtifactUrlFromTraceHit = (
     locator.artifact_url,
     locator.table_artifact_url,
     locator.dataframe_artifact_url,
+    locator.figure_artifact_url,
+    locator.preview_url,
+    locator.table_image_url,
   ];
   for (const candidate of locatorUrlCandidates) {
     const direct = String(candidate || '').trim();

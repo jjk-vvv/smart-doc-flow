@@ -6,7 +6,7 @@ from importlib import import_module
 def test_module2_bootstrap_foundation_exports_runtime_builders() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.foundation")
-    runtime_module = import_module("app.modules.module2.runtime.main_foundation_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.foundation_builder")
 
     assert (
         package_module.build_module2_default_bootstrap_components
@@ -53,7 +53,7 @@ def test_module2_bootstrap_foundation_builder_delegates_to_service_layer() -> No
 def test_module2_bootstrap_entry_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.entry")
-    runtime_module = import_module("app.modules.module2.runtime.main_entry_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.entry_builder")
 
     assert (
         package_module.build_module2_main_entry_bundle
@@ -75,10 +75,8 @@ def test_module2_bootstrap_entry_builder_delegates_to_service_layer() -> None:
     )
 
 
-def test_module2_runtime_package_lazy_exports_bootstrap_builders() -> None:
+def test_module2_runtime_package_exports_cycle_safe_builders_only() -> None:
     runtime_package = import_module("app.modules.module2.runtime")
-    foundation_module = import_module("app.modules.module2.bootstrap.foundation")
-    entry_module = import_module("app.modules.module2.bootstrap.entry")
     extraction_module = import_module("app.modules.module2.bootstrap.extraction")
     document_io_module = import_module("app.modules.module2.bootstrap.document_io")
     geometry_module = import_module("app.modules.module2.bootstrap.geometry")
@@ -93,22 +91,11 @@ def test_module2_runtime_package_lazy_exports_bootstrap_builders() -> None:
     schema_fields_module = import_module("app.modules.module2.bootstrap.schema_fields")
     schema_inference_module = import_module("app.modules.module2.bootstrap.schema_inference")
     schema_llm_module = import_module("app.modules.module2.bootstrap.schema_llm")
-    schema_pipeline_module = import_module("app.modules.module2.bootstrap.schema_pipeline")
     schema_primitives_module = import_module("app.modules.module2.bootstrap.schema_primitives")
     schema_resolution_module = import_module("app.modules.module2.bootstrap.schema_resolution")
     schema_selection_module = import_module("app.modules.module2.bootstrap.schema_selection")
     schema_semantics_module = import_module("app.modules.module2.bootstrap.schema_semantics")
-    service_module = import_module("app.modules.module2.bootstrap.service")
-    support_module = import_module("app.modules.module2.bootstrap.support")
-
-    assert (
-        runtime_package.build_module2_default_bootstrap_components
-        is foundation_module.build_module2_default_bootstrap_components
-    )
-    assert (
-        runtime_package.build_module2_main_entry_bundle
-        is entry_module.build_module2_main_entry_bundle
-    )
+    assert "__getattr__" not in runtime_package.__dict__
     assert (
         runtime_package.build_module2_main_extraction_bundle
         is extraction_module.build_module2_main_extraction_bundle
@@ -170,14 +157,6 @@ def test_module2_runtime_package_lazy_exports_bootstrap_builders() -> None:
         is schema_llm_module.build_module2_main_schema_llm_bundle
     )
     assert (
-        runtime_package.build_module2_main_schema_pipeline_bundle
-        is schema_pipeline_module.build_module2_main_schema_pipeline_bundle
-    )
-    assert (
-        runtime_package.build_module2_main_schema_pipeline_bundle_from_rules
-        is schema_pipeline_module.build_module2_main_schema_pipeline_bundle_from_rules
-    )
-    assert (
         runtime_package.build_module2_main_schema_primitives_bundle
         is schema_primitives_module.build_module2_main_schema_primitives_bundle
     )
@@ -201,24 +180,20 @@ def test_module2_runtime_package_lazy_exports_bootstrap_builders() -> None:
         runtime_package.build_module2_main_schema_semantics_bundle
         is schema_semantics_module.build_module2_main_schema_semantics_bundle
     )
-    assert (
-        runtime_package.build_module2_main_service_bundle
-        is service_module.build_module2_main_service_bundle
-    )
-    assert (
-        runtime_package.build_module2_main_support_bundle
-        is support_module.build_module2_main_support_bundle
-    )
-    assert (
-        runtime_package.build_module2_bootstrap_runtime_bundle
-        is support_module.build_module2_bootstrap_runtime_bundle
-    )
+    assert not hasattr(runtime_package, "build_module2_default_bootstrap_components")
+    assert not hasattr(runtime_package, "build_module2_main_foundation_bundle")
+    assert not hasattr(runtime_package, "build_module2_main_entry_bundle")
+    assert not hasattr(runtime_package, "build_module2_main_schema_pipeline_bundle")
+    assert not hasattr(runtime_package, "build_module2_main_schema_pipeline_bundle_from_rules")
+    assert not hasattr(runtime_package, "build_module2_main_service_bundle")
+    assert not hasattr(runtime_package, "build_module2_main_support_bundle")
+    assert not hasattr(runtime_package, "build_module2_bootstrap_runtime_bundle")
 
 
 def test_module2_bootstrap_extraction_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.extraction")
-    runtime_module = import_module("app.modules.module2.runtime.main_extraction_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.extraction_builder")
 
     assert (
         package_module.build_module2_main_extraction_bundle
@@ -247,7 +222,7 @@ def test_module2_bootstrap_extraction_builder_delegates_to_service_layer() -> No
 def test_module2_bootstrap_document_io_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.document_io")
-    runtime_module = import_module("app.modules.module2.runtime.main_document_io_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.document_io_builder")
 
     assert (
         package_module.build_module2_main_document_io_bundle
@@ -272,7 +247,7 @@ def test_module2_bootstrap_document_io_builder_delegates_to_service_layer() -> N
 def test_module2_bootstrap_geometry_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.geometry")
-    runtime_module = import_module("app.modules.module2.runtime.main_geometry_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.geometry_builder")
 
     assert (
         package_module.build_module2_main_geometry_bundle
@@ -297,7 +272,7 @@ def test_module2_bootstrap_geometry_builder_delegates_to_service_layer() -> None
 def test_module2_bootstrap_nonpdf_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.nonpdf")
-    runtime_module = import_module("app.modules.module2.runtime.main_nonpdf_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.nonpdf_builder")
 
     assert (
         package_module.build_module2_main_nonpdf_bundle
@@ -322,7 +297,7 @@ def test_module2_bootstrap_nonpdf_builder_delegates_to_service_layer() -> None:
 def test_module2_bootstrap_platform_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.platform")
-    runtime_module = import_module("app.modules.module2.runtime.main_platform_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.platform_builder")
 
     assert (
         package_module.build_module2_main_platform_bundle
@@ -347,7 +322,7 @@ def test_module2_bootstrap_platform_builder_delegates_to_service_layer() -> None
 def test_module2_bootstrap_policy_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.policy")
-    runtime_module = import_module("app.modules.module2.runtime.main_policy_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.policy_builder")
 
     assert (
         package_module.build_module2_main_policy_bundle
@@ -372,7 +347,7 @@ def test_module2_bootstrap_policy_builder_delegates_to_service_layer() -> None:
 def test_module2_bootstrap_progress_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.progress")
-    runtime_module = import_module("app.modules.module2.runtime.main_progress_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.progress_builder")
 
     assert (
         package_module.build_module2_main_progress_bundle
@@ -397,7 +372,7 @@ def test_module2_bootstrap_progress_builder_delegates_to_service_layer() -> None
 def test_module2_bootstrap_quick_extract_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.quick_extract")
-    runtime_module = import_module("app.modules.module2.runtime.main_quick_extract_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.quick_extract_builder")
 
     assert (
         package_module.build_module2_main_quick_extract_bundle
@@ -434,7 +409,7 @@ def test_module2_bootstrap_quick_extract_builder_delegates_to_service_layer() ->
 def test_module2_bootstrap_quality_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.quality")
-    runtime_module = import_module("app.modules.module2.runtime.main_quality_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.quality_builder")
 
     assert (
         package_module.build_module2_main_quality_bundle
@@ -459,7 +434,7 @@ def test_module2_bootstrap_quality_builder_delegates_to_service_layer() -> None:
 def test_module2_bootstrap_schema_primitives_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.schema_primitives")
-    runtime_module = import_module("app.modules.module2.runtime.main_schema_primitives_bundle")
+    runtime_module = import_module("app.modules.module2.services.schema.schema_primitives_builder")
 
     assert (
         package_module.build_module2_main_schema_primitives_bundle
@@ -490,7 +465,7 @@ def test_module2_bootstrap_schema_primitives_exports_runtime_builder_shim() -> N
 def test_module2_bootstrap_schema_pipeline_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.schema_pipeline")
-    runtime_module = import_module("app.modules.module2.runtime.main_schema_pipeline_bundle")
+    runtime_module = import_module("app.modules.module2.services.schema.schema_pipeline_builder")
 
     assert (
         package_module.build_module2_main_schema_pipeline_bundle
@@ -514,7 +489,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
     package_module = import_module("app.modules.module2.bootstrap")
 
     result_filter_bootstrap = import_module("app.modules.module2.bootstrap.result_filter")
-    result_filter_runtime = import_module("app.modules.module2.runtime.main_result_filter_bundle")
+    result_filter_runtime = import_module("app.modules.module2.services.schema.result_filter_builder")
     assert (
         package_module.build_module2_main_result_filter_bundle
         is result_filter_bootstrap.build_module2_main_result_filter_bundle
@@ -525,7 +500,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
     )
 
     schema_context_bootstrap = import_module("app.modules.module2.bootstrap.schema_context")
-    schema_context_runtime = import_module("app.modules.module2.runtime.main_schema_context_bundle")
+    schema_context_runtime = import_module("app.modules.module2.services.schema.schema_context_builder")
     assert (
         package_module.build_module2_main_schema_context_bundle
         is schema_context_bootstrap.build_module2_main_schema_context_bundle
@@ -536,7 +511,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
     )
 
     schema_fields_bootstrap = import_module("app.modules.module2.bootstrap.schema_fields")
-    schema_fields_runtime = import_module("app.modules.module2.runtime.main_schema_fields_bundle")
+    schema_fields_runtime = import_module("app.modules.module2.services.schema.schema_fields_builder")
     assert (
         package_module.build_module2_main_schema_fields_bundle
         is schema_fields_bootstrap.build_module2_main_schema_fields_bundle
@@ -547,7 +522,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
     )
 
     schema_inference_bootstrap = import_module("app.modules.module2.bootstrap.schema_inference")
-    schema_inference_runtime = import_module("app.modules.module2.runtime.main_schema_inference_bundle")
+    schema_inference_runtime = import_module("app.modules.module2.services.schema.schema_inference_builder")
     assert (
         package_module.build_module2_main_schema_inference_bundle
         is schema_inference_bootstrap.build_module2_main_schema_inference_bundle
@@ -558,7 +533,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
     )
 
     schema_llm_bootstrap = import_module("app.modules.module2.bootstrap.schema_llm")
-    schema_llm_runtime = import_module("app.modules.module2.runtime.main_schema_llm_bundle")
+    schema_llm_runtime = import_module("app.modules.module2.services.schema.schema_llm_builder")
     assert (
         package_module.build_module2_main_schema_llm_bundle
         is schema_llm_bootstrap.build_module2_main_schema_llm_bundle
@@ -569,7 +544,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
     )
 
     schema_semantics_bootstrap = import_module("app.modules.module2.bootstrap.schema_semantics")
-    schema_semantics_runtime = import_module("app.modules.module2.runtime.main_schema_semantics_bundle")
+    schema_semantics_runtime = import_module("app.modules.module2.services.schema.schema_semantics_builder")
     assert (
         package_module.build_module2_main_schema_semantics_bundle
         is schema_semantics_bootstrap.build_module2_main_schema_semantics_bundle
@@ -580,7 +555,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
     )
 
     schema_selection_bootstrap = import_module("app.modules.module2.bootstrap.schema_selection")
-    schema_selection_runtime = import_module("app.modules.module2.runtime.main_schema_selection_bundle")
+    schema_selection_runtime = import_module("app.modules.module2.services.schema.schema_selection_builder")
     assert (
         package_module.build_module2_main_schema_selection_bundle
         is schema_selection_bootstrap.build_module2_main_schema_selection_bundle
@@ -591,7 +566,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
     )
 
     schema_resolution_bootstrap = import_module("app.modules.module2.bootstrap.schema_resolution")
-    schema_resolution_runtime = import_module("app.modules.module2.runtime.main_schema_resolution_bundle")
+    schema_resolution_runtime = import_module("app.modules.module2.services.schema.schema_resolution_builder")
     assert (
         package_module.build_module2_main_schema_resolution_bundle
         is schema_resolution_bootstrap.build_module2_main_schema_resolution_bundle
@@ -605,7 +580,7 @@ def test_module2_bootstrap_schema_subbundle_exports_runtime_builder_shims() -> N
 def test_module2_bootstrap_service_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.service")
-    runtime_module = import_module("app.modules.module2.runtime.main_service_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.service_builder")
 
     assert (
         package_module.build_module2_main_service_bundle
@@ -630,7 +605,7 @@ def test_module2_bootstrap_service_builder_delegates_to_service_layer() -> None:
 def test_module2_bootstrap_support_exports_runtime_builder_shim() -> None:
     package_module = import_module("app.modules.module2.bootstrap")
     bootstrap_module = import_module("app.modules.module2.bootstrap.support")
-    runtime_module = import_module("app.modules.module2.runtime.main_support_bundle")
+    runtime_module = import_module("app.modules.module2.services.extraction.support_builder")
 
     assert (
         package_module.build_module2_main_support_bundle

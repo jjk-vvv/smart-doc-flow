@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { BookOpen, Database, FileSearch, Home, UserCircle2 } from 'lucide-react';
 
 import { AccountSecurityModal } from './components/AccountSecurityModal';
+import { PlatformAssistant } from './features/platform-assistant/components/PlatformAssistant';
 import { AuthModal } from './components/AuthModal';
 import { MobileProfilePage } from './pages/profile/MobileProfilePage';
 import { Sidebar } from './components/Sidebar';
@@ -10,7 +11,7 @@ import { cn } from './lib/utils';
 import { Dashboard } from './pages/dashboard/Dashboard';
 import { MobileDashboard } from './pages/dashboard/MobileDashboard';
 import { DeepReadWorkbench } from './pages/deepread/DeepReadWorkbench';
-import { DocInteractionWorkbench } from './pages/deepread/DocInteractionWorkbench';
+import { DocProcessingWorkbench } from './pages/doc-processing/DocProcessingWorkbench';
 import { MobileDeepReadPage } from './pages/deepread/MobileDeepReadPage';
 import { FusionGrid } from './pages/fusion/FusionGrid';
 import { UserGuide } from './pages/guide/UserGuide';
@@ -20,7 +21,7 @@ import { getCurrentUser, logoutAuth, type AuthUser } from './shared/api/auth';
 
 type AppTab =
   | 'dashboard'
-  | 'deepread_interaction'
+  | 'doc-processing'
   | 'deepread_extraction'
   | 'fusion'
   | 'nexus'
@@ -43,7 +44,7 @@ const normalizeMobileTab = (tab: NormalizedTab): NormalizedTab => {
 const normalizeTab = (value: string | null | undefined): NormalizedTab => {
   if (
     value === 'dashboard' ||
-    value === 'deepread_interaction' ||
+    value === 'doc-processing' ||
     value === 'deepread_extraction' ||
     value === 'fusion' ||
     value === 'nexus' ||
@@ -113,11 +114,12 @@ const readInitialOnboarding = (): boolean => {
 };
 
 const MOBILE_BOTTOM_TABS: Array<{
-  id: 'dashboard' | 'deepread_extraction' | 'fusion' | 'mine';
+  id: 'dashboard' | 'doc-processing' | 'deepread_extraction' | 'fusion' | 'mine';
   label: string;
   icon: React.ElementType;
 }> = [
   { id: 'dashboard', label: '首页', icon: Home },
+  { id: 'doc-processing', label: '处理', icon: BookOpen },
   { id: 'deepread_extraction', label: '提取', icon: FileSearch },
   { id: 'fusion', label: '融合', icon: Database },
   { id: 'mine', label: '我的', icon: UserCircle2 },
@@ -256,10 +258,10 @@ export default function App() {
             <Dashboard />
           </div>
         );
-      case 'deepread_interaction':
+      case 'doc-processing':
         return (
           <div className="h-screen overflow-hidden p-4">
-            <DocInteractionWorkbench />
+            <DocProcessingWorkbench />
           </div>
         );
       case 'deepread_extraction':
@@ -320,8 +322,8 @@ export default function App() {
     switch (activeTab) {
       case 'dashboard':
         return <MobileDashboard user={user} onNavigate={handleTabChange} />;
-      case 'deepread_interaction':
-        return <DocInteractionWorkbench />;
+      case 'doc-processing':
+        return <DocProcessingWorkbench />;
       case 'deepread_extraction':
         if (!authBootstrapDone) {
           return (
@@ -413,7 +415,7 @@ export default function App() {
                       key={item.id}
                       type="button"
                       onClick={() => handleTabChange(item.id)}
-                      className="group relative flex h-full flex-1 flex-col items-center justify-center transition-transform active:scale-[0.96]"
+                      className="group relative flex h-full flex-1 flex-col items-center justify-center outline-none transition-transform active:scale-[0.96] focus:outline-none"
                     >
                       <span className="relative z-10 flex flex-col items-center justify-center gap-1">
                         <div
@@ -475,7 +477,12 @@ export default function App() {
           </main>
         </div>
       )}
+      {user ? (
+        <PlatformAssistant
+          activeTab={activeTab}
+          onNavigate={(target) => handleTabChange(target as AppTab)}
+        />
+      ) : null}
     </div>
   );
 }
-

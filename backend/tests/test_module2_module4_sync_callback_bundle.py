@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.modules.module2.runtime.module4_sync_callback_bundle import build_module4_sync_callback_bundle
+from app.modules.module2.runtime.sync_callback_bundle import build_module4_sync_callback_bundle
 
 
 class _FakeStorage:
@@ -229,14 +229,14 @@ def test_module4_sync_callback_bundle_respects_disabled_switches() -> None:
     assert outbox_runtime.enqueue_calls == []
 
 
-def test_module4_sync_callback_bundle_storage_param_emits_deprecation_warning() -> None:
+def test_module4_sync_callback_bundle_rejects_removed_storage_compat_param() -> None:
     storage = _FakeStorage()
     config_runtime = _FakeModule4SyncConfigRuntime(sync_enabled=True, document_sync_enabled=False)
     outbox_runtime = _FakeModule4SyncOutboxRuntime()
     task_runtime = _FakeModule4SyncTaskRuntime()
     metrics_runtime = _FakeModule4SyncMetricsRuntime()
 
-    with pytest.warns(DeprecationWarning):
+    with pytest.raises(TypeError):
         build_module4_sync_callback_bundle(
             storage=storage,
             module4_sync_config_runtime=config_runtime,

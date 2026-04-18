@@ -1,36 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import logging
-import sys
 import time
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 
-def _load_module():
-    module_path = (
-        Path(__file__).resolve().parents[1]
-        / "app"
-        / "modules"
-        / "module2"
-        / "services"
-        / "extraction_request_service.py"
-    )
-    module_name = "_smart_doc_flow_module2_extraction_request_service"
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-runtime_module = _load_module()
-ExtractionRequestRuntime = runtime_module.ExtractionRequestRuntime
+runtime_module = import_module("app.modules.module2.services.extraction.request")
+ExtractionRequestService = runtime_module.ExtractionRequestService
 
 
 @dataclass
@@ -283,7 +264,7 @@ def _build_runtime(**overrides):
         logger=logging.getLogger("test-extraction-request-runtime"),
     )
     defaults.update(overrides)
-    return ExtractionRequestRuntime(**defaults)
+    return ExtractionRequestService(**defaults)
 
 
 def test_extraction_request_runtime_create_job_schedules_and_persists(monkeypatch) -> None:

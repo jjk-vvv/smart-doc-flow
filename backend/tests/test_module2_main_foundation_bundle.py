@@ -60,7 +60,9 @@ def test_build_module2_main_foundation_bundle_exposes_expected_runtime_clusters(
         is_low_value_auto_schema_field_name=lambda field_name: False,
     )
 
-    assert bundle.repository_bundle.legacy_storage.dsn == "postgresql://example"
+    assert bundle.repository_bundle.storage.dsn == "postgresql://example"
+    with pytest.warns(DeprecationWarning):
+        assert bundle.repository_bundle.legacy_storage.dsn == "postgresql://example"
     with pytest.warns(DeprecationWarning):
         assert bundle.storage.dsn == "postgresql://example"
     assert bundle.repository_bundle.runtime_state_repository is not None

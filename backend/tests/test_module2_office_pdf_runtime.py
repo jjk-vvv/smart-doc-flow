@@ -174,3 +174,27 @@ def test_resolve_word_conversion_timeout_scales_for_complex_docx(monkeypatch) ->
     assert meta["word_com_dynamic_timeout_applied"] is True
     assert meta["word_com_timeout_complexity_score"] >= 10
     assert meta["word_com_timeout_resolved_sec"] == round(resolved_timeout, 3)
+
+
+def test_resolve_cache_lock_stale_sec_caps_to_timeout_budget(monkeypatch) -> None:
+    monkeypatch.setenv("MODULE2_OFFICE_CACHE_LOCK_STALE_SEC", "600")
+
+    resolved = office_pdf_module._resolve_cache_lock_stale_sec(180.0)
+
+    # Keep enough recovery budget for conversion retry before this request times out.
+    assert resolved < 180.0
+    assert resolved >= 12.0
+
+
+def test_lock_file_owner_inactive_uses_pid_probe(tmp_path: Path, monkeypatch) -> None:
+    lock_path = tmp_path / "convert.lock"
+    lock_path.write_text(
+        json.dumps({"token": "t", "pid": 12345, "created_at": 0}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(office_pdf_module, "_is_process_alive", lambda _pid: False)
+
+    assert office_pdf_module._lock_file_owner_inactive(lock_path) is True
+
+    monkeypatch.setattr(office_pdf_module, "_is_process_alive", lambda _pid: True)
+    assert office_pdf_module._lock_file_owner_inactive(lock_path) is False

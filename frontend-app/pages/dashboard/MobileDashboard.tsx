@@ -25,7 +25,7 @@ import {
   type ExtractionEntity,
 } from '../../shared/state/extractionDocuments';
 
-type MobileDashboardAction = 'deepread_extraction' | 'fusion' | 'guide';
+type MobileDashboardAction = 'deepread_extraction' | 'fusion' | 'guide' | 'doc-processing';
 
 type MobileDashboardProps = {
   user: AuthUser;
@@ -198,7 +198,7 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
           className="-mx-5 flex snap-x gap-2.5 overflow-x-auto px-5 pb-0 pt-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
         >
           <article
-            onClick={() => onNavigate('deepread_extraction')}
+            onClick={() => onNavigate('doc-processing')}
             className="group relative flex h-[260px] w-[290px] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 active:scale-[0.98] transition-all duration-300 dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
           >
             <div className="absolute inset-x-0 top-0 h-[185px] overflow-hidden bg-[#D4F4F6] dark:bg-cyan-950/30">
@@ -225,7 +225,7 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
           </article>
 
           <article
-            onClick={() => onNavigate('fusion')}
+            onClick={() => onNavigate('deepread_extraction')}
             className="group relative flex h-[260px] w-[290px] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 active:scale-[0.98] transition-all duration-300 dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
           >
             <div className="absolute inset-x-0 top-0 h-[185px] overflow-hidden bg-[#EAF5FD] dark:bg-sky-950/30">
@@ -251,7 +251,7 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
           </article>
 
           <article
-            onClick={() => onNavigate('guide')}
+            onClick={() => onNavigate('fusion')}
             className="group relative flex h-[260px] w-[290px] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 active:scale-[0.98] transition-all duration-300 dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
           >
             <div className="absolute inset-x-0 top-0 h-[185px] overflow-hidden bg-[#F5F1FD] dark:bg-indigo-950/30">
@@ -293,12 +293,14 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
           </div>
 
           {recentDocs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-200 py-12 text-center dark:border-slate-800">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#F2F5F8] shadow-sm dark:bg-slate-800">
-                <FileText size={24} className="text-[#64748B] dark:text-slate-400" />
+            <div className="mt-2 flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200/60 bg-slate-50/50 py-14 text-center dark:border-slate-700/60 dark:bg-slate-800/20">
+              <div className="mb-4 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] bg-white shadow-[0_8px_30px_rgba(6,182,212,0.15)] ring-1 ring-slate-100 dark:bg-slate-800 dark:shadow-[0_8px_30px_rgba(6,182,212,0.08)] dark:ring-slate-700">
+                <FileText size={28} className="text-cyan-500 dark:text-cyan-400" strokeWidth={1.5} />
               </div>
-              <p className="text-[15px] font-medium text-[#11323B] dark:text-slate-200">还没有解析文档</p>
-              <p className="mt-1 text-[13px] text-[#64748B] dark:text-slate-400">上传文件后，这里会展示最近的解析结果摘要</p>
+              <p className="text-[15px] font-bold text-[#11323B] dark:text-slate-200">还没有解析文档</p>
+              <p className="mt-1.5 max-w-[220px] text-[13px] leading-relaxed text-[#64748B] dark:text-slate-400">
+                上传文件后，这里会展示最近的解析结果摘要
+              </p>
             </div>
           ) : (
             <div className="space-y-4">

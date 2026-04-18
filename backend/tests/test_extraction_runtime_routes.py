@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.core.deps import get_settings
-from app.create_app import create_app
-from app.modules.auth.deps import AuthenticatedUser, require_authenticated_user
+from app.core.auth_deps import AuthenticatedUser, require_authenticated_user
+from app.factory import create_app
 
 
 def _settings(tmp_path: Path) -> Settings:

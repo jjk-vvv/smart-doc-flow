@@ -10,9 +10,9 @@ from fastapi import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.modules.auth.config import AuthSettings
-from app.modules.auth.security import is_bcrypt_hash, verify_password
-from app.modules.auth.service import AuthService
+from app.core.auth_config import AuthSettings
+from app.core.auth_security import create_auth_token, is_bcrypt_hash, verify_password
+from app.services.auth_service import AuthService
 
 
 class _DummyNotifier:
@@ -76,9 +76,32 @@ class FakeAuthRepository:
                 return dict(user)
         return None
 
+    async def find_existing_identity(self, name: str, email: str, phone: str) -> dict[str, str] | None:
+        normalized_name = str(name or "").strip()
+        normalized_email = str(email or "").strip()
+        normalized_phone = str(phone or "").strip()
+        for user in self.users.values():
+            if normalized_name and normalized_name == str(user.get("name") or "").strip():
+                return dict(user)
+            if normalized_email and normalized_email == str(user.get("email") or "").strip():
+                return dict(user)
+            if normalized_phone and normalized_phone == str(user.get("phone") or "").strip():
+                return dict(user)
+        return None
+
     async def get_user_by_id(self, user_id: str) -> dict[str, str] | None:
         user = self.users.get(str(user_id or "").strip())
         return dict(user) if user else None
+
+    async def create_user(self, user: dict[str, str]) -> dict[str, str]:
+        normalized_user = {
+            "status": "active",
+            **dict(user or {}),
+        }
+        user_id = str(normalized_user.get("id") or "").strip()
+        if user_id:
+            self.users[user_id] = dict(normalized_user)
+        return dict(normalized_user)
 
     async def update_user_password(self, user_id: str, password_hash: str) -> None:
         normalized_user_id = str(user_id or "").strip()
@@ -126,6 +149,22 @@ class FakeAuthRepository:
         ]
         rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
         return rows
+
+    async def get_session(self, session_id: str) -> dict[str, object] | None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return None
+        row = self.session_rows.get(normalized_session_id)
+        return dict(row) if row else None
+
+    async def touch_session(self, session_id: str) -> None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return
+        row = self.session_rows.get(normalized_session_id)
+        if row is None:
+            return
+        row["last_seen_at"] = datetime.now(UTC)
 
     async def store_verification_code(
         self,
@@ -209,7 +248,6 @@ class FakeAuthRepository:
 
 def _auth_settings(
     users_file: Path,
-    legacy_users_file: Path,
     *,
     database_enabled: bool = False,
     login_max_failures_per_account: int = 5,
@@ -234,7 +272,6 @@ def _auth_settings(
         login_lock_ms=login_lock_ms,
         is_prod=False,
         users_file=users_file,
-        legacy_users_file=legacy_users_file,
         sms_provider="",
         ihuyi_api_id="",
         ihuyi_api_key="",
@@ -270,10 +307,28 @@ def _request(ip: str = "127.0.0.1", path: str = "/api/login") -> Request:
     return Request(scope)
 
 
+def _request_with_cookie(token: str, *, ip: str = "127.0.0.1", path: str = "/api/me") -> Request:
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("utf-8"),
+        "query_string": b"",
+        "headers": [
+            (b"user-agent", b"pytest"),
+            (b"cookie", f"token={token}".encode("utf-8")),
+        ],
+        "client": (ip, 12345),
+        "server": ("testserver", 80),
+    }
+    return Request(scope)
+
+
 def test_reset_forgot_password_revokes_existing_sessions(tmp_path: Path) -> None:
     settings = _auth_settings(
         tmp_path / "users.json",
-        tmp_path / "legacy-users.json",
         database_enabled=True,
     )
     repository = FakeAuthRepository(
@@ -323,7 +378,6 @@ def test_reset_forgot_password_revokes_existing_sessions(tmp_path: Path) -> None
 def test_login_blocks_after_repeated_failures(tmp_path: Path) -> None:
     settings = _auth_settings(
         tmp_path / "users.json",
-        tmp_path / "legacy-users.json",
         login_max_failures_per_account=3,
         login_max_failures_per_ip=10,
         login_failure_window_ms=300000,
@@ -372,7 +426,6 @@ def test_login_blocks_after_repeated_failures(tmp_path: Path) -> None:
 def test_login_success_returns_enriched_user_payload(tmp_path: Path) -> None:
     settings = _auth_settings(
         tmp_path / "users.json",
-        tmp_path / "legacy-users.json",
     )
     repository = FakeAuthRepository(
         settings,
@@ -407,7 +460,6 @@ def test_login_success_returns_enriched_user_payload(tmp_path: Path) -> None:
 def test_send_register_code_rejects_existing_email_with_clear_error(tmp_path: Path) -> None:
     settings = _auth_settings(
         tmp_path / "users.json",
-        tmp_path / "legacy-users.json",
     )
     repository = FakeAuthRepository(
         settings,
@@ -441,7 +493,6 @@ def test_send_register_code_rejects_existing_email_with_clear_error(tmp_path: Pa
 def test_send_register_code_sends_email_for_new_contact(tmp_path: Path) -> None:
     settings = _auth_settings(
         tmp_path / "users.json",
-        tmp_path / "legacy-users.json",
     )
     repository = FakeAuthRepository(settings)
     notifier = _DummyNotifier()
@@ -463,7 +514,6 @@ def test_send_register_code_sends_email_for_new_contact(tmp_path: Path) -> None:
 def test_list_sessions_returns_current_session_first(tmp_path: Path) -> None:
     settings = _auth_settings(
         tmp_path / "users.json",
-        tmp_path / "legacy-users.json",
         database_enabled=True,
     )
     repository = FakeAuthRepository(
@@ -536,7 +586,6 @@ def test_list_sessions_returns_current_session_first(tmp_path: Path) -> None:
 def test_revoke_other_sessions_keeps_current_session(tmp_path: Path) -> None:
     settings = _auth_settings(
         tmp_path / "users.json",
-        tmp_path / "legacy-users.json",
         database_enabled=True,
     )
     repository = FakeAuthRepository(
@@ -597,7 +646,6 @@ def test_revoke_other_sessions_keeps_current_session(tmp_path: Path) -> None:
 def test_revoke_session_rejects_current_session(tmp_path: Path) -> None:
     settings = _auth_settings(
         tmp_path / "users.json",
-        tmp_path / "legacy-users.json",
         database_enabled=True,
     )
     repository = FakeAuthRepository(
@@ -631,3 +679,145 @@ def test_revoke_session_rejects_current_session(tmp_path: Path) -> None:
 
     assert exc_info.value.status_code == 400
     assert "Use logout" in str(exc_info.value.detail)
+
+
+def test_authenticate_request_requires_sid_in_database_mode(tmp_path: Path) -> None:
+    settings = _auth_settings(
+        tmp_path / "users.json",
+        database_enabled=True,
+    )
+    repository = FakeAuthRepository(
+        settings,
+        database_enabled=True,
+        users=[
+            {
+                "id": "user-1",
+                "name": "Tester",
+                "email": "tester@example.com",
+                "phone": "13900000000",
+                "password": "secret",
+                "status": "active",
+            }
+        ],
+    )
+    service = AuthService(settings=settings, repository=repository, notifier=_DummyNotifier())
+    token_without_sid = create_auth_token(repository.users["user-1"], settings)
+    request = _request_with_cookie(token_without_sid, path="/api/me")
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.authenticate_request(request))
+
+    assert exc_info.value.status_code == 401
+    assert str(exc_info.value.detail) == "Session id is required"
+
+
+def test_login_returns_503_when_auth_database_is_temporarily_unavailable(tmp_path: Path) -> None:
+    settings = _auth_settings(
+        tmp_path / "users.json",
+        database_enabled=True,
+    )
+    repository = FakeAuthRepository(
+        settings,
+        database_enabled=True,
+        users=[
+            {
+                "id": "user-1",
+                "name": "Tester",
+                "email": "tester@example.com",
+                "phone": "13900000000",
+                "password": "secret",
+                "status": "active",
+            }
+        ],
+    )
+
+    async def _raise_db_error(account: str):
+        del account
+        raise RuntimeError("No valid auth database connection candidates")
+
+    repository.find_user_by_account = _raise_db_error  # type: ignore[method-assign]
+    service = AuthService(settings=settings, repository=repository, notifier=_DummyNotifier())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            service.login(
+                _request(),
+                Response(),
+                {"account": "tester@example.com", "password": "secret"},
+            )
+        )
+
+    assert exc_info.value.status_code == 503
+    assert str(exc_info.value.detail) == "Auth database is temporarily unavailable. Please retry shortly."
+
+
+def test_authenticate_request_returns_503_when_session_store_is_unavailable(tmp_path: Path) -> None:
+    settings = _auth_settings(
+        tmp_path / "users.json",
+        database_enabled=True,
+    )
+    repository = FakeAuthRepository(
+        settings,
+        database_enabled=True,
+        users=[
+            {
+                "id": "user-1",
+                "name": "Tester",
+                "email": "tester@example.com",
+                "phone": "13900000000",
+                "password": "secret",
+                "status": "active",
+            }
+        ],
+    )
+    token_with_sid = create_auth_token(repository.users["user-1"], settings, session_id="sess-1")
+    request = _request_with_cookie(token_with_sid, path="/api/me")
+
+    async def _raise_session_db_error(session_id: str):
+        del session_id
+        raise TimeoutError("database connection timeout")
+
+    repository.get_session = _raise_session_db_error  # type: ignore[method-assign]
+    service = AuthService(settings=settings, repository=repository, notifier=_DummyNotifier())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.authenticate_request(request))
+
+    assert exc_info.value.status_code == 503
+    assert str(exc_info.value.detail) == "Auth database is temporarily unavailable. Please retry shortly."
+
+
+def test_register_generates_uuid_user_id(tmp_path: Path) -> None:
+    settings = _auth_settings(
+        tmp_path / "users.json",
+        database_enabled=False,
+    )
+    repository = FakeAuthRepository(settings, database_enabled=False, users=[])
+    service = AuthService(settings=settings, repository=repository, notifier=_DummyNotifier())
+
+    asyncio.run(
+        service._store_verification_record(
+            "register",
+            "fresh@example.com",
+            "123456",
+        )
+    )
+    response = Response()
+    result, status_code = asyncio.run(
+        service.register(
+            _request(path="/api/register"),
+            response,
+            {
+                "name": "Fresh User",
+                "email": "fresh@example.com",
+                "phone": "13900000001",
+                "password": "new-password-123",
+                "code": "123456",
+            },
+        )
+    )
+
+    user_id = str(result["user"]["id"])
+    assert status_code == 201
+    assert len(user_id) == 32
+    assert all(ch in "0123456789abcdef" for ch in user_id)

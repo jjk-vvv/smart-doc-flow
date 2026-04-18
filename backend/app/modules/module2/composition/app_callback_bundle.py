@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, MutableMapping, Set
@@ -45,8 +44,7 @@ def build_module2_app_callback_bundle(
     health_runtime,
     module2_bootstrap_runtime,
     startup_task_runtime,
-    runtime_state_repository: Any | None = None,
-    legacy_storage: Any | None = None,
+    runtime_state_repository: Any,
     office_preview_runtime,
     module4_sync_config_runtime,
     module4_sync_outbox_runtime,
@@ -68,25 +66,10 @@ def build_module2_app_callback_bundle(
     python_prefix: str,
     python_base_prefix: str,
     python_venv_active: bool,
-    **legacy_kwargs: Any,
 ) -> Module2AppCallbackBundle:
-    if "storage" in legacy_kwargs:
-        if legacy_storage is not None:
-            raise TypeError("Pass only one of legacy_storage=... or storage=...")
-        legacy_storage = legacy_kwargs.pop("storage")
-    if legacy_kwargs:
-        unexpected = ", ".join(sorted(legacy_kwargs))
-        raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-    if runtime_state_repository is None and legacy_storage is not None:
-        warnings.warn(
-            "build_module2_app_callback_bundle(storage=...) is deprecated; "
-            "pass runtime_state_repository=... instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    resolved_runtime_state_repository = runtime_state_repository or legacy_storage
-    if resolved_runtime_state_repository is None:
-        raise ValueError("runtime_state_repository or legacy_storage is required")
+    if runtime_state_repository is None:
+        raise ValueError("runtime_state_repository is required")
+    resolved_runtime_state_repository = runtime_state_repository
 
     async def _recover_module4_sync_outbox() -> None:
         if not module4_sync_config_runtime.sync_enabled():

@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { AuthModal } from './components/AuthModal';
 import { AccountSecurityModal } from './components/AccountSecurityModal';
-import { AIAssistant } from './components/AIAssistant';
+import { PlatformAssistant } from './features/platform-assistant/components/PlatformAssistant';
 import { BrainCircuit } from 'lucide-react';
 import { getCurrentUser, type AuthUser } from './shared/api/auth';
 
@@ -11,9 +11,10 @@ const ME_REQUEST_TIMEOUT_MS = 20000;
 const AUTH_PROBE_ENV = import.meta.env.VITE_ENABLE_AUTH_PROBE;
 const APP_ACTIVE_TAB_STORAGE_KEY = 'smart_doc_flow.active_tab.v1';
 const PROTECTED_APP_TABS = new Set([
+  'dashboard',
   'deepread',
   'deepread_extraction',
-  'deepread_interaction',
+  'doc-processing',
   'fusion',
   'nexus',
 ]);
@@ -21,7 +22,7 @@ const VALID_APP_TABS = new Set([
   'dashboard',
   'deepread',
   'deepread_extraction',
-  'deepread_interaction',
+  'doc-processing',
   'fusion',
   'nexus',
   'guide',
@@ -141,8 +142,8 @@ const Dashboard = lazy(() =>
 const DeepReadWorkbench = lazy(() =>
   import('./pages/deepread/DeepReadWorkbench').then((mod) => ({ default: mod.DeepReadWorkbench }))
 );
-const Module1PlaceholderPage = lazy(() =>
-  import('./pages/module1-placeholder/Module1PlaceholderPage').then((mod) => ({ default: mod.Module1PlaceholderPage }))
+const DocProcessingWorkbench = lazy(() =>
+  import('./pages/doc-processing/DocProcessingWorkbench').then((mod) => ({ default: mod.DocProcessingWorkbench }))
 );
 const FusionGrid = lazy(() =>
   import('./pages/fusion/FusionGrid').then((mod) => ({ default: mod.FusionGrid }))
@@ -168,7 +169,12 @@ const App: React.FC = () => {
 
   const isFullPage = activeTab === 'guide';
   const isEdgeToEdgeWorkbench =
-    activeTab === 'deepread' || activeTab === 'deepread_extraction' || activeTab === 'nexus' || activeTab === 'fusion';
+    activeTab === 'dashboard' ||
+    activeTab === 'deepread' ||
+    activeTab === 'deepread_extraction' ||
+    activeTab === 'doc-processing' ||
+    activeTab === 'nexus' ||
+    activeTab === 'fusion';
   const activeTabRequiresAuth = isProtectedTab(activeTab);
 
   const applyUserState = (nextUser: AuthUser) => {
@@ -262,12 +268,12 @@ const App: React.FC = () => {
     }
     switch (activeTab) {
       case 'dashboard':
-        return <Dashboard />;
+        return <Dashboard onNavigate={handleActiveTabChange} user={user} />;
       case 'deepread':
       case 'deepread_extraction':
         return <DeepReadWorkbench isSidebarCollapsed={isSidebarCollapsed} />;
-      case 'deepread_interaction':
-        return <Module1PlaceholderPage />;
+      case 'doc-processing':
+        return <DocProcessingWorkbench />;
       case 'fusion':
         return <FusionGrid />;
       case 'nexus':
@@ -280,7 +286,7 @@ const App: React.FC = () => {
           />
         );
       default:
-        return <Dashboard />;
+        return <Dashboard onNavigate={handleActiveTabChange} user={user} />;
     }
   };
 
@@ -339,7 +345,7 @@ const App: React.FC = () => {
         onLoggedOut={() => applyUserState(null)}
       />
 
-      {user ? <AIAssistant /> : null}
+      {user ? <PlatformAssistant activeTab={activeTab} onNavigate={handleActiveTabChange} /> : null}
     </>
   );
 };

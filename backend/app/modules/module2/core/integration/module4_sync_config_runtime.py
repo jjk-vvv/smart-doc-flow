@@ -100,27 +100,75 @@ class Module4SyncConfigRuntime:
 
     def tenant_guard_mode(self) -> str:
         raw_mode = str(
-            self._env_get("MODULE2_MODULE4_TENANT_GUARD_MODE", "compat_default") or ""
+            self._env_get("MODULE2_MODULE4_TENANT_GUARD_MODE", "authenticated_required") or ""
         ).strip().lower()
         if raw_mode in {"strict", "strict_authenticated_tenant", "authenticated_required"}:
             return "authenticated_required"
-        return "compat_default"
+        if raw_mode in {"compat", "compat_default"}:
+            return "compat_default"
+        return "authenticated_required"
 
     def default_tenant(self) -> str:
         return str(self._env_get("MODULE2_MODULE4_DEFAULT_TENANT", "default") or "default").strip() or "default"
+
+    @staticmethod
+    def _resolve_authenticated_owner_from_request_state(request: Optional[Any]) -> str:
+        if request is None:
+            return ""
+        state = getattr(request, "state", None)
+        authenticated_user = getattr(state, "authenticated_user", None)
+        if authenticated_user is None:
+            return ""
+
+        if isinstance(authenticated_user, dict):
+            return str(
+                authenticated_user.get("tenant_id")
+                or authenticated_user.get("tenantId")
+                or authenticated_user.get("user_id")
+                or authenticated_user.get("id")
+                or ""
+            ).strip()
+
+        return str(
+            getattr(authenticated_user, "tenant_id", "")
+            or getattr(authenticated_user, "tenantId", "")
+            or getattr(authenticated_user, "user_id", "")
+            or getattr(authenticated_user, "id", "")
+            or ""
+        ).strip()
 
     def tenant(self, request: Optional[Any] = None, explicit: str = "") -> str:
         explicit_clean = str(explicit or "").strip()
         header_tenant = ""
         authenticated_tenant = ""
         authenticated_user = ""
+        state_authenticated_owner = ""
+        if request is None and explicit_clean:
+            # Embedded internal invocations can pass a pre-resolved tenant_id
+            # derived from authenticated context at the API layer.
+            return explicit_clean
         if request is not None:
             headers = getattr(request, "headers", None)
             if headers is not None:
                 header_tenant = str(headers.get("x-tenant-id") or "").strip()
                 authenticated_tenant = str(headers.get("x-authenticated-tenant-id") or "").strip()
                 authenticated_user = str(headers.get("x-authenticated-user-id") or "").strip()
-        authenticated_owner = authenticated_tenant or authenticated_user
+            state_authenticated_owner = self._resolve_authenticated_owner_from_request_state(request)
+
+        if (
+            state_authenticated_owner
+            and authenticated_tenant
+            and authenticated_tenant != state_authenticated_owner
+        ):
+            raise HTTPException(status_code=403, detail="tenant mismatch for authenticated request")
+        if (
+            state_authenticated_owner
+            and authenticated_user
+            and authenticated_user != state_authenticated_owner
+        ):
+            raise HTTPException(status_code=403, detail="tenant mismatch for authenticated request")
+
+        authenticated_owner = authenticated_tenant or authenticated_user or state_authenticated_owner
         if authenticated_owner:
             if explicit_clean and explicit_clean != authenticated_owner:
                 raise HTTPException(status_code=403, detail="tenant mismatch for authenticated request")
@@ -149,6 +197,9 @@ class Module4SyncConfigRuntime:
         bearer = str(self._env_get("MODULE2_MODULE4_BEARER_TOKEN", "") or "").strip()
         if bearer:
             headers["Authorization"] = f"Bearer {bearer}"
+        internal_token = str(self._env_get("MODULE2_MODULE4_INTERNAL_TOKEN", "") or "").strip()
+        if internal_token:
+            headers["X-Module4-Internal-Token"] = internal_token
         return headers
 
     @staticmethod

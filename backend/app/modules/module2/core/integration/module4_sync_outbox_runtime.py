@@ -6,7 +6,6 @@ import json
 import os
 import urllib.error
 import urllib.request
-import warnings
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -37,8 +36,7 @@ class Module4SyncOutboxRuntime:
         self,
         *,
         logger: Any,
-        outbox_repository: Any | None = None,
-        legacy_storage: Any | None = None,
+        outbox_repository: Any,
         metrics_runtime: Any,
         base_url_factory: Callable[[], str],
         headers_factory: HeadersFactory,
@@ -51,27 +49,11 @@ class Module4SyncOutboxRuntime:
         tenant_guard_mode_factory: TenantGuardModeFactory | None = None,
         transport: TransportFn | None = None,
         sleep_fn: Callable[[float], Awaitable[None]] | None = None,
-        **legacy_kwargs: Any,
     ) -> None:
-        if "storage" in legacy_kwargs:
-            if legacy_storage is not None:
-                raise TypeError("Pass only one of legacy_storage=... or storage=...")
-            legacy_storage = legacy_kwargs.pop("storage")
-        if legacy_kwargs:
-            unexpected = ", ".join(sorted(legacy_kwargs))
-            raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-        if outbox_repository is None and legacy_storage is not None:
-            warnings.warn(
-                "Module4SyncOutboxRuntime(storage=...) is deprecated; "
-                "pass outbox_repository=... instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        resolved_outbox_repository = outbox_repository or legacy_storage
-        if resolved_outbox_repository is None:
-            raise ValueError("outbox_repository or legacy_storage is required")
+        if outbox_repository is None:
+            raise ValueError("outbox_repository is required")
         self._logger = logger
-        self._outbox_repository = resolved_outbox_repository
+        self._outbox_repository = outbox_repository
         self._metrics_runtime = metrics_runtime
         self._base_url_factory = base_url_factory
         self._headers_factory = headers_factory
@@ -82,7 +64,7 @@ class Module4SyncOutboxRuntime:
         self._utcnow_factory = utcnow_factory
         self._default_tenant_factory = default_tenant_factory
         self._tenant_guard_mode_factory = tenant_guard_mode_factory or (
-            lambda: str(os.getenv("MODULE2_MODULE4_TENANT_GUARD_MODE", "compat_default") or "")
+            lambda: str(os.getenv("MODULE2_MODULE4_TENANT_GUARD_MODE", "authenticated_required") or "")
         )
         self._transport = transport or self._default_transport
         self._sleep = sleep_fn or asyncio.sleep
@@ -111,13 +93,15 @@ class Module4SyncOutboxRuntime:
         text = str(raw_mode or "").strip().lower()
         if text in {"strict", "strict_authenticated_tenant", "authenticated_required"}:
             return "authenticated_required"
-        return "compat_default"
+        if text in {"compat", "compat_default"}:
+            return "compat_default"
+        return "authenticated_required"
 
     def _tenant_guard_mode(self) -> str:
         try:
             return self._normalize_tenant_guard_mode(self._tenant_guard_mode_factory())
         except Exception:
-            return "compat_default"
+            return "authenticated_required"
 
     def _resolve_outbox_tenant_id(self, claimed: Dict[str, Any], payload: Dict[str, Any]) -> tuple[str, str]:
         claimed_tenant = str(claimed.get("tenant_id") or "").strip()

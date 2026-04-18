@@ -38,11 +38,11 @@ const services = [
         baseEnv: {
           ...process.env,
           UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE:
-            process.env.UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE || 'managed',
+            process.env.UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE || 'disabled',
           UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE:
-            process.env.UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE || 'managed',
+            process.env.UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE || 'disabled',
         },
-        scopes: ['backend', 'module2'],
+        scopes: ['backend'],
       }),
       pythonExec: backendPythonExec,
     }),

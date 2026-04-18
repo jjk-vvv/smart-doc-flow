@@ -465,15 +465,6 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
       {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/84 p-4 text-center dark:bg-[#0B1120]/82">
           <p className="max-w-[420px] text-xs text-slate-600 dark:text-slate-300">{error}</p>
-          <a
-            href={src}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-md border border-slate-200/80 px-2 py-1 text-[11px] text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-white/[0.05] dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
-          >
-            <ExternalLink size={12} />
-            在新窗口打开文档
-          </a>
         </div>
       )}
     </div>

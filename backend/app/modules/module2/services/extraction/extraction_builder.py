@@ -20,7 +20,7 @@ _EXTRACTION_RUNTIME_FINGERPRINT_FILES: Tuple[str, ...] = (
     "app/assets/schema_noise_rules_v1.json",
     "app/assets/schema_selection_rules_v1.json",
     "app/assets/schema_semantic_rules_v1.json",
-    "app/core/parser.py",
+    "app/core/parsers/native_document_parser.py",
     "app/core/format/plain_text_parser.py",
     "app/core/format/xlsx_artifact_io.py",
     "app/core/integration/cached_extraction_restore_runtime.py",

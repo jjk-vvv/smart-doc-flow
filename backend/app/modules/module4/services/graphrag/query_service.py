@@ -5,6 +5,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Dict, Iterable, Literal, Optional
@@ -220,6 +222,51 @@ def _query_timeout_seconds(mode: GraphRAGQueryMode) -> float | None:
         "DRIFT": 90.0,
     }
     return defaults.get(mode_key)
+
+
+def _query_subprocess_timeout_seconds(mode: GraphRAGQueryMode) -> float:
+    configured = _float_env("MODULE4_GRAPHRAG_QUERY_SUBPROCESS_TIMEOUT_SEC")
+    if configured is not None and configured > 0:
+        return max(1.0, configured)
+    fallback = _query_timeout_seconds(mode)
+    if fallback is not None and fallback > 0:
+        return max(60.0, fallback + 30.0)
+    return 180.0
+
+
+def _runtime_root_dir() -> Path:
+    configured_root = str(os.getenv("SMART_DOC_FLOW_RUNTIME_ROOT") or "").strip()
+    if configured_root:
+        return Path(configured_root).resolve()
+    return Path(__file__).resolve().parents[6]
+
+
+def _backend_root_dir() -> Path:
+    return (_runtime_root_dir() / "backend").resolve()
+
+
+def _resolve_query_python_bin() -> str:
+    configured = str(
+        os.getenv("MODULE4_GRAPHRAG_QUERY_PYTHON_BIN")
+        or os.getenv("MODULE4_GRAPHRAG_PYTHON_BIN")
+        or ""
+    ).strip()
+    generic_commands = {"python", "python3", "py"}
+    if configured and configured.lower() not in generic_commands:
+        return configured
+
+    runtime_root = _runtime_root_dir()
+    candidates = [
+        runtime_root / ".venv-module4-py311" / "Scripts" / "python.exe",
+        runtime_root / ".venv-module4-py311" / "bin" / "python",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+
+    if configured:
+        return configured
+    return sys.executable
 
 
 async def _run_query_with_timeout(
@@ -680,12 +727,22 @@ def _resolve_candidate_from_alias_map(candidate: str, alias_map: Dict[str, str])
 
 def _resolution_strategy_label(*, storage_alias_count: int, artifact_alias_count: int) -> str:
     if storage_alias_count > 0 and artifact_alias_count > 0:
-        return "storage_first_then_artifact"
+        return "artifact_first_then_storage"
     if storage_alias_count > 0:
         return "storage_only"
     if artifact_alias_count > 0:
         return "artifact_only"
     return "identity_fallback"
+
+
+def _known_graph_node_ids(*alias_maps: Dict[str, str]) -> set[str]:
+    node_ids: set[str] = set()
+    for alias_map in alias_maps:
+        for mapped in alias_map.values():
+            node_id = str(mapped or "").strip()
+            if node_id:
+                node_ids.add(node_id)
+    return node_ids
 
 
 async def _canonicalize_linked_node_ids_with_storage_diagnostics(
@@ -718,16 +775,19 @@ async def _canonicalize_linked_node_ids_with_storage_diagnostics(
     resolved: list[str] = []
     seen: set[str] = set()
     unresolved: list[str] = []
+    known_artifact_node_ids = _known_graph_node_ids(artifact_alias_map)
+    known_storage_node_ids = _known_graph_node_ids(storage_alias_map)
+    artifact_only_resolution = bool(known_artifact_node_ids)
     resolution_source_counts = {
         "storage": 0,
         "artifact": 0,
     }
     for candidate in deduped_candidates:
-        mapped = _resolve_candidate_from_alias_map(candidate, storage_alias_map)
-        source = "storage"
-        if not mapped:
-            mapped = _resolve_candidate_from_alias_map(candidate, artifact_alias_map)
-            source = "artifact"
+        mapped = _resolve_candidate_from_alias_map(candidate, artifact_alias_map) if artifact_only_resolution else None
+        source = "artifact" if artifact_only_resolution else "storage"
+        if not mapped and not artifact_only_resolution:
+            mapped = _resolve_candidate_from_alias_map(candidate, storage_alias_map)
+            source = "storage"
 
         if not mapped:
             unresolved.append(candidate)
@@ -738,12 +798,26 @@ async def _canonicalize_linked_node_ids_with_storage_diagnostics(
             seen.add(mapped)
             resolved.append(mapped)
 
-    linked_node_ids = resolved or deduped_candidates
-    used_fallback_candidates = not bool(resolved) and bool(deduped_candidates)
-    unresolved_for_report = deduped_candidates if used_fallback_candidates else unresolved
+    linked_node_ids = list(resolved)
+    fallback_known_node_ids = known_artifact_node_ids or known_storage_node_ids
+    if not linked_node_ids and fallback_known_node_ids:
+        for candidate in deduped_candidates:
+            normalized_candidate = str(candidate or "").strip()
+            if not normalized_candidate or normalized_candidate not in fallback_known_node_ids:
+                continue
+            if normalized_candidate in seen:
+                continue
+            seen.add(normalized_candidate)
+            linked_node_ids.append(normalized_candidate)
+
+    used_fallback_candidates = bool(linked_node_ids) and not bool(resolved)
+    unresolved_for_report = [candidate for candidate in deduped_candidates if candidate not in set(linked_node_ids)]
+    if not unresolved_for_report and unresolved:
+        unresolved_for_report = unresolved
     diagnostics = {
         "candidate_count": len(deduped_candidates),
         "resolved_count": len(resolved),
+        "linked_node_id_count": len(linked_node_ids),
         "unresolved_count": len(unresolved_for_report),
         "unresolved_candidates": unresolved_for_report[:20],
         "storage_alias_count": len(storage_alias_map),
@@ -857,39 +931,19 @@ def _fallback_basic_search_from_text_units(
     }
 
 
-async def search_graph(
+async def _execute_query_runtime(
     *,
-    storage: Any,
-    tenant_id: str,
-    file_hash: str,
-    query: str,
-    mode: GraphRAGQueryMode,
-    response_type: str,
-    community_level: Optional[int],
-    dynamic_community_selection: bool = False,
-    verbose: bool = False,
+    runtime: GraphRAGResolvedRuntime,
+    mode_value: GraphRAGQueryMode,
+    query_text: str,
+    response_type_value: str,
+    community_level_value: Optional[int],
+    dynamic_community_selection: bool,
+    verbose: bool,
+    graphrag_api: Any,
+    reformat_context_data: Any,
 ) -> Dict[str, Any]:
-    runtime = await _resolve_runtime(storage=storage, tenant_id=tenant_id, file_hash=file_hash)
-    mode_value = str(mode or "local").strip().lower()
-    if mode_value not in {"local", "global", "drift", "basic"}:
-        raise GraphRAGQueryServiceError(f"Unsupported GraphRAG query mode: {mode}", status_code=400)
-
-    query_text = str(query or "").strip()
-    if not query_text:
-        raise GraphRAGQueryServiceError("Query text cannot be empty.", status_code=400)
-
-    response_type_value = str(response_type or "").strip() or "multiple paragraphs"
-    community_level_value = max(0, int(community_level or 0)) if community_level is not None else None
     effective_mode_value = mode_value
-
-    try:
-        import graphrag.api as graphrag_api
-        from graphrag.utils.api import reformat_context_data
-    except ModuleNotFoundError as exc:
-        raise GraphRAGQueryServiceError(
-            "The GraphRAG query runtime is not installed in the current Python environment."
-        ) from exc
-
     try:
         try:
             if mode_value == "global":
@@ -981,8 +1035,6 @@ async def search_graph(
             fallback_reason = detail_text
             use_basic_fallback = True
 
-            # drift mode is the most expensive path. If it fails or times out, we try
-            # local mode first before downgrading to basic mode.
             if mode_value == "drift":
                 try:
                     local_config, local_frames = await _load_output_frames(
@@ -1081,6 +1133,229 @@ async def search_graph(
         }
     else:
         normalized_context = reformat_context_data(raw_context)
+
+    return {
+        "answer": _serialize_answer(answer),
+        "mode": effective_mode_value,
+        "context_data": normalized_context,
+        "source": (
+            f"graphrag:query:{mode_value}:fallback:{effective_mode_value}"
+            if effective_mode_value != mode_value
+            else f"graphrag:query:{mode_value}"
+        ),
+    }
+
+
+def _subprocess_query_entry(raw_payload: str) -> Dict[str, Any]:
+    try:
+        payload = json.loads(str(raw_payload or "").strip() or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"invalid subprocess query payload: {exc}") from exc
+
+    workspace_dir = Path(str(payload.get("workspace_dir") or "").strip()).resolve()
+    artifacts_dir = Path(str(payload.get("artifacts_dir") or "").strip()).resolve()
+    runtime = GraphRAGResolvedRuntime(
+        graph_file={},
+        graph_version={},
+        workspace_dir=workspace_dir,
+        artifacts_dir=artifacts_dir,
+    )
+    mode_value = str(payload.get("mode") or "local").strip().lower()
+    if mode_value not in {"local", "global", "drift", "basic"}:
+        raise RuntimeError(f"unsupported mode in subprocess payload: {mode_value}")
+    query_text = str(payload.get("query") or "").strip()
+    if not query_text:
+        raise RuntimeError("query cannot be empty in subprocess payload")
+    response_type_value = str(payload.get("response_type") or "").strip() or "multiple paragraphs"
+    community_level_value = payload.get("community_level")
+    if community_level_value is not None:
+        try:
+            community_level_value = max(0, int(community_level_value))
+        except Exception:
+            community_level_value = None
+
+    import graphrag.api as graphrag_api
+    from graphrag.utils.api import reformat_context_data
+
+    return asyncio.run(
+        _execute_query_runtime(
+            runtime=runtime,
+            mode_value=mode_value,  # type: ignore[arg-type]
+            query_text=query_text,
+            response_type_value=response_type_value,
+            community_level_value=community_level_value,
+            dynamic_community_selection=bool(payload.get("dynamic_community_selection")),
+            verbose=bool(payload.get("verbose")),
+            graphrag_api=graphrag_api,
+            reformat_context_data=reformat_context_data,
+        )
+    )
+
+
+async def _execute_query_runtime_via_subprocess(
+    *,
+    runtime: GraphRAGResolvedRuntime,
+    mode_value: GraphRAGQueryMode,
+    query_text: str,
+    response_type_value: str,
+    community_level_value: Optional[int],
+    dynamic_community_selection: bool,
+    verbose: bool,
+) -> Dict[str, Any]:
+    python_bin = _resolve_query_python_bin()
+    command = [
+        python_bin,
+        "-c",
+        (
+            "import json,sys;"
+            "from app.modules.module4.services.graphrag.query_service import _subprocess_query_entry;"
+            "result=_subprocess_query_entry(sys.stdin.read());"
+            "sys.stdout.write(json.dumps(result, ensure_ascii=False))"
+        ),
+    ]
+    payload = {
+        "workspace_dir": str(runtime.workspace_dir),
+        "artifacts_dir": str(runtime.artifacts_dir),
+        "mode": str(mode_value),
+        "query": query_text,
+        "response_type": response_type_value,
+        "community_level": community_level_value,
+        "dynamic_community_selection": bool(dynamic_community_selection),
+        "verbose": bool(verbose),
+    }
+    timeout_sec = _query_subprocess_timeout_seconds(mode_value)
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
+
+    def _run_subprocess() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command,
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            cwd=str(_backend_root_dir()),
+            timeout=max(1.0, float(timeout_sec)),
+            env=env,
+        )
+
+    try:
+        completed = await asyncio.to_thread(_run_subprocess)
+    except subprocess.TimeoutExpired as exc:
+        raise GraphRAGQueryServiceError(
+            f"GraphRAG subprocess query timed out after {float(timeout_sec):.1f}s.",
+            status_code=504,
+        ) from exc
+    except FileNotFoundError as exc:
+        raise GraphRAGQueryServiceError(
+            f"GraphRAG query python runtime not found: {python_bin}",
+            status_code=503,
+        ) from exc
+    except Exception as exc:
+        raise GraphRAGQueryServiceError(
+            f"GraphRAG subprocess query failed to start: {type(exc).__name__}: {exc}",
+            status_code=503,
+        ) from exc
+
+    if completed.returncode != 0:
+        stderr_text = str(completed.stderr or "").strip()
+        stdout_text = str(completed.stdout or "").strip()
+        detail = stderr_text or stdout_text or f"exit_code={completed.returncode}"
+        raise GraphRAGQueryServiceError(
+            f"GraphRAG subprocess query failed: {detail}",
+            status_code=503,
+        )
+
+    output_text = str(completed.stdout or "").strip()
+    if not output_text:
+        raise GraphRAGQueryServiceError(
+            "GraphRAG subprocess query returned an empty payload.",
+            status_code=502,
+        )
+    try:
+        payload_obj = json.loads(output_text)
+    except Exception as exc:
+        raise GraphRAGQueryServiceError(
+            f"GraphRAG subprocess query returned invalid JSON: {exc}",
+            status_code=502,
+        ) from exc
+    if not isinstance(payload_obj, dict):
+        raise GraphRAGQueryServiceError(
+            "GraphRAG subprocess query returned an unexpected payload.",
+            status_code=502,
+        )
+    source_value = str(payload_obj.get("source") or "").strip()
+    payload_obj["source"] = f"{source_value}:subprocess" if source_value else "graphrag:query:subprocess"
+    return payload_obj
+
+
+async def search_graph(
+    *,
+    storage: Any,
+    tenant_id: str,
+    file_hash: str,
+    query: str,
+    mode: GraphRAGQueryMode,
+    response_type: str,
+    community_level: Optional[int],
+    dynamic_community_selection: bool = False,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    runtime = await _resolve_runtime(storage=storage, tenant_id=tenant_id, file_hash=file_hash)
+    mode_value = str(mode or "local").strip().lower()
+    if mode_value not in {"local", "global", "drift", "basic"}:
+        raise GraphRAGQueryServiceError(f"Unsupported GraphRAG query mode: {mode}", status_code=400)
+
+    query_text = str(query or "").strip()
+    if not query_text:
+        raise GraphRAGQueryServiceError("Query text cannot be empty.", status_code=400)
+
+    response_type_value = str(response_type or "").strip() or "multiple paragraphs"
+    community_level_value = max(0, int(community_level or 0)) if community_level is not None else None
+    query_runtime_payload: Dict[str, Any]
+    try:
+        import graphrag.api as graphrag_api
+        from graphrag.utils.api import reformat_context_data
+    except ModuleNotFoundError:
+        query_runtime_payload = await _execute_query_runtime_via_subprocess(
+            runtime=runtime,
+            mode_value=mode_value,  # type: ignore[arg-type]
+            query_text=query_text,
+            response_type_value=response_type_value,
+            community_level_value=community_level_value,
+            dynamic_community_selection=bool(dynamic_community_selection),
+            verbose=verbose,
+        )
+    else:
+        query_runtime_payload = await _execute_query_runtime(
+            runtime=runtime,
+            mode_value=mode_value,  # type: ignore[arg-type]
+            query_text=query_text,
+            response_type_value=response_type_value,
+            community_level_value=community_level_value,
+            dynamic_community_selection=bool(dynamic_community_selection),
+            verbose=verbose,
+            graphrag_api=graphrag_api,
+            reformat_context_data=reformat_context_data,
+        )
+
+    normalized_context_raw = query_runtime_payload.get("context_data")
+    normalized_context = normalized_context_raw if isinstance(normalized_context_raw, dict) else {
+        "reports": [],
+        "entities": [],
+        "relationships": [],
+        "claims": [],
+        "sources": [],
+    }
+    answer_value = _serialize_answer(query_runtime_payload.get("answer", ""))
+    effective_mode_value = str(query_runtime_payload.get("mode") or mode_value).strip().lower() or mode_value
+    source_value = str(query_runtime_payload.get("source") or "").strip()
+    if not source_value:
+        source_value = (
+            f"graphrag:query:{mode_value}:fallback:{effective_mode_value}"
+            if effective_mode_value != mode_value
+            else f"graphrag:query:{mode_value}"
+        )
     linked_node_candidates = _linked_node_ids_from_context(normalized_context)
     linked_node_ids, linked_node_resolution = await _canonicalize_linked_node_ids_with_storage_diagnostics(
         candidates=linked_node_candidates,
@@ -1090,7 +1365,7 @@ async def search_graph(
     )
 
     return {
-        "answer": _serialize_answer(answer),
+        "answer": answer_value,
         "mode": effective_mode_value,
         "query": query_text,
         "response_type": response_type_value,
@@ -1104,11 +1379,7 @@ async def search_graph(
         "context_data": normalized_context,
         "linked_node_ids": linked_node_ids,
         "linked_node_resolution": linked_node_resolution,
-        "source": (
-            f"graphrag:query:{mode_value}:fallback:{effective_mode_value}"
-            if effective_mode_value != mode_value
-            else f"graphrag:query:{mode_value}"
-        ),
+        "source": source_value,
     }
 
 

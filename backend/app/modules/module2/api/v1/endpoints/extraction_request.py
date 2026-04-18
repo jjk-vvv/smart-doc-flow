@@ -11,9 +11,9 @@ except ModuleNotFoundError:  # pragma: no cover - direct file-loading tests can 
 
 
 def build_router(*, extraction_request_runtime) -> APIRouter:
-    router = APIRouter(tags=["extraction"])
+    router = APIRouter(prefix="/extract", tags=["extraction"])
 
-    @router.post("/extract/jobs/create")
+    @router.post("/jobs/create")
     async def extract_jobs_create(
         request: Request,
         files: List[UploadFile] = File(...),
@@ -27,15 +27,15 @@ def build_router(*, extraction_request_runtime) -> APIRouter:
             tenant_id=tenant_id,
         )
 
-    @router.get("/extract/jobs/status/{job_id}")
+    @router.get("/jobs/status/{job_id}")
     async def extract_jobs_status(job_id: str, include_documents: bool = False) -> Dict[str, Any]:
         return await extraction_request_runtime.get_job_status(job_id, include_documents=include_documents)
 
-    @router.post("/extract/jobs/{job_id}/cancel-file")
+    @router.post("/jobs/{job_id}/cancel-file")
     async def extract_jobs_cancel_file(job_id: str, payload: Dict[str, Any] = Body(default_factory=dict)) -> Dict[str, Any]:
         return await extraction_request_runtime.cancel_job_file(job_id=job_id, payload=payload)
 
-    @router.post("/extract/batch", response_model=BatchExtractionResponse)
+    @router.post("/batch", response_model=BatchExtractionResponse)
     async def extract_batch(
         request: Request,
         files: List[UploadFile] = File(...),

@@ -86,7 +86,6 @@ class AuthSettings:
     login_lock_ms: int
     is_prod: bool
     users_file: Path
-    legacy_users_file: Path
     sms_provider: str
     ihuyi_api_id: str
     ihuyi_api_key: str
@@ -103,11 +102,24 @@ class AuthSettings:
     db_schema_timeout_sec: float
     db_pool_min_size: int
     db_pool_max_size: int
+    require_session_id_in_db_mode: bool = True
+    enforce_secret_key_in_production: bool = True
+    secret_key_min_length: int = 32
 
     @classmethod
     def from_env(cls) -> "AuthSettings":
         runtime_root = resolve_runtime_root_dir()
         configured_secret = _env_str("AUTH_SECRET_KEY", "")
+        is_prod = _env_str("NODE_ENV", "development").lower() == "production"
+        enforce_secret_key_in_production = _env_bool("AUTH_ENFORCE_SECRET_KEY_IN_PRODUCTION", True)
+        secret_key_min_length = max(16, _env_int("AUTH_SECRET_KEY_MIN_LENGTH", 32))
+        if is_prod and enforce_secret_key_in_production:
+            if not configured_secret:
+                raise RuntimeError("AUTH_SECRET_KEY is required in production mode")
+            if len(configured_secret) < secret_key_min_length:
+                raise RuntimeError(
+                    f"AUTH_SECRET_KEY must be at least {secret_key_min_length} characters in production mode"
+                )
         configured_database_dsn = _env_str("AUTH_DATABASE_DSN", "") or _resolve_fallback_database_dsn(runtime_root)
         return cls(
             secret_key=configured_secret or secrets.token_hex(32),
@@ -145,14 +157,13 @@ class AuthSettings:
                 30 * 1000,
                 _env_int("AUTH_LOGIN_LOCK_MS", 15 * 60 * 1000),
             ),
-            is_prod=_env_str("NODE_ENV", "development").lower() == "production",
+            is_prod=is_prod,
             users_file=Path(
                 _env_str(
                     "AUTH_USERS_FILE",
                     str(runtime_root / "auth" / "users.json"),
                 )
             ).expanduser().resolve(),
-            legacy_users_file=(runtime_root / "backend" / "auth" / "users.json").resolve(),
             sms_provider=_env_str("AUTH_SMS_PROVIDER", "").lower(),
             ihuyi_api_id=_env_str("AUTH_IHUYI_API_ID", ""),
             ihuyi_api_key=_env_str("AUTH_IHUYI_API_KEY", ""),
@@ -169,4 +180,7 @@ class AuthSettings:
             db_schema_timeout_sec=max(1.0, _env_float("AUTH_DB_SCHEMA_TIMEOUT_SEC", 8.0)),
             db_pool_min_size=max(1, _env_int("AUTH_DB_POOL_MIN_SIZE", 1)),
             db_pool_max_size=max(1, _env_int("AUTH_DB_POOL_MAX_SIZE", 10)),
+            require_session_id_in_db_mode=_env_bool("AUTH_REQUIRE_SESSION_ID_IN_DB_MODE", True),
+            enforce_secret_key_in_production=enforce_secret_key_in_production,
+            secret_key_min_length=secret_key_min_length,
         )

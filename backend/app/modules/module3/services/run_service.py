@@ -513,6 +513,13 @@ def execute_web_run(run_id: str, request: WebRunRequest) -> None:
                         table_context={
                             "template_type": "docx",
                             "template_filename": str(template_record.get("filename") or template_path.name),
+                            "block_id": table_block.get("block_id"),
+                            "table_index": table_block.get("table_index"),
+                            "fill_mode": table_block.get("fill_mode"),
+                            "title": table_block.get("title") or "",
+                            "context_text": table_block.get("context_text") or "",
+                            "available_row_slots": table_block.get("available_row_slots"),
+                            "header_columns": table_block.get("header_columns") or [],
                             "table_block": table_block,
                         },
                     )

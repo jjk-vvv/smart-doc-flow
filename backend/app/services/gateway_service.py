@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,11 +15,6 @@ from app.core.config import Settings
 from app.core.health import probe_json, probe_path
 from app.services.auth_service import get_auth_service
 from app.core.auth_tenant import resolve_authenticated_tenant
-from app.modules.module4.core.module4_sidecar_runtime import (
-    get_module4_sidecar_settings,
-    get_module4_sidecar_manager,
-    resolve_live_module4_upstream_url,
-)
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -46,12 +42,11 @@ def list_upstream_targets(settings: Settings) -> tuple[UpstreamTarget, ...]:
     return (
         UpstreamTarget("auth", "", "/api/auth/health", mode="local"),
         UpstreamTarget("module2", "", "/healthz", mode="local"),
-        UpstreamTarget("module4", settings.module4_upstream_url, "/module4/healthz"),
+        UpstreamTarget("module4", "", "/module4/healthz", mode="local"),
     )
 
 
 def build_gateway_info(settings: Settings) -> dict[str, Any]:
-    module4_sidecar_settings = get_module4_sidecar_settings()
     return {
         "ok": True,
         "gateway": {
@@ -73,14 +68,7 @@ def build_gateway_info(settings: Settings) -> dict[str, Any]:
                 "mode": target.mode,
                 "base_url": target.base_url,
                 "health_path": target.health_path,
-                "sidecar": (
-                    {
-                        "requested_mode": module4_sidecar_settings.module4_sidecar_mode,
-                        "startup_timeout_sec": float(module4_sidecar_settings.module4_sidecar_startup_timeout_sec),
-                    }
-                    if target.name == "module4"
-                    else None
-                ),
+                "sidecar": None,
             }
             for target in list_upstream_targets(settings)
         },
@@ -94,9 +82,13 @@ async def build_gateway_health(settings: Settings) -> dict[str, Any]:
         if target.name == "auth":
             payload = await get_auth_service().health_payload()
         elif target.name == "module2":
-            from app.services.extraction_service import get_extraction_service
+            from app.modules.module2.services.api.extraction_service import get_extraction_service
 
             payload = await asyncio.to_thread(get_extraction_service().health_payload, settings)
+        elif target.name == "module4":
+            from app.modules.module4.composition import build_health_payload as build_module4_health_payload
+
+            payload = await build_module4_health_payload()
         else:
             payload = {
                 "ok": False,
@@ -113,26 +105,6 @@ async def build_gateway_health(settings: Settings) -> dict[str, Any]:
     async def probe_target(target: UpstreamTarget) -> tuple[str, dict[str, Any]]:
         if target.mode == "local":
             return target.name, await probe_local_target(target)
-        if target.name == "module4":
-            module4_sidecar = await asyncio.to_thread(get_module4_sidecar_manager().health_payload, settings)
-            probe_payload = (
-                module4_sidecar.get("probe")
-                if isinstance(module4_sidecar.get("probe"), dict)
-                else {}
-            )
-            resolved_url = str(module4_sidecar.get("preferred_base_url") or target.base_url or "").rstrip("/")
-            return target.name, {
-                "ok": bool(probe_payload.get("ok")) or bool(module4_sidecar.get("healthy")),
-                "mode": str(module4_sidecar.get("active_mode") or target.mode),
-                "health_path": target.health_path,
-                "configured_url": target.base_url,
-                "resolved_url": resolved_url,
-                "payload": probe_payload.get("payload", {}),
-                "status_code": int(probe_payload.get("status_code", 0) or 0),
-                "url": str(probe_payload.get("url") or ""),
-                "error": str(probe_payload.get("error") or ""),
-                "sidecar": module4_sidecar,
-            }
         url = f"{target.base_url.rstrip('/')}{target.health_path}"
         result = await asyncio.to_thread(probe_json, url, health_probe_timeout_sec)
         result["mode"] = target.mode
@@ -184,6 +156,20 @@ def _compose_target_url(base_url: str, upstream_path: str, query_string: str) ->
     if query_string:
         return f"{url}?{query_string}"
     return url
+
+
+def _module4_internal_token_header() -> tuple[str, str]:
+    token = str(os.getenv("MODULE4_INTERNAL_TOKEN", "") or "").strip()
+    if not token:
+        return "", ""
+    return "X-Module4-Internal-Token", token
+
+
+def _gateway_loopback_base_url(settings: Settings) -> str:
+    host = str(settings.gateway_host or "").strip() or "127.0.0.1"
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    return f"http://{host}:{int(settings.gateway_port)}"
 
 
 def _forward_request_headers(request: Request) -> dict[str, str]:
@@ -329,11 +315,13 @@ async def proxy_module4_request(
     )
     merged_headers = dict(additional_headers or {})
     merged_headers.update(tenant_resolution.to_forward_headers())
-    upstream_base_url = resolve_live_module4_upstream_url(settings, ensure_sidecar=True)
+    internal_header_name, internal_header_value = _module4_internal_token_header()
+    if internal_header_name and internal_header_value:
+        merged_headers[internal_header_name] = internal_header_value
     return await proxy_request(
         request,
         settings,
-        upstream_base_url,
+        _gateway_loopback_base_url(settings),
         upstream_path,
         additional_headers=merged_headers,
     )

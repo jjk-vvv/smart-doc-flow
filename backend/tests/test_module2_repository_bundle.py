@@ -60,19 +60,20 @@ class _FakeStorage:
 
 def test_module2_repository_bundle_wraps_storage_interfaces() -> None:
     storage = _FakeStorage()
-    bundle = build_module2_repository_bundle(legacy_storage=storage)
-    assert bundle.legacy_storage is storage
+    bundle = build_module2_repository_bundle(storage=storage)
+    assert bundle.storage is storage
+    assert bundle.runtime_state_repository.storage is storage
+    assert bundle.extraction_cache_repository.storage is storage
+    assert bundle.module4_sync_outbox_repository.storage is storage
+
     with pytest.warns(DeprecationWarning):
-        assert bundle.storage is storage
-    assert bundle.runtime_state_repository.legacy_storage is storage
+        assert bundle.legacy_storage is storage
     with pytest.warns(DeprecationWarning):
-        assert bundle.runtime_state_repository.storage is storage
-    assert bundle.extraction_cache_repository.legacy_storage is storage
+        assert bundle.runtime_state_repository.legacy_storage is storage
     with pytest.warns(DeprecationWarning):
-        assert bundle.extraction_cache_repository.storage is storage
-    assert bundle.module4_sync_outbox_repository.legacy_storage is storage
+        assert bundle.extraction_cache_repository.legacy_storage is storage
     with pytest.warns(DeprecationWarning):
-        assert bundle.module4_sync_outbox_repository.storage is storage
+        assert bundle.module4_sync_outbox_repository.legacy_storage is storage
 
     async def _scenario() -> None:
         await bundle.runtime_state_repository.connect()
@@ -112,14 +113,7 @@ def test_module2_repository_bundle_wraps_storage_interfaces() -> None:
     asyncio.run(_scenario())
 
 
-def test_module2_repository_bundle_storage_param_emits_deprecation_warning() -> None:
+def test_module2_repository_bundle_rejects_removed_storage_compat_param() -> None:
     storage = _FakeStorage()
-    with pytest.warns(DeprecationWarning):
-        bundle = build_module2_repository_bundle(storage=storage)
-    assert bundle.legacy_storage is storage
-
-
-def test_module2_repository_bundle_rejects_conflicting_storage_keywords() -> None:
-    storage = _FakeStorage()
-    with pytest.raises(TypeError, match="Pass only one of legacy_storage=... or storage=..."):
-        build_module2_repository_bundle(legacy_storage=storage, storage=storage)
+    with pytest.raises(TypeError):
+        build_module2_repository_bundle(legacy_storage=storage)

@@ -6,10 +6,7 @@ from pathlib import Path
 
 def test_module2_runtime_main_bundle_shims_no_longer_import_bootstrap_directly() -> None:
     runtime_dir = Path(__file__).resolve().parents[1] / "app" / "modules" / "module2" / "runtime"
-    for bundle_file in runtime_dir.glob("main*_bundle.py"):
-        source = bundle_file.read_text(encoding="utf-8")
-        assert "from ..bootstrap import" not in source
-        assert "from app.modules.module2.bootstrap import" not in source
+    assert list(runtime_dir.glob("main*_bundle.py")) == []
 
 
 def test_module2_api_v1_router_bundle_prefers_sync_endpoint_name() -> None:
@@ -27,22 +24,20 @@ def test_module2_api_v1_router_bundle_prefers_sync_endpoint_name() -> None:
     assert "from .endpoints.module4_sync import build_router as build_module4_sync_router" not in source
 
 
-def test_module2_runtime_sync_callback_compat_module_delegates_to_concise_name() -> None:
-    source = (
+def test_module2_runtime_sync_callback_compat_module_is_removed() -> None:
+    compat_path = (
         Path(__file__).resolve().parents[1]
         / "app"
         / "modules"
         / "module2"
         / "runtime"
         / "module4_sync_callback_bundle.py"
-    ).read_text(encoding="utf-8")
-
-    assert "from .sync_callback_bundle import (" in source
-    assert "build_module4_sync_callback_bundle" in source
+    )
+    assert not compat_path.exists()
 
 
-def test_module2_endpoint_sync_compat_module_delegates_to_concise_name() -> None:
-    source = (
+def test_module2_endpoint_sync_compat_module_is_removed() -> None:
+    compat_path = (
         Path(__file__).resolve().parents[1]
         / "app"
         / "modules"
@@ -51,9 +46,8 @@ def test_module2_endpoint_sync_compat_module_delegates_to_concise_name() -> None
         / "v1"
         / "endpoints"
         / "module4_sync.py"
-    ).read_text(encoding="utf-8")
-
-    assert "from .sync import (" in source
+    )
+    assert not compat_path.exists()
 
 
 def test_module2_bootstrap_non_builder_surfaces_prefer_canonical_layers_directly() -> None:

@@ -48,6 +48,11 @@ export type Module3RunResponse = {
   status: string;
 };
 
+export type Module3MissingResource = {
+  kind: "template" | "docset" | "run";
+  id: string;
+};
+
 export type Module3RunStatusResponse = {
   run_id: string;
   status: string;
@@ -224,11 +229,6 @@ const resolveModule3BaseUrl = (): string => {
       ? String(import.meta.env?.VITE_MODULE3_API_BASE ?? "").trim()
       : "";
   if (envBase) return trimTrailingSlash(envBase);
-  if (typeof window !== "undefined" && import.meta.env?.DEV) {
-    const protocol = window.location.protocol || "http:";
-    const hostname = window.location.hostname || "127.0.0.1";
-    return `${protocol}//${hostname}:8001/module3`;
-  }
   return "/module3";
 };
 
@@ -269,6 +269,41 @@ const readJson = async <T>(response: Response): Promise<T> => {
     throw new Error(await readModule3Error(response));
   }
   return response.json() as Promise<T>;
+};
+
+const extractResourceId = (message: string, prefix: string): string => {
+  const match = message.match(new RegExp(`${prefix}_[a-z0-9]+`, "i"));
+  return match?.[0] ?? "";
+};
+
+export const parseModule3MissingResource = (
+  value: unknown,
+): Module3MissingResource | null => {
+  const message =
+    value instanceof Error
+      ? value.message
+      : typeof value === "string"
+        ? value
+        : "";
+  const normalized = message.trim();
+  if (!normalized) return null;
+
+  const templateId = extractResourceId(normalized, "tpl");
+  if (templateId) {
+    return { kind: "template", id: templateId };
+  }
+
+  const docsetId = extractResourceId(normalized, "docset");
+  if (docsetId) {
+    return { kind: "docset", id: docsetId };
+  }
+
+  const runId = extractResourceId(normalized, "run");
+  if (runId && normalized.toLowerCase().includes("run")) {
+    return { kind: "run", id: runId };
+  }
+
+  return null;
 };
 
 export const normalizeModule3Status = (

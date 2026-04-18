@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowUp, Bot, Sparkles, X } from 'lucide-react';
+import { ArrowUp, Bot, Sparkles, X, ChevronDown } from 'lucide-react';
 
-import assistantBotIcon from '../../../assets/文心智能体-copy.png';
+import assistantBotIcon from '../../../assets/模块二智能助手图标.png';
 import { cn } from '../../../lib/utils';
 import { parseErrorMessage } from '../../../shared/api/client';
 import {
@@ -106,6 +106,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
   const [assistantCompanionActionPreview, setAssistantCompanionActionPreview] =
     useState<AssistantActionPreview | null>(null);
   const [assistantRuntimeEvents, setAssistantRuntimeEvents] = useState<AssistantToolEvent[]>([]);
+  const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
 
   const assistantAbortRef = useRef<AbortController | null>(null);
   const assistantDialogRef = useRef<HTMLDivElement | null>(null);
@@ -135,6 +136,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
     setAssistantRuntimeEvents([]);
     setAssistantCurrentLock(null);
     setAssistantMessage('');
+    setIsSummaryExpanded(false);
     const storedSessionId = String(readAssistantSessionMap()[activeAssistantSessionKey] || '').trim();
     setAssistantSessionId(storedSessionId);
   }, [activeAssistantSessionKey]);
@@ -386,23 +388,20 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: '8%', opacity: 0.94 }}
             transition={{ type: 'spring', stiffness: 260, damping: 28 }}
-            className="absolute inset-x-0 bottom-0 top-[max(0.75rem,env(safe-area-inset-top))] flex flex-col overflow-hidden rounded-t-[30px] bg-[#F6F8FB] shadow-2xl dark:bg-[#0B1120]"
+            className="absolute inset-0 flex flex-col overflow-hidden bg-[#F6F8FB] shadow-2xl dark:bg-[#0B1120]"
           >
             <div className="sticky top-0 z-10 border-b border-slate-200/80 bg-white/92 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl dark:border-white/[0.05] dark:bg-[#0B1120]/92">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex min-w-0 items-start gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5">
                   <img
                     src={assistantBotIcon}
                     alt="Bot"
-                    className="h-5 w-5 shrink-0 translate-y-[2px] object-contain"
+                    className="h-5 w-5 shrink-0 object-contain drop-shadow-sm"
                   />
                   <div className="min-w-0">
                     <h3 className="truncate text-[18px] font-semibold leading-tight text-slate-900 dark:text-white">
                       智能助手
                     </h3>
-                    <p className="mt-0.5 truncate text-[13px] text-slate-500 dark:text-slate-400">
-                      {activeDoc?.file_name || '当前无解析文档'}
-                    </p>
                   </div>
                 </div>
                 <button
@@ -419,17 +418,44 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
             <div className="min-h-0 flex-1 overflow-hidden">
               <div className="flex h-full min-h-0 flex-col">
                 {hasActiveDoc && (assistantSummaryLoading || assistantSummaryText) && (
-                  <div className="px-4 pt-4">
+                  <div className="px-4 pt-4 shrink-0">
                     <div className="rounded-[22px] border border-slate-200/80 bg-white px-4 py-3 shadow-[0_4px_18px_rgba(15,23,42,0.04)] dark:border-white/[0.06] dark:bg-white/[0.03]">
-                      <div className="mb-1.5 flex items-center gap-2 text-[12px] font-semibold text-slate-800 dark:text-slate-100">
-                        <Sparkles size={14} className="text-cyan-500" />
-                        当前文档摘要
-                      </div>
-                      <p className="text-[13px] leading-6 text-slate-600 dark:text-slate-300">
-                        {assistantSummaryLoading
-                          ? '正在整理当前文档摘要...'
-                          : assistantSummaryText}
-                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setIsSummaryExpanded(!isSummaryExpanded)}
+                        className="flex w-full items-center justify-between outline-none"
+                      >
+                        <div className="flex items-center gap-2 text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                          <Sparkles size={14} className="text-cyan-500" />
+                          当前文档摘要
+                        </div>
+                        <ChevronDown
+                          size={14}
+                          className={cn(
+                            'text-slate-400 transition-transform duration-200',
+                            isSummaryExpanded && 'rotate-180',
+                          )}
+                        />
+                      </button>
+                      <AnimatePresence initial={false}>
+                        {isSummaryExpanded && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: 'easeInOut' }}
+                            className="overflow-hidden"
+                          >
+                            <div className="pt-1.5">
+                              <p className="text-[13px] leading-6 text-slate-600 dark:text-slate-300">
+                                {assistantSummaryLoading
+                                  ? '正在整理当前文档摘要...'
+                                  : assistantSummaryText}
+                              </p>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
                   </div>
                 )}
@@ -495,7 +521,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                 )}
 
                 <div className="px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-2">
-                  <div className="rounded-[24px] border border-transparent bg-white p-2.5 shadow-[0_4px_18px_rgba(15,23,42,0.06)] transition-all focus-within:shadow-[0_8px_24px_rgba(15,23,42,0.12)] focus-within:ring-1 focus-within:ring-slate-200 dark:border-white/[0.05] dark:bg-[#1A1D24] dark:shadow-none dark:focus-within:ring-white/[0.1]">
+                  <div className="rounded-[26px] border border-slate-200/80 bg-white py-[6px] pl-4 pr-1.5 shadow-[0_2px_12px_rgba(15,23,42,0.04)] transition-all focus-within:border-slate-300 focus-within:shadow-[0_4px_16px_rgba(15,23,42,0.08)] dark:border-white/[0.08] dark:bg-[#1A1D24] dark:shadow-none">
                     <AssistantComposerStatus
                       isLoading={assistantQueryLoading}
                       streamingMessage={latestStreamingAssistantMessage}
@@ -503,6 +529,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                     <div className="flex items-end gap-2">
                       <textarea
                         ref={assistantInputRef}
+                        rows={1}
                         value={assistantInput}
                         onChange={(event) => setAssistantInput(event.target.value)}
                         disabled={!hasActiveDoc}
@@ -514,7 +541,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                         }}
                         placeholder={hasActiveDoc ? "输入任务指令或提问..." : "暂无可用文档"}
                         className={cn(
-                          'max-h-[140px] min-h-[36px] flex-1 resize-none bg-transparent px-1.5 py-[6px] text-[15px] leading-6 outline-none',
+                          'max-h-[140px] min-h-[36px] flex-1 resize-none bg-transparent py-1.5 text-[15px] leading-[24px] outline-none',
                           hasActiveDoc
                             ? 'text-slate-800 placeholder:text-slate-400 dark:text-slate-100'
                             : 'cursor-not-allowed text-slate-400 placeholder:text-slate-400 dark:text-slate-500',

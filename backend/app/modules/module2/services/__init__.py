@@ -1,11 +1,7 @@
-from __future__ import annotations
+"""Module2 service package.
 
-from .assistant_service import AssistantService, get_assistant_service
-from .extraction_service import ExtractionService, get_extraction_service
+Intentionally avoids package-level re-exports so imports stay explicit and
+do not trigger heavyweight module loading during composition bootstrap.
+"""
 
-__all__ = [
-    "AssistantService",
-    "ExtractionService",
-    "get_assistant_service",
-    "get_extraction_service",
-]
+__all__: list[str] = []

@@ -81,6 +81,7 @@ def test_module4_app_runtime_build_router_deps_kwargs_uses_runtime_getters() -> 
     assert kwargs["submit_ingest_job"] is _submit_ingest_job
     assert kwargs["schedule_rebuild_job"] is _schedule_rebuild_job
     assert callable(kwargs["tenant_from_request"])
+    assert callable(kwargs["validate_internal_request"])
     assert callable(kwargs["parse_csv_list"])
     assert callable(kwargs["now_utc"])
 

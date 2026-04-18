@@ -4,7 +4,7 @@ Authoritative backend framework:
 
 - FastAPI is the primary backend framework.
 - The main app entrypoint is `backend/app/main.py`.
-- The application factory is `backend/app/create_app.py`.
+- The application factory is `backend/app/factory.py`.
 
 Current backend topology:
 
@@ -14,19 +14,12 @@ Current backend topology:
 - `backend/shared/`
   - shared contracts and cross-service primitives
   - contains `contracts`, `tenancy`, `security`, `exceptions`, `logging`, `utils`
-- `backend/auth/`
-  - compatibility proxy only
-  - keeps historical auth/chat entrypoints alive on port `3003`
-  - should not be treated as the main backend anymore
-- `backend/compat/auth_proxy/`
-  - canonical target location for the legacy auth compatibility layer
-  - current startup still points at `backend/auth` during migration compatibility
 - `backend/app/modules/module2/`
   - specialized extraction/assistant runtime under the unified FastAPI module tree
-  - in FastAPI-first mode this runtime is attached by the unified backend through the extraction sidecar manager unless `MODULE2_ENABLED=1` is explicitly restored
+  - standard runtime is mounted directly inside the unified FastAPI app
 - `backend/app/modules/module4/`
   - specialized graph/runtime upstream
-  - in FastAPI-first mode this runtime is now expected to be attached by the unified gateway through the Module 4 sidecar manager unless `MODULE4_ENABLED=1` is explicitly restored
+  - standard runtime is mounted directly inside the unified FastAPI app
   - preferred Python runtime is now the repo-root `.venv-module4-py311`
   - legacy standalone `backend/module4` layout has been removed from the project layout
 
@@ -34,35 +27,27 @@ Recommended runtime entrypoints:
 
 - `npm run dev`
   - canonical full-stack dev entry
-  - FastAPI-first mode without auth compat by default
+  - FastAPI-first single-entry mode
   - defaults `MODULE2_ENABLED=0` and `MODULE4_ENABLED=0`, so unified FastAPI is the only backend entry
-  - extraction jobs attach to the managed Module 2 sidecar path instead of requiring a separately booted `module2` process
-  - graph routes attach to the managed Module 4 sidecar path instead of requiring a separately booted `module4` process
+  - standard runtime does not require separate module ports
 - `npm run dev:fastapi`
-  - FastAPI-first mode without auth compat
+  - FastAPI-first single-entry mode
   - defaults `MODULE2_ENABLED=0` and `MODULE4_ENABLED=0`, so unified FastAPI is the only backend entry
-  - extraction jobs attach to the managed Module 2 sidecar path instead of requiring a separately booted `module2` process
-  - graph routes attach to the managed Module 4 sidecar path instead of requiring a separately booted `module4` process
-- `npm run dev:compat`
-  - compatibility-oriented full-stack dev entry
-  - restores auth compat plus standalone module2/module4 startup for old debugging flows
+  - standard runtime does not require separate module ports
 - `npm run start`
   - canonical production-style backend startup
   - FastAPI-first single-entry topology by default
 - `npm run start:fastapi`
   - production-style FastAPI-only backend startup
   - defaults `MODULE2_ENABLED=0` and `MODULE4_ENABLED=0`, matching the single-entry runtime expected by desktop packaging
-- `npm run start:compat`
-  - compatibility-oriented production-style backend startup
-  - restores the historical auth compat and standalone module startup shape
 
 Public port contract:
 
 - frontend public entry: `3000`
 - frontend-app public entry: `3002`
 - unified FastAPI backend public entry: `3001`
-- `3003`, `8010`, `8001`, and `8100` are internal compatibility or sidecar ports
-- frontend code should target `3001` by default and only reach older upstream ports through explicit developer overrides
+- standard deployment does not require module-specific backend ports
+- frontend code should target `3001` by default
 
 Desktop runtime entrypoints:
 
@@ -77,8 +62,8 @@ Desktop runtime entrypoints:
   - if you want to validate a packaged output directory, set `DESKTOP_DOCTOR_OUTPUT_DIR=dist-electron-rebuild4` or another output folder before running it
 - packaged Electron runtime
   - `electron/main.cjs` now manages FastAPI startup internally by default
-  - default behavior is `AUTH_COMPAT_ENABLED=0`, `MODULE2_ENABLED=0`, `UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE=managed`, and `UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE=managed`
-  - unified FastAPI becomes the single desktop backend entry, while extraction jobs and graph routes still preserve the original Module 2 and Module 4 runtime semantics through their managed sidecars
+  - default behavior is `MODULE2_ENABLED=0`, `UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE=disabled`, and `UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE=disabled`
+  - unified FastAPI is the single desktop backend entry
   - packaged desktop runtime now defaults `SMART_DOC_FLOW_DATA_ROOT` to Electron `userData/runtime-data`, so newly generated auth data, extraction artifacts, caches, and module4 workspaces are written into a user-writable data directory instead of the packaged app resources
   - runtime history folders such as `module2/artifacts` and `module4/workspaces` are intentionally excluded from packaging, so historical trace images and workspace outputs from the source tree are not baked into the desktop app
   - `SMART_DOC_FLOW_ELECTRON_LOG_FILE` can be used to persist Electron main-process startup logs during packaging smoke tests
@@ -94,10 +79,12 @@ Configuration layering:
 
 - `backend/.env`
   - recommended authoritative config for the unified FastAPI backend
-- `backend/auth/.env`
-  - compat proxy specific config
+- `backend/app/modules/module1/.env`
+  - module1 local runtime config
 - `backend/app/modules/module2/.env`
   - module2 advanced upstream config
+- `backend/app/modules/module3/.env`
+  - module3 advanced upstream config
 - `backend/app/modules/module4/.env`
   - module4 advanced upstream config
 
@@ -129,19 +116,19 @@ FastAPI-first graph sidecar controls:
 
 Runtime env loading is now scope-aware:
 
-- FastAPI gateway loads `backend/.env` first-class, plus Module 2 env, plus a
-  narrow auth legacy fallback for transitional auth keys only
-- for the FastAPI gateway, `backend/.env` is now later in precedence than the
-  fallback scopes, so overlapping keys in `backend/.env` win
-- auth compat loads `backend/.env` plus `backend/auth/.env`
+- FastAPI gateway loads `backend/.env`, `backend/app/modules/module1/.env`,
+  `backend/app/modules/module2/.env`, `backend/app/modules/module3/.env`,
+  and `backend/app/modules/module4/.env`
+- `backend/.env` remains the last-wins authoritative scope for shared keys
+- module1 standalone runtime loads `backend/.env` plus `backend/app/modules/module1/.env`
 - module2 loads `backend/.env` plus `backend/app/modules/module2/.env`
+- module3 loads `backend/.env` plus `backend/app/modules/module3/.env`
 - module4 loads `backend/.env` plus `backend/app/modules/module4/.env`
 - module4 startup now resolves directly to the repo-root `.venv-module4-py311`
 
 Data/storage direction:
 
 - runtime-generated auth data should live under the managed runtime/data root
-- legacy `backend/auth/users.json` is kept only for safe migration fallback
 - the FastAPI auth module now migrates legacy users into the managed storage path automatically
 
 FastAPI module structure:
@@ -173,8 +160,6 @@ Unified route assembly:
 
 - `backend/app/factory.py`
   - canonical FastAPI app factory (`create_app`)
-- `backend/app/create_app.py`
-  - compatibility import shim that re-exports `create_app`
 - `backend/app/modules/registry.py`
   - module-level router registration for API v1 assembly
 

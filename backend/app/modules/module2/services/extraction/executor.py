@@ -192,6 +192,4 @@ class ExtractionJobExecutionService:
                 if recorded:
                     await self._persist_snapshot(job_id, True)
 
-
-# Backward-compatible alias during migration.
-ExtractionJobExecutor = ExtractionJobExecutionService
+__all__ = ["ExtractionJobExecutionService"]

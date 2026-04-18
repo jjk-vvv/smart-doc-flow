@@ -155,6 +155,12 @@ def _build_index_command(*, python_bin: str, workspace_dir: Path, workspace_env:
     return command
 
 
+def _append_no_cache_flag(command: List[str]) -> List[str]:
+    if "--no-cache" in command:
+        return command
+    return [*command, "--no-cache"]
+
+
 def _looks_like_artifacts_dir(path: Path) -> bool:
     if not path.exists() or not path.is_dir():
         return False
@@ -1314,6 +1320,12 @@ class GraphRAGIndexer:
 
                     reset_cache = retry_reason == "cache_missing_summarize_descriptions"
                     reset_output = True
+                    no_cache_switched = False
+                    if reset_cache and style != "legacy":
+                        next_command = _append_no_cache_flag(command)
+                        if next_command != command:
+                            command = next_command
+                            no_cache_switched = True
                     touched_dirs = _reset_workspace_runtime_dirs(
                         workspace_dir=workspace_dir,
                         workspace_env=workspace_env,
@@ -1332,6 +1344,10 @@ class GraphRAGIndexer:
                             f"reset_output={str(reset_output).lower()} "
                             f"touched={touched_text}\n"
                         )
+                        if no_cache_switched:
+                            log_file.write(
+                                "# module4 retry: switched command to --no-cache due to cache file miss\n"
+                            )
                         if backoff_sec > 0:
                             log_file.write(
                                 f"# module4 retry: provider backoff {backoff_sec:.1f}s before re-run\n"

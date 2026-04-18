@@ -1,7 +1,13 @@
-"""Module1 API endpoint implementations."""
-
-from .document import router as document_router
 from .health import router as health_router
-from .module1_placeholder import router as module1_placeholder_router
+from .modification import router as modification_router
+from .preview import router as preview_router
+from .save import router as save_router
+from .stream import router as stream_router
 
-__all__ = ["document_router", "health_router", "module1_placeholder_router"]
+__all__ = [
+    "health_router",
+    "modification_router",
+    "preview_router",
+    "save_router",
+    "stream_router",
+]

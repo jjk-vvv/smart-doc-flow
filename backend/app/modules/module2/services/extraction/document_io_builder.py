@@ -85,17 +85,22 @@ def build_module2_main_document_io_bundle(
         timeout_sec: float,
     ) -> Tuple[bytes, Dict[str, Any]]:
         loop = asyncio.get_running_loop()
-        return await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: convert_word_bytes_to_pdf_fn(
-                    file_name=file_name,
-                    file_bytes=file_bytes,
-                    timeout_sec=timeout_sec,
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: convert_word_bytes_to_pdf_fn(
+                        file_name=file_name,
+                        file_bytes=file_bytes,
+                        timeout_sec=timeout_sec,
+                    ),
                 ),
+                timeout=timeout_sec,
             ),
-            timeout=timeout_sec,
-        )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"word_to_pdf_wait_for_timeout:{round(float(timeout_sec), 3)}s:{file_name}"
+            ) from exc
 
     async def _convert_doc_to_docx_with_timeout(
         *,

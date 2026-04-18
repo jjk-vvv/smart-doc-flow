@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """App entry bundle builders for module2 extraction service layer."""
 
-import warnings
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -40,8 +39,7 @@ def build_module2_main_entry_bundle(
     health_runtime,
     module2_bootstrap_runtime,
     startup_task_runtime,
-    runtime_state_repository: Any | None = None,
-    legacy_storage: Any | None = None,
+    runtime_state_repository: Any,
     office_preview_runtime,
     module4_sync_config_runtime,
     module4_sync_outbox_runtime,
@@ -72,22 +70,9 @@ def build_module2_main_entry_bundle(
     build_list_response,
     serialize_outbox_row,
     metrics_snapshot,
-    **legacy_kwargs: Any,
 ) -> Module2MainEntryBundle:
-    if "storage" in legacy_kwargs:
-        if legacy_storage is not None:
-            raise TypeError("Pass only one of legacy_storage=... or storage=...")
-        legacy_storage = legacy_kwargs.pop("storage")
-    if legacy_kwargs:
-        unexpected = ", ".join(sorted(legacy_kwargs))
-        raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-    if runtime_state_repository is None and legacy_storage is not None:
-        warnings.warn(
-            "build_module2_main_entry_bundle(storage=...) is deprecated; "
-            "pass runtime_state_repository=... instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+    if runtime_state_repository is None:
+        raise ValueError("runtime_state_repository is required")
     module2_app_callback_bundle = build_module2_app_callback_bundle(
         app_lifecycle_runtime=app_lifecycle_runtime,
         cache_clear_runtime=cache_clear_runtime,
@@ -96,7 +81,6 @@ def build_module2_main_entry_bundle(
         module2_bootstrap_runtime=module2_bootstrap_runtime,
         startup_task_runtime=startup_task_runtime,
         runtime_state_repository=runtime_state_repository,
-        legacy_storage=legacy_storage,
         office_preview_runtime=office_preview_runtime,
         module4_sync_config_runtime=module4_sync_config_runtime,
         module4_sync_outbox_runtime=module4_sync_outbox_runtime,

@@ -1,4 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import "luckysheet/dist/plugins/css/pluginsCss.css";
 import "luckysheet/dist/plugins/plugins.css";
 import "luckysheet/dist/css/luckysheet.css";
@@ -12,9 +17,12 @@ type LocatorHint = {
 };
 
 type LuckysheetPreviewProps = {
-  file: File | null;
+  file?: File | null;
+  workbook?: WorkbookPayload | null;
   locator?: LocatorHint | null;
   className?: string;
+  editable?: boolean;
+  loadingLabel?: string;
 };
 
 type LuckysheetLike = {
@@ -55,6 +63,19 @@ type JQueryCompat = Record<string, unknown> & {
 type WorkbookPayload = {
   sheets: unknown[];
   info: Record<string, unknown>;
+};
+
+export type LuckysheetWorkbookPayload = WorkbookPayload;
+
+export type LuckysheetSaveSheet = {
+  name: string;
+  rows: Array<Array<string | number | boolean | null>>;
+};
+
+export type LuckysheetPreviewHandle = {
+  exportSheets: () => LuckysheetSaveSheet[] | null;
+  relayout: () => void;
+  retry: () => void;
 };
 
 type SheetJsModule = typeof import("xlsx");
@@ -748,6 +769,69 @@ export function clearLuckysheetPreviewCache(): void {
   workbookPayloadPromiseCache.clear();
 }
 
+function normalizeSavedCellValue(cell: unknown): string | number | boolean | null {
+  if (cell === null || cell === undefined) return "";
+  if (
+    typeof cell === "string"
+    || typeof cell === "number"
+    || typeof cell === "boolean"
+  ) {
+    return cell;
+  }
+  if (typeof cell !== "object") return String(cell);
+
+  const normalized = cell as Record<string, unknown>;
+  if (
+    typeof normalized.v === "string"
+    || typeof normalized.v === "number"
+    || typeof normalized.v === "boolean"
+  ) {
+    return normalized.v;
+  }
+  if (
+    typeof normalized.m === "string"
+    || typeof normalized.m === "number"
+    || typeof normalized.m === "boolean"
+  ) {
+    return normalized.m;
+  }
+  if (typeof normalized.f === "string" && normalized.f.trim()) {
+    return normalized.f;
+  }
+  return "";
+}
+
+function buildSaveSheetsFromLuckysheet(
+  sheets: Array<Record<string, unknown>>,
+): LuckysheetSaveSheet[] {
+  return sheets.map((sheet) => {
+    const rows: Array<Array<string | number | boolean | null>> = [];
+    const sheetData = Array.isArray(sheet.data) ? (sheet.data as unknown[][]) : [];
+
+    for (let rowIndex = 0; rowIndex < sheetData.length; rowIndex += 1) {
+      const sourceRow = Array.isArray(sheetData[rowIndex]) ? sheetData[rowIndex] : [];
+      const rowData: Array<string | number | boolean | null> = [];
+      for (let colIndex = 0; colIndex < sourceRow.length; colIndex += 1) {
+        rowData.push(normalizeSavedCellValue(sourceRow[colIndex]));
+      }
+      rows.push(rowData);
+    }
+
+    let lastNonEmptyRow = -1;
+    for (let rowIndex = rows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+      if (rows[rowIndex].some((value) => value !== "")) {
+        lastNonEmptyRow = rowIndex;
+        break;
+      }
+    }
+
+    return {
+      name: String(sheet.name ?? "Sheet1"),
+      rows: rows.slice(0, lastNonEmptyRow + 1),
+    };
+  });
+}
+
 function applyLocator(luckysheet: LuckysheetLike, locator?: LocatorHint | null) {
   if (!locator || typeof locator !== "object") return;
 
@@ -933,6 +1017,55 @@ function hasWorkbookPayloadData(payload?: WorkbookPayload | null): boolean {
     if (!sheet || typeof sheet !== "object") return false;
     return sheetDataLooksHydrated(sheet as Record<string, unknown>);
   }));
+}
+
+function estimateWorkbookPayloadComplexity(payload?: WorkbookPayload | null): {
+  sheetCount: number;
+  totalCells: number;
+  maxSheetCells: number;
+  maxRows: number;
+  maxCols: number;
+} {
+  if (!payload || !Array.isArray(payload.sheets)) {
+    return { sheetCount: 0, totalCells: 0, maxSheetCells: 0, maxRows: 0, maxCols: 0 };
+  }
+
+  let totalCells = 0;
+  let maxSheetCells = 0;
+  let maxRows = 0;
+  let maxCols = 0;
+
+  payload.sheets.forEach((sheet) => {
+    if (!sheet || typeof sheet !== "object") return;
+    const normalized = sheet as Record<string, unknown>;
+    const rows = Math.max(1, Number(normalized.row ?? 0) || 0);
+    const cols = Math.max(1, Number(normalized.column ?? 0) || 0);
+    const sheetCells = rows * cols;
+    totalCells += sheetCells;
+    maxSheetCells = Math.max(maxSheetCells, sheetCells);
+    maxRows = Math.max(maxRows, rows);
+    maxCols = Math.max(maxCols, cols);
+  });
+
+  return {
+    sheetCount: payload.sheets.length,
+    totalCells,
+    maxSheetCells,
+    maxRows,
+    maxCols,
+  };
+}
+
+function shouldPreferTableModeForWorkbook(file: File | null, payload?: WorkbookPayload | null): boolean {
+  if (!file || !payload) return false;
+  const complexity = estimateWorkbookPayloadComplexity(payload);
+  if (file.size >= 1_200_000) return true;
+  if (complexity.totalCells >= 150_000) return true;
+  if (complexity.maxSheetCells >= 90_000) return true;
+  if (complexity.maxRows >= 4_000) return true;
+  if (complexity.maxCols >= 180) return true;
+  if (complexity.sheetCount >= 8) return true;
+  return false;
 }
 
 function buildTableWorkbookSheets(payload?: WorkbookPayload | null): TableWorkbookSheet[] {
@@ -1204,8 +1337,8 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
           containerRef.current.innerHTML = "";
         }
         if (!disposed) {
-          setRenderMode("table");
-          setStatus("ready");
+          setError("Luckysheet 初始化失败，请稍后重试。");
+          setStatus("error");
         }
       };
       const getSourceSheets = () => {
@@ -1325,6 +1458,21 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
           }
         }
         setFallbackPayload(hasTableData ? tablePayload : null);
+        const preferTableMode = false;
+        if (preferTableMode) {
+          try {
+            runtimeRef.current?.luckysheet.destroy?.();
+          } catch {
+            // Ignore.
+          }
+          if (containerRef.current) {
+            containerRef.current.innerHTML = "";
+          }
+          runtimeRef.current = null;
+          setError("电子表格预览初始化失败，请稍后重试");
+          setStatus("error");
+          return;
+        }
 
         try {
           const runtime = await ensureRuntime();
@@ -1332,11 +1480,6 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
           runtimeRef.current = runtime;
           mountWorkbook(runtime, payload, hasTableData ? tablePayload : null);
         } catch (runtimeError) {
-          if (hasTableData) {
-            setRenderMode("table");
-            setStatus("ready");
-            return;
-          }
           throw runtimeError;
         }
       } catch (err) {
@@ -1451,15 +1594,10 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
           </p>
         </div>
       )}
-      {renderMode === "table" && fallbackPayload && status === "ready" && (
-        <div className="absolute inset-0 z-10">
-          <SheetTableFallback payload={fallbackPayload} locator={locator} />
-        </div>
-      )}
       <div
         id={containerId}
         ref={containerRef}
-        className={`h-full w-full min-h-0 min-w-0 ${renderMode === "table" ? "hidden" : ""}`}
+        className="h-full w-full min-h-0 min-w-0"
       />
     </div>
   );

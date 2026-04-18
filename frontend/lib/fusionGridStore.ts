@@ -52,7 +52,8 @@ export type FusionGridState = {
   draftRequirements: string;
 };
 
-const STORAGE_KEY = "module3_fusion_grid_state";
+export const FUSION_GRID_STORAGE_KEY = "module3_fusion_grid_state";
+export const FUSION_GRID_OWNER_STORAGE_KEY = "module3_fusion_grid_owner";
 
 const EMPTY_STATE: FusionGridState = {
   templates: [],
@@ -63,6 +64,13 @@ const EMPTY_STATE: FusionGridState = {
   selectedTaskId: null,
   draftRequirements: "",
 };
+
+export const createEmptyFusionGridState = (): FusionGridState => ({
+  ...EMPTY_STATE,
+  templates: [],
+  docsets: [],
+  tasks: [],
+});
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -162,7 +170,7 @@ export const readFusionGridState = (): FusionGridState => {
   if (typeof window === "undefined") return EMPTY_STATE;
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(FUSION_GRID_STORAGE_KEY);
     if (!raw) return EMPTY_STATE;
 
     const parsed = JSON.parse(raw);
@@ -202,5 +210,26 @@ export const readFusionGridState = (): FusionGridState => {
 
 export const writeFusionGridState = (state: FusionGridState): void => {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  window.localStorage.setItem(FUSION_GRID_STORAGE_KEY, JSON.stringify(state));
+};
+
+export const clearFusionGridStateStorage = (): void => {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(FUSION_GRID_STORAGE_KEY);
+};
+
+export const readFusionGridOwnerScope = (): string | null => {
+  if (typeof window === "undefined") return null;
+  const value = window.localStorage.getItem(FUSION_GRID_OWNER_STORAGE_KEY);
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+};
+
+export const writeFusionGridOwnerScope = (scope: string): void => {
+  if (typeof window === "undefined") return;
+  const normalized = scope.trim();
+  if (!normalized) {
+    window.localStorage.removeItem(FUSION_GRID_OWNER_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(FUSION_GRID_OWNER_STORAGE_KEY, normalized);
 };

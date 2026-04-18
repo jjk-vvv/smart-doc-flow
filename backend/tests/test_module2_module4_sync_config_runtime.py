@@ -5,6 +5,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 
 def _load_module(path_parts: list[str], module_name: str):
     module_path = Path(__file__).resolve().parents[1]
@@ -44,6 +47,7 @@ def test_module4_sync_config_runtime_uses_expected_defaults() -> None:
     assert runtime.retries() == 2
     assert runtime.backoff_sec() == 1.5
     assert runtime.shutdown_drain_sec() == 8.0
+    assert runtime.tenant_guard_mode() == "authenticated_required"
     assert runtime.default_tenant() == "default"
 
 
@@ -82,6 +86,7 @@ def test_module4_sync_config_runtime_resolves_tenant_and_headers() -> None:
         {
             "MODULE2_MODULE4_DEFAULT_TENANT": "tenant-default",
             "MODULE2_MODULE4_BEARER_TOKEN": "token-123",
+            "MODULE2_MODULE4_TENANT_GUARD_MODE": "compat_default",
         }
     )
     request = SimpleNamespace(headers={"x-tenant-id": "tenant-header"})
@@ -94,6 +99,21 @@ def test_module4_sync_config_runtime_resolves_tenant_and_headers() -> None:
         "X-Tenant-Id": "tenant-h",
         "X-Authenticated-Tenant-Id": "tenant-h",
         "Authorization": "Bearer token-123",
+    }
+
+
+def test_module4_sync_config_runtime_adds_internal_token_header_when_configured() -> None:
+    runtime = _build_runtime(
+        {
+            "MODULE2_MODULE4_INTERNAL_TOKEN": "internal-token-xyz",
+        }
+    )
+
+    assert runtime.headers("tenant-h") == {
+        "Content-Type": "application/json",
+        "X-Tenant-Id": "tenant-h",
+        "X-Authenticated-Tenant-Id": "tenant-h",
+        "X-Module4-Internal-Token": "internal-token-xyz",
     }
 
 
@@ -111,3 +131,44 @@ def test_module4_sync_config_runtime_retry_policy_matches_existing_behavior() ->
 def test_module4_sync_config_runtime_payload_mode_falls_back_for_invalid_value() -> None:
     runtime = _build_runtime({"MODULE2_MODULE4_SYNC_PAYLOAD_MODE": "legacy"})
     assert runtime.payload_mode() == "hybrid"
+
+
+def test_module4_sync_config_runtime_tenant_uses_authenticated_user_from_request_state() -> None:
+    runtime = _build_runtime({"MODULE2_MODULE4_TENANT_GUARD_MODE": "authenticated_required"})
+    request = SimpleNamespace(
+        headers={},
+        state=SimpleNamespace(
+            authenticated_user=SimpleNamespace(
+                tenant_id="tenant-state-auth",
+                user_id="user-state-auth",
+            )
+        ),
+    )
+
+    assert runtime.tenant(request) == "tenant-state-auth"
+    assert runtime.tenant(request, explicit="tenant-state-auth") == "tenant-state-auth"
+
+
+def test_module4_sync_config_runtime_rejects_state_and_header_authenticated_mismatch() -> None:
+    runtime = _build_runtime({"MODULE2_MODULE4_TENANT_GUARD_MODE": "authenticated_required"})
+    request = SimpleNamespace(
+        headers={"x-authenticated-tenant-id": "tenant-header-auth"},
+        state=SimpleNamespace(
+            authenticated_user=SimpleNamespace(
+                tenant_id="tenant-state-auth",
+                user_id="user-state-auth",
+            )
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        runtime.tenant(request)
+
+    assert exc_info.value.status_code == 403
+    assert str(exc_info.value.detail) == "tenant mismatch for authenticated request"
+
+
+def test_module4_sync_config_runtime_allows_explicit_tenant_for_embedded_internal_call() -> None:
+    runtime = _build_runtime({"MODULE2_MODULE4_TENANT_GUARD_MODE": "authenticated_required"})
+
+    assert runtime.tenant(None, explicit="tenant-from-internal-auth") == "tenant-from-internal-auth"

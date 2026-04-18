@@ -22,6 +22,7 @@ import {
   RotateCcw,
   UploadCloud,
   X,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -36,6 +37,8 @@ import pdfIcon from '../../assets/pdf.png';
 import wordIcon from '../../assets/WORD.png';
 import excelIcon from '../../assets/xlsx.png';
 import txtIcon from '../../assets/txt.png';
+import mdIcon from '../../assets/md.png';
+import aiAssistantIcon from '../../assets/模块二智能助手图标.png';
 import {
   requestExtractionJobCancelFile,
   requestExtractionJobCreateWithRetry,
@@ -400,7 +403,7 @@ const QUICK_UPLOAD_SHORTCUTS: QuickUploadShortcut[] = [
     label: 'MD',
     hint: 'Markdown',
     accept: '.md',
-    iconImg: txtIcon, // Using txtIcon for md fallback
+    iconImg: mdIcon,
     color: 'text-cyan-600',
     activeBg: 'bg-cyan-50 dark:bg-cyan-500/10',
     activeBorder: 'border-cyan-200 dark:border-cyan-500/30',
@@ -1277,44 +1280,40 @@ export const MobileDeepReadPage: React.FC = () => {
     ];
 
     return (
-      <section id="mobile-artifact-detail" className="space-y-4">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="truncate text-[17px] font-bold text-slate-800 dark:text-slate-100">
-            {activeDoc.file_name} · 产物详情
-          </h3>
-          <button
-            type="button"
-            onClick={() => setTraceRefreshNonce((prev) => prev + 1)}
-            disabled={traceLoading}
-            className="inline-flex items-center gap-1.5 rounded-full bg-slate-200/50 px-3 py-1.5 text-[13px] font-medium text-slate-600 transition hover:bg-slate-300/50 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
-          >
-            {traceLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
-            刷新
-          </button>
-        </div>
-
-        <div className="rounded-[26px] bg-white p-4 shadow-[0_8px_32px_rgba(0,0,0,0.03)] dark:bg-slate-800/60 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)]">
-          <div className="mb-5 flex gap-1.5 rounded-[14px] bg-slate-50/80 p-1 ring-1 ring-slate-100/50 dark:bg-slate-900/50 dark:ring-slate-700/50">
-            {tabDefs.map((tab) => {
-              const Icon = tab.icon;
-              const active = tab.id === activeTab;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={cn(
-                    'flex flex-1 items-center justify-center gap-1.5 rounded-[12px] py-2 text-[13px] font-semibold transition-all',
-                    active
-                      ? 'bg-white text-slate-800 shadow-[0_2px_10px_rgba(0,0,0,0.04)] dark:bg-slate-700 dark:text-white'
-                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200',
-                  )}
-                >
-                  <Icon size={15} strokeWidth={active ? 2.5 : 2} />
-                  {tab.label}
-                </button>
-              );
-            })}
+      <section id="mobile-artifact-detail" className="flex flex-col min-h-full">
+        <div className="flex-1 rounded-[24px] bg-white p-3 shadow-[0_8px_32px_rgba(0,0,0,0.03)] dark:bg-slate-800/60 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)]">
+          <div className="sticky top-0 z-10 -mx-1 mb-4 flex items-center gap-2 bg-white/95 py-1 backdrop-blur-md dark:bg-slate-800/95">
+            <div className="flex flex-1 gap-1.5 rounded-[14px] bg-slate-50/80 p-1 ring-1 ring-slate-100/50 dark:bg-slate-900/50 dark:ring-slate-700/50">
+              {tabDefs.map((tab) => {
+                const Icon = tab.icon;
+                const active = tab.id === activeTab;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveTab(tab.id)}
+                    className={cn(
+                      'flex flex-1 items-center justify-center gap-1.5 rounded-[12px] py-2 text-[13px] font-semibold transition-all',
+                      active
+                        ? 'bg-white text-slate-800 shadow-[0_2px_10px_rgba(0,0,0,0.04)] dark:bg-slate-700 dark:text-white'
+                        : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200',
+                    )}
+                  >
+                    <Icon size={15} strokeWidth={active ? 2.5 : 2} />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => setTraceRefreshNonce((prev) => prev + 1)}
+              disabled={traceLoading}
+              className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[14px] bg-slate-50/80 text-slate-500 ring-1 ring-slate-100/50 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-900/50 dark:text-slate-400 dark:ring-slate-700/50"
+              aria-label="刷新产物"
+            >
+              {traceLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCcw size={16} />}
+            </button>
           </div>
 
           {traceError && (
@@ -1331,14 +1330,14 @@ export const MobileDeepReadPage: React.FC = () => {
           )}
 
           {activeTab === 'fields' && (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {fieldEntries.length === 0 ? (
                 <div className="py-14 text-center text-[13px] text-slate-500 dark:text-slate-400">暂无字段产物</div>
               ) : (
                 fieldEntries.map((item) => (
-                  <article key={item.fieldName} className="rounded-[20px] border border-slate-100 bg-white px-4 py-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
-                    <p className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{item.fieldName}</p>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-[15px] font-medium text-slate-800 dark:text-slate-100">{item.value}</p>
+                  <article key={item.fieldName} className="rounded-[16px] border border-slate-100 bg-white px-3.5 py-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                    <p className="text-[12px] font-medium text-slate-500 dark:text-slate-400">{item.fieldName}</p>
+                    <p className="mt-0.5 whitespace-pre-wrap break-words text-[14px] font-semibold text-slate-900 dark:text-slate-100">{item.value}</p>
                   </article>
                 ))
               )}
@@ -1346,25 +1345,25 @@ export const MobileDeepReadPage: React.FC = () => {
           )}
 
           {activeTab === 'tables' && (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {tableItems.length === 0 ? (
                 <div className="py-14 text-center text-[13px] text-slate-500 dark:text-slate-400">暂无表格产物</div>
               ) : (
                 tableItems.map((item) => (
-                  <article key={item.key} className="overflow-hidden rounded-[20px] border border-slate-100 bg-white shadow-[0_2px_10px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
-                    <div className="p-4">
-                      <div className="mb-3 flex items-start justify-between gap-3">
+                  <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                    <div className="p-3.5">
+                      <div className="mb-2 flex items-start justify-between gap-3">
                         <div className="flex-1">
-                          <p className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '表格'}</p>
-                          <p className="mt-1 text-[12px] text-slate-500 dark:text-slate-400">{item.dataframe.rowCount} 行 / {item.dataframe.colCount} 列</p>
+                          <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '表格'}</p>
+                          <p className="mt-0.5 text-[12px] text-slate-500 dark:text-slate-400">{item.dataframe.rowCount} 行 / {item.dataframe.colCount} 列</p>
                         </div>
                         {item.tableDownloadUrl && (
                           <button
                             type="button"
                             onClick={() => handleDownloadRemote(item.tableDownloadUrl, `${baseName}-${item.title || 'table'}.csv`)}
-                            className="inline-flex items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-[12px] font-semibold text-emerald-600 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400"
+                            className="inline-flex h-7 items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-3 text-[12px] font-semibold text-emerald-600 transition active:scale-95 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400"
                           >
-                            <Download size={13} />
+                            <Download size={12} />
                             下载
                           </button>
                         )}
@@ -1377,16 +1376,16 @@ export const MobileDeepReadPage: React.FC = () => {
           )}
 
           {activeTab === 'charts' && (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {chartItems.length === 0 ? (
                 <div className="py-14 text-center text-[13px] text-slate-500 dark:text-slate-400">暂无图表产物</div>
               ) : (
                 chartItems.map((item) => (
-                  <article key={item.key} className="overflow-hidden rounded-[20px] border border-slate-100 bg-white shadow-[0_2px_10px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
-                    <div className="p-4">
-                      <p className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '图表'}</p>
-                      {item.summary && <p className="mt-3 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400"><span className="font-semibold text-slate-700 dark:text-slate-200">趋势解读：</span>{item.summary}</p>}
-                      <div className="mt-3">
+                  <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                    <div className="p-3.5">
+                      <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '图表'}</p>
+                      {item.summary && <p className="mt-2 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400"><span className="font-medium text-slate-700 dark:text-slate-200">趋势解读：</span>{item.summary}</p>}
+                      <div className="mt-2">
                         <TraceChartPreview spec={item.chartSpec} compact />
                       </div>
                     </div>
@@ -1397,15 +1396,15 @@ export const MobileDeepReadPage: React.FC = () => {
           )}
 
           {activeTab === 'images' && (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {imageItems.length === 0 ? (
                 <div className="py-14 text-center text-[13px] text-slate-500 dark:text-slate-400">暂无图片产物</div>
               ) : (
                 imageItems.map((item) => (
-                  <article key={item.key} className="overflow-hidden rounded-[20px] border border-slate-100 bg-white shadow-[0_2px_10px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
-                    <div className="p-4">
-                      <p className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '图片'}</p>
-                      {item.caption && <p className="mt-2 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{item.caption}</p>}
+                  <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                    <div className="p-3.5">
+                      <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '图片'}</p>
+                      {item.caption && <p className="mt-1.5 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">{item.caption}</p>}
                     </div>
                   </article>
                 ))
@@ -1771,6 +1770,11 @@ export const MobileDeepReadPage: React.FC = () => {
     show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring' as const, stiffness: 300, damping: 24 } }
   };
 
+  const cardVariants = {
+    hidden: { opacity: 0, y: 80 },
+    show: { opacity: 1, y: 0, transition: { type: 'spring' as const, stiffness: 260, damping: 26 } }
+  };
+
   const stickySearchLayerOpacity = clamp01(stickySearchProgress * 1.1);
   const stickySearchShellOpacity = clamp01((stickySearchProgress - 0.08) / 0.72);
   const heroSearchOpacity = clamp01(1 - stickySearchProgress * 1.05);
@@ -1801,7 +1805,7 @@ export const MobileDeepReadPage: React.FC = () => {
       {/* 悬浮搜索框主体 (完全融入毛玻璃背景，放弃生硬的大白块包裹) */}
       <div
         ref={stickySearchShellRef}
-        className="fixed inset-x-0 top-0 z-[65] px-4 pt-[max(12px,env(safe-area-inset-top))]"
+        className="pointer-events-none fixed inset-x-0 top-0 z-[65] px-4 pt-[max(12px,env(safe-area-inset-top))]"
       >
         <motion.div
           style={{
@@ -1831,39 +1835,61 @@ export const MobileDeepReadPage: React.FC = () => {
       <div className="px-4 pt-[max(0rem,env(safe-area-inset-top))]">
         {/* 顶部独立导航区 (分离式设计：主标题与副标题) */}
         {/* 整体上移：将 pt-6 减小为 pt-3，使得页面内容整体向上提升约 12px */}
-        <motion.div variants={itemVariants} className="relative flex items-start justify-between px-3 pt-3 overflow-visible">
-          {/* 左侧标题区：提升层级，向左微移，确保不被背景插图干扰 */}
-          {/* 将文字区域单独通过 translate-y 向下平移 12px，以此来拉近与搜索框的距离，同时绝对不会影响其他任何组件 */}
-          <div className="relative z-20 flex flex-col gap-1.5 -ml-1 translate-y-3">
-            {/* 主标题放大至 26px */}
-            <h1 className="text-[26px] font-bold tracking-tight text-slate-900 dark:text-white">
-              AI文档处理
-            </h1>
-            {/* 副标题放大至 15px，并添加 Impeccable 风格的流光动效 */}
-            <p className="text-[15px] bg-gradient-to-r from-slate-500/90 via-slate-700 to-slate-500/90 bg-[length:200%_auto] bg-clip-text text-transparent animate-text-shimmer dark:from-slate-400 dark:via-white dark:to-slate-400">
+        <motion.div variants={itemVariants} className="relative z-40 flex items-start justify-between px-3 pt-2 overflow-visible pointer-events-auto">
+          {/* 左侧标题区：通过 -ml-2 抵消部分 px-3，配合下方标题的 px-1，统一向右微调 4px；向下微调 8px 靠近搜索框 */}
+          <div className="relative z-50 flex flex-col gap-1 -ml-2 translate-y-3">
+            <div className="flex items-center gap-2.5">
+              {/* 主标题缩小至 22px */}
+              <h1 className="text-[22px] font-bold tracking-tight text-slate-900 dark:text-white">
+                AI信息提取
+              </h1>
+              {/* 智能助手小组件 */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setAssistantOpen(true);
+                }}
+                className="relative z-50 pointer-events-auto cursor-pointer flex items-center justify-center transition-transform active:scale-[0.92]"
+                aria-label="打开智能助手"
+              >
+                {/* 底部白色动态光晕层：加入 pulse 动画效果，使其像呼吸一样闪烁 */}
+                <div className="absolute top-1/2 left-1/2 z-0 h-[24px] w-[24px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/90 blur-[6px] dark:bg-white/40 animate-pulse" aria-hidden="true" />
+                {/* 右上角小星光点缀 */}
+                <Sparkles 
+                  size={12} 
+                  className="absolute -right-1.5 -top-1.5 z-20 text-amber-400 animate-pulse dark:text-amber-300 drop-shadow-[0_0_2px_rgba(251,191,36,0.8)]" 
+                  aria-hidden="true" 
+                />
+                {/* 图标主体：设置 relative z-10 确保完全覆盖在光晕之上 */}
+                <img src={aiAssistantIcon} alt="AI 助手" className="relative z-10 h-[28px] w-[28px] object-contain drop-shadow-sm" />
+              </button>
+            </div>
+            {/* 副标题缩小至 13px */}
+            <p className="text-[13px] bg-gradient-to-r from-slate-500/90 via-slate-700 to-slate-500/90 bg-[length:200%_auto] bg-clip-text text-transparent animate-text-shimmer dark:from-slate-400 dark:via-white dark:to-slate-400">
               智能解析与结构化产物检索
             </p>
           </div>
           
-          {/* 方案A: 右侧沉浸式悬浮插图 (Impeccable 设计：底层渲染、半透明融合、允许破局与穿插) */}
-          <div className="absolute right-0 top-0 bottom-0 z-0 pointer-events-none w-[200px] overflow-visible">
-            {/* 微调缩小插图：宽度调整为 200px，高度调整为 150px，并将 top 和 right 偏移微调以保持视觉平衡 */}
-            <div className="absolute -right-2 -top-7 h-[150px] w-[200px]">
+          {/* 右侧沉浸式悬浮插图：移除透明度遮罩，展示原图 */}
+          <div className="absolute right-0 top-0 bottom-0 z-0 pointer-events-none w-[160px] overflow-visible">
+            <div className="absolute -right-1 -top-7 h-[120px] w-[160px]">
               <img 
                 src={headerIllustration} 
                 alt="Decorative Illustration" 
-                className="absolute inset-0 h-full w-full object-contain object-right-bottom mix-blend-multiply opacity-[0.80] dark:opacity-40 dark:mix-blend-normal"
+                className="absolute inset-0 h-full w-full object-contain object-right-bottom mix-blend-multiply dark:opacity-80 dark:mix-blend-normal"
                 aria-hidden="true"
               />
             </div>
           </div>
         </motion.div>
 
-        {/* 核心搜索区域：将上边距从 pt-7 进一步调整为 pt-9，使其及其下方所有内容再次微微下移 */}
+        {/* 核心搜索区域：大幅缩减上边距，让出首屏空间 */}
         <div ref={heroSearchAnchorRef} className="pointer-events-none h-0" aria-hidden="true" />
         <motion.div
           variants={itemVariants}
-          className="relative mb-5 pt-9 z-30"
+          className="relative mb-4 pt-6 z-30"
           style={{
             opacity: heroSearchOpacity,
             y: heroSearchYOffset,
@@ -1871,8 +1897,8 @@ export const MobileDeepReadPage: React.FC = () => {
             filter: `blur(${heroSearchBlur.toFixed(2)}px)`,
           }}
         >
-          <div className="flex h-[44px] w-full items-center gap-2.5 rounded-full bg-white/96 px-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)] ring-1 ring-white/50 dark:bg-slate-800 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)] dark:ring-slate-700/50">
-            <Search className="text-slate-400" size={18} />
+          <div className="flex h-[38px] w-full items-center gap-2.5 rounded-full bg-white/96 px-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)] ring-1 ring-white/50 dark:bg-slate-800 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)] dark:ring-slate-700/50">
+            <Search className="text-slate-400" size={16} />
             <input
               ref={heroSearchInputRef}
               type="text"
@@ -1888,8 +1914,8 @@ export const MobileDeepReadPage: React.FC = () => {
 
         {/* Quick Upload Rail */}
         <motion.div variants={itemVariants} className="mb-2">
-          <div className="mb-3.5 px-1">
-            <h3 className="text-[17px] font-bold text-slate-800 dark:text-slate-100">文件上传</h3>
+          <div className="mb-2 px-1">
+            <h3 className="text-[15px] font-bold text-slate-800 dark:text-slate-100">文件上传</h3>
           </div>
 
           <div className="-mx-1 flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-1 pb-1 scrollbar-hide [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
@@ -1992,9 +2018,9 @@ export const MobileDeepReadPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => openQueuePreview(item.id)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-200"
+                      className="inline-flex h-[28px] items-center gap-1.5 rounded-[10px] bg-white px-2.5 text-[12px] font-medium text-slate-600 shadow-sm transition-colors active:bg-slate-50 dark:bg-white/[0.04] dark:text-slate-300 dark:active:bg-white/[0.08] dark:shadow-none"
                     >
-                      <MonitorPlay size={12} />
+                      <MonitorPlay size={13} />
                       预览
                     </button>
                     {canStart && (
@@ -2005,10 +2031,10 @@ export const MobileDeepReadPage: React.FC = () => {
                           event.stopPropagation();
                           void startSingleUpload(item.id);
                         }}
-                        className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-600 transition hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-500/15 dark:text-blue-300"
+                        className="inline-flex h-[28px] items-center gap-1.5 rounded-[10px] bg-blue-50 px-2.5 text-[12px] font-medium text-blue-600 transition-colors active:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400 dark:active:bg-blue-500/20"
                       >
-                        {item.status === 'queued' ? <Play size={12} /> : <RotateCcw size={12} />}
-                        {item.status === 'queued' ? '开始解析' : '重新解析'}
+                        {item.status === 'queued' ? <Play size={13} /> : <RotateCcw size={13} />}
+                        {item.status === 'queued' ? '开始解析' : '重试'}
                       </button>
                     )}
                     {item.status === 'running' && (
@@ -2019,10 +2045,10 @@ export const MobileDeepReadPage: React.FC = () => {
                           event.stopPropagation();
                           void cancelSingleUpload(item.id);
                         }}
-                        className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-500/15 dark:text-rose-300"
+                        className="inline-flex h-[28px] items-center gap-1.5 rounded-[10px] bg-rose-50 px-2.5 text-[12px] font-medium text-rose-600 transition-colors active:bg-rose-100 dark:bg-rose-500/10 dark:text-rose-400 dark:active:bg-rose-500/20"
                       >
-                        <X size={12} />
-                        取消解析
+                        <X size={13} />
+                        取消
                       </button>
                     )}
                     {item.status !== 'running' && (
@@ -2033,10 +2059,10 @@ export const MobileDeepReadPage: React.FC = () => {
                           event.stopPropagation();
                           removeUploadQueueItem(item.id);
                         }}
-                        className="inline-flex items-center rounded-full border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-500 transition hover:text-slate-700 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-300"
+                        className="inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[10px] bg-slate-50 text-slate-400 transition-colors active:bg-slate-100 active:text-red-500 dark:bg-white/[0.04] dark:text-slate-500 dark:active:bg-white/[0.08] dark:active:text-red-400"
                         aria-label={`移除 ${item.file.name}`}
                       >
-                        <X size={12} />
+                        <X size={14} />
                       </button>
                     )}
                   </div>
@@ -2046,36 +2072,25 @@ export const MobileDeepReadPage: React.FC = () => {
           </motion.div>
         )}
 
-        <section className="mb-4 mt-2">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-[17px] font-bold text-slate-800 dark:text-slate-100">解析文档列表</h3>
+        <motion.section variants={cardVariants} className="mt-4 relative z-20">
+          <div className="-mx-4 rounded-t-[32px] bg-white pb-[calc(env(safe-area-inset-bottom)+120px)] pt-6 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] dark:bg-slate-900/95 dark:shadow-[0_-4px_24px_rgba(0,0,0,0.2)]">
+            <div className="mb-4 flex items-center justify-between px-6">
+              <h3 className="text-[16px] font-bold text-slate-800 dark:text-slate-100">解析文档列表</h3>
+            </div>
             
-          </div>
-
-        {/* Decorative Body Illustration */}
-        <motion.div variants={itemVariants} className="-mb-5 mt-1 flex w-full justify-center px-4 relative z-0">
-          <img 
-            src={bodyIllustration} 
-            alt="Upload Workspace Illustration" 
-            className="h-auto w-full object-contain drop-shadow-md transition-transform duration-500 hover:scale-[1.02] dark:opacity-90 dark:mix-blend-lighten" 
-            aria-hidden="true" 
-          />
-        </motion.div>
-
-          
-        <motion.div variants={itemVariants} className="relative z-10">
-            {filteredDocuments.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-[26px] bg-white py-14 text-center shadow-[0_8px_32px_rgba(0,0,0,0.03)] dark:bg-slate-800/60 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)]">
-                <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-slate-50/80 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500">
-                  <FileSearch size={28} strokeWidth={1.5} />
+          <div className="relative z-10 px-6">
+              {filteredDocuments.length === 0 ? (
+                <div className="mt-2 flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200/60 bg-slate-50/50 py-14 text-center dark:border-slate-700/60 dark:bg-slate-800/20">
+                  <div className="mb-4 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] bg-white shadow-[0_8px_30px_rgba(6,182,212,0.15)] ring-1 ring-slate-100 dark:bg-slate-800 dark:shadow-[0_8px_30px_rgba(6,182,212,0.08)] dark:ring-slate-700">
+                    <FileSearch size={28} className="text-cyan-500 dark:text-cyan-400" strokeWidth={1.5} />
+                  </div>
+                  <p className="text-[15px] font-bold text-slate-700 dark:text-slate-200">暂无解析记录</p>
+                  <p className="mt-1.5 max-w-[200px] text-[13px] leading-relaxed text-slate-400 dark:text-slate-500">
+                    {documents.length > 0 ? "没有找到符合条件的文档" : "请先上传文件并创建解析任务"}
+                  </p>
                 </div>
-                <p className="text-[15px] font-semibold text-slate-700 dark:text-slate-200">暂无解析记录</p>
-                <p className="mt-1.5 text-[13px] text-slate-400 dark:text-slate-500">
-                  {documents.length > 0 ? "没有找到符合条件的文档" : "请先上传文件并创建解析任务"}
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-hidden rounded-[26px] bg-white shadow-[0_8px_32px_rgba(0,0,0,0.03)] dark:bg-slate-800/60 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)]">
+              ) : (
+              <div className="flex flex-col gap-3">
                 {filteredDocuments.map((doc) => {
                 const active = doc.file_hash === activeDocHash;
                 const errorCount = Array.isArray(doc.errors) ? doc.errors.length : 0;
@@ -2090,19 +2105,28 @@ export const MobileDeepReadPage: React.FC = () => {
                 const fileName = (doc.file_name || '').toLowerCase();
                 let FileIcon = FileText;
                 let iconColors = 'bg-slate-50 text-slate-500 dark:bg-slate-800 dark:text-slate-400';
+                let fileImgSrc: string | undefined = txtIcon;
                 
                 if (fileName.endsWith('.pdf')) {
                   FileIcon = FileText;
                   iconColors = 'bg-red-50 text-red-500 dark:bg-red-500/10 dark:text-red-400';
+                  fileImgSrc = pdfIcon;
                 } else if (fileName.endsWith('.doc') || fileName.endsWith('.docx')) {
                   FileIcon = File;
                   iconColors = 'bg-blue-50 text-blue-500 dark:bg-blue-500/10 dark:text-blue-400';
+                  fileImgSrc = wordIcon;
                 } else if (fileName.endsWith('.xls') || fileName.endsWith('.xlsx') || fileName.endsWith('.csv')) {
                   FileIcon = FileSpreadsheet;
                   iconColors = 'bg-green-50 text-green-600 dark:bg-green-500/10 dark:text-green-500';
+                  fileImgSrc = excelIcon;
                 } else if (fileName.endsWith('.ppt') || fileName.endsWith('.pptx')) {
                   FileIcon = MonitorPlay;
                   iconColors = 'bg-orange-50 text-orange-500 dark:bg-orange-500/10 dark:text-orange-400';
+                  fileImgSrc = undefined;
+                } else if (fileName.endsWith('.md')) {
+                  FileIcon = FileText;
+                  iconColors = 'bg-cyan-50 text-cyan-600 dark:bg-cyan-500/10 dark:text-cyan-500';
+                  fileImgSrc = mdIcon;
                 }
 
                 const relatedQueueItem = uploadQueue.find((item) => {
@@ -2118,45 +2142,47 @@ export const MobileDeepReadPage: React.FC = () => {
                     key={doc.file_hash}
                     title={`字段 ${fieldCount} · 待核验 ${reviewCount}`}
                     className={cn(
-                      'group relative flex w-full flex-col gap-3 border-b border-slate-100 px-4 py-3.5 text-left transition-colors last:border-b-0 dark:border-slate-700/40',
-                      active ? 'bg-blue-50/30 dark:bg-blue-900/10' : ''
+                      'group relative flex w-full flex-col gap-3 rounded-[16px] p-3 text-left transition-colors active:bg-slate-50 dark:active:bg-white/[0.05]',
+                      active 
+                        ? 'bg-blue-50/40 shadow-[0_4px_20px_rgba(59,130,246,0.06)] dark:bg-blue-500/5 dark:shadow-none' 
+                        : 'bg-white shadow-[0_2px_12px_rgba(0,0,0,0.02)] dark:bg-white/[0.03] dark:shadow-none dark:ring-1 dark:ring-white/[0.05]'
                     )}
                   >
-                    {/* Active Indicator Line */}
-                    {active && (
-                      <div className="absolute left-0 top-0 h-full w-[3px] bg-blue-500" />
-                    )}
-
                     <div className="flex min-w-0 items-center gap-3">
-                      <div className={cn('flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[15px]', iconColors)}>
-                        <FileIcon size={22} strokeWidth={2} />
+                      <div className={cn('flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-[12px]', iconColors)}>
+                        {fileImgSrc ? (
+                          <img src={fileImgSrc} alt={fileName} className="h-5 w-5 object-contain drop-shadow-sm" />
+                        ) : (
+                          <FileIcon size={20} strokeWidth={2} />
+                        )}
                       </div>
 
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-[14px] font-semibold text-slate-800 dark:text-slate-100">
                           {doc.file_name}
                         </p>
-                        <p className="mt-0.5 truncate text-[12px] text-slate-400 dark:text-slate-500">
-                          字段 {fieldCount} · 异常 {errorCount}
-                        </p>
+                        <div className="mt-1 flex items-center gap-2 text-[12px] text-slate-400 dark:text-slate-500">
+                          <span className="flex items-center gap-1 rounded-md bg-slate-50 px-1.5 py-0.5 dark:bg-white/[0.04]">字段 {fieldCount}</span>
+                          <span className={cn('flex items-center gap-1 rounded-md px-1.5 py-0.5', errorCount > 0 ? 'bg-red-50 text-red-500 dark:bg-red-500/10 dark:text-red-400' : 'bg-slate-50 dark:bg-white/[0.04]')}>异常 {errorCount}</span>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="flex w-full flex-wrap items-center gap-2">
+                    <div className="flex w-full flex-wrap items-center gap-2 pt-1 border-t border-slate-50 dark:border-white/[0.02]">
                       <button
                         type="button"
                         onClick={() => openDocumentPreview(doc)}
-                        className="inline-flex min-h-8 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-200"
+                        className="inline-flex h-[28px] flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-slate-50 px-2 text-[12px] font-medium text-slate-600 transition-colors active:bg-slate-100 dark:bg-white/[0.04] dark:text-slate-300 dark:active:bg-white/[0.08]"
                       >
-                        <MonitorPlay size={12} />
+                        <MonitorPlay size={13} />
                         预览
                       </button>
                       <button
                         type="button"
                         onClick={() => openDocumentArtifacts(doc)}
-                        className="inline-flex min-h-8 items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-600 transition hover:bg-violet-100 dark:border-violet-500/40 dark:bg-violet-500/15 dark:text-violet-300"
+                        className="inline-flex h-[28px] flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-slate-50 px-2 text-[12px] font-medium text-slate-600 transition-colors active:bg-slate-100 dark:bg-white/[0.04] dark:text-slate-300 dark:active:bg-white/[0.08]"
                       >
-                        <LayoutList size={12} />
+                        <LayoutList size={13} />
                         产物
                       </button>
                       {relatedQueueItem?.status === 'running' ? (
@@ -2166,10 +2192,10 @@ export const MobileDeepReadPage: React.FC = () => {
                             event.stopPropagation();
                             void cancelSingleUpload(relatedQueueItem.id);
                           }}
-                          className="inline-flex min-h-8 items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-500/15 dark:text-rose-300"
+                          className="inline-flex h-[28px] flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-rose-50/80 px-2 text-[12px] font-medium text-rose-600 transition-colors active:bg-rose-100 dark:bg-rose-500/10 dark:text-rose-400 dark:active:bg-rose-500/20"
                         >
-                          <X size={12} />
-                          取消解析
+                          <X size={13} />
+                          取消
                         </button>
                       ) : (
                         <button
@@ -2178,10 +2204,10 @@ export const MobileDeepReadPage: React.FC = () => {
                             event.stopPropagation();
                             void reparseDocument(doc);
                           }}
-                          className="inline-flex min-h-8 items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-600 transition hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-500/15 dark:text-blue-300"
+                          className="inline-flex h-[28px] flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-slate-50 px-2 text-[12px] font-medium text-slate-600 transition-colors active:bg-slate-100 dark:bg-white/[0.04] dark:text-slate-300 dark:active:bg-white/[0.08]"
                         >
-                          <RotateCcw size={12} />
-                          重新解析
+                          <RotateCcw size={13} />
+                          重试
                         </button>
                       )}
                       <button
@@ -2190,19 +2216,30 @@ export const MobileDeepReadPage: React.FC = () => {
                           event.stopPropagation();
                           requestRemoveDocument(doc);
                         }}
-                        className="inline-flex min-h-8 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-200"
+                        className="inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[10px] bg-red-50/50 text-red-400 transition-colors active:bg-red-100 active:text-red-600 dark:bg-red-500/10 dark:text-red-400/80 dark:active:bg-red-500/30"
+                        aria-label="移除"
                       >
-                        <Trash2 size={12} />
-                        移除
+                        <Trash2 size={13} />
                       </button>
                     </div>
                   </article>
                 );
               })}
+                
+                {/* 列表底部“到底了”状态指示器：填充留白并提升设计完成度 */}
+                <div className="mt-4 flex flex-col items-center justify-center pb-8 opacity-60">
+                  <div className="flex w-full max-w-[120px] items-center justify-center gap-2">
+                    <div className="h-px flex-1 bg-gradient-to-r from-transparent to-slate-300 dark:to-slate-600" />
+                    <span className="text-[11px] text-slate-400 dark:text-slate-500">到底了</span>
+                    <div className="h-px flex-1 bg-gradient-to-l from-transparent to-slate-300 dark:to-slate-600" />
+                  </div>
+                  <p className="mt-1.5 text-[10px] text-slate-300 dark:text-slate-600">已加载全部 {filteredDocuments.length} 个文档</p>
+                </div>
               </div>
             )}
-          </motion.div>
-        </section>
+          </div>
+          </div>
+        </motion.section>
 
         {/* Deprecated banner removed: keep single-path upload flow */}
         {/*
@@ -2229,12 +2266,9 @@ export const MobileDeepReadPage: React.FC = () => {
 
       {previewOpen && previewDoc && (
         <div className="fixed inset-0 z-[72] bg-[#f4fbfd] dark:bg-slate-950">
-          <div className="flex items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pb-3 pt-[max(12px,env(safe-area-inset-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
-            <div className="min-w-0">
-              <p className="text-[15px] font-semibold text-slate-900 dark:text-slate-100">原文预览</p>
-              <p className="mt-0.5 truncate text-[12px] text-slate-500 dark:text-slate-400">
-                {previewDoc.file_name}
-              </p>
+          <div className="flex h-14 items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pt-[max(0px,env(safe-area-inset-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
+            <div className="flex-1 min-w-0 pr-4">
+              <p className="text-[17px] font-bold text-slate-900 dark:text-slate-100">文件预览</p>
             </div>
             <div className="flex items-center gap-2">
               {activeDoc && (
@@ -2244,24 +2278,24 @@ export const MobileDeepReadPage: React.FC = () => {
                     setPreviewOpen(false);
                     setArtifactOpen(true);
                   }}
-                  className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-[12px] font-semibold text-violet-600 transition hover:bg-violet-100 dark:border-violet-500/40 dark:bg-violet-500/15 dark:text-violet-300"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full bg-slate-900 px-3.5 text-[13px] font-medium text-white shadow-[0_2px_8px_rgba(15,23,42,0.12)] transition active:scale-95 dark:bg-slate-100 dark:text-slate-900"
                 >
-                  <LayoutList size={13} />
+                  <LayoutList size={14} />
                   产物
                 </button>
               )}
               <button
                 type="button"
                 onClick={() => setPreviewOpen(false)}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-100/80 text-slate-500 transition active:scale-95 dark:bg-slate-800/80 dark:text-slate-400"
                 aria-label="关闭预览"
               >
-                <X size={18} />
+                <X size={16} />
               </button>
             </div>
           </div>
 
-          <div className="h-[calc(100dvh-4.5rem)] overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-3">
+          <div className="flex h-[calc(100dvh-3.5rem)] flex-col overflow-y-auto px-2 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-2">
             <MobileDocumentPreviewCard
               activeDoc={previewDoc}
               preferredBase={apiBaseHint}
@@ -2273,37 +2307,34 @@ export const MobileDeepReadPage: React.FC = () => {
 
       {artifactOpen && activeDoc && (
         <div className="fixed inset-0 z-[73] bg-[#f4fbfd] dark:bg-slate-950">
-          <div className="flex items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pb-3 pt-[max(12px,env(safe-area-inset-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
-            <div className="min-w-0">
-              <p className="text-[15px] font-semibold text-slate-900 dark:text-slate-100">解析产物</p>
-              <p className="mt-0.5 truncate text-[12px] text-slate-500 dark:text-slate-400">
-                {activeDoc.file_name}
-              </p>
+          <div className="flex h-14 items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pt-[max(0px,env(safe-area-inset-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
+            <div className="flex-1 min-w-0 pr-4">
+              <p className="text-[17px] font-bold text-slate-900 dark:text-slate-100">解析产物</p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setArtifactOpen(false);
                   setPreviewOpen(true);
                 }}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-200"
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-slate-900 px-3.5 text-[13px] font-medium text-white shadow-[0_2px_8px_rgba(15,23,42,0.12)] transition active:scale-95 dark:bg-slate-100 dark:text-slate-900"
               >
-                <MonitorPlay size={13} />
+                <MonitorPlay size={14} />
                 预览
               </button>
               <button
                 type="button"
                 onClick={() => setArtifactOpen(false)}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-100/80 text-slate-500 transition active:scale-95 dark:bg-slate-800/80 dark:text-slate-400"
                 aria-label="关闭产物详情"
               >
-                <X size={18} />
+                <X size={16} />
               </button>
             </div>
           </div>
 
-          <div className="h-[calc(100dvh-4.5rem)] overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-3">
+          <div className="h-[calc(100dvh-3.5rem)] overflow-y-auto px-2 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-2">
             {renderArtifactDetailPanel()}
           </div>
         </div>
@@ -2345,22 +2376,6 @@ export const MobileDeepReadPage: React.FC = () => {
             {toastMessage}
           </div>
         </div>
-      )}
-
-      {!previewOpen && !artifactOpen && (
-      <button
-        type="button"
-        onClick={() => setAssistantOpen(true)}
-        className={cn(
-          'fixed bottom-[calc(env(safe-area-inset-bottom)+5.4rem)] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full shadow-[0_12px_28px_rgba(15,23,42,0.22)] transition-all active:scale-[0.92] dark:shadow-[0_12px_28px_rgba(2,6,23,0.4)]',
-          activeDoc
-            ? 'bg-slate-900 text-white hover:bg-black dark:bg-slate-100 dark:text-slate-900'
-            : 'bg-slate-700 text-white hover:bg-slate-800 dark:bg-slate-200 dark:text-slate-900',
-        )}
-        aria-label="打开智能助手"
-      >
-        <Bot size={24} strokeWidth={2} />
-      </button>
       )}
 
       <MobileAssistantDialog

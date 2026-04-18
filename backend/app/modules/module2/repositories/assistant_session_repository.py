@@ -7,37 +7,23 @@ from typing import Any, Dict, List, Optional
 class AssistantSessionRepository:
     """Repository wrapper for assistant session/message/tool persistence operations."""
 
-    def __init__(self, *, legacy_storage: Any | None = None, **legacy_kwargs: Any) -> None:
-        if "storage" in legacy_kwargs:
-            if legacy_storage is not None:
-                raise TypeError("Pass only one of legacy_storage=... or storage=...")
-            legacy_storage = legacy_kwargs.pop("storage")
-            warnings.warn(
-                "AssistantSessionRepository(storage=...) is deprecated; "
-                "pass legacy_storage=... instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if legacy_kwargs:
-            unexpected = ", ".join(sorted(legacy_kwargs))
-            raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-        if legacy_storage is None:
-            raise ValueError("legacy_storage is required")
-        self._legacy_storage = legacy_storage
+    def __init__(self, *, storage: Any | None = None) -> None:
+        if storage is None:
+            raise ValueError("storage is required")
+        self._storage = storage
 
     @property
     def legacy_storage(self) -> Any:
-        return self._legacy_storage
-
-    @property
-    def storage(self) -> Any:
         warnings.warn(
-            "AssistantSessionRepository.storage is deprecated; "
-            "use AssistantSessionRepository.legacy_storage instead.",
+            "AssistantSessionRepository.legacy_storage is deprecated; use AssistantSessionRepository.storage instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self._legacy_storage
+        return self._storage
+
+    @property
+    def storage(self) -> Any:
+        return self._storage
 
     async def fetch_assistant_session(
         self,
@@ -45,7 +31,7 @@ class AssistantSessionRepository:
         *,
         expected_tenant_id: str = "",
     ) -> Optional[Dict[str, Any]]:
-        return await self._legacy_storage.fetch_assistant_session(
+        return await self._storage.fetch_assistant_session(
             session_id,
             expected_tenant_id=expected_tenant_id,
         )
@@ -61,7 +47,7 @@ class AssistantSessionRepository:
         metadata: Optional[Dict[str, Any]] = None,
         tenant_id: str = "",
     ) -> None:
-        await self._legacy_storage.upsert_assistant_session(
+        await self._storage.upsert_assistant_session(
             session_id=session_id,
             file_hash=file_hash,
             file_name=file_name,
@@ -78,7 +64,7 @@ class AssistantSessionRepository:
         *,
         expected_tenant_id: str = "",
     ) -> List[Dict[str, Any]]:
-        return await self._legacy_storage.list_assistant_messages(
+        return await self._storage.list_assistant_messages(
             session_id,
             limit=limit,
             expected_tenant_id=expected_tenant_id,
@@ -95,7 +81,7 @@ class AssistantSessionRepository:
         payload: Optional[Dict[str, Any]] = None,
         tenant_id: str = "",
     ) -> None:
-        await self._legacy_storage.save_assistant_message(
+        await self._storage.save_assistant_message(
             session_id=session_id,
             message_id=message_id,
             role=role,
@@ -117,7 +103,7 @@ class AssistantSessionRepository:
         latency_ms: int = 0,
         tenant_id: str = "",
     ) -> None:
-        await self._legacy_storage.save_tool_invocation(
+        await self._storage.save_tool_invocation(
             session_id=session_id,
             message_id=message_id,
             tool_name=tool_name,

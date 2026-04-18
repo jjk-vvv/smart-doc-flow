@@ -21,11 +21,11 @@ def _load_module(path_parts: list[str], module_name: str):
 
 
 router_module = _load_module(
-    ["app", "modules", "module2", "api", "v1", "endpoints", "module4_sync.py"],
-    "_smart_doc_flow_module2_api_v1_module4_sync_endpoint",
+    ["app", "modules", "module2", "api", "v1", "endpoints", "sync.py"],
+    "_smart_doc_flow_module2_api_v1_sync_endpoint",
 )
 
-build_module4_sync_router = router_module.build_router
+build_sync_router = router_module.build_router
 
 
 def _build_app():
@@ -57,7 +57,7 @@ def _build_app():
 
     app = FastAPI()
     app.include_router(
-        build_module4_sync_router(
+        build_sync_router(
             list_outbox_rows=_list_outbox_rows,
             get_outbox_row=_get_outbox_row,
             build_list_response=_build_list_response,

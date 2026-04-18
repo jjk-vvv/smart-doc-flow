@@ -1204,8 +1204,8 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
           containerRef.current.innerHTML = "";
         }
         if (!disposed) {
-          setRenderMode("table");
-          setStatus("ready");
+          setError("电子表格预览初始化失败，请稍后重试");
+          setStatus("error");
         }
       };
       const getSourceSheets = () => {
@@ -1332,11 +1332,6 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
           runtimeRef.current = runtime;
           mountWorkbook(runtime, payload, hasTableData ? tablePayload : null);
         } catch (runtimeError) {
-          if (hasTableData) {
-            setRenderMode("table");
-            setStatus("ready");
-            return;
-          }
           throw runtimeError;
         }
       } catch (err) {
@@ -1451,15 +1446,10 @@ export const LuckysheetPreview: React.FC<LuckysheetPreviewProps> = ({ file, loca
           </p>
         </div>
       )}
-      {renderMode === "table" && fallbackPayload && status === "ready" && (
-        <div className="absolute inset-0 z-10">
-          <SheetTableFallback payload={fallbackPayload} locator={locator} />
-        </div>
-      )}
       <div
         id={containerId}
         ref={containerRef}
-        className={`h-full w-full min-h-0 min-w-0 ${renderMode === "table" ? "hidden" : ""}`}
+        className="h-full w-full min-h-0 min-w-0"
       />
     </div>
   );

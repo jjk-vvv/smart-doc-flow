@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ...deps import Module4RouterDeps
 from ....schemas import (
@@ -62,13 +62,20 @@ from ....services.query.runtime import (
 
 
 def build_router(*, deps: Module4RouterDeps) -> APIRouter:
-    router = APIRouter(tags=["module4"])
+    async def _require_internal_request(request: Request) -> None:
+        deps.validate_internal_request(request)
 
-    @router.post("/module4/ingest", response_model=IngestResponse)
+    router = APIRouter(
+        prefix="/module4",
+        tags=["module4"],
+        dependencies=[Depends(_require_internal_request)],
+    )
+
+    @router.post("/ingest", response_model=IngestResponse)
     async def module4_ingest(payload: IngestRequest, request: Request) -> IngestResponse:
         return await deps.submit_ingest_job(payload, request)
 
-    @router.get("/module4/jobs/{job_id}", response_model=JobResponse)
+    @router.get("/jobs/{job_id}", response_model=JobResponse)
     async def module4_job_status(job_id: str, request: Request, tenant_id: str = Query(default="")) -> JobResponse:
         resolved_tenant = deps.tenant_from_request(request, tenant_id)
         row = await deps.storage_getter().get_job(job_id, tenant_id=resolved_tenant)
@@ -76,7 +83,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             raise HTTPException(status_code=404, detail="Job not found")
         return JobResponse(**row)
 
-    @router.post("/module4/rebuild", response_model=RebuildResponse)
+    @router.post("/rebuild", response_model=RebuildResponse)
     async def module4_rebuild(body: RebuildRequest, request: Request) -> RebuildResponse:
         tenant_id = deps.tenant_from_request(request, body.tenant_id)
         storage = deps.storage_getter()
@@ -96,7 +103,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             documents=int(payload["documents"]),
         )
 
-    @router.get("/module4/graph/files", response_model=GraphFileListResponse)
+    @router.get("/graph/files", response_model=GraphFileListResponse)
     async def module4_graph_files(
         request: Request,
         tenant_id: str = Query(default=""),
@@ -112,7 +119,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             limit=limit,
         )
 
-    @router.get("/module4/graph/files/{file_hash}", response_model=GraphFileDetailResponse)
+    @router.get("/graph/files/{file_hash}", response_model=GraphFileDetailResponse)
     async def module4_graph_file_detail(
         file_hash: str,
         request: Request,
@@ -126,7 +133,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             file_hash=file_hash,
         )
 
-    @router.get("/module4/graph/files/{file_hash}/view", response_model=GraphResponse)
+    @router.get("/graph/files/{file_hash}/view", response_model=GraphResponse)
     async def module4_graph_file_view(
         file_hash: str,
         request: Request,
@@ -148,7 +155,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             limit_edges=limit_edges,
         )
 
-    @router.post("/module4/query/search", response_model=GraphRAGQueryResponse)
+    @router.post("/query/search", response_model=GraphRAGQueryResponse)
     async def module4_query_search(body: GraphRAGQueryRequest, request: Request) -> GraphRAGQueryResponse:
         tenant_id = deps.tenant_from_request(request, body.tenant_id)
         try:
@@ -172,7 +179,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
         )
         return GraphRAGQueryResponse(**payload)
 
-    @router.get("/module4/graph/files/{file_hash}/neighborhood/{node_id}", response_model=GraphResponse)
+    @router.get("/graph/files/{file_hash}/neighborhood/{node_id}", response_model=GraphResponse)
     async def module4_graph_file_neighborhood(
         file_hash: str,
         node_id: str,
@@ -194,7 +201,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             limit=limit,
         )
 
-    @router.get("/module4/graph/files/{file_hash}/node/{node_id}", response_model=GraphNodeDetailResponse)
+    @router.get("/graph/files/{file_hash}/node/{node_id}", response_model=GraphNodeDetailResponse)
     async def module4_graph_file_node_detail(
         file_hash: str,
         node_id: str,
@@ -216,7 +223,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             limit=limit,
         )
 
-    @router.get("/module4/graph", response_model=GraphResponse)
+    @router.get("/graph", response_model=GraphResponse)
     async def module4_graph(
         request: Request,
         tenant_id: str = Query(default=""),
@@ -236,7 +243,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             limit_edges=limit_edges,
         )
 
-    @router.get("/module4/graph/neighborhood/{node_id}", response_model=GraphResponse)
+    @router.get("/graph/neighborhood/{node_id}", response_model=GraphResponse)
     async def module4_neighborhood(
         node_id: str,
         request: Request,
@@ -256,7 +263,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             limit=limit,
         )
 
-    @router.get("/module4/alerts", response_model=AlertListResponse)
+    @router.get("/alerts", response_model=AlertListResponse)
     async def module4_alerts(
         request: Request,
         tenant_id: str = Query(default=""),
@@ -278,7 +285,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             page_size=page_size,
         )
 
-    @router.post("/module4/alerts/{alert_id}/ack", response_model=AlertActionResponse)
+    @router.post("/alerts/{alert_id}/ack", response_model=AlertActionResponse)
     async def module4_alert_ack(alert_id: str, body: AlertActionRequest, request: Request) -> AlertActionResponse:
         tenant_id = deps.tenant_from_request(request, body.tenant_id)
         return await alert_action_response_service(
@@ -291,7 +298,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             comment=body.comment,
         )
 
-    @router.post("/module4/alerts/{alert_id}/resolve", response_model=AlertActionResponse)
+    @router.post("/alerts/{alert_id}/resolve", response_model=AlertActionResponse)
     async def module4_alert_resolve(
         alert_id: str,
         body: AlertResolveRequest,
@@ -309,7 +316,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             resolution=body.resolution,
         )
 
-    @router.get("/module4/evidence", response_model=EvidenceListResponse)
+    @router.get("/evidence", response_model=EvidenceListResponse)
     async def module4_evidence(
         request: Request,
         tenant_id: str = Query(default=""),
@@ -331,7 +338,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             page_size=page_size,
         )
 
-    @router.get("/module4/evidence/edge/{edge_id}", response_model=EvidenceListResponse)
+    @router.get("/evidence/edge/{edge_id}", response_model=EvidenceListResponse)
     async def module4_edge_evidence(
         edge_id: str,
         request: Request,
@@ -349,7 +356,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             page_size=page_size,
         )
 
-    @router.get("/module4/rules", response_model=RuleListResponse)
+    @router.get("/rules", response_model=RuleListResponse)
     async def module4_rules(
         request: Request,
         tenant_id: str = Query(default=""),
@@ -363,7 +370,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             enabled_only=enabled_only,
         )
 
-    @router.put("/module4/rules/{rule_id}", response_model=RuleUpsertResponse)
+    @router.put("/rules/{rule_id}", response_model=RuleUpsertResponse)
     async def module4_rule_upsert(
         rule_id: str,
         body: RuleUpsertRequest,
@@ -379,7 +386,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             body=body,
         )
 
-    @router.post("/module4/explain", response_model=ExplainResponse)
+    @router.post("/explain", response_model=ExplainResponse)
     async def module4_explain(body: ExplainRequest, request: Request) -> ExplainResponse:
         tenant_id = deps.tenant_from_request(request, body.tenant_id)
         return await explain_response_service(
@@ -389,7 +396,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             body=body,
         )
 
-    @router.post("/module4/simulate", response_model=SimulateResponse)
+    @router.post("/simulate", response_model=SimulateResponse)
     async def module4_simulate(body: SimulateRequest, request: Request) -> SimulateResponse:
         tenant_id = deps.tenant_from_request(request, body.tenant_id)
         return await simulate_response_service(
@@ -399,7 +406,7 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
             body=body,
         )
 
-    @router.get("/module4/healthz", response_model=HealthzResponse)
+    @router.get("/healthz", response_model=HealthzResponse)
     async def module4_healthz(probe: str = Query(default="basic")) -> HealthzResponse:
         storage = deps.storage_getter()
         workspace_builder = deps.workspace_builder_getter()

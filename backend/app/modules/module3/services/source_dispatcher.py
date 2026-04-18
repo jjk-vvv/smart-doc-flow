@@ -10,7 +10,7 @@ from typing import Any, Callable
 import pandas as pd
 from openpyxl import load_workbook
 
-from ..core.config import DEFAULT_PROMPT
+from ..core.config import DEFAULT_PROMPT, read_structured_metric_profile
 from .llm_service import (
     build_messages,
     build_repair_messages,
@@ -24,6 +24,28 @@ from .markdown_processor import extract_rows_from_markdown_source
 from .text_source_common import log_event
 from .text_processor import extract_rows_from_txt_source
 from .word_processor import extract_docx_images, read_docx_content, squish
+
+_STRUCTURED_METRIC_PROFILE = read_structured_metric_profile()
+_METRIC_HEADER_ALIASES = {
+    key: [str(item) for item in value]
+    for key, value in dict(_STRUCTURED_METRIC_PROFILE.get("header_aliases") or {}).items()
+}
+_ROOT_REGION_LABELS = tuple(str(item) for item in (_STRUCTURED_METRIC_PROFILE.get("root_regions") or []))
+_PRIMARY_ROOT_REGION = _ROOT_REGION_LABELS[0] if _ROOT_REGION_LABELS else ""
+_ROOT_REGION_SET = {item for item in _ROOT_REGION_LABELS if item}
+_REGION_SUFFIXES = tuple(str(item) for item in (_STRUCTURED_METRIC_PROFILE.get("region_suffixes") or []))
+_REGION_SUFFIX_PATTERN = (
+    re.compile(rf"({'|'.join(re.escape(item) for item in _REGION_SUFFIXES if item)})$")
+    if any(_REGION_SUFFIXES)
+    else None
+)
+_CN_NUMERIC_MULTIPLIERS = tuple(
+    (str(unit), float(multiplier))
+    for unit, multiplier in (_STRUCTURED_METRIC_PROFILE.get("cn_numeric_multipliers") or [])
+)
+_CASE_EXCLUDE_KEYWORDS = tuple(str(item) for item in (_STRUCTURED_METRIC_PROFILE.get("case_exclude_keywords") or []))
+_CASE_STRONG_KEYWORDS = tuple(str(item) for item in (_STRUCTURED_METRIC_PROFILE.get("case_strong_keywords") or []))
+_CASE_WEAK_KEYWORDS = tuple(str(item) for item in (_STRUCTURED_METRIC_PROFILE.get("case_weak_keywords") or []))
 
 
 def prefixed_logger(logger: Callable[[str], None] | None, prefix: str) -> Callable[[str], None] | None:
@@ -89,6 +111,194 @@ def _row_filled_count(row: dict[str, str], headers: list[str]) -> int:
 
 def _rows_quality(rows: list[dict[str, str]], headers: list[str]) -> tuple[int, int]:
     return len(rows), sum(_row_filled_count(row, headers) for row in rows)
+
+
+def _match_header(headers: list[str], candidates: list[str]) -> str:
+    candidate_keys = {_normalize_header(item) for item in candidates if _normalize_header(item)}
+    for header in headers:
+        header_key = _normalize_header(header)
+        if header_key and header_key in candidate_keys:
+            return header
+    return ""
+
+
+def _resolve_structured_metric_headers(headers: list[str]) -> dict[str, str]:
+    aliases = _METRIC_HEADER_ALIASES
+    return {
+        "region": _match_header(headers, list(aliases.get("region") or [])),
+        "gdp_per_capita": _match_header(headers, list(aliases.get("gdp_per_capita") or [])),
+        "population": _match_header(headers, list(aliases.get("population") or [])),
+        "daily_tests": _match_header(headers, list(aliases.get("daily_tests") or [])),
+        "cases": _match_header(headers, list(aliases.get("cases") or [])),
+    }
+
+
+def _looks_like_nested_region(value: str) -> bool:
+    text = _cell_text(value)
+    if not text:
+        return False
+    if text in _ROOT_REGION_SET:
+        return False
+    if _REGION_SUFFIX_PATTERN is None:
+        return False
+    return bool(_REGION_SUFFIX_PATTERN.search(text))
+
+
+def _format_number_text(value: float) -> str:
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def _extract_cn_numeric_text(value: str, *, sum_all_numbers: bool = False) -> str:
+    text = _cell_text(value)
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKC", text).replace(",", "").replace("，", "").strip()
+    if not normalized:
+        return ""
+
+    number_tokens = re.findall(r"[-+]?\d+(?:\.\d+)?", normalized)
+    if not number_tokens:
+        return ""
+
+    numbers: list[float] = []
+    for token in number_tokens:
+        try:
+            numbers.append(float(token))
+        except ValueError:
+            continue
+    if not numbers:
+        return ""
+
+    base_value = sum(numbers) if sum_all_numbers else numbers[0]
+    multiplier = 1.0
+    for unit, unit_multiplier in _CN_NUMERIC_MULTIPLIERS:
+        if unit and unit in normalized:
+            multiplier = unit_multiplier
+            break
+    numeric = base_value * multiplier
+    return _format_number_text(numeric)
+
+
+def _extract_case_count_from_doc_text(doc_text: str, anchor_text: str) -> str:
+    context_text = _cell_text(doc_text)
+    anchor = _cell_text(anchor_text)
+    if not context_text or not anchor:
+        return ""
+
+    anchor_candidates: list[str] = []
+
+    def _add_anchor_candidate(value: str) -> None:
+        text = _cell_text(value)
+        if text and text not in anchor_candidates:
+            anchor_candidates.append(text)
+
+    _add_anchor_candidate(anchor)
+    cleaned_anchor = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", anchor)
+    _add_anchor_candidate(cleaned_anchor)
+    for suffix in _REGION_SUFFIXES:
+        if not suffix:
+            continue
+        if cleaned_anchor.endswith(suffix):
+            _add_anchor_candidate(cleaned_anchor[: -len(suffix)])
+
+    position = -1
+    for candidate in anchor_candidates:
+        if not candidate:
+            continue
+        hit = context_text.find(candidate)
+        if hit >= 0:
+            position = hit
+            break
+    if position < 0:
+        return ""
+    window = context_text[position : position + 260]
+
+    newline_index = window.find("\n")
+    if newline_index > 0:
+        window = window[:newline_index]
+
+    case_matches = re.findall(r"(\d+(?:\.\d+)?)\s*例([^，。；;\n]{0,24})", window)
+    if not case_matches:
+        return ""
+
+    total = 0.0
+    matched = False
+    for token, qualifier in case_matches:
+        try:
+            number_value = float(token)
+        except ValueError:
+            continue
+        qualifier_text = _cell_text(qualifier)
+        if _CASE_EXCLUDE_KEYWORDS and any(keyword and keyword in qualifier_text for keyword in _CASE_EXCLUDE_KEYWORDS):
+            continue
+        if _CASE_WEAK_KEYWORDS and any(keyword and keyword in qualifier_text for keyword in _CASE_WEAK_KEYWORDS):
+            if _CASE_STRONG_KEYWORDS and not any(
+                keyword and keyword in qualifier_text
+                for keyword in _CASE_STRONG_KEYWORDS
+            ):
+                continue
+        total += number_value
+        matched = True
+    if not matched:
+        return ""
+    return _format_number_text(total) if total >= 0 else ""
+
+
+
+
+def _normalize_word_rows_for_structured_metrics(
+    rows: list[dict[str, str]],
+    headers: list[str],
+    *,
+    doc_text: str = "",
+) -> list[dict[str, str]]:
+    if not rows:
+        return rows
+
+    resolved_headers = _resolve_structured_metric_headers(headers)
+    country_header = resolved_headers.get("region", "")
+    gdp_header = resolved_headers.get("gdp_per_capita", "")
+    population_header = resolved_headers.get("population", "")
+    daily_tests_header = resolved_headers.get("daily_tests", "")
+    cases_header = resolved_headers.get("cases", "")
+
+    available_metric_headers = [item for item in (gdp_header, population_header, daily_tests_header, cases_header) if item]
+    if not country_header or len(available_metric_headers) < 2:
+        return rows
+
+    normalized_rows: list[dict[str, str]] = []
+    for row in rows:
+        normalized = dict(row)
+        source_region = str(normalized.get(country_header, "")) if country_header else ""
+        if country_header and _PRIMARY_ROOT_REGION and _looks_like_nested_region(source_region):
+            normalized[country_header] = _PRIMARY_ROOT_REGION
+
+        if gdp_header:
+            parsed = _extract_cn_numeric_text(str(normalized.get(gdp_header, "")))
+            if parsed:
+                normalized[gdp_header] = parsed
+        if population_header:
+            parsed = _extract_cn_numeric_text(str(normalized.get(population_header, "")))
+            if parsed:
+                normalized[population_header] = parsed
+        if daily_tests_header:
+            parsed = _extract_cn_numeric_text(str(normalized.get(daily_tests_header, "")))
+            if parsed:
+                normalized[daily_tests_header] = parsed
+        if cases_header:
+            parsed = _extract_cn_numeric_text(str(normalized.get(cases_header, "")), sum_all_numbers=True)
+            if (not parsed or parsed == "0") and source_region:
+                derived = _extract_case_count_from_doc_text(doc_text, source_region)
+                if derived:
+                    parsed = derived
+            if parsed:
+                normalized[cases_header] = parsed
+
+        normalized_rows.append(normalized)
+
+    return normalized_rows
 
 
 def _anchor_value(row: dict[str, str], anchor_header: str) -> str:
@@ -694,6 +904,214 @@ def _is_safe_docx_ai_header_match(target_header: str, source_header: str) -> boo
     return SequenceMatcher(None, target_text, source_text).ratio() >= 0.84
 
 
+def _safe_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _table_context_value(
+    table_context: dict[str, Any] | None,
+    key: str,
+    default: Any = "",
+) -> Any:
+    if not isinstance(table_context, dict):
+        return default
+    value = table_context.get(key)
+    if value is not None and value != "":
+        return value
+    table_block = table_context.get("table_block")
+    if isinstance(table_block, dict):
+        nested_value = table_block.get(key)
+        if nested_value is not None and nested_value != "":
+            return nested_value
+    return default
+
+
+def _extract_context_tokens_from_text(text: str) -> list[str]:
+    merged_text = _cell_text(text)
+    if not merged_text:
+        return []
+
+    raw_location_tokens = re.findall(r"[\u4e00-\u9fff]{2,24}(?:省|市|区|县)", merged_text)
+    raw_location_tokens.extend(
+        re.findall(r"(?:城市|地区|省份)\s*[：:]\s*([\u4e00-\u9fff]{2,12}(?:省|市|区|县)?)", merged_text)
+    )
+    date_tokens = re.findall(
+        r"\d{4}[年/-]\d{1,2}[月/-]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?",
+        merged_text,
+    )
+    time_tokens = re.findall(r"\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?", merged_text)
+
+    city_tokens: list[str] = []
+    location_stopwords = {
+        "城市",
+        "行政区",
+        "市区",
+        "城区",
+        "地区",
+        "省份",
+    }
+    for token in raw_location_tokens:
+        normalized = _cell_text(token)
+        if not normalized:
+            continue
+        # Keep only the trailing place-name segment to avoid phrases like "时刻德州市".
+        tail_match = re.search(r"([\u4e00-\u9fff]{2,9}(?:省|市|区|县))$", normalized)
+        location = tail_match.group(1) if tail_match else normalized
+        if location in location_stopwords:
+            continue
+        if location not in city_tokens:
+            city_tokens.append(location)
+
+    tokens: list[str] = []
+    for token in city_tokens + date_tokens + time_tokens:
+        normalized = _cell_text(token)
+        if normalized and normalized not in tokens:
+            tokens.append(normalized)
+    return tokens[:16]
+
+
+def _extract_docx_context_tokens(prompt: str, table_context: dict[str, Any] | None) -> list[str]:
+    context_text = _cell_text(_table_context_value(table_context, "context_text", ""))
+    table_hint = _cell_text(_table_context_value(table_context, "title", ""))
+    contextual_tokens = _extract_context_tokens_from_text("\n".join([context_text, table_hint]))
+    if contextual_tokens:
+        return contextual_tokens
+    return _extract_context_tokens_from_text(prompt)
+
+
+def _row_match_score(row: pd.Series, tokens: list[str]) -> int:
+    if not tokens:
+        return 0
+    row_text = " ".join(filter(None, (_cell_text(value) for value in row.values.tolist())))
+    if not row_text:
+        return 0
+    return sum(1 for token in tokens if token and token in row_text)
+
+
+def _filter_docx_dataframe_by_context(
+    dataframe: pd.DataFrame,
+    *,
+    prompt: str,
+    table_context: dict[str, Any] | None,
+    logger: Callable[[str], None] | None = None,
+) -> pd.DataFrame:
+    context_text = _cell_text(_table_context_value(table_context, "context_text", ""))
+    table_hint = _cell_text(_table_context_value(table_context, "title", ""))
+    context_tokens = _extract_context_tokens_from_text("\n".join([context_text, table_hint]))
+    prompt_tokens = _extract_context_tokens_from_text(prompt)
+
+    token_candidates: list[tuple[str, list[str]]] = []
+    if context_tokens:
+        token_candidates.append(("context", context_tokens))
+    if prompt_tokens and prompt_tokens != context_tokens:
+        token_candidates.append(("prompt", prompt_tokens))
+    if not token_candidates:
+        return dataframe
+
+    city_stopwords = {"城市", "行政区", "市区", "城区", "地区", "省份"}
+    city_column_candidates = [
+        column_name
+        for column_name in dataframe.columns.tolist()
+        if "城市" in _cell_text(column_name)
+    ]
+    known_city_values: set[str] = set()
+    for column_name in city_column_candidates[:3]:
+        for value in dataframe[column_name].head(5000).tolist():
+            city_value = _cell_text(value)
+            if city_value:
+                known_city_values.add(city_value)
+
+    def _normalize_city_tokens(raw_tokens: list[str]) -> list[str]:
+        normalized_tokens: list[str] = []
+        for raw_token in raw_tokens:
+            token_text = _cell_text(raw_token)
+            if not token_text:
+                continue
+            matched_city_values = [
+                city_name
+                for city_name in known_city_values
+                if city_name and city_name in token_text
+            ]
+            if matched_city_values:
+                for city_name in sorted(matched_city_values, key=len, reverse=True):
+                    if city_name not in normalized_tokens:
+                        normalized_tokens.append(city_name)
+                continue
+            if known_city_values:
+                # When we already know concrete city values from the source data,
+                # skip unmatched phrase-like tokens to avoid over-broad filtering.
+                continue
+            if token_text in city_stopwords:
+                continue
+            if token_text not in normalized_tokens:
+                normalized_tokens.append(token_text)
+        return normalized_tokens
+
+    for source_name, tokens in token_candidates:
+        city_tokens = [token for token in tokens if re.search(r"(省|市|区|县)$", token)]
+        city_tokens = _normalize_city_tokens(city_tokens)
+        if city_tokens:
+            specific_city_tokens = [token for token in city_tokens if token.endswith(("市", "区", "县"))]
+            if specific_city_tokens:
+                city_tokens = specific_city_tokens
+        if source_name == "context" and len(city_tokens) > 1:
+            city_tokens = [city_tokens[0]]
+
+        matched_indices: list[int] = []
+        match_scores: list[int] = []
+        for idx, (_, row) in enumerate(dataframe.iterrows()):
+            row_text = " ".join(filter(None, (_cell_text(value) for value in row.values.tolist())))
+            if not row_text:
+                continue
+            if city_tokens and not any(token in row_text for token in city_tokens):
+                continue
+            score = _row_match_score(row, tokens)
+            if city_tokens and score <= 0:
+                score = 1
+            if score > 0:
+                matched_indices.append(idx)
+                match_scores.append(score)
+
+        if not matched_indices:
+            log_event(
+                logger,
+                f"[context filter] source={source_name} produced zero row matches, "
+                f"trying next strategy (token_count={len(tokens)}, city_token_count={len(city_tokens)})",
+            )
+            continue
+
+        filtered = dataframe.iloc[matched_indices].copy()
+        score_max = max(match_scores) if match_scores else 0
+        score_min = min(match_scores) if match_scores else 0
+        log_event(
+            logger,
+            "[context filter] source="
+            + source_name
+            + ", tokens="
+            + json.dumps(tokens, ensure_ascii=False)
+            + f", city_tokens={json.dumps(city_tokens, ensure_ascii=False)}, "
+            + f"matched_rows={len(filtered)}, score_range={score_min}-{score_max}",
+        )
+        return filtered
+
+    log_event(
+        logger,
+        "[context filter] no rows matched contextual or prompt tokens; fallback to full source rows",
+    )
+    return dataframe
+
+
+def _docx_candidate_row_limit(table_context: dict[str, Any] | None) -> int:
+    available_row_slots = _safe_int(_table_context_value(table_context, "available_row_slots", 0), 0)
+    if available_row_slots <= 0:
+        return 2000
+    # Keep a generous buffer over writable slots while preventing huge row explosions.
+    return min(max(available_row_slots * 8, available_row_slots + 40), 1500)
+
+
 def _extract_rows_from_excel_for_docx_template(
     source_path: Path,
     headers: list[str],
@@ -711,6 +1129,12 @@ def _extract_rows_from_excel_for_docx_template(
 
     log_event(logger, f"[step1] loaded Excel source: {source_path.name}")
     dataframe = pd.read_excel(source_path, **read_kwargs)
+    dataframe = _filter_docx_dataframe_by_context(
+        dataframe,
+        prompt=prompt,
+        table_context=table_context,
+        logger=logger,
+    )
     matched_mapping, unresolved = _match_docx_headers_to_excel(headers, dataframe.columns)
     if unresolved:
         ai_prompt = prompt
@@ -806,6 +1230,14 @@ def _extract_rows_from_excel_for_docx_template(
         )
     if invalid_row_count:
         log_event(logger, f"[step2.1] filtered invalid Excel rows={invalid_row_count}")
+    row_limit = _docx_candidate_row_limit(table_context)
+    if len(rows) > row_limit:
+        log_event(
+            logger,
+            f"[step2.2] candidate rows capped from {len(rows)} to {row_limit} "
+            f"(available_row_slots={_safe_int(_table_context_value(table_context, 'available_row_slots', 0), 0)})",
+        )
+        rows = rows[:row_limit]
     log_event(logger, f"[step3] DOCX-oriented Excel transform complete, rows={len(rows)}")
     return rows
 
@@ -1051,6 +1483,7 @@ def extract_rows_from_word_source(
     if _rows_quality(merged_rows, headers) > _rows_quality(rows_values, headers):
         rows_values = merged_rows
         log_event(logger, f"[recall] merged rows improved to {len(rows_values)}")
+    rows_values = _normalize_word_rows_for_structured_metrics(rows_values, headers, doc_text=doc_text)
     log_event(logger, f"[step2] normalized Word rows={len(rows_values)}")
     log_event(logger, "[normalized rows]\n" + json.dumps({"rows": rows_values}, ensure_ascii=False, indent=2))
     return rows_values

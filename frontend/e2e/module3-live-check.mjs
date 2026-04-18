@@ -266,6 +266,21 @@ function sanitizeFilename(value = "") {
   return String(value || "").replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_");
 }
 
+function parseFilenameFromContentDisposition(value = "") {
+  const raw = String(value || "");
+  if (!raw) return "";
+  const utf8Match = raw.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(String(utf8Match[1]).trim());
+    } catch {
+      return String(utf8Match[1]).trim();
+    }
+  }
+  const simpleMatch = raw.match(/filename\s*=\s*"?([^\";]+)"?/i);
+  return simpleMatch?.[1] ? String(simpleMatch[1]).trim() : "";
+}
+
 function relativePath(targetPath) {
   return path.relative(projectRoot, targetPath).replace(/\\/g, "/");
 }
@@ -336,8 +351,7 @@ async function patchModule3FetchCredentials(context) {
           : input instanceof URL
             ? String(input)
             : String(input?.url || "");
-      const needsModule3Credentials =
-        /\/module3(\/|$|\?)/.test(url) || /:8001\/module3(\/|$|\?)/.test(url);
+      const needsModule3Credentials = /\/module3(\/|$|\?)/.test(url);
       if (!needsModule3Credentials) {
         return nativeFetch(input, init);
       }
@@ -374,15 +388,20 @@ async function waitForUploadResponse(page, matcher, trigger) {
       matcher.test(response.url()),
     { timeout: 90_000 },
   );
-  await trigger();
-  const response = await responsePromise;
-  const payload = await response.json().catch(() => ({}));
-  return {
-    ok: response.ok(),
-    status: response.status(),
-    url: response.url(),
-    payload,
-  };
+  try {
+    await trigger();
+    const response = await responsePromise;
+    const payload = await response.json().catch(() => ({}));
+    return {
+      ok: response.ok(),
+      status: response.status(),
+      url: response.url(),
+      payload,
+    };
+  } catch (error) {
+    responsePromise.catch(() => {});
+    throw error;
+  }
 }
 
 async function waitForRunCreate(page, trigger) {
@@ -392,15 +411,20 @@ async function waitForRunCreate(page, trigger) {
       /\/module3\/run$/.test(response.url()),
     { timeout: 90_000 },
   );
-  await trigger();
-  const response = await responsePromise;
-  const payload = await response.json().catch(() => ({}));
-  return {
-    ok: response.ok(),
-    status: response.status(),
-    url: response.url(),
-    payload,
-  };
+  try {
+    await trigger();
+    const response = await responsePromise;
+    const payload = await response.json().catch(() => ({}));
+    return {
+      ok: response.ok(),
+      status: response.status(),
+      url: response.url(),
+      payload,
+    };
+  } catch (error) {
+    responsePromise.catch(() => {});
+    throw error;
+  }
 }
 
 async function pollRunStatus(context, baseUrl, runId) {
@@ -895,9 +919,16 @@ async function runMobileFlow(browser, dataset, account) {
     await page.getByRole("textbox", { name: "用户要求" }).fill(dataset.requirements || defaultRequirements);
     const startButton = page.getByRole("button", { name: /开始填充|创建中/ }).first();
     await waitForEnabled(startButton, 20_000);
+    await startButton.scrollIntoViewIfNeeded().catch(() => {});
 
     const runCreate = await waitForRunCreate(page, async () => {
-      await startButton.click();
+      await startButton.click().catch(async () => {
+        await startButton.evaluate((button) => {
+          if (button instanceof HTMLElement) {
+            button.click();
+          }
+        });
+      });
     });
     summary.run_create = runCreate;
     await page.waitForTimeout(1500);
@@ -975,13 +1006,38 @@ async function runMobileFlow(browser, dataset, account) {
     await page.waitForTimeout(800);
     await openTaskCenterPanel();
 
-    const [download] = await Promise.all([
-      page.waitForEvent("download", { timeout: 60_000 }),
-      page.locator('button[aria-label="下载结果"]').first().click({ force: true }),
-    ]);
-    const suggestedFilename = sanitizeFilename(download.suggestedFilename() || `${runId}.xlsx`);
-    const savedPath = path.join(dirPath, suggestedFilename);
-    await download.saveAs(savedPath);
+    const runDownloadUrl = `${new URL(mobileBaseUrl).origin}/module3/run/${encodeURIComponent(runId)}/download`;
+    let savedPath = "";
+    let suggestedFilename = "";
+    try {
+      const [download] = await Promise.all([
+        page.waitForEvent("download", { timeout: 60_000 }),
+        page.locator('button[aria-label="下载结果"]').first().click({ force: true }),
+      ]);
+      suggestedFilename = sanitizeFilename(download.suggestedFilename() || `${runId}.xlsx`);
+      savedPath = path.join(dirPath, suggestedFilename);
+      await download.saveAs(savedPath);
+    } catch (downloadEventError) {
+      pushIssue(
+        summary.issues,
+        "mobile:download_event_fallback",
+        downloadEventError?.stack || downloadEventError?.message || downloadEventError,
+      );
+      page.locator('button[aria-label="下载结果"]').first().click({ force: true }).catch(() => {});
+      const response = await context.request.get(runDownloadUrl, { timeout: 90_000 });
+      if (!response.ok()) {
+        throw new Error(`mobile_download_http_failed:${response.status()}`);
+      }
+      const contentDisposition = response.headers()["content-disposition"] || "";
+      const fallbackName =
+        parseFilenameFromContentDisposition(contentDisposition) ||
+        String(runStatus?.final?.output_name || "").trim() ||
+        `${runId}.xlsx`;
+      suggestedFilename = sanitizeFilename(fallbackName);
+      savedPath = path.join(dirPath, suggestedFilename);
+      const bytes = await response.body();
+      await fs.writeFile(savedPath, bytes);
+    }
     summary.download = {
       suggested_filename: suggestedFilename,
       saved_path: relativePath(savedPath),

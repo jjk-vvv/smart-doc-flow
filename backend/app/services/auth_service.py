@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from fastapi import HTTPException, Request, Response, status
 from jwt import InvalidTokenError
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
     from app.core.auth_deps import AuthenticatedUser
 
 GENERIC_SEND_CODE_MESSAGE = "If this account is eligible, a verification code has been sent."
+_RepositoryResultT = TypeVar("_RepositoryResultT")
 
 
 @dataclass
@@ -109,9 +112,6 @@ class AuthService:
             "usersFileExists": storage_path.exists(),
             "usersFileMode": storage_state.mode,
             "usersPreferredFile": str(storage_state.preferred_path),
-            "legacyUsersFile": str(storage_state.legacy_path),
-            "legacyUsersFileExists": storage_state.legacy_exists,
-            "usersFileMigratedFromLegacy": storage_state.migrated_from_legacy,
             "usersCount": users_count,
             "secretConfigured": bool(str(self.settings.secret_key or "").strip()),
             "notifierMode": notifier_mode,
@@ -161,7 +161,7 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
 
         new_user = {
-            "id": str(int(time.time() * 1000)),
+            "id": uuid.uuid4().hex,
             "name": name,
             "email": email,
             "phone": phone,
@@ -200,7 +200,10 @@ class AuthService:
                 detail=f"Too many login attempts. Retry after {retry_after_sec}s.",
             )
 
-        user = await self.repository.find_user_by_account(account)
+        user = await self._run_repository_operation(
+            "login.find_user_by_account",
+            lambda: self.repository.find_user_by_account(account),
+        )
         if user is None:
             with self._lock:
                 self._record_login_failure(request, account)
@@ -230,7 +233,10 @@ class AuthService:
             is_match = current_password == password
             if is_match:
                 upgraded_password_hash = hash_password(password, self.settings.password_salt_rounds)
-                await self.repository.update_user_password(user["id"], upgraded_password_hash)
+                await self._run_repository_operation(
+                    "login.update_user_password",
+                    lambda: self.repository.update_user_password(user["id"], upgraded_password_hash),
+                )
                 user["password"] = upgraded_password_hash
 
         if not is_match:
@@ -246,8 +252,17 @@ class AuthService:
 
         with self._lock:
             self._clear_login_failures(request, account)
-        await self.repository.touch_last_login(user["id"])
-        await self._issue_auth_cookie(response, user, request)
+        await self._run_repository_operation(
+            "login.touch_last_login",
+            lambda: self.repository.touch_last_login(user["id"]),
+        )
+        try:
+            await self._issue_auth_cookie(response, user, request)
+        except Exception as exc:
+            translated_error = self._translate_auth_backend_exception(exc)
+            if translated_error is not None:
+                raise translated_error from exc
+            raise
         await self._append_audit_log(
             request,
             event_type="login_success",
@@ -373,8 +388,13 @@ class AuthService:
         session_id = normalize_str(decoded.get("sid"))
 
         if self.repository.database_enabled:
+            if self.settings.require_session_id_in_db_mode and not session_id:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session id is required")
             if session_id:
-                session = await self.repository.get_session(session_id)
+                session = await self._run_repository_operation(
+                    "authenticate_request.get_session",
+                    lambda: self.repository.get_session(session_id),
+                )
                 if session is None:
                     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid session")
                 revoked_at = session.get("revoked_at")
@@ -383,9 +403,15 @@ class AuthService:
                     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session revoked")
                 if isinstance(expires_at, datetime) and expires_at <= datetime.now(UTC):
                     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session expired")
-                await self.repository.touch_session(session_id)
+                await self._run_repository_operation(
+                    "authenticate_request.touch_session",
+                    lambda: self.repository.touch_session(session_id),
+                )
 
-            user = await self.repository.get_user_by_id(normalize_str(decoded.get("id")))
+            user = await self._run_repository_operation(
+                "authenticate_request.get_user_by_id",
+                lambda: self.repository.get_user_by_id(normalize_str(decoded.get("id"))),
+            )
             if user is None:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
             if normalize_str(user.get("status")) not in {"", "active"}:
@@ -853,6 +879,48 @@ class AuthService:
             return decode_auth_token(token, self.settings)
         except InvalidTokenError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token") from exc
+
+    async def _run_repository_operation(
+        self,
+        operation_name: str,
+        operation: Callable[[], Awaitable[_RepositoryResultT]],
+    ) -> _RepositoryResultT:
+        try:
+            return await operation()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            translated_error = self._translate_auth_backend_exception(exc)
+            if translated_error is not None:
+                raise translated_error from exc
+            raise
+
+    def _translate_auth_backend_exception(self, exc: Exception) -> HTTPException | None:
+        if not self.repository.database_enabled:
+            return None
+
+        is_connectivity_error = isinstance(exc, (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError))
+        if not is_connectivity_error:
+            message = str(exc or "").strip().lower()
+            connectivity_markers = (
+                "auth database",
+                "database connection",
+                "connection refused",
+                "connection timeout",
+                "no valid auth database connection candidates",
+                "pool is not available",
+                "create_pool",
+                "asyncpg",
+            )
+            is_connectivity_error = any(marker in message for marker in connectivity_markers)
+        if not is_connectivity_error:
+            return None
+
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth database is temporarily unavailable. Please retry shortly.",
+            headers={"Retry-After": "3"},
+        )
 
     async def _append_audit_log(
         self,

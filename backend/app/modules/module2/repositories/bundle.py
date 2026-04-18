@@ -12,44 +12,30 @@ from .runtime_state_repository import RuntimeStateRepository
 
 @dataclass(frozen=True)
 class Module2RepositoryBundle:
-    legacy_storage: Any
+    storage: Any
     runtime_state_repository: RuntimeStateRepository
     extraction_cache_repository: ExtractionCacheRepository
     module4_sync_outbox_repository: Module4SyncOutboxRepository
     assistant_session_repository: AssistantSessionRepository
 
     @property
-    def storage(self) -> Any:
+    def legacy_storage(self) -> Any:
         warnings.warn(
-            "Module2RepositoryBundle.storage is deprecated; "
-            "use Module2RepositoryBundle.legacy_storage instead.",
+            "Module2RepositoryBundle.legacy_storage is deprecated; use Module2RepositoryBundle.storage instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.legacy_storage
+        return self.storage
 
 
-def build_module2_repository_bundle(legacy_storage: Any | None = None, **legacy_kwargs: Any) -> Module2RepositoryBundle:
-    if "storage" in legacy_kwargs:
-        if legacy_storage is not None:
-            raise TypeError("Pass only one of legacy_storage=... or storage=...")
-        legacy_storage = legacy_kwargs.pop("storage")
-        warnings.warn(
-            "build_module2_repository_bundle(storage=...) is deprecated; "
-            "pass legacy_storage=... instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    if legacy_kwargs:
-        unexpected = ", ".join(sorted(legacy_kwargs))
-        raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-    if legacy_storage is None:
-        raise ValueError("legacy_storage is required")
+def build_module2_repository_bundle(storage: Any | None = None) -> Module2RepositoryBundle:
+    if storage is None:
+        raise ValueError("storage is required")
 
     return Module2RepositoryBundle(
-        legacy_storage=legacy_storage,
-        runtime_state_repository=RuntimeStateRepository(legacy_storage=legacy_storage),
-        extraction_cache_repository=ExtractionCacheRepository(legacy_storage=legacy_storage),
-        module4_sync_outbox_repository=Module4SyncOutboxRepository(legacy_storage=legacy_storage),
-        assistant_session_repository=AssistantSessionRepository(legacy_storage=legacy_storage),
+        storage=storage,
+        runtime_state_repository=RuntimeStateRepository(storage=storage),
+        extraction_cache_repository=ExtractionCacheRepository(storage=storage),
+        module4_sync_outbox_repository=Module4SyncOutboxRepository(storage=storage),
+        assistant_session_repository=AssistantSessionRepository(storage=storage),
     )

@@ -66,6 +66,8 @@ import {
     type PersistedWorkbenchFile,
     type WorkbenchSessionSnapshot,
 } from '../../shared/state/workbenchSession';
+import { consumeModule2DraftFromHomeWorkbench } from '../../shared/state/homeWorkbench';
+import { getCurrentUser } from '../../shared/api/auth';
 import { LuckysheetPreview, clearLuckysheetPreviewCache } from '../../components/LuckysheetPreview';
 import { PdfJsViewer, type PdfViewMode } from '../../components/PdfJsViewer';
 import { AssistantActionPreviewCard } from './assistant/AssistantActionPreviewCard';
@@ -1935,6 +1937,60 @@ const parseFetchErrorMessage = (error: unknown): string => {
     return msg;
 };
 
+type ExtractAuthHeaders = Record<string, string>;
+
+let extractAuthHeadersCache: ExtractAuthHeaders | null = null;
+let extractAuthHeadersPromise: Promise<ExtractAuthHeaders> | null = null;
+
+const resolveExtractAuthHeaders = async (): Promise<ExtractAuthHeaders> => {
+    if (extractAuthHeadersCache) {
+        return extractAuthHeadersCache;
+    }
+    if (extractAuthHeadersPromise) {
+        return extractAuthHeadersPromise;
+    }
+
+    extractAuthHeadersPromise = (async () => {
+        try {
+            const payload = await getCurrentUser();
+            const user = payload?.user;
+            const userId = String(user?.id || '').trim();
+            const tenantId = String(user?.tenantId || userId).trim();
+            const headers: ExtractAuthHeaders = {};
+            if (userId) {
+                headers['X-Authenticated-User-Id'] = userId;
+            }
+            if (tenantId) {
+                headers['X-Authenticated-Tenant-Id'] = tenantId;
+                headers['X-Tenant-Id'] = tenantId;
+            }
+            extractAuthHeadersCache = headers;
+            return headers;
+        } catch {
+            extractAuthHeadersCache = {};
+            return {};
+        } finally {
+            extractAuthHeadersPromise = null;
+        }
+    })();
+
+    return extractAuthHeadersPromise;
+};
+
+const withExtractAuthHeaders = async (init?: RequestInit): Promise<RequestInit> => {
+    const mergedHeaders = new Headers(init?.headers || undefined);
+    const authHeaders = await resolveExtractAuthHeaders();
+    Object.entries(authHeaders).forEach(([key, value]) => {
+        if (value && !mergedHeaders.has(key)) {
+            mergedHeaders.set(key, value);
+        }
+    });
+    return {
+        ...(init || {}),
+        headers: mergedHeaders,
+    };
+};
+
 const isMissingExtractionJobMessage = (messageRaw: unknown): boolean => {
     const message = String(messageRaw || '').trim().toLowerCase();
     if (!message) return false;
@@ -1977,6 +2033,7 @@ const fetchExtractWithFallback = async (
     preferredBase = '',
     options?: ExtractFetchFallbackOptions,
 ): Promise<ExtractFetchResult> => {
+    const initWithHeaders = await withExtractAuthHeaders(init);
     const tried: string[] = [];
     let lastError = '';
     const retryNotFound = options?.retryNotFound !== false;
@@ -1996,15 +2053,21 @@ const fetchExtractWithFallback = async (
         const url = joinExtractUrl(base, path);
         try {
             const response = await fetch(url, {
-                credentials: init?.credentials ?? 'include',
-                ...init,
+                credentials: initWithHeaders.credentials ?? 'include',
+                ...initWithHeaders,
             });
             if (response.ok) {
                 return { response, usedBase: base };
             }
 
             const msg = await readResponseErrorMessage(response);
-            const retryable = response.status >= 500 || (retryNotFound && response.status === 404);
+            const retryableStatus =
+                response.status >= 500 ||
+                response.status === 401 ||
+                response.status === 403 ||
+                response.status === 410 ||
+                (retryNotFound && response.status === 404);
+            const retryable = retryableStatus;
             if (!retryable) {
                 throw new Error(msg);
             }
@@ -2022,11 +2085,12 @@ const fetchExtractAtBase = async (
     init?: RequestInit,
     base = '',
 ): Promise<ExtractFetchResult> => {
+    const initWithHeaders = await withExtractAuthHeaders(init);
     const normalizedBase = normalizeExtractBase(base);
     const url = joinExtractUrl(normalizedBase, path);
     const response = await fetch(url, {
-        credentials: init?.credentials ?? 'include',
-        ...init,
+        credentials: initWithHeaders.credentials ?? 'include',
+        ...initWithHeaders,
     });
     if (!response.ok) {
         throw new Error(await readResponseErrorMessage(response));
@@ -2853,12 +2917,30 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         return byIdentity || byName || null;
     }, [activeDoc?.file_name, activeSourceFile, officePreviewMap]);
     const activeDocPreviewPdfUrl = useMemo(() => {
-        const val = String(
-            activeDoc?.diagnostics?.office_pdf_preview_url
-            || activeDoc?.diagnostics?.pdf_preview_url
+        const diagnostics = toRecord(activeDoc?.diagnostics);
+        const byFileResolved = resolveByFileArtifactUrl(
+            {
+                artifact_by_file_url: String(
+                    diagnostics.office_pdf_preview_by_file_url
+                    || diagnostics.pdf_preview_by_file_url
+                    || ''
+                ).trim(),
+                artifact_file_id: String(
+                    diagnostics.office_pdf_preview_file_id
+                    || diagnostics.pdf_preview_file_id
+                    || ''
+                ).trim(),
+            },
+            '',
+        );
+        if (byFileResolved) return byFileResolved;
+        const directRaw = String(
+            diagnostics.office_pdf_preview_url
+            || diagnostics.pdf_preview_url
             || ''
         ).trim();
-        return val || '';
+        if (!directRaw) return '';
+        return normalizeExtractArtifactUrl(directRaw, '') || '';
     }, [activeDoc?.diagnostics]);
     const activeConvertedPdfUrl = useMemo(() => {
         const fromUpload = String(activeOfficePreview?.pdfUrl || '').trim();
@@ -4164,6 +4246,16 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             void ensureOfficePreview(file);
         });
     };
+
+    useEffect(() => {
+        void consumeModule2DraftFromHomeWorkbench().then((handoff) => {
+            if (!handoff) return;
+            if (handoff.itemIds && handoff.itemIds.length > 0) {
+              // process HomeWorkbench items ...
+            }
+            setSmartUnitTab('results');
+        });
+    }, [mergeSelectedFiles]);
 
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
@@ -5848,7 +5940,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                     <button
                                         type="button"
                                         onClick={() => fileInputRef.current?.click()}
-                                        className="group relative flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-all hover:bg-slate-100 hover:text-slate-700 active:scale-95 dark:text-slate-400 dark:hover:bg-white/[0.1] dark:hover:text-slate-200"
+                                        className="group relative flex h-[36px] w-[36px] items-center justify-center rounded-full text-slate-500 transition-all hover:bg-slate-100 hover:text-slate-700 active:scale-95 dark:text-slate-400 dark:hover:bg-white/[0.1] dark:hover:text-slate-200"
                                         title="上传文档进行分析"
                                         aria-label="上传文档进行分析"
                                     >
@@ -5862,7 +5954,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                         onClick={() => void runAssistantInstruction()}
                                         disabled={!assistantQueryLoading && !assistantInput.trim()}
                                         className={cn(
-                                            'group relative flex h-8 w-8 items-center justify-center rounded-full transition-all duration-200',
+                                            'group relative flex h-[36px] w-[36px] items-center justify-center rounded-full transition-all duration-200',
                                             !assistantQueryLoading && !assistantInput.trim()
                                                 ? 'cursor-not-allowed bg-[#F3F4F6] text-[#A1A1AA] dark:bg-white/[0.05] dark:text-slate-600'
                                                 : assistantQueryLoading
@@ -5872,7 +5964,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                         title={assistantQueryLoading ? "停止本次回答" : "发送"}
                                         aria-label={assistantQueryLoading ? "停止本次回答" : "发送"}
                                     >
-                                        {assistantQueryLoading ? <X size={15} /> : <ArrowUp size={16} strokeWidth={2.5} className="transition-transform group-hover:-translate-y-0.5" />}
+                                        {assistantQueryLoading ? <X size={16} /> : <ArrowUp size={18} strokeWidth={2.5} className="transition-transform group-hover:-translate-y-0.5" />}
                                     </button>
                                 </div>
                             </div>
@@ -6712,7 +6804,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                             ) : (
                                                 <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 bg-slate-50/70 dark:bg-white/[0.05]">
                                                     <div className="w-14 h-14 rounded-2xl bg-white dark:bg-white/[0.05] border border-slate-100/80 dark:border-white/[0.05] flex items-center justify-center mb-4 text-slate-500">
-                                                        <FileText size={26} />
+                                                        <img src={iconDocumentQueue} alt="Document" className="h-7 w-7 object-contain opacity-60 drop-shadow-sm" />
                                                     </div>
                                                     <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-2">{activeDisplayName}</h4>
                                                     <p className="text-[11px] tabular-nums text-slate-500 dark:text-slate-400 max-w-[320px] leading-relaxed">

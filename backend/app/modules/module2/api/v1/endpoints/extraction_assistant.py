@@ -10,7 +10,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct file-loading tests can 
 
 
 def build_router(*, assistant1_runtime) -> APIRouter:
-    router = APIRouter(tags=["extraction"])
+    router = APIRouter(prefix="/extract", tags=["extraction"])
 
     def _resolve_expected_tenant_id(request: Request) -> str:
         headers = request.headers if request is not None else {}
@@ -21,7 +21,7 @@ def build_router(*, assistant1_runtime) -> APIRouter:
             or ""
         ).strip()
 
-    @router.get("/extract/assistant1/sessions/{session_id}")
+    @router.get("/assistant1/sessions/{session_id}")
     async def extract_assistant1_session(
         session_id: str,
         request: Request,
@@ -60,7 +60,7 @@ def build_router(*, assistant1_runtime) -> APIRouter:
         }
         return JSONResponse(payload)
 
-    @router.post("/extract/assistant1/chat/stream")
+    @router.post("/assistant1/chat/stream")
     async def extract_assistant1_chat_stream(payload: Assistant1ChatStreamRequest) -> StreamingResponse:
         history = []
         if isinstance(payload, dict):

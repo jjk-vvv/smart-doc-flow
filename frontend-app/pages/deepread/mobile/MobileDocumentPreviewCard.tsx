@@ -30,9 +30,9 @@ import {
   formatPreviewMetric,
   getFileExtension,
   pickOfficePreviewByFileName,
+  pickPersistedWorkbenchFile,
   pickPersistedWorkbenchFileFromDiagnostics,
   pickPersistedWorkbenchFileFromExtractionJob,
-  pickPersistedWorkbenchFile,
   restoreWorkbenchFile,
   toRecord,
 } from './documentPreviewRuntime';
@@ -59,6 +59,23 @@ const resolvePdfPreviewUrl = (
     ? pickOfficePreviewByFileName(session?.officePreviewMap || {}, fileName)
     : null;
   const diagnostics = toRecord(document?.diagnostics);
+  const byFileResolved = resolveExtractArtifactUrlFromTraceHit(
+    {
+      artifact_by_file_url: String(
+        diagnostics.office_pdf_preview_by_file_url
+        || diagnostics.pdf_preview_by_file_url
+        || '',
+      ).trim(),
+      artifact_file_id: String(
+        diagnostics.office_pdf_preview_file_id
+        || diagnostics.pdf_preview_file_id
+        || '',
+      ).trim(),
+    },
+    preferredBase,
+  );
+  if (byFileResolved) return byFileResolved;
+
   const direct = String(
     bySession?.pdfUrl
     || diagnostics.office_pdf_preview_url
@@ -95,8 +112,7 @@ const resolveMarkdownArtifactUrl = (
     || diagnostics.markdown_artifact_url
     || '',
   ).trim();
-  if (direct) return toAbsoluteExtractUrl(direct, preferredBase);
-  return '';
+  return direct ? toAbsoluteExtractUrl(direct, preferredBase) : '';
 };
 
 const resolveImageArtifactUrl = (
@@ -236,6 +252,7 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
     };
   }, [
     activeSourceFile,
+    preferredBase,
     restoreCandidateFile?.artifactByFileUrl,
     restoreCandidateFile?.artifactFileId,
     restoreCandidateFile?.artifactPath,
@@ -243,7 +260,6 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
     restoreCandidateFile?.key,
     restoreCandidateFile?.lastModified,
     restoreCandidateFile?.name,
-    preferredBase,
   ]);
 
   useEffect(() => {
@@ -260,26 +276,26 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
     () => getFileExtension(sourceFile?.name || activeDoc?.file_name || ''),
     [activeDoc?.file_name, sourceFile?.name],
   );
+  const isOfficeDocument = fileExtension === 'doc' || fileExtension === 'docx';
+  const isPdfDocument = fileExtension === 'pdf';
 
   const previewKind = useMemo<PreviewKind>(() => {
     if (!activeDoc) return 'unsupported';
-    if (fileExtension === 'pdf' || fileExtension === 'doc' || fileExtension === 'docx') return 'pdf';
+    if (isPdfDocument || isOfficeDocument) return 'pdf';
     if (SPREADSHEET_EXTENSIONS.has(fileExtension)) return 'spreadsheet';
     if (TEXT_EXTENSIONS.has(fileExtension)) return 'text';
     if (IMAGE_EXTENSIONS.has(fileExtension)) return 'image';
     return 'unsupported';
-  }, [activeDoc, fileExtension]);
+  }, [activeDoc, fileExtension, isOfficeDocument, isPdfDocument]);
 
   const pdfPreviewUrl = useMemo(
     () => resolvePdfPreviewUrl(activeDoc, preferredBase, workbenchSession),
     [activeDoc, preferredBase, workbenchSession],
   );
-
   const markdownArtifactUrl = useMemo(
     () => resolveMarkdownArtifactUrl(activeDoc, preferredBase),
     [activeDoc, preferredBase],
   );
-
   const imageArtifactUrl = useMemo(
     () => resolveImageArtifactUrl(activeDoc, preferredBase),
     [activeDoc, preferredBase],
@@ -287,10 +303,10 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
 
   const pdfRenderUrl = useMemo(() => {
     if (previewKind !== 'pdf') return '';
-    if ((fileExtension === 'doc' || fileExtension === 'docx') && pdfPreviewUrl) return pdfPreviewUrl;
-    if (fileExtension === 'pdf' && sourceBlobUrl) return sourceBlobUrl;
+    if (isOfficeDocument) return pdfPreviewUrl;
+    if (isPdfDocument && sourceBlobUrl) return sourceBlobUrl;
     return pdfPreviewUrl || sourceBlobUrl;
-  }, [fileExtension, pdfPreviewUrl, previewKind, sourceBlobUrl]);
+  }, [isOfficeDocument, isPdfDocument, pdfPreviewUrl, previewKind, sourceBlobUrl]);
 
   const imageRenderUrl = useMemo(() => {
     if (previewKind !== 'image') return '';
@@ -393,15 +409,59 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
     setPdfScrollRequest(createPdfScrollRequest(safePage));
   };
 
+  const previewCanvasTitle = useMemo(() => {
+    if (previewKind === 'pdf') return isOfficeDocument ? 'PDF 预览画布' : 'PDF 原文件画布';
+    if (previewKind === 'text') return '文本画布';
+    if (previewKind === 'spreadsheet') return '表格画布';
+    if (previewKind === 'image') return '图片画布';
+    return '预览画布';
+  }, [isOfficeDocument, previewKind]);
+
   const previewStatusLabel = useMemo(() => {
-    if (sourceLoading) return '正在恢复当前文件的源文件画布…';
-    if (sourceFile) return '当前直接渲染上传源文件画布';
-    if (previewKind === 'pdf' && pdfPreviewUrl) return '当前渲染解析阶段生成的 PDF 预览产物';
-    if (previewKind === 'text' && markdownArtifactUrl) return '当前渲染解析阶段生成的 Markdown 文本产物';
-    if (previewKind === 'image' && imageArtifactUrl) return '当前渲染解析阶段生成的图片产物';
+    if (sourceLoading) return '正在恢复当前文件的源文件与预览资源…';
     if (sourceError) return sourceError;
-    return '当前暂未恢复到可直接渲染的源文件，已自动使用可用产物兜底';
-  }, [imageArtifactUrl, markdownArtifactUrl, pdfPreviewUrl, previewKind, sourceError, sourceFile, sourceLoading]);
+    if (isOfficeDocument && pdfPreviewUrl) return '当前展示解析阶段生成的 PDF 预览产物';
+    if (isOfficeDocument && sourceFile) return '已恢复 Office 源文件，正在等待生成可渲染的 PDF 预览';
+    if (isOfficeDocument) return '当前 Office 文件的 PDF 预览产物尚未就绪';
+    if (isPdfDocument && sourceFile) return '当前直接渲染上传或恢复的 PDF 源文件';
+    if (previewKind === 'text' && markdownArtifactUrl) return '当前展示解析阶段生成的 Markdown 文本产物';
+    if (previewKind === 'text' && sourceFile) return '当前直接渲染上传或恢复的文本源文件';
+    if (previewKind === 'image' && imageArtifactUrl) return '当前展示解析阶段生成的图片产物';
+    if (previewKind === 'image' && sourceFile) return '当前直接渲染上传或恢复的图片源文件';
+    if (previewKind === 'spreadsheet' && sourceFile) return '当前直接渲染上传或恢复的表格源文件';
+    if (sourceFile) return '当前直接渲染上传或恢复的源文件';
+    return '当前还没有可直接渲染的预览资源，系统会自动回退到可用产物';
+  }, [
+    imageArtifactUrl,
+    isOfficeDocument,
+    isPdfDocument,
+    markdownArtifactUrl,
+    pdfPreviewUrl,
+    previewKind,
+    sourceError,
+    sourceFile,
+    sourceLoading,
+  ]);
+
+  const fallbackTitle = useMemo(() => {
+    if (previewKind === 'unsupported') return '当前文件暂不支持直接预览';
+    if (isOfficeDocument) return '当前 Office 预览尚未就绪';
+    if (previewKind === 'spreadsheet') return '当前还未恢复到完整表格画布';
+    return '当前预览产物尚未就绪';
+  }, [isOfficeDocument, previewKind]);
+
+  const fallbackDescription = useMemo(() => {
+    if (sourceError) return sourceError;
+    if (isOfficeDocument) {
+      return sourceFile
+        ? '已恢复上传的 Office 源文件，但手机端画布只能渲染解析阶段生成的 PDF 预览。请先开始解析，完成后再回到这里查看。'
+        : '当前还没有找到 Office 文件对应的 PDF 预览产物。解析完成后，这里会自动切换到可渲染的 PDF 画布。';
+    }
+    if (previewKind === 'spreadsheet') {
+      return '当前还没有恢复到可直接渲染的表格源文件。源文件可用后，这里会直接展示完整工作表。';
+    }
+    return '当前还没有可直接渲染的预览资源。系统会优先使用源文件，其次回退到解析阶段生成的可用产物。';
+  }, [isOfficeDocument, previewKind, sourceError, sourceFile]);
 
   if (!activeDoc) {
     return (
@@ -413,9 +473,9 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
             <MonitorPlay size={22} />
           </div>
-          <p className="text-[15px] font-semibold text-slate-700 dark:text-slate-200">请先选择一份已解析文档</p>
+          <p className="text-[15px] font-semibold text-slate-700 dark:text-slate-200">请先选择一份已解析文档。</p>
           <p className="mt-1 text-[13px] leading-6 text-slate-400 dark:text-slate-500">
-            后续这个区域会直接承接文件画布，不再依赖旧工作区的大预览面板。
+            这里会直接承接当前文档的移动端预览，不再依赖旧的大预览面板。
           </p>
         </div>
       </section>
@@ -423,142 +483,86 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
   }
 
   return (
-    <section className="mb-6">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-[17px] font-bold text-slate-800 dark:text-slate-100">文件预览</h3>
-          <p className="mt-1 truncate text-[12px] text-slate-500 dark:text-slate-400">
-            {activeDoc.file_name}
-          </p>
-        </div>
-        {openExternalUrl && (
-          <a
-            href={openExternalUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm ring-1 ring-slate-200/70 transition hover:text-slate-900 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700/70 dark:hover:text-white"
-            title="在新窗口打开当前预览"
-            aria-label="在新窗口打开当前预览"
-          >
-            <ExternalLink size={16} />
-          </a>
-        )}
-      </div>
-
-      <div className="overflow-hidden rounded-[28px] bg-white shadow-[0_10px_36px_rgba(15,23,42,0.06)] ring-1 ring-slate-200/60 dark:bg-slate-800/60 dark:ring-slate-700/60 dark:shadow-[0_10px_36px_rgba(0,0,0,0.22)]">
-        <div className="border-b border-slate-100/80 px-4 py-3.5 dark:border-slate-700/60">
-          <div className="flex flex-col gap-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">
-                  {previewKind === 'pdf'
-                    ? '原文件画布'
-                    : previewKind === 'text'
-                      ? '文本画布'
-                      : previewKind === 'spreadsheet'
-                        ? '表格画布'
-                        : previewKind === 'image'
-                          ? '图片画布'
-                          : '预览画布'}
-                </p>
-                <p className="mt-1 text-[12px] leading-5 text-slate-500 dark:text-slate-400">
-                  {previewStatusLabel}
-                </p>
+    <section className="flex flex-1 flex-col">
+      {/* 隐藏冗余的“文件预览”大标题和文件名，因为最外层的 Modal Header 已经展示过了 */}
+      <div className="flex flex-1 flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_24px_rgba(15,23,42,0.04)] ring-1 ring-slate-200/50 dark:bg-slate-800/60 dark:ring-slate-700/60 dark:shadow-none">
+        <div className="border-b border-slate-100/80 px-3 py-2.5 dark:border-slate-700/60">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[13px] font-semibold text-slate-800 dark:text-slate-100">{activeDoc?.file_name || previewCanvasTitle}</p>
               </div>
 
               {previewKind === 'pdf' && pdfRenderUrl && (
-                <div className="flex shrink-0 items-center gap-1 rounded-full bg-slate-100/80 px-2 py-1 dark:bg-slate-900/60">
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex items-center gap-0.5 rounded-full bg-slate-100/80 px-1.5 py-1 dark:bg-slate-900/60">
+                    <button
+                      type="button"
+                      onClick={() => jumpToPdfPage(currentPdfPage - 1)}
+                      disabled={currentPdfPage <= 1}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full text-slate-500 transition enabled:hover:bg-white enabled:hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300 dark:text-slate-400 dark:enabled:hover:bg-white/10 dark:enabled:hover:text-white dark:disabled:text-slate-600"
+                      title="上一页"
+                    >
+                      <ChevronLeft size={13} />
+                    </button>
+                    <span className="min-w-[36px] text-center text-[10px] font-semibold text-slate-600 dark:text-slate-300">
+                      {`${currentPdfPage} / ${Math.max(pdfPageCount, 1)}`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => jumpToPdfPage(currentPdfPage + 1)}
+                      disabled={currentPdfPage >= Math.max(pdfPageCount, 1)}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full text-slate-500 transition enabled:hover:bg-white enabled:hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300 dark:text-slate-400 dark:enabled:hover:bg-white/10 dark:enabled:hover:text-white dark:disabled:text-slate-600"
+                      title="下一页"
+                    >
+                      <ChevronRight size={13} />
+                    </button>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => setScale((prev) => Math.max(prev - 0.1, 0.6))}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-600 transition hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
-                    title="缩小"
+                    onClick={() => {
+                      setPdfViewMode((prev) =>
+                        prev === 'fit-width' ? 'fit-page' : prev === 'fit-page' ? 'actual' : 'fit-width',
+                      );
+                      setScale(1);
+                    }}
+                    className="rounded-full bg-slate-100/80 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
                   >
-                    <ZoomOut size={15} />
-                  </button>
-                  <span className="w-10 text-center text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-                    {`${Math.round(scale * 100)}%`}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setScale((prev) => Math.min(prev + 0.1, 2.4))}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-600 transition hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
-                    title="放大"
-                  >
-                    <ZoomIn size={15} />
+                    {pdfViewMode === 'fit-width'
+                      ? '适宽'
+                      : pdfViewMode === 'fit-page'
+                        ? '整页'
+                        : '原始'}
                   </button>
                 </div>
               )}
             </div>
 
             {previewKind === 'spreadsheet' && workbookMetrics.length > 0 && (
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2 mt-1">
                 {workbookMetrics.map((item) => (
                   <div
                     key={item.label}
-                    className="rounded-[16px] bg-slate-50/90 px-3 py-2.5 ring-1 ring-slate-100 dark:bg-slate-900/55 dark:ring-slate-700/60"
+                    className="rounded-[12px] bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-100 dark:bg-slate-900/55 dark:ring-slate-700/60"
                   >
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{item.label}</p>
-                    <p className="mt-1 text-[16px] font-semibold text-slate-800 dark:text-slate-100">{item.value}</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">{item.label}</p>
+                    <p className="mt-0.5 text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.value}</p>
                   </div>
                 ))}
               </div>
             )}
-
-            {previewKind === 'pdf' && pdfRenderUrl && (
-              <div className="flex items-center justify-between gap-3 rounded-[16px] bg-slate-50/90 px-3 py-2 ring-1 ring-slate-100 dark:bg-slate-900/55 dark:ring-slate-700/60">
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => jumpToPdfPage(currentPdfPage - 1)}
-                    disabled={currentPdfPage <= 1}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-600 transition enabled:hover:bg-white enabled:hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300 dark:text-slate-300 dark:enabled:hover:bg-white/10 dark:enabled:hover:text-white dark:disabled:text-slate-600"
-                    title="上一页"
-                  >
-                    <ChevronLeft size={16} />
-                  </button>
-                  <span className="min-w-[62px] text-center text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-                    {`${currentPdfPage} / ${Math.max(pdfPageCount, 1)}`}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => jumpToPdfPage(currentPdfPage + 1)}
-                    disabled={currentPdfPage >= Math.max(pdfPageCount, 1)}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-600 transition enabled:hover:bg-white enabled:hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300 dark:text-slate-300 dark:enabled:hover:bg-white/10 dark:enabled:hover:text-white dark:disabled:text-slate-600"
-                    title="下一页"
-                  >
-                    <ChevronRight size={16} />
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPdfViewMode((prev) =>
-                      prev === 'fit-width' ? 'fit-page' : prev === 'fit-page' ? 'actual' : 'fit-width',
-                    );
-                    setScale(1);
-                  }}
-                  className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:text-slate-900 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 dark:hover:text-white"
-                >
-                  {pdfViewMode === 'fit-width'
-                    ? '铺满宽度'
-                    : pdfViewMode === 'fit-page'
-                      ? '整页适配'
-                      : '原始尺寸'}
-                </button>
-              </div>
-            )}
           </div>
         </div>
-
-        <div className="relative h-[68vh] min-h-[420px] overflow-hidden bg-[linear-gradient(180deg,rgba(247,250,255,0.96),rgba(235,243,255,0.9))] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(2,6,23,0.94))]">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle,_rgba(96,165,250,0.22)_1px,_transparent_1px)] bg-[length:24px_24px] opacity-60 dark:opacity-20" />
+        <div className="relative flex flex-1 min-h-[460px] overflow-hidden bg-[#F5F9FA] dark:bg-slate-900/50">
+          {/* 全息光斑背景装饰 */}
+          <div className="pointer-events-none absolute -left-12 top-1/4 h-[200px] w-[200px] rounded-full bg-cyan-400/20 blur-[60px] dark:bg-cyan-500/15" />
+          <div className="pointer-events-none absolute -right-12 bottom-1/4 h-[200px] w-[200px] rounded-full bg-blue-400/20 blur-[60px] dark:bg-blue-500/15" />
 
           {(sourceLoading || (previewKind === 'text' && textLoading)) && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/55 backdrop-blur-sm dark:bg-slate-950/55">
               <div className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-[13px] text-slate-700 shadow-lg dark:bg-slate-800 dark:text-slate-200">
                 <Loader2 size={15} className="animate-spin" />
-                {sourceLoading ? '正在恢复源文件画布…' : '正在加载文本预览…'}
+                {sourceLoading ? '正在恢复源文件预览…' : '正在加载文本预览…'}
               </div>
             </div>
           )}
@@ -604,37 +608,39 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
               />
             </div>
           ) : previewKind === 'spreadsheet' ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">
-                <FileSpreadsheet size={28} />
+            <div className="absolute inset-0 flex flex-col items-center justify-center p-6">
+              <div className="flex w-full max-w-[280px] flex-col items-center justify-center rounded-[24px] bg-white p-8 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 dark:bg-slate-800/80 dark:shadow-[0_8px_30px_rgba(0,0,0,0.1)] dark:ring-white/[0.05]">
+                <div className="mb-5 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] bg-[#E8F8F5] text-emerald-500 shadow-[0_8px_24px_rgba(16,185,129,0.15)] ring-1 ring-white/50 dark:bg-emerald-500/20 dark:text-emerald-300 dark:shadow-[0_8px_24px_rgba(16,185,129,0.08)] dark:ring-white/10">
+                  <FileSpreadsheet size={28} strokeWidth={1.5} />
+                </div>
+                <p className="text-[16px] font-bold tracking-tight text-slate-800 dark:text-slate-100">当前还未恢复到完整表格画布</p>
+                <p className="mt-2.5 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  当前还没有恢复到可直接渲染的表格源文件。源文件可用后，这里会直接展示完整工作表。
+                </p>
               </div>
-              <p className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">当前还未恢复到完整表格画布</p>
-              <p className="mt-2 max-w-[22rem] text-[13px] leading-6 text-slate-500 dark:text-slate-400">
-                已经将表格预览主入口上浮到这里；一旦当前会话中的源文件可用，这里会直接渲染完整工作表，而不是再跳去旧工作区。
-              </p>
             </div>
           ) : (
-            <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
-              <div
-                className={cn(
-                  'mb-4 flex h-16 w-16 items-center justify-center rounded-full',
-                  previewKind === 'image'
-                    ? 'bg-amber-50 text-amber-500 dark:bg-amber-500/10 dark:text-amber-300'
-                    : previewKind === 'unsupported'
-                      ? 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-                      : 'bg-sky-50 text-sky-500 dark:bg-sky-500/10 dark:text-sky-300',
-                )}
-              >
-                {previewKind === 'image' ? <FileImage size={28} /> : <FileText size={28} />}
+            <div className="absolute inset-0 flex flex-col items-center justify-center p-6">
+              <div className="flex w-full max-w-[280px] flex-col items-center justify-center rounded-[24px] bg-white p-8 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 dark:bg-slate-800/80 dark:shadow-[0_8px_30px_rgba(0,0,0,0.1)] dark:ring-white/[0.05]">
+                <div
+                  className={cn(
+                    'mb-5 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] shadow-[0_8px_24px_rgba(14,165,233,0.15)] ring-1 ring-white/50 dark:shadow-[0_8px_24px_rgba(14,165,233,0.08)] dark:ring-white/10',
+                    previewKind === 'image'
+                      ? 'bg-amber-50 text-amber-500 dark:bg-amber-500/20 dark:text-amber-300 shadow-[0_8px_24px_rgba(245,158,11,0.15)]'
+                      : previewKind === 'unsupported'
+                        ? 'bg-slate-50 text-slate-500 dark:bg-slate-700 dark:text-slate-400 shadow-[0_8px_24px_rgba(100,116,139,0.15)]'
+                        : 'bg-[#EAF5FD] text-sky-500 dark:bg-sky-500/20 dark:text-sky-300',
+                  )}
+                >
+                  {previewKind === 'image' ? <FileImage size={28} strokeWidth={1.5} /> : <FileText size={28} strokeWidth={1.5} />}
+                </div>
+                <p className="text-[16px] font-bold tracking-tight text-slate-800 dark:text-slate-100">
+                  {fallbackTitle}
+                </p>
+                <p className="mt-2.5 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  {fallbackDescription}
+                </p>
               </div>
-              <p className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">
-                {previewKind === 'unsupported' ? '当前文件暂不支持直接预览' : '当前预览产物还未就绪'}
-              </p>
-              <p className="mt-2 max-w-[22rem] text-[13px] leading-6 text-slate-500 dark:text-slate-400">
-                {sourceError
-                  ? sourceError
-                  : '这个区域现在就是手机端文件画布主入口。后续文件预览会优先在这里完成，而不是回到旧的大预览面板。'}
-              </p>
             </div>
           )}
         </div>

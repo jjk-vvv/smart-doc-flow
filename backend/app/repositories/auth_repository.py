@@ -45,11 +45,7 @@ def _normalize_user_record(item: dict[str, Any]) -> dict[str, Any]:
 class AuthStorageState:
     active_path: Path
     preferred_path: Path
-    legacy_path: Path
     mode: str
-    preferred_exists: bool
-    legacy_exists: bool
-    migrated_from_legacy: bool
 
 
 class AuthUserRepository:
@@ -66,53 +62,11 @@ class AuthUserRepository:
 
     def resolve_storage_state(self) -> AuthStorageState:
         preferred = self.settings.users_file
-        legacy = self.settings.legacy_users_file
-        preferred_exists = preferred.exists()
-        legacy_exists = legacy.exists()
-
-        if preferred_exists:
-            return AuthStorageState(
-                active_path=preferred,
-                preferred_path=preferred,
-                legacy_path=legacy,
-                mode="managed",
-                preferred_exists=True,
-                legacy_exists=legacy_exists,
-                migrated_from_legacy=False,
-            )
-
-        migrated_from_legacy = False
-        if legacy_exists:
-            migrated_from_legacy = self._copy_legacy_users_to_preferred(preferred, legacy)
-            if preferred.exists():
-                return AuthStorageState(
-                    active_path=preferred,
-                    preferred_path=preferred,
-                    legacy_path=legacy,
-                    mode="migrated_from_legacy" if migrated_from_legacy else "managed",
-                    preferred_exists=True,
-                    legacy_exists=True,
-                    migrated_from_legacy=migrated_from_legacy,
-                )
-            return AuthStorageState(
-                active_path=legacy,
-                preferred_path=preferred,
-                legacy_path=legacy,
-                mode="legacy_fallback",
-                preferred_exists=False,
-                legacy_exists=True,
-                migrated_from_legacy=False,
-            )
-
         preferred.parent.mkdir(parents=True, exist_ok=True)
         return AuthStorageState(
             active_path=preferred,
             preferred_path=preferred,
-            legacy_path=legacy,
             mode="managed",
-            preferred_exists=False,
-            legacy_exists=False,
-            migrated_from_legacy=False,
         )
 
     async def ensure_ready(self) -> bool:
@@ -605,23 +559,6 @@ class AuthUserRepository:
                 continue
             users.append(_normalize_user_record(item))
         return users
-
-    def _copy_legacy_users_to_preferred(self, preferred: Path, legacy: Path) -> bool:
-        if preferred == legacy:
-            return False
-        with self._lock:
-            if preferred.exists() or (not legacy.exists()):
-                return False
-            users = self._read_users_from_path(legacy)
-            try:
-                preferred.parent.mkdir(parents=True, exist_ok=True)
-                preferred.write_text(
-                    json.dumps(users, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            except OSError:
-                return False
-            return True
 
     def _save_users_to_file(self, users: list[dict[str, Any]]) -> None:
         storage_path = self.resolve_storage_path()

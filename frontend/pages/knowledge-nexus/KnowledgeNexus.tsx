@@ -1,5 +1,9 @@
-import React, { Suspense, lazy } from 'react';
-import { BrainCircuit } from 'lucide-react';
+import React, { Suspense, lazy, useState } from 'react';
+import { BrainCircuit, GitGraph, X } from 'lucide-react';
+import {
+  clearModule4DraftFromHomeWorkbench,
+  readModule4DraftFromHomeWorkbench,
+} from '../../shared/state/homeWorkbench';
 
 const KnowledgeNexusScreen = lazy(() =>
   import('./KnowledgeNexusGraphRAGG6').then((mod) => ({ default: mod.KnowledgeNexus }))
@@ -74,8 +78,30 @@ const loadingFallback = (
 );
 
 export const KnowledgeNexus: React.FC = () => {
+  const [showHomeDraftBanner, setShowHomeDraftBanner] = useState(() =>
+    Boolean(readModule4DraftFromHomeWorkbench())
+  );
+
   return (
     <KnowledgeNexusErrorBoundary>
+      {showHomeDraftBanner ? (
+        <div className="fixed left-1/2 top-5 z-[80] -translate-x-1/2">
+          <div className="flex max-w-[840px] items-center gap-3 rounded-full border border-slate-200 bg-white/96 px-4 py-2 text-sm text-slate-700 shadow-[0_18px_40px_-26px_rgba(15,23,42,0.28)] backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-200">
+            <GitGraph size={16} className="text-sky-600 dark:text-sky-400" />
+            <span>首页已有文件加入模块四候选清单。模块四当前以图谱工作台为主，建议先在模块二完成抽取后再继续下游图谱处理。</span>
+            <button
+              type="button"
+              onClick={() => {
+                clearModule4DraftFromHomeWorkbench();
+                setShowHomeDraftBanner(false);
+              }}
+              className="rounded-full p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      ) : null}
       <Suspense fallback={loadingFallback}>
         <KnowledgeNexusScreen />
       </Suspense>

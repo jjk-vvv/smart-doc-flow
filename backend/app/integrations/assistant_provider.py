@@ -15,8 +15,9 @@ def _normalize_base_url(raw_url: str) -> str:
     cleaned = str(raw_url or "").strip().rstrip("/")
     if not cleaned:
         return ""
-    if cleaned.endswith("/v1/responses"):
-        return cleaned[: -len("/v1/responses")]
+    for suffix in ("/v1/responses", "/v1/chat/completions", "/chat/completions"):
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)]
     return cleaned
 
 
@@ -41,6 +42,46 @@ def _messages_to_input_items(messages: list[dict[str, Any]]) -> list[dict[str, A
             }
         )
     return input_items
+
+
+def _normalize_chat_messages(
+    messages: list[dict[str, Any]],
+    *,
+    instructions: str,
+) -> list[dict[str, str]]:
+    chat_messages: list[dict[str, str]] = []
+    if str(instructions or "").strip():
+        chat_messages.append({"role": "system", "content": str(instructions).strip()})
+
+    for message in messages or []:
+        role = str(message.get("role") or "user").strip().lower() or "user"
+        if role not in {"user", "assistant", "system", "developer"}:
+            role = "user"
+        if role == "developer":
+            role = "system"
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        chat_messages.append({"role": role, "content": content})
+    return chat_messages
+
+
+def _coerce_text_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type in {"text", "output_text", "input_text"}:
+                parts.append(str(item.get("text") or ""))
+        return "".join(parts)
+    return str(value or "")
 
 
 def _iter_sse_messages(response: Response) -> Iterator[tuple[str, str]]:
@@ -91,6 +132,10 @@ class AssistantResponsesProvider:
             "model": self.model,
         }
 
+    @property
+    def uses_chat_completions_api(self) -> bool:
+        return self.settings.chat_endpoint_style == "openai_chat_completions"
+
     def complete_text(
         self,
         *,
@@ -112,7 +157,7 @@ class AssistantResponsesProvider:
             text_verbosity=text_verbosity,
         )
         data = self._request_json(payload)
-        return self._extract_output_text(data)
+        return self._extract_output_text(data, endpoint_style=self.settings.chat_endpoint_style)
 
     def stream_text(
         self,
@@ -125,14 +170,9 @@ class AssistantResponsesProvider:
 
         payload = self._build_payload(messages=messages, instructions=instructions, stream=True)
         for data in self._iter_json_stream(payload):
-            event_type = str(data.get("type") or "").strip()
-            if event_type == "response.output_text.delta":
-                delta = str(data.get("delta") or "")
+            for delta in self._extract_stream_deltas(data):
                 if delta:
                     yield delta
-                continue
-            if event_type == "response.output_text.done":
-                continue
 
     def _build_payload(
         self,
@@ -144,6 +184,17 @@ class AssistantResponsesProvider:
         reasoning_effort: str | None = None,
         text_verbosity: str | None = None,
     ) -> dict[str, Any]:
+        if self.uses_chat_completions_api:
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "messages": _normalize_chat_messages(messages, instructions=instructions),
+                "max_tokens": int(max_output_tokens or self.max_output_tokens),
+                "temperature": self.temperature,
+            }
+            if stream:
+                payload["stream"] = True
+            return payload
+
         payload: dict[str, Any] = {
             "model": self.model,
             "input": _messages_to_input_items(messages),
@@ -264,7 +315,21 @@ class AssistantResponsesProvider:
             raise RuntimeError(message)
 
     @staticmethod
-    def _extract_output_text(data: dict[str, Any]) -> str:
+    def _extract_output_text(data: dict[str, Any], *, endpoint_style: str = "openai_responses") -> str:
+        if endpoint_style == "openai_chat_completions":
+            choices = data.get("choices")
+            if not isinstance(choices, list):
+                return ""
+            parts: list[str] = []
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    continue
+                parts.append(_coerce_text_content(message.get("content")))
+            return "".join(parts).strip()
+
         parts: list[str] = []
         for item in data.get("output", []) if isinstance(data.get("output"), list) else []:
             if not isinstance(item, dict):
@@ -277,6 +342,34 @@ class AssistantResponsesProvider:
                 if str(content_item.get("type") or "").strip().lower() == "output_text":
                     parts.append(str(content_item.get("text") or ""))
         return "".join(parts).strip()
+
+    def _extract_stream_deltas(self, data: dict[str, Any]) -> list[str]:
+        if self.uses_chat_completions_api:
+            choices = data.get("choices")
+            if not isinstance(choices, list):
+                return []
+            deltas: list[str] = []
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta_payload = choice.get("delta")
+                if isinstance(delta_payload, dict):
+                    content = _coerce_text_content(delta_payload.get("content"))
+                    if content:
+                        deltas.append(content)
+                    continue
+                message_payload = choice.get("message")
+                if isinstance(message_payload, dict):
+                    content = _coerce_text_content(message_payload.get("content"))
+                    if content:
+                        deltas.append(content)
+            return deltas
+
+        event_type = str(data.get("type") or "").strip()
+        if event_type == "response.output_text.delta":
+            delta = str(data.get("delta") or "")
+            return [delta] if delta else []
+        return []
 
     def _request_url(self) -> str:
         return f"{self.base_url}{self.endpoint_path}"

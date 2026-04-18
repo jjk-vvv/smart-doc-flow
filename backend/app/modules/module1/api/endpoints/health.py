@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.modules.module1.services.document_service import build_health_response
+from ...services.health_service import build_health_response
 
 router = APIRouter()
+
 
 @router.get("/health")
 async def health():

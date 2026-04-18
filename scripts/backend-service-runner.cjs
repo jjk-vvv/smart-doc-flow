@@ -24,14 +24,9 @@ const buildBackendServices = ({
 
   const services = [];
   const gatewayServiceEnv = {
-    UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE: process.env.UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE || 'auto',
+    UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE: 'disabled',
+    UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE: 'disabled',
   };
-  if (process.env.MODULE2_UPSTREAM_URL) {
-    gatewayServiceEnv.MODULE2_UPSTREAM_URL = process.env.MODULE2_UPSTREAM_URL;
-  }
-  if (process.env.MODULE4_UPSTREAM_URL) {
-    gatewayServiceEnv.MODULE4_UPSTREAM_URL = process.env.MODULE4_UPSTREAM_URL;
-  }
 
   services.push({
     name: 'gateway-backend',
@@ -39,7 +34,7 @@ const buildBackendServices = ({
     args: [path.join(rootDir, 'scripts', `${scriptPrefix}-gateway.cjs`)],
     cwd: rootDir,
     env: gatewayServiceEnv,
-    scopes: ['module2', 'backend'],
+    scopes: ['backend'],
     required: true,
   });
 
@@ -54,7 +49,7 @@ const buildBackendServices = ({
     });
   } else {
     console.log(
-      `[${label}] standalone module2 disabled; unified FastAPI sidecar will attach or start module2 when required`,
+      `[${label}] standalone module2 disabled; unified FastAPI keeps module2 mounted inside the single backend entry`,
     );
   }
 
@@ -82,7 +77,7 @@ const buildBackendServices = ({
     });
   } else {
     console.log(
-      `[${label}] standalone module4 disabled; unified FastAPI gateway will attach or start module4 when required`,
+      `[${label}] standalone module4 disabled; unified FastAPI keeps module4 mounted inside the single backend entry`,
     );
   }
 

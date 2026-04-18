@@ -65,3 +65,45 @@ def test_module4_tenant_guard_compat_mode_keeps_legacy_fallback(monkeypatch, run
     assert by_candidate == "candidate-tenant"
     assert by_header == "header-tenant"
     assert by_default == "default-tenant"
+
+
+@pytest.mark.parametrize("runtime_module", [module4_runtime])
+def test_module4_tenant_guard_default_mode_is_authenticated_required(monkeypatch, runtime_module) -> None:
+    monkeypatch.delenv("MODULE4_TENANT_GUARD_MODE", raising=False)
+    monkeypatch.setenv("MODULE4_DEFAULT_TENANT", "default")
+
+    with pytest.raises(HTTPException) as exc_info:
+        runtime_module.tenant_from_request(_build_request(), "")
+
+    assert exc_info.value.status_code == 401
+    assert str(exc_info.value.detail) == "authenticated tenant headers required"
+
+
+@pytest.mark.parametrize("runtime_module", [module4_runtime])
+def test_module4_internal_token_guard_off_mode_is_compatible(monkeypatch, runtime_module) -> None:
+    monkeypatch.delenv("MODULE4_INTERNAL_TOKEN_MODE", raising=False)
+    monkeypatch.delenv("MODULE4_INTERNAL_TOKEN", raising=False)
+
+    runtime_module.validate_internal_request(_build_request())
+
+
+@pytest.mark.parametrize("runtime_module", [module4_runtime])
+def test_module4_internal_token_guard_required_mode_rejects_missing_token(monkeypatch, runtime_module) -> None:
+    monkeypatch.setenv("MODULE4_INTERNAL_TOKEN_MODE", "required")
+    monkeypatch.setenv("MODULE4_INTERNAL_TOKEN", "internal-secret")
+
+    with pytest.raises(HTTPException) as exc_info:
+        runtime_module.validate_internal_request(_build_request())
+
+    assert exc_info.value.status_code == 401
+    assert str(exc_info.value.detail) == "invalid module4 internal token"
+
+
+@pytest.mark.parametrize("runtime_module", [module4_runtime])
+def test_module4_internal_token_guard_required_mode_accepts_matching_token(monkeypatch, runtime_module) -> None:
+    monkeypatch.setenv("MODULE4_INTERNAL_TOKEN_MODE", "required")
+    monkeypatch.setenv("MODULE4_INTERNAL_TOKEN", "internal-secret")
+
+    runtime_module.validate_internal_request(
+        _build_request(headers={"x-module4-internal-token": "internal-secret"})
+    )

@@ -67,6 +67,7 @@ import {
     type PersistedWorkbenchFile,
     type WorkbenchSessionSnapshot,
 } from '../../shared/state/workbenchSession';
+import { getCurrentUser } from '../../shared/api/auth';
 import { LuckysheetPreview, clearLuckysheetPreviewCache } from '../../components/LuckysheetPreview';
 import { PdfJsViewer, type PdfViewMode } from '../../components/PdfJsViewer';
 import { AssistantActionPreviewCard } from './assistant/AssistantActionPreviewCard';
@@ -559,15 +560,6 @@ const PdfCanvasPreview: React.FC<PdfCanvasPreviewProps> = ({
             {error && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/80 p-4 text-center dark:bg-black/40 dark:backdrop-blur-sm">
                     <p className="max-w-[420px] text-xs text-slate-600 dark:text-slate-300">{error}</p>
-                    <a
-                        href={src}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 rounded-md border border-slate-100/80 px-2 py-1 text-[11px] tabular-nums text-slate-600 hover:border-blue-300 hover:text-blue-700 dark:border-white/[0.05] dark:text-slate-300 dark:hover:border-blue-700 dark:hover:text-blue-300"
-                    >
-                        <ExternalLink size={12} />
-                        在新窗口打开文档
-                    </a>
                 </div>
             )}
         </div>
@@ -1946,6 +1938,60 @@ const parseFetchErrorMessage = (error: unknown): string => {
     return msg;
 };
 
+type ExtractAuthHeaders = Record<string, string>;
+
+let extractAuthHeadersCache: ExtractAuthHeaders | null = null;
+let extractAuthHeadersPromise: Promise<ExtractAuthHeaders> | null = null;
+
+const resolveExtractAuthHeaders = async (): Promise<ExtractAuthHeaders> => {
+    if (extractAuthHeadersCache) {
+        return extractAuthHeadersCache;
+    }
+    if (extractAuthHeadersPromise) {
+        return extractAuthHeadersPromise;
+    }
+
+    extractAuthHeadersPromise = (async () => {
+        try {
+            const payload = await getCurrentUser();
+            const user = payload?.user;
+            const userId = String(user?.id || '').trim();
+            const tenantId = String(user?.tenantId || userId).trim();
+            const headers: ExtractAuthHeaders = {};
+            if (userId) {
+                headers['X-Authenticated-User-Id'] = userId;
+            }
+            if (tenantId) {
+                headers['X-Authenticated-Tenant-Id'] = tenantId;
+                headers['X-Tenant-Id'] = tenantId;
+            }
+            extractAuthHeadersCache = headers;
+            return headers;
+        } catch {
+            extractAuthHeadersCache = {};
+            return {};
+        } finally {
+            extractAuthHeadersPromise = null;
+        }
+    })();
+
+    return extractAuthHeadersPromise;
+};
+
+const withExtractAuthHeaders = async (init?: RequestInit): Promise<RequestInit> => {
+    const mergedHeaders = new Headers(init?.headers || undefined);
+    const authHeaders = await resolveExtractAuthHeaders();
+    Object.entries(authHeaders).forEach(([key, value]) => {
+        if (value && !mergedHeaders.has(key)) {
+            mergedHeaders.set(key, value);
+        }
+    });
+    return {
+        ...(init || {}),
+        headers: mergedHeaders,
+    };
+};
+
 const isMissingExtractionJobMessage = (messageRaw: unknown): boolean => {
     const message = String(messageRaw || '').trim().toLowerCase();
     if (!message) return false;
@@ -1988,6 +2034,7 @@ const fetchExtractWithFallback = async (
     preferredBase = '',
     options?: ExtractFetchFallbackOptions,
 ): Promise<ExtractFetchResult> => {
+    const initWithHeaders = await withExtractAuthHeaders(init);
     const tried: string[] = [];
     let lastError = '';
     const retryNotFound = options?.retryNotFound !== false;
@@ -2007,15 +2054,21 @@ const fetchExtractWithFallback = async (
         const url = joinExtractUrl(base, path);
         try {
             const response = await fetch(url, {
-                credentials: init?.credentials ?? 'include',
-                ...init,
+                credentials: initWithHeaders.credentials ?? 'include',
+                ...initWithHeaders,
             });
             if (response.ok) {
                 return { response, usedBase: base };
             }
 
             const msg = await readResponseErrorMessage(response);
-            const retryable = response.status >= 500 || (retryNotFound && response.status === 404);
+            const retryableStatus =
+                response.status >= 500 ||
+                response.status === 401 ||
+                response.status === 403 ||
+                response.status === 410 ||
+                (retryNotFound && response.status === 404);
+            const retryable = retryableStatus;
             if (!retryable) {
                 throw new Error(msg);
             }
@@ -2033,11 +2086,12 @@ const fetchExtractAtBase = async (
     init?: RequestInit,
     base = '',
 ): Promise<ExtractFetchResult> => {
+    const initWithHeaders = await withExtractAuthHeaders(init);
     const normalizedBase = normalizeExtractBase(base);
     const url = joinExtractUrl(normalizedBase, path);
     const response = await fetch(url, {
-        credentials: init?.credentials ?? 'include',
-        ...init,
+        credentials: initWithHeaders.credentials ?? 'include',
+        ...initWithHeaders,
     });
     if (!response.ok) {
         throw new Error(await readResponseErrorMessage(response));
@@ -2818,12 +2872,30 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
         return byIdentity || byName || null;
     }, [activeDoc?.file_name, activeSourceFile, officePreviewMap]);
     const activeDocPreviewPdfUrl = useMemo(() => {
-        const val = String(
-            activeDoc?.diagnostics?.office_pdf_preview_url
-            || activeDoc?.diagnostics?.pdf_preview_url
+        const diagnostics = toRecord(activeDoc?.diagnostics);
+        const byFileResolved = resolveByFileArtifactUrl(
+            {
+                artifact_by_file_url: String(
+                    diagnostics.office_pdf_preview_by_file_url
+                    || diagnostics.pdf_preview_by_file_url
+                    || ''
+                ).trim(),
+                artifact_file_id: String(
+                    diagnostics.office_pdf_preview_file_id
+                    || diagnostics.pdf_preview_file_id
+                    || ''
+                ).trim(),
+            },
+            '',
+        );
+        if (byFileResolved) return byFileResolved;
+        const directRaw = String(
+            diagnostics.office_pdf_preview_url
+            || diagnostics.pdf_preview_url
             || ''
         ).trim();
-        return val || '';
+        if (!directRaw) return '';
+        return normalizeExtractArtifactUrl(directRaw, '') || '';
     }, [activeDoc?.diagnostics]);
     const activeConvertedPdfUrl = useMemo(() => {
         const fromUpload = String(activeOfficePreview?.pdfUrl || '').trim();

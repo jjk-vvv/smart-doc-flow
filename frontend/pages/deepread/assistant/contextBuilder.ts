@@ -228,8 +228,8 @@ export const buildAssistantExtraContext = <
 }: BuildAssistantExtraContextArgs<TDoc, TField, TTrace>): Record<string, unknown> => {
     if (!activeDoc) return {};
 
-    const diagnostics = activeDoc.diagnostics && typeof activeDoc.diagnostics === 'object'
-        ? (activeDoc.diagnostics as Record<string, unknown>)
+    const diagnostics = (activeDoc as any).diagnostics && typeof (activeDoc as any).diagnostics === 'object'
+        ? ((activeDoc as any).diagnostics as Record<string, unknown>)
         : {};
     const workbookManifestPath = trimAssistantContextText(diagnostics.xlsx_workbook_manifest_path, 320);
     const workbookManifestUrl = trimAssistantContextText(diagnostics.xlsx_workbook_manifest_url, 320);

@@ -1,18 +1,28 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from .endpoints.document import router as document_router
-from .endpoints.health import router as health_router
-from .endpoints.module1_placeholder import router as module1_placeholder_router
+from .endpoints import (
+    health_router,
+    modification_router,
+    preview_router,
+    save_router,
+    stream_router,
+)
+from .deps import require_module1_authenticated_user
 
 
 def build_router() -> APIRouter:
     router = APIRouter()
-    router.include_router(document_router)
     router.include_router(health_router)
-    # Keep placeholder metadata endpoint during migration window.
-    router.include_router(module1_placeholder_router)
+
+    protected_router = APIRouter(dependencies=[Depends(require_module1_authenticated_user)])
+    protected_router.include_router(modification_router)
+    protected_router.include_router(preview_router)
+    protected_router.include_router(save_router)
+    protected_router.include_router(stream_router)
+
+    router.include_router(protected_router)
     return router
 
 

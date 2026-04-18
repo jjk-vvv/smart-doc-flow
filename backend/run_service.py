@@ -206,14 +206,18 @@ def _build_env(service: str) -> dict[str, str]:
     )
 
     if service in {"backend", "gateway"}:
-        module2_port = str(env.get("MODULE2_PORT") or "8010").strip() or "8010"
-        module4_port = str(env.get("MODULE4_PORT") or "8100").strip() or "8100"
-        # Default to auto mode to avoid blocking gateway startup when sidecars are
-        # already running externally (or temporarily unavailable during boot).
-        env.setdefault("UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE", "auto")
-        env.setdefault("UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE", "auto")
-        env.setdefault("MODULE2_UPSTREAM_URL", f"http://127.0.0.1:{module2_port}")
-        env.setdefault("MODULE4_UPSTREAM_URL", f"http://127.0.0.1:{module4_port}")
+        gateway_host = str(env.get("GATEWAY_HOST") or "0.0.0.0").strip() or "0.0.0.0"
+        gateway_port = str(env.get("GATEWAY_PORT") or "3001").strip() or "3001"
+        gateway_loopback_host = gateway_host if gateway_host not in {"0.0.0.0", "::"} else "127.0.0.1"
+        gateway_base_url = str(env.get("GATEWAY_BASE_URL") or f"http://{gateway_loopback_host}:{gateway_port}").strip()
+        gateway_base_url = gateway_base_url.rstrip("/")
+
+        # Unified backend formal runtime uses a single FastAPI entry port only.
+        env["GATEWAY_BASE_URL"] = gateway_base_url
+        env["UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE"] = "disabled"
+        env["UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE"] = "disabled"
+        env["MODULE2_UPSTREAM_URL"] = gateway_base_url
+        env["MODULE4_UPSTREAM_URL"] = gateway_base_url
     return env
 
 

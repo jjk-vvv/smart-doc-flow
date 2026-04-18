@@ -4,11 +4,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from app.modules.auth.config import AuthSettings
-from app.modules.auth.repository import AuthUserRepository
+from app.core.auth_config import AuthSettings
+from app.repositories.auth_repository import AuthUserRepository
 
 
-def _auth_settings(users_file: Path, legacy_users_file: Path) -> AuthSettings:
+def _auth_settings(users_file: Path) -> AuthSettings:
     return AuthSettings(
         secret_key="test-secret",
         token_expires_in="7d",
@@ -26,7 +26,6 @@ def _auth_settings(users_file: Path, legacy_users_file: Path) -> AuthSettings:
         login_lock_ms=900000,
         is_prod=False,
         users_file=users_file,
-        legacy_users_file=legacy_users_file,
         sms_provider="",
         ihuyi_api_id="",
         ihuyi_api_key="",
@@ -46,7 +45,7 @@ def _auth_settings(users_file: Path, legacy_users_file: Path) -> AuthSettings:
     )
 
 
-def test_auth_repository_migrates_legacy_users_into_managed_storage(tmp_path: Path) -> None:
+def test_auth_repository_ignores_legacy_backend_auth_users_path(tmp_path: Path) -> None:
     legacy_users_file = tmp_path / "backend" / "auth" / "users.json"
     legacy_users_file.parent.mkdir(parents=True, exist_ok=True)
     legacy_users_file.write_text(
@@ -66,18 +65,17 @@ def test_auth_repository_migrates_legacy_users_into_managed_storage(tmp_path: Pa
     )
     managed_users_file = tmp_path / "managed-data" / "auth" / "users.json"
 
-    repository = AuthUserRepository(_auth_settings(managed_users_file, legacy_users_file))
+    repository = AuthUserRepository(_auth_settings(managed_users_file))
 
     state = repository.resolve_storage_state()
     loaded_users = asyncio.run(repository.load_users())
-    follow_up_state = repository.resolve_storage_state()
 
-    assert state.mode == "migrated_from_legacy"
-    assert state.migrated_from_legacy is True
-    assert managed_users_file.exists() is True
-    assert loaded_users[0]["email"] == "legacy@example.com"
-    assert follow_up_state.mode == "managed"
-    assert follow_up_state.active_path == managed_users_file.resolve()
+    assert state.mode == "managed"
+    assert state.active_path == managed_users_file.resolve()
+    assert state.preferred_path == managed_users_file.resolve()
+    assert managed_users_file.exists() is False
+    assert loaded_users == []
+    assert json.loads(legacy_users_file.read_text(encoding="utf-8"))[0]["email"] == "legacy@example.com"
 
 
 def test_auth_settings_can_fallback_to_module4_database_dsn(tmp_path: Path, monkeypatch) -> None:

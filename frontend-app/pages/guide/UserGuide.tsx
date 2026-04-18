@@ -1115,7 +1115,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
       gradient: "linear-gradient(135deg, #00C9FF 0%, #92FE9D 100%)",
     },
     {
-      title: "多源数据融合",
+      title: "自定义智能填表",
       desc: "跨文档自动对齐信息，智能合并多来源数据，消除重复与冲突。",
       icon: "🌈",
       gradient: "linear-gradient(135deg, #F6D365 0%, #FDA085 100%)",

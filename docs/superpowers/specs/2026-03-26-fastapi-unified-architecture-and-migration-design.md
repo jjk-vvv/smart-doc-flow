@@ -119,11 +119,12 @@ It has two layers:
 - Node compatibility proxy in `backend/auth/server.cjs`
 
 The FastAPI auth core is the real business authority.
-The Node auth process is a compatibility adapter that forwards historical routes.
+The Node auth process is a compatibility adapter that forwards historical auth routes only.
 
-This is why `backend/auth/server.cjs` still contains `/api/chat`.
-That file is not an auth-domain service.
-It is a historical route proxy.
+`backend/auth/server.cjs` is not an auth-domain service and no longer carries the
+platform assistant chat path.
+The platform assistant canonical runtime is owned by FastAPI under
+`/api/platform-assistant/*`.
 
 ### 3. Module 2 Is Still The Real Extraction Engine
 
@@ -488,7 +489,7 @@ To avoid future confusion, source and non-source content should be discussed usi
 - `frontend/components/DeepReadWorkbench.tsx`
 - `frontend/components/knowledge-nexus/KnowledgeNexusNeo4j.tsx`
 - `frontend/components/AuthModal.tsx`
-- `frontend/components/AIAssistant.tsx`
+- `frontend/features/platform-assistant/components/PlatformAssistant.tsx`
 - `frontend/shared/api/**`
 - `frontend/lib/**`
 - `scripts/start-*.cjs`

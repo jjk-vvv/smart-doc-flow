@@ -51,7 +51,7 @@ class ExtractionSettings:
     extract_job_cap: int
     shadow_poll_timeout_sec: float
     shadow_poll_interval_sec: float
-    job_tenant_guard_mode: str = "warn"
+    job_tenant_guard_mode: str = "strict"
     assistant1_mode: str = "upstream"
     assistant1_fallback_to_legacy: bool = True
     assistant1_context_max_source_chars: int = 12000
@@ -61,23 +61,23 @@ class ExtractionSettings:
 
     @classmethod
     def from_env(cls) -> "ExtractionSettings":
-        assistant1_mode = _env_str("UNIFIED_EXTRACT_ASSISTANT1_MODE", "upstream").lower()
+        assistant1_mode = _env_str("UNIFIED_EXTRACT_ASSISTANT1_MODE", "native").lower()
         if assistant1_mode not in {"legacy", "native", "upstream"}:
-            assistant1_mode = "upstream"
-        module2_execution_mode = _env_str("UNIFIED_EXTRACT_MODULE2_EXECUTION_MODE", "upstream").lower()
+            assistant1_mode = "native"
+        module2_execution_mode = _env_str("UNIFIED_EXTRACT_MODULE2_EXECUTION_MODE", "subprocess").lower()
         if module2_execution_mode not in {"auto", "upstream", "subprocess"}:
-            module2_execution_mode = "upstream"
-        module2_sidecar_mode = _env_str("UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE", "auto").lower()
+            module2_execution_mode = "subprocess"
+        module2_sidecar_mode = _env_str("UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE", "disabled").lower()
         if module2_sidecar_mode not in {"disabled", "auto", "managed"}:
-            module2_sidecar_mode = "auto"
-        job_tenant_guard_mode = _env_str("UNIFIED_EXTRACT_JOB_TENANT_GUARD_MODE", "warn").lower()
+            module2_sidecar_mode = "disabled"
+        job_tenant_guard_mode = _env_str("UNIFIED_EXTRACT_JOB_TENANT_GUARD_MODE", "strict").lower()
         if job_tenant_guard_mode not in {"compat", "warn", "strict"}:
-            job_tenant_guard_mode = "warn"
+            job_tenant_guard_mode = "strict"
         return cls(
             module2_port_hint=_env_str("MODULE2_PORT", ""),
             artifact_root_dir=_env_str("MODULE2_ARTIFACT_ROOT_DIR", ""),
             module2_execution_mode=module2_execution_mode,
-            module2_fallback_to_upstream=_env_bool("UNIFIED_EXTRACT_MODULE2_FALLBACK_TO_UPSTREAM", True),
+            module2_fallback_to_upstream=_env_bool("UNIFIED_EXTRACT_MODULE2_FALLBACK_TO_UPSTREAM", False),
             module2_worker_timeout_sec=max(30.0, _env_float("UNIFIED_EXTRACT_MODULE2_WORKER_TIMEOUT_SEC", 900.0)),
             module2_worker_python=_env_str("UNIFIED_EXTRACT_MODULE2_WORKER_PYTHON", ""),
             module2_sidecar_mode=module2_sidecar_mode,

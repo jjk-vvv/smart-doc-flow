@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """Service composition bundle builders for module2 extraction service layer."""
 
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Tuple
@@ -54,9 +53,8 @@ class Module2MainServiceBundle:
 def build_module2_main_service_bundle(
     *,
     logger: Any,
-    outbox_repository: Any | None = None,
+    outbox_repository: Any,
     assistant_repository: Any | None = None,
-    legacy_storage: Any | None = None,
     artifact_root_factory: ArtifactRootFactory,
     convert_word_to_pdf: ConvertWordToPdfFn,
     office_preview_timeout_sec_factory: TimeoutSecFactory,
@@ -67,33 +65,10 @@ def build_module2_main_service_bundle(
     page_from_bbox: PageFromBboxFn,
     is_meaningful_bbox: IsMeaningfulBboxFn,
     utcnow_factory: UtcNowFactory,
-    **legacy_kwargs: Any,
 ) -> Module2MainServiceBundle:
-    if "storage" in legacy_kwargs:
-        if legacy_storage is not None:
-            raise TypeError("Pass only one of legacy_storage=... or storage=...")
-        legacy_storage = legacy_kwargs.pop("storage")
-    if legacy_kwargs:
-        unexpected = ", ".join(sorted(legacy_kwargs))
-        raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-    if outbox_repository is None and legacy_storage is not None:
-        warnings.warn(
-            "build_module2_main_service_bundle(storage=...) is deprecated; "
-            "pass outbox_repository=... instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    if assistant_repository is None and legacy_storage is not None:
-        warnings.warn(
-            "build_module2_main_service_bundle(legacy_storage=...) for assistant persistence is deprecated; "
-            "pass assistant_repository=... instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    resolved_outbox_repository = outbox_repository or legacy_storage
-    if resolved_outbox_repository is None:
-        raise ValueError("outbox_repository or legacy_storage is required")
-    resolved_assistant_repository = assistant_repository or legacy_storage
+    if outbox_repository is None:
+        raise ValueError("outbox_repository is required")
+    resolved_assistant_repository = assistant_repository
 
     assistant1_runtime = Assistant1StreamingRuntime(
         persistence=Assistant1PersistenceAdapter(
@@ -122,7 +97,7 @@ def build_module2_main_service_bundle(
     )
     module4_sync_outbox_runtime = Module4SyncOutboxRuntime(
         logger=logger,
-        outbox_repository=resolved_outbox_repository,
+        outbox_repository=outbox_repository,
         metrics_runtime=module4_sync_metrics_runtime,
         base_url_factory=module4_sync_config_runtime.base_url,
         headers_factory=module4_sync_config_runtime.headers,
@@ -135,11 +110,11 @@ def build_module2_main_service_bundle(
         tenant_guard_mode_factory=(
             module4_sync_config_runtime.tenant_guard_mode
             if hasattr(module4_sync_config_runtime, "tenant_guard_mode")
-            else (lambda: "compat_default")
+            else (lambda: "authenticated_required")
         ),
     )
     module4_sync_callback_bundle = build_module4_sync_callback_bundle(
-        outbox_repository=resolved_outbox_repository,
+        outbox_repository=outbox_repository,
         module4_sync_config_runtime=module4_sync_config_runtime,
         module4_sync_outbox_runtime=module4_sync_outbox_runtime,
         module4_sync_task_runtime=module4_sync_task_runtime,

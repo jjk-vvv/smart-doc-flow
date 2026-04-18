@@ -62,7 +62,7 @@ def test_module2_foundation_bootstrap_surface_delegates_to_composition_layer() -
     assert "from ..composition.foundation import (" in source
 
 
-def test_module2_runtime_package_prefers_composition_foundation_exports() -> None:
+def test_module2_runtime_package_is_static_without_dynamic_exports() -> None:
     runtime_init = (
         Path(__file__).resolve().parents[1]
         / "app"
@@ -73,8 +73,12 @@ def test_module2_runtime_package_prefers_composition_foundation_exports() -> Non
     )
     source = runtime_init.read_text(encoding="utf-8")
 
-    assert "from ..composition.foundation import (" in source
-    assert "from ..bootstrap.foundation import (" not in source
+    assert "def __getattr__(name: str):" not in source
+    assert "build_module2_main_foundation_bundle" not in source
+    assert "build_module2_main_entry_bundle" not in source
+    assert "build_module2_main_service_bundle" not in source
+    assert "build_module2_main_support_bundle" not in source
+    assert "build_module2_main_schema_pipeline_bundle" not in source
 
 
 def test_module2_foundation_service_builder_prefers_service_bundles_for_migrated_clusters() -> None:

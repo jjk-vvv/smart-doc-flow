@@ -17,8 +17,6 @@ const sourceCacheRoots = [
   'backend/app/modules/module4',
   'backend/tests',
   'frontend',
-  'backend/auth',
-  'auth',
 ];
 const extraCacheDirs = ['.pytest_cache'];
 const ignoredWalkDirNames = new Set(['node_modules', '.git', '.venv-module2-py311']);

@@ -12,7 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 
 parser_initialization_runtime_module = import_module("app.modules.module2.core.parsers.parser_initialization_runtime")
-parser_module = import_module("app.modules.module2.core.parser")
+parser_module = import_module("app.modules.module2.core.parsers.native_document_parser")
 
 
 class _BootstrapStub:

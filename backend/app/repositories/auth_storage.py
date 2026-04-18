@@ -7,22 +7,37 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
-import asyncpg
-
 from app.core.auth_config import AuthSettings
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-RETRYABLE_CONNECTION_ERROR_TYPES = tuple(
-    error_type
-    for error_type in (
-        getattr(asyncpg, "InterfaceError", None),
-        getattr(asyncpg, "PostgresConnectionError", None),
-        getattr(asyncpg, "CannotConnectNowError", None),
-        getattr(asyncpg, "ConnectionDoesNotExistError", None),
-        getattr(asyncpg, "ConnectionFailureError", None),
+_ASYNCPG_MODULE: Any | None = None
+
+
+def _load_asyncpg() -> Any:
+    global _ASYNCPG_MODULE
+    if _ASYNCPG_MODULE is None:
+        import asyncpg as loaded_asyncpg
+
+        _ASYNCPG_MODULE = loaded_asyncpg
+    return _ASYNCPG_MODULE
+
+
+def _retryable_connection_error_types() -> tuple[type[BaseException], ...]:
+    try:
+        asyncpg = _load_asyncpg()
+    except Exception:
+        return tuple()
+    return tuple(
+        error_type
+        for error_type in (
+            getattr(asyncpg, "InterfaceError", None),
+            getattr(asyncpg, "PostgresConnectionError", None),
+            getattr(asyncpg, "CannotConnectNowError", None),
+            getattr(asyncpg, "ConnectionDoesNotExistError", None),
+            getattr(asyncpg, "ConnectionFailureError", None),
+        )
+        if isinstance(error_type, type)
     )
-    if isinstance(error_type, type)
-)
 
 INIT_SQL_TEMPLATE = """
 CREATE SCHEMA IF NOT EXISTS {schema_name};
@@ -186,7 +201,8 @@ def _dsn_connection_candidates(dsn: str) -> list[str]:
 def _is_retryable_connection_error(exc: Exception) -> bool:
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError)):
         return True
-    if RETRYABLE_CONNECTION_ERROR_TYPES and isinstance(exc, RETRYABLE_CONNECTION_ERROR_TYPES):
+    retryable_types = _retryable_connection_error_types()
+    if retryable_types and isinstance(exc, retryable_types):
         return True
     return False
 
@@ -204,7 +220,7 @@ class AuthDatabaseDiagnostics:
 class AuthDatabase:
     def __init__(self, settings: AuthSettings) -> None:
         self.settings = settings
-        self._pool: asyncpg.Pool | None = None
+        self._pool: Any | None = None
         self._connect_lock = asyncio.Lock()
         self._last_connect_error = ""
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -237,8 +253,9 @@ class AuthDatabase:
 
             connect_errors: list[str] = []
             for candidate_dsn in _dsn_connection_candidates(self.settings.database_dsn):
-                pool: asyncpg.Pool | None = None
+                pool: Any | None = None
                 try:
+                    asyncpg = _load_asyncpg()
                     pool = await asyncio.wait_for(
                         asyncpg.create_pool(
                             candidate_dsn,
@@ -289,7 +306,7 @@ class AuthDatabase:
             self._last_connect_error = f"{type(exc).__name__}: {exc}" if isinstance(exc, Exception) else str(exc)
         self._discard_pool()
 
-    async def _acquire_pool_connection(self) -> tuple[asyncpg.Pool, Any]:
+    async def _acquire_pool_connection(self) -> tuple[Any, Any]:
         last_exc: Exception | None = None
         for attempt_index in range(2):
             await self.ensure_ready()
@@ -311,7 +328,7 @@ class AuthDatabase:
 
     @asynccontextmanager
     async def acquire(self):
-        pool: asyncpg.Pool | None = None
+        pool: Any | None = None
         connection: Any = None
         operation_error: Exception | None = None
         try:

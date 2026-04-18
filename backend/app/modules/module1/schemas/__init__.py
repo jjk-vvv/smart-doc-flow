@@ -1,19 +1,6 @@
-"""Module1 schemas."""
-
-from .api_schemas import (
-    ErrorResponse,
-    HealthModulesSchema,
-    HealthResponse,
-    ModificationSchema,
-    PreviewFileSchema,
-    StyleTransferStatus,
-)
+from .workbench import Module1ArtifactPayload, OfficePreviewPayload
 
 __all__ = [
-    "ErrorResponse",
-    "HealthModulesSchema",
-    "HealthResponse",
-    "ModificationSchema",
-    "PreviewFileSchema",
-    "StyleTransferStatus",
+    "Module1ArtifactPayload",
+    "OfficePreviewPayload",
 ]

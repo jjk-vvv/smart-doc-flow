@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from .endpoints.graph import build_router as build_graph_endpoint_router
+from .endpoints.module4 import build_router as build_graph_endpoint_router
 from ..deps import Module4RouterDeps
 
 

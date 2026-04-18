@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -89,10 +90,39 @@ def default_tenant() -> str:
 
 
 def module4_tenant_guard_mode() -> str:
-    raw_mode = str(os.getenv("MODULE4_TENANT_GUARD_MODE", "compat_default") or "").strip().lower()
+    raw_mode = str(os.getenv("MODULE4_TENANT_GUARD_MODE", "authenticated_required") or "").strip().lower()
     if raw_mode in {"strict", "strict_authenticated_tenant", "authenticated_required"}:
         return "authenticated_required"
-    return "compat_default"
+    if raw_mode in {"compat", "compat_default"}:
+        return "compat_default"
+    return "authenticated_required"
+
+
+def module4_internal_token_mode() -> str:
+    raw_mode = str(os.getenv("MODULE4_INTERNAL_TOKEN_MODE", "off") or "").strip().lower()
+    if raw_mode in {"required", "strict", "enabled", "on"}:
+        return "required"
+    return "off"
+
+
+def module4_internal_token() -> str:
+    return str(os.getenv("MODULE4_INTERNAL_TOKEN", "") or "").strip()
+
+
+def validate_internal_request(request: Optional[Request]) -> None:
+    mode = module4_internal_token_mode()
+    if mode != "required":
+        return
+
+    expected = module4_internal_token()
+    if not expected:
+        raise HTTPException(status_code=503, detail="module4 internal token is not configured")
+
+    provided = ""
+    if request is not None:
+        provided = str(request.headers.get("x-module4-internal-token") or "").strip()
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="invalid module4 internal token")
 
 
 def tenant_from_request(request: Optional[Request], candidate: Optional[str] = None) -> str:
@@ -477,6 +507,7 @@ class Module4AppRuntime:
         insight_helpers_getter: Callable[[], Module4InsightRuntimeHelpers],
         logger: Any,
         tenant_from_request_fn: Callable[[Optional[Request], Optional[str]], str] = tenant_from_request,
+        validate_internal_request_fn: Callable[[Optional[Request]], None] = validate_internal_request,
         parse_csv_list_fn: Callable[[Optional[str]], List[str]] = parse_csv_list,
         now_utc_fn: Callable[[], datetime] = now_utc,
         derived_ingest_batch_key_fn: Callable[[IngestRequest, Optional[str]], str] = derived_ingest_batch_key,
@@ -501,6 +532,7 @@ class Module4AppRuntime:
         self._insight_helpers_getter = insight_helpers_getter
         self._logger = logger
         self._tenant_from_request = tenant_from_request_fn
+        self._validate_internal_request = validate_internal_request_fn
         self._parse_csv_list = parse_csv_list_fn
         self._now_utc = now_utc_fn
         self._derived_ingest_batch_key = derived_ingest_batch_key_fn
@@ -540,6 +572,10 @@ class Module4AppRuntime:
         return self._tenant_from_request
 
     @property
+    def validate_internal_request(self) -> Callable[[Optional[Request]], None]:
+        return self._validate_internal_request
+
+    @property
     def parse_csv_list(self) -> Callable[[Optional[str]], List[str]]:
         return self._parse_csv_list
 
@@ -572,6 +608,7 @@ class Module4AppRuntime:
             "neo4j_graph_projector_getter": self.neo4j_graph_projector_getter,
             "graphrag_indexer_getter": self.graphrag_indexer_getter,
             "tenant_from_request": self.tenant_from_request,
+            "validate_internal_request": self.validate_internal_request,
             "parse_csv_list": self.parse_csv_list,
             "submit_ingest_job": submit_ingest_job,
             "schedule_rebuild_job": schedule_rebuild_job,

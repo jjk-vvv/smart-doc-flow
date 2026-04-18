@@ -554,11 +554,11 @@ def test_module4_sync_outbox_runtime_builds_list_response_with_metrics() -> None
     }
 
 
-def test_module4_sync_outbox_runtime_storage_param_emits_deprecation_warning() -> None:
+def test_module4_sync_outbox_runtime_rejects_removed_storage_compat_param() -> None:
     logger = _FakeLogger()
     metrics = _FakeMetricsRuntime()
     storage = _SuccessStorage()
-    with pytest.warns(DeprecationWarning):
+    with pytest.raises(TypeError):
         Module4SyncOutboxRuntime(
             logger=logger,
             storage=storage,

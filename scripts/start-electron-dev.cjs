@@ -76,7 +76,8 @@ backendChild = spawn(nodeExec, [path.join(rootDir, 'scripts', 'dev-backend-fasta
     baseEnv: {
       ...managedBackendEnv,
       MODULE2_ENABLED: process.env.MODULE2_ENABLED || '0',
-      UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE: process.env.UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE || 'managed',
+      UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE: process.env.UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE || 'disabled',
+      UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE: process.env.UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE || 'disabled',
     },
   }),
 });

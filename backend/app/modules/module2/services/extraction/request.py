@@ -267,6 +267,4 @@ class ExtractionRequestService:
 
         return self._batch_response_factory(documents=results)
 
-
-# Backward-compatible alias during migration.
-ExtractionRequestRuntime = ExtractionRequestService
+__all__ = ["ExtractionRequestService"]

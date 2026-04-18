@@ -4,11 +4,11 @@ import json
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
-def probe_json(url: str, timeout_sec: float) -> dict[str, Any]:
-    request = urllib.request.Request(url=url, method="GET")
+def probe_json(url: str, timeout_sec: float, *, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+    request = urllib.request.Request(url=url, method="GET", headers=dict(headers or {}))
     try:
         with urllib.request.urlopen(request, timeout=timeout_sec) as response:
             body = response.read()
@@ -58,4 +58,3 @@ def probe_path(path: Path) -> dict[str, Any]:
         "is_dir": is_dir,
         "index_exists": index_exists,
     }
-

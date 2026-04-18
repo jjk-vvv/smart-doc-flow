@@ -29,6 +29,7 @@ from ...schemas.run_schemas import (
     WordParseRequest,
 )
 from ...services.docset_service import create_docset_record
+from ...services.dashboard_service import build_owner_dashboard_overview
 from ...services.excel_json_service import parse_excel_workbook_to_json
 from ...services.run_service import cancel_run, execute_web_run, register_run_control
 from ...services.storage_service import (
@@ -52,7 +53,7 @@ from ...services.storage_service import (
 from ...services.template_service import create_template_record
 from ...services.word_json_service import apply_word_section_diffs, parse_word_document_to_json
 
-router = APIRouter()
+router = APIRouter(prefix="/module3")
 DEFAULT_OWNER_ID = "default"
 
 
@@ -313,7 +314,7 @@ def _require_xlsx_run_output_path(run_id: str, owner_id: str) -> tuple[dict[str,
     return record, output_path
 
 
-@router.get("/module3/health")
+@router.get("/health")
 def module3_health() -> dict[str, Any]:
     ensure_module3_storage()
     return {
@@ -327,7 +328,14 @@ def module3_health() -> dict[str, Any]:
     }
 
 
-@router.post("/module3/template/upload")
+@router.get("/overview")
+def module3_dashboard_overview(request: Request, limit: int = Query(default=6, ge=3, le=12)) -> dict[str, Any]:
+    ensure_module3_storage()
+    owner_id = _resolve_request_owner_id(request)
+    return build_owner_dashboard_overview(owner_id, limit=limit)
+
+
+@router.post("/template/upload")
 async def upload_template(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     ensure_module3_storage()
     owner_id = _resolve_request_owner_id(request)
@@ -361,7 +369,7 @@ async def upload_template(request: Request, file: UploadFile = File(...)) -> dic
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/module3/docset/upload")
+@router.post("/docset/upload")
 async def upload_docset(request: Request, files: list[UploadFile] = File(...)) -> dict[str, Any]:
     ensure_module3_storage()
     owner_id = _resolve_request_owner_id(request)
@@ -408,7 +416,7 @@ async def upload_docset(request: Request, files: list[UploadFile] = File(...)) -
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/module3/run")
+@router.post("/run")
 def create_run(request: Request, payload: WebRunRequest) -> dict[str, Any]:
     ensure_module3_storage()
     owner_id = _resolve_request_owner_id(request, explicit_owner_id=payload.owner_id)
@@ -456,7 +464,7 @@ def create_run(request: Request, payload: WebRunRequest) -> dict[str, Any]:
     }
 
 
-@router.get("/module3/run/{run_id}")
+@router.get("/run/{run_id}")
 def get_run_status(run_id: str, request: Request) -> dict[str, Any]:
     owner_id = _resolve_request_owner_id(request)
     try:
@@ -466,7 +474,7 @@ def get_run_status(run_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@router.post("/module3/run/{run_id}/cancel")
+@router.post("/run/{run_id}/cancel")
 def cancel_run_request(run_id: str, request: Request) -> dict[str, Any]:
     owner_id = _resolve_request_owner_id(request)
     try:
@@ -489,7 +497,7 @@ def cancel_run_request(run_id: str, request: Request) -> dict[str, Any]:
     return _augment_run_record_for_client(response_payload)
 
 
-@router.get("/module3/run/{run_id}/download")
+@router.get("/run/{run_id}/download")
 def download_run_output(run_id: str, request: Request) -> FileResponse:
     owner_id = _resolve_request_owner_id(request)
     record, output_path = _require_run_output_path(run_id, owner_id)
@@ -497,7 +505,7 @@ def download_run_output(run_id: str, request: Request) -> FileResponse:
     return FileResponse(path=str(output_path), filename=output_name)
 
 
-@router.get("/module3/documents/preview")
+@router.get("/documents/preview")
 def preview_document(
     request: Request,
     file_id: str | None = Query(default=None),
@@ -522,7 +530,7 @@ def preview_document(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/module3/api/v1/word/parse-json")
+@router.post("/api/v1/word/parse-json")
 def parse_word_document_json(request: Request, payload: WordParseRequest) -> dict[str, Any]:
     owner_id = _resolve_request_owner_id(request)
     _, output_path = _require_docx_run_output_path(payload.run_id, owner_id)
@@ -538,7 +546,7 @@ def parse_word_document_json(request: Request, payload: WordParseRequest) -> dic
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/module3/api/v1/excel/parse-json")
+@router.post("/api/v1/excel/parse-json")
 def parse_excel_document_json(request: Request, payload: ExcelParseRequest) -> dict[str, Any]:
     owner_id = _resolve_request_owner_id(request)
     _, output_path = _require_xlsx_run_output_path(payload.run_id, owner_id)
@@ -554,7 +562,7 @@ def parse_excel_document_json(request: Request, payload: ExcelParseRequest) -> d
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/module3/api/v1/word/apply-diff")
+@router.post("/api/v1/word/apply-diff")
 def apply_word_document_diff(request: Request, payload: WordApplyDiffRequest) -> dict[str, Any]:
     owner_id = _resolve_request_owner_id(request)
     _, output_path = _require_docx_run_output_path(payload.run_id, owner_id)
@@ -582,7 +590,7 @@ def apply_word_document_diff(request: Request, payload: WordApplyDiffRequest) ->
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/module3/run/{run_id}/save")
+@router.post("/run/{run_id}/save")
 def save_run_output(run_id: str, request: Request, payload: UpdateExcelRequest) -> dict[str, Any]:
     owner_id = _resolve_request_owner_id(request)
     _, output_path = _require_xlsx_run_output_path(run_id, owner_id)
@@ -644,7 +652,7 @@ def save_run_output(run_id: str, request: Request, payload: UpdateExcelRequest) 
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/module3/run/{run_id}/save-file")
+@router.post("/run/{run_id}/save-file")
 async def save_run_output_file(
     run_id: str,
     request: Request,
@@ -689,7 +697,7 @@ async def save_run_output_file(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/module3/run/{run_id}/save-word")
+@router.post("/run/{run_id}/save-word")
 def save_run_output_word(run_id: str, request: Request, payload: UpdateWordRequest) -> dict[str, Any]:
     owner_id = _resolve_request_owner_id(request)
     _, output_path = _require_docx_run_output_path(run_id, owner_id)

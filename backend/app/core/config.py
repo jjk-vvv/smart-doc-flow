@@ -72,11 +72,14 @@ def get_settings() -> Settings:
     config_root_dir = resolve_config_root_dir(runtime_root_dir)
     data_root_dir = resolve_data_root_dir(runtime_root_dir)
     frontend_dist_dir = resolve_frontend_dist_dir(runtime_root_dir)
-    module2_port = _env_str("MODULE2_PORT", "8010")
+    gateway_host = _env_str("GATEWAY_HOST", "0.0.0.0")
+    gateway_port = _env_int("GATEWAY_PORT", 3001)
+    gateway_loopback_host = gateway_host if gateway_host not in {"", "0.0.0.0", "::"} else "127.0.0.1"
+    gateway_base_url = _env_str("GATEWAY_BASE_URL", f"http://{gateway_loopback_host}:{gateway_port}")
 
     return Settings(
-        gateway_host=_env_str("GATEWAY_HOST", "0.0.0.0"),
-        gateway_port=_env_int("GATEWAY_PORT", 3001),
+        gateway_host=gateway_host,
+        gateway_port=gateway_port,
         cors_origins=_split_csv(
             _env_str(
                 "GATEWAY_CORS_ORIGINS",
@@ -89,8 +92,8 @@ def get_settings() -> Settings:
         config_root_dir=config_root_dir,
         data_root_dir=data_root_dir,
         frontend_dist_dir=frontend_dist_dir,
-        module2_upstream_url=_env_str("MODULE2_UPSTREAM_URL", f"http://127.0.0.1:{module2_port}"),
-        module4_upstream_url=_env_str("MODULE4_UPSTREAM_URL", "http://127.0.0.1:8100"),
+        module2_upstream_url=_env_str("MODULE2_UPSTREAM_URL", gateway_base_url),
+        module4_upstream_url=_env_str("MODULE4_UPSTREAM_URL", gateway_base_url),
         module3_router_mode=_env_choice(
             "UNIFIED_GATEWAY_MODULE3_ROUTER_MODE",
             "auto",

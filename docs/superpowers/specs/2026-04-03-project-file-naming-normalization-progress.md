@@ -37,7 +37,7 @@ Status: applied
 已同步更新以下前端引用：
 
 - `frontend/pages/deepread/DeepReadWorkbench.tsx`
-- `frontend/components/AIAssistant.tsx`
+- `frontend/features/platform-assistant/components/PlatformAssistant.tsx`
 - `frontend/pages/dashboard/Dashboard.tsx`
 - `frontend/pages/fusion/FusionGrid.tsx`
 - `frontend/pages/knowledge-nexus/KnowledgeNexusNeo4j.tsx`

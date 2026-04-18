@@ -13,6 +13,7 @@ from fastapi import APIRouter
         "app.modules.module1.api.router",
         "app.modules.module2.api.router",
         "app.modules.module4.api.router",
+        "app.modules.platform_assistant",
         "app.modules.frontend_static.api.router",
     ],
 )

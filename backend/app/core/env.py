@@ -109,11 +109,12 @@ def load_managed_env_files(scopes: tuple[str, ...] | None = None) -> None:
     config_root = resolve_config_root_dir(runtime_root)
     scope_specs: dict[str, tuple[Path, tuple[str, ...] | None]] = {
         "backend": (Path("backend/.env"), None),
+        "module1": (Path("backend/app/modules/module1/.env"), None),
         "module2": (Path("backend/app/modules/module2/.env"), None),
         "module3": (Path("backend/app/modules/module3/.env"), None),
         "module4": (Path("backend/app/modules/module4/.env"), None),
     }
-    normalized_scopes = tuple(scopes or ("backend", "module2", "module3", "module4"))
+    normalized_scopes = tuple(scopes or ("module1", "backend", "module2", "module3", "module4"))
 
     env_file_specs = _build_env_file_specs(
         runtime_root=runtime_root,

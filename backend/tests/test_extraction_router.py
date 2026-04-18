@@ -7,9 +7,9 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.core.deps import get_settings
-from app.create_app import create_app
-from app.modules.auth.deps import AuthenticatedUser, require_authenticated_user
-from app.services.extraction_service import get_extraction_service
+from app.core.auth_deps import AuthenticatedUser, require_authenticated_user
+from app.factory import create_app
+from app.modules.module2.services.api.extraction_service import get_extraction_service
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -286,7 +286,7 @@ def test_extract_artifact_by_file_id_endpoint_serves_file_asset(tmp_path: Path, 
     artifact_file.write_text("hello by file id", encoding="utf-8")
 
     monkeypatch.setattr(
-        "app.services.extraction_service.resolve_file_for_owner",
+        "app.modules.module2.services.api.extraction_service.resolve_file_for_owner",
         lambda file_id, owner_id: (
             {
                 "file_id": file_id,
@@ -318,7 +318,7 @@ def test_extract_artifact_route_prefers_file_id_query_when_present(tmp_path: Pat
     artifact_file.write_text("prefer file id", encoding="utf-8")
 
     monkeypatch.setattr(
-        "app.services.extraction_service.resolve_file_for_owner",
+        "app.modules.module2.services.api.extraction_service.resolve_file_for_owner",
         lambda file_id, owner_id: (
             {
                 "file_id": file_id,
@@ -352,7 +352,7 @@ def test_extract_layout_preview_by_file_id_head_returns_file_metadata(tmp_path: 
     preview_file.write_text(preview_content, encoding="utf-8")
 
     monkeypatch.setattr(
-        "app.services.extraction_service.resolve_file_for_owner",
+        "app.modules.module2.services.api.extraction_service.resolve_file_for_owner",
         lambda file_id, owner_id: (
             {
                 "file_id": file_id,

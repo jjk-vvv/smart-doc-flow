@@ -1,12 +1,58 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
 import requests
 
 from .word_processor import get_word_data_url, squish
+
+
+_RETRYABLE_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+_MAX_REQUEST_ATTEMPTS = 3
+_BASE_RETRY_DELAY_SECONDS = 1.0
+
+
+def _is_retryable_request_error(exc: requests.exceptions.RequestException) -> bool:
+    if isinstance(exc, requests.exceptions.HTTPError):
+        response = exc.response
+        return bool(response is not None and response.status_code in _RETRYABLE_HTTP_STATUS_CODES)
+    return isinstance(
+        exc,
+        (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ProxyError,
+            requests.exceptions.ChunkedEncodingError,
+        ),
+    )
+
+
+def _post_json_with_retry(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: int = 180,
+    max_attempts: int = _MAX_REQUEST_ATTEMPTS,
+) -> requests.Response:
+    last_error: requests.exceptions.RequestException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+            if attempt >= max_attempts or not _is_retryable_request_error(exc):
+                raise
+            backoff_seconds = _BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+            time.sleep(backoff_seconds)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Unexpected request retry failure")
 
 
 def build_row_template(headers: list[str]) -> dict[str, str]:
@@ -123,13 +169,13 @@ def request_text_responses(
         ],
     }
 
-    resp = requests.post(
+    resp = _post_json_with_retry(
         f"{base_url}/responses",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json=payload,
+        payload=payload,
         timeout=180,
     )
     resp.raise_for_status()
@@ -199,13 +245,13 @@ def request_responses(
         ],
     }
 
-    resp = requests.post(
+    resp = _post_json_with_retry(
         f"{base_url}/responses",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json=payload,
+        payload=payload,
         timeout=180,
     )
     resp.raise_for_status()
@@ -261,13 +307,13 @@ def request_chat_completions(
             {"role": "user", "content": user_content},
         ],
     }
-    resp = requests.post(
+    resp = _post_json_with_retry(
         f"{base_url}/chat/completions",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json=payload,
+        payload=payload,
         timeout=180,
     )
     resp.raise_for_status()

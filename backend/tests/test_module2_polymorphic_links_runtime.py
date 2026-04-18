@@ -1,29 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
+from importlib import import_module
 
 
-def _load_module():
-    module_path = (
-        Path(__file__).resolve().parents[1]
-        / "app"
-        / "modules"
-        / "module2"
-        / "services"
-        / "document_tools_service.py"
-    )
-    module_name = "_smart_doc_flow_module2_polymorphic_links_service"
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-runtime_module = _load_module()
+runtime_module = import_module("app.modules.module2.services.document.tools")
 PolymorphicLinksRuntime = runtime_module.PolymorphicLinksRuntime
 
 

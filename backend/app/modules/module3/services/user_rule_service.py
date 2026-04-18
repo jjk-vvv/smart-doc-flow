@@ -7,7 +7,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from ..core.config import DEFAULT_PROMPT
+from ..core.config import DEFAULT_PROMPT, read_structured_metric_profile
 from .llm_service import parse_model_json, request_chat_completions, request_text_responses
 from .source_dispatcher import simple_match_excel_headers
 from .text_source_common import log_event
@@ -48,6 +48,14 @@ _OPERATOR_ALIASES = {
     "非空": "not_empty",
     "为空": "empty",
 }
+
+_STRUCTURED_METRIC_PROFILE = read_structured_metric_profile()
+_REGION_FIELD_ALIASES = tuple(
+    str(item).strip()
+    for item in dict(_STRUCTURED_METRIC_PROFILE.get("header_aliases") or {}).get("region", [])
+    if str(item).strip()
+)
+_DEFAULT_SECONDARY_SORT_FIELD_ALIASES = tuple(dict.fromkeys([*_REGION_FIELD_ALIASES, "location", "name"]))
 
 
 def has_effective_user_prompt(user_prompt: str) -> bool:
@@ -1159,6 +1167,51 @@ def _sort_key(value: str) -> tuple[int, Any]:
     return (2, _normalize_key(value))
 
 
+def _infer_default_sort_rules(
+    rows: list[dict[str, str]],
+    field_requirements: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if not rows or not field_requirements:
+        return []
+
+    date_field = ""
+    for requirement in field_requirements:
+        operator = str(requirement.get("operator", "")).strip().lower()
+        field = str(requirement.get("field", "")).strip()
+        if not field or operator not in {"eq", "gt", "gte", "lt", "lte", "in"}:
+            continue
+        has_datetime = any(
+            _try_parse_datetime(_normalize_text(row.get(field, ""))) is not None
+            for row in rows[:2000]
+        )
+        if has_datetime:
+            date_field = field
+            break
+    if not date_field:
+        return []
+
+    country_field = ""
+    preferred_country_fields = _DEFAULT_SECONDARY_SORT_FIELD_ALIASES
+    sample_row = rows[0] if rows else {}
+    for preferred in preferred_country_fields:
+        preferred_key = _normalize_key(preferred)
+        for key in sample_row.keys():
+            if _normalize_key(key) == preferred_key:
+                country_field = str(key)
+                break
+        if country_field:
+            break
+
+    sort_rules: list[dict[str, str]] = []
+    # Keep date as the primary key. `apply_user_rule_bundle` applies rules in reversed order
+    # with stable sort semantics, so the primary key should be appended last in reversed loop,
+    # which means declared first here.
+    sort_rules.append({"field": date_field, "direction": "asc"})
+    if country_field and country_field != date_field:
+        sort_rules.append({"field": country_field, "direction": "asc"})
+    return sort_rules
+
+
 def _validate_filtered_rows(
     *,
     original_rows: list[dict[str, str]],
@@ -1209,7 +1262,13 @@ def apply_user_rule_bundle(
     for requirement in reconciled_requirements:
         filtered = [row for row in filtered if _matches_requirement(row, requirement)]
 
-    for sort_rule in reversed(bundle.get("sort") or []):
+    sort_rules = list(bundle.get("sort") or [])
+    if not sort_rules:
+        sort_rules = _infer_default_sort_rules(filtered, reconciled_requirements)
+        if sort_rules:
+            log_event(logger, "[user rules] implicit sort: " + json.dumps(sort_rules, ensure_ascii=False))
+
+    for sort_rule in reversed(sort_rules):
         field = sort_rule["field"]
         reverse = sort_rule.get("direction") == "desc"
         filtered = sorted(filtered, key=lambda row: _sort_key(str(row.get(field, ""))), reverse=reverse)

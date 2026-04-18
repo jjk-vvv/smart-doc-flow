@@ -112,10 +112,21 @@ def module4_upstream_candidates(settings: Settings) -> list[str]:
     return deduped
 
 
+def _module4_internal_probe_headers() -> dict[str, str]:
+    token = _env_str("MODULE4_INTERNAL_TOKEN", "")
+    if not token:
+        return {}
+    return {"X-Module4-Internal-Token": token}
+
+
 def probe_module4_upstream(base_url: str, timeout_sec: float) -> dict[str, Any]:
     normalized_base_url = str(base_url or "").strip().rstrip("/")
     health_url = f"{normalized_base_url}/module4/healthz"
-    result = probe_json(health_url, _bounded_probe_timeout(timeout_sec))
+    result = probe_json(
+        health_url,
+        _bounded_probe_timeout(timeout_sec),
+        headers=_module4_internal_probe_headers(),
+    )
     result["base_url"] = normalized_base_url
     result["health_url"] = health_url
     result["checked_at"] = time.time()

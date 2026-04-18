@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi.responses import FileResponse
 
 from app.core.config import Settings
-from app.modules.frontend_static.service import serve_frontend_asset
+from app.services.frontend_static_service import serve_frontend_asset
 
 
 def _settings(tmp_path: Path) -> Settings:

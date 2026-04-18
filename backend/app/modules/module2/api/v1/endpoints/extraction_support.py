@@ -36,6 +36,7 @@ def build_router(
     serve_file_asset: ServeFileAssetFn | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["extraction"])
+    extract_router = APIRouter(prefix="/extract")
 
     def _legacy_route_mode() -> str:
         return "off"
@@ -88,23 +89,23 @@ def build_router(
             detail="file_id artifact route is unavailable in current module2 runtime",
         )
 
-    @router.post("/extract/preview/office/start")
+    @extract_router.post("/preview/office/start")
     async def extract_preview_office_start(file: UploadFile = File(...)) -> Dict[str, Any]:
         return await office_preview_request_runtime.start(file)
 
-    @router.get("/extract/preview/office/status/{job_id}")
+    @extract_router.get("/preview/office/status/{job_id}")
     async def extract_preview_office_status(job_id: str) -> Dict[str, Any]:
         return await office_preview_request_runtime.get_status(job_id)
 
-    @router.post("/extract/summarize", response_model=SummarizeResponse)
+    @extract_router.post("/summarize", response_model=SummarizeResponse)
     async def extract_summarize(payload: SummarizeRequest) -> SummarizeResponse:
         return document_tools_runtime.summarize(payload)
 
-    @router.post("/extract/trace/locate", response_model=TraceLocateResponse)
+    @extract_router.post("/trace/locate", response_model=TraceLocateResponse)
     async def extract_trace_locate(payload: TraceLocateRequest) -> TraceLocateResponse:
         return document_tools_runtime.trace_locate(payload)
 
-    @router.post("/extract/cache/clear", response_model=CacheClearResponse)
+    @extract_router.post("/cache/clear", response_model=CacheClearResponse)
     async def extract_cache_clear(
         scope: str = Query(default="results", pattern="^(results|runtime|all)$"),
         tenant_id: str = Query(default=""),
@@ -116,12 +117,12 @@ def build_router(
             payload = await clear_cache_request(scope)
         return payload if CacheClearResponse is dict else CacheClearResponse(**payload)
 
-    @router.api_route("/extract/layout-preview/by-file/{file_id}", methods=["GET", "HEAD"])
+    @extract_router.api_route("/layout-preview/by-file/{file_id}", methods=["GET", "HEAD"])
     async def extract_layout_preview_by_file(file_id: str, request: Request) -> Response:
         response = _serve_by_file_id(file_id, request.method, request=request)
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @router.api_route("/extract/layout-preview/{artifact_name}", methods=["GET", "HEAD"])
+    @extract_router.api_route("/layout-preview/{artifact_name}", methods=["GET", "HEAD"])
     async def extract_layout_preview(
         artifact_name: str,
         request: Request,
@@ -140,12 +141,12 @@ def build_router(
         )
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @router.api_route("/extract/artifact/by-file/{file_id}", methods=["GET", "HEAD"])
+    @extract_router.api_route("/artifact/by-file/{file_id}", methods=["GET", "HEAD"])
     async def extract_artifact_by_file(file_id: str, request: Request) -> Response:
         response = _serve_by_file_id(file_id, request.method, request=request)
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @router.api_route("/extract/artifact/{artifact_path:path}", methods=["GET", "HEAD"])
+    @extract_router.api_route("/artifact/{artifact_path:path}", methods=["GET", "HEAD"])
     async def extract_artifact_route(
         artifact_path: str,
         request: Request,
@@ -168,4 +169,5 @@ def build_router(
     async def healthz() -> Dict[str, str]:
         return build_health_payload()
 
+    router.include_router(extract_router)
     return router

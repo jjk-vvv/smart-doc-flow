@@ -48,17 +48,17 @@ type SidebarMenuItem = SidebarMenuLeaf & {
 };
 
 const MENU_ITEMS: readonly SidebarMenuItem[] = [
-  { id: 'dashboard', label: '指挥控制台', icon: Home },
+  { id: 'dashboard', label: '文档中心', icon: Home },
   {
     id: 'deepread',
     label: '智能文档解析',
     icon: FileSearch,
     subItems: [
-      { id: 'deepread_interaction', label: 'AI文档处理', icon: Bot },
+      { id: 'doc-processing', label: 'AI文档处理', icon: Bot },
       { id: 'deepread_extraction', label: 'AI信息提取', icon: FileText },
     ],
   },
-  { id: 'fusion', label: '多源数据融合', icon: Database },
+  { id: 'fusion', label: '自定义智能填表', icon: Database },
   { id: 'nexus', label: '全域知识图谱', icon: GitGraph },
 ];
 
@@ -213,7 +213,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     if (!isExpanded) {
                       setExpandedItems(prev => [...prev, item.id]);
                       if (item.id === 'deepread') {
-                         setActiveTab('deepread_interaction');
+                         setActiveTab('doc-processing');
                       } else if (item.subItems) {
                          setActiveTab(item.subItems[0].id);
                       }

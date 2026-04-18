@@ -4,6 +4,11 @@ from functools import lru_cache
 from typing import Any
 
 from app.core.config import Settings
+from app.modules.module2.composition.embedded_runtime import (
+    cancel_job_file as cancel_local_job_file,
+    create_job as create_local_job,
+    get_job_status as get_local_job_status,
+)
 
 from .cache_runtime import merge_module2_cache_clear_payloads
 from .config import ExtractionSettings, get_extraction_settings
@@ -43,12 +48,11 @@ class Module2ExecutionFacade:
         tenant_id: str = "",
         request_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        return await self.upstream_runtime.create_job(
-            settings,
+        del settings, request_headers
+        return await create_local_job(
             files_payload=files_payload,
             schema_form=schema_form,
             tenant_id=tenant_id,
-            request_headers=request_headers or {},
         )
 
     def get_job_status(
@@ -58,8 +62,8 @@ class Module2ExecutionFacade:
         job_id: str,
         include_documents: bool = False,
     ) -> dict[str, Any]:
-        return self.upstream_runtime.get_job_status(
-            settings,
+        del settings
+        return get_local_job_status(
             job_id=job_id,
             include_documents=include_documents,
         )
@@ -72,8 +76,8 @@ class Module2ExecutionFacade:
         file_hash: str,
         file_name: str = "",
     ) -> dict[str, Any]:
-        return self.upstream_runtime.cancel_job_file(
-            settings,
+        del settings
+        return cancel_local_job_file(
             job_id=job_id,
             file_hash=file_hash,
             file_name=file_name,

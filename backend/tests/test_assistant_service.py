@@ -7,12 +7,12 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.assistant_config import AssistantSettings
-from app.services.assistant_prompting import CHAT_FALLBACK_TEXT
-from app.services.assistant_service import (
+from app.modules.platform_assistant.data.platform_facts import CHAT_FALLBACK_TEXT
+from app.modules.platform_assistant.services.chat_service import (
     ASSISTANT_EMPTY_RESPONSE_TEXT,
     ASSISTANT_NO_KEY_TEXT,
     ASSISTANT_STREAM_ERROR_TEXT,
-    AssistantService,
+    PlatformAssistantService,
 )
 
 
@@ -99,7 +99,7 @@ def _render_stream(response) -> tuple[str, str]:
 
 
 def test_assistant_health_payload_reports_disabled_smoke() -> None:
-    service = AssistantService(
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=False),
         provider=FakeProvider(configured=False),
     )
@@ -114,7 +114,7 @@ def test_assistant_health_payload_reports_disabled_smoke() -> None:
 
 def test_assistant_health_payload_reuses_smoke_cache_until_forced() -> None:
     provider = FakeProvider(configured=True, complete_text_reply="链路正常。")
-    service = AssistantService(
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=True),
         provider=provider,
     )
@@ -130,7 +130,7 @@ def test_assistant_health_payload_reuses_smoke_cache_until_forced() -> None:
 
 
 def test_assistant_stream_chat_requires_messages() -> None:
-    service = AssistantService(
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=False),
         provider=FakeProvider(configured=False),
     )
@@ -143,7 +143,7 @@ def test_assistant_stream_chat_requires_messages() -> None:
 
 
 def test_assistant_stream_chat_returns_config_fallback_when_provider_missing() -> None:
-    service = AssistantService(
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=False),
         provider=FakeProvider(configured=False),
     )
@@ -153,12 +153,13 @@ def test_assistant_stream_chat_returns_config_fallback_when_provider_missing() -
 
     assert response.headers["X-AI-Reply-Source"] == "fallback_no_key"
     assert ASSISTANT_NO_KEY_TEXT in rendered_text
+    assert "PLATFORM_ASSISTANT_API_KEY" in rendered_text
     assert '0:"[DONE]"' in raw_stream
 
 
 def test_assistant_stream_chat_streams_model_chunks_and_builds_prompt() -> None:
     provider = FakeProvider(configured=True, stream_chunks=["你", "好"])
-    service = AssistantService(
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=False),
         provider=provider,
     )
@@ -166,7 +167,10 @@ def test_assistant_stream_chat_streams_model_chunks_and_builds_prompt() -> None:
     response = service.stream_chat(
         {
             "messages": [{"role": "user", "content": "请介绍模块2"}],
-            "platformContext": "模块2 状态：健康",
+            "context": {
+                "activeTab": "deepread_extraction",
+                "pageCue": "模块2 状态：健康",
+            },
         }
     )
     raw_stream, rendered_text = _render_stream(response)
@@ -176,13 +180,13 @@ def test_assistant_stream_chat_streams_model_chunks_and_builds_prompt() -> None:
     assert '0:"[DONE]"' in raw_stream
     assert provider.stream_calls
     assert provider.stream_calls[0]["messages"] == [{"role": "user", "content": "请介绍模块2"}]
-    assert "[平台事实]" in str(provider.stream_calls[0]["instructions"])
+    assert "[Platform Facts]" in str(provider.stream_calls[0]["instructions"])
     assert "模块2 状态：健康" in str(provider.stream_calls[0]["instructions"])
 
 
 def test_assistant_stream_chat_falls_back_when_provider_errors() -> None:
     provider = FakeProvider(configured=True, stream_error=RuntimeError("boom"))
-    service = AssistantService(
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=False),
         provider=provider,
     )
@@ -197,7 +201,7 @@ def test_assistant_stream_chat_falls_back_when_provider_errors() -> None:
 
 def test_assistant_stream_chat_falls_back_when_provider_returns_no_text() -> None:
     provider = FakeProvider(configured=True, stream_chunks=["", "", "  "])
-    service = AssistantService(
+    service = PlatformAssistantService(
         settings=_assistant_settings(smoke_test_enabled=False),
         provider=provider,
     )

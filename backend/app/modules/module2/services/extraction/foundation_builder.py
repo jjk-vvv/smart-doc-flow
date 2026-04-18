@@ -93,11 +93,11 @@ class Module2MainFoundationBundle:
     def storage(self) -> Any:
         warnings.warn(
             "Module2MainFoundationBundle.storage is deprecated; "
-            "use Module2MainFoundationBundle.repository_bundle.legacy_storage instead.",
+            "use Module2MainFoundationBundle.repository_bundle.storage instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.repository_bundle.legacy_storage
+        return self.repository_bundle.storage
 
 
 @dataclass(frozen=True)
@@ -152,8 +152,8 @@ def build_module2_main_foundation_bundle(
         getenv=getenv,
         parse_document_in_subprocess=parse_document_in_subprocess,
     )
-    legacy_storage = extraction_storage_factory(module2_database_dsn)
-    repository_bundle = build_module2_repository_bundle(legacy_storage=legacy_storage)
+    storage = extraction_storage_factory(module2_database_dsn)
+    repository_bundle = build_module2_repository_bundle(storage=storage)
     graph = extraction_graph_factory()
     schema_primitives_bundle = build_module2_main_schema_primitives_bundle()
     policy_bundle = build_module2_main_policy_bundle(

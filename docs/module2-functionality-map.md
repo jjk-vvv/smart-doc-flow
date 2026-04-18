@@ -254,7 +254,7 @@
 
 - `POST /extract/assistant1/chat/stream`
 - `GET /extract/assistant1/sessions/{session_id}`
-- 兼容聊天接口：`GET /api/chat/health`、`POST /api/chat`
+- 全局平台助手已独立收口到：`GET /api/platform-assistant/health`、`POST /api/platform-assistant/chat`
 
 ### 5.3 模块四同步接口
 
@@ -455,4 +455,3 @@ assets/schema_semantic_rules_v1.json
 README.md
 requirements.txt
 ```
-

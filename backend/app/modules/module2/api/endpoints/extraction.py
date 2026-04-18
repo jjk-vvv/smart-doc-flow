@@ -17,11 +17,15 @@ from app.modules.module2.schemas.extraction import (
     SummarizeRequest,
     TraceLocateRequest,
 )
-from app.modules.module2.services.extraction_service import ExtractionService, get_extraction_service
+from app.modules.module2.services.api.extraction_service import (
+    ExtractionService,
+    get_extraction_service,
+)
 
 
 def build_router() -> APIRouter:
     router = APIRouter(tags=["extraction"])
+    extract_router = APIRouter(prefix="/extract")
 
     def _legacy_route_mode() -> str:
         return "off"
@@ -50,7 +54,7 @@ def build_router() -> APIRouter:
     ):
         return await asyncio.to_thread(extraction_service.health_payload, settings)
 
-    @router.post("/extract/jobs/create")
+    @extract_router.post("/jobs/create")
     async def extract_jobs_create(
         request: Request,
         files: list[UploadFile] = File(...),
@@ -63,7 +67,7 @@ def build_router() -> APIRouter:
         request.state.authenticated_user = current_user
         return await extraction_service.create_job(settings, request, files, schema_form, tenant_id)
 
-    @router.get("/extract/jobs/status/{job_id}")
+    @extract_router.get("/jobs/status/{job_id}")
     async def extract_jobs_status(
         request: Request,
         job_id: str,
@@ -73,14 +77,15 @@ def build_router() -> APIRouter:
         current_user: AuthenticatedUser = Depends(require_authenticated_user),
     ):
         request.state.authenticated_user = current_user
-        return extraction_service.get_job_status(
+        return await asyncio.to_thread(
+            extraction_service.get_job_status,
             settings,
             request,
             job_id,
             include_documents=include_documents,
         )
 
-    @router.post("/extract/jobs/{job_id}/cancel-file", response_model=CancelExtractionJobFileResponse)
+    @extract_router.post("/jobs/{job_id}/cancel-file", response_model=CancelExtractionJobFileResponse)
     async def extract_jobs_cancel_file(
         request: Request,
         job_id: str,
@@ -90,7 +95,8 @@ def build_router() -> APIRouter:
         current_user: AuthenticatedUser = Depends(require_authenticated_user),
     ):
         request.state.authenticated_user = current_user
-        return extraction_service.cancel_job_file(
+        return await asyncio.to_thread(
+            extraction_service.cancel_job_file,
             settings,
             request,
             job_id,
@@ -98,7 +104,7 @@ def build_router() -> APIRouter:
             file_name=payload.file_name,
         )
 
-    @router.post("/extract/batch", response_model=BatchExtractionResponse)
+    @extract_router.post("/batch", response_model=BatchExtractionResponse)
     async def extract_batch(
         request: Request,
         files: list[UploadFile] = File(...),
@@ -111,7 +117,7 @@ def build_router() -> APIRouter:
         request.state.authenticated_user = current_user
         return await extraction_service.extract_batch(settings, request, files, schema_form, tenant_id)
 
-    @router.post("/extract/preview/office/start")
+    @extract_router.post("/preview/office/start")
     async def extract_office_preview_start(
         request: Request,
         file: UploadFile = File(...),
@@ -122,7 +128,7 @@ def build_router() -> APIRouter:
         request.state.authenticated_user = current_user
         return await extraction_service.start_office_preview(settings, request, file)
 
-    @router.get("/extract/preview/office/status/{job_id}")
+    @extract_router.get("/preview/office/status/{job_id}")
     async def extract_office_preview_status(
         request: Request,
         job_id: str,
@@ -133,7 +139,7 @@ def build_router() -> APIRouter:
         request.state.authenticated_user = current_user
         return await extraction_service.get_office_preview_status(settings, request, job_id)
 
-    @router.post("/extract/summarize")
+    @extract_router.post("/summarize")
     async def extract_summarize(
         payload: SummarizeRequest,
         extraction_service: ExtractionService = Depends(get_extraction_service),
@@ -141,7 +147,7 @@ def build_router() -> APIRouter:
     ):
         return extraction_service.summarize(payload)
 
-    @router.post("/extract/trace/locate")
+    @extract_router.post("/trace/locate")
     async def extract_trace_locate(
         request: Request,
         payload: TraceLocateRequest,
@@ -152,7 +158,7 @@ def build_router() -> APIRouter:
         request.state.authenticated_user = current_user
         return extraction_service.trace_locate(payload, settings=settings, request=request)
 
-    @router.post("/extract/assistant1/chat/stream")
+    @extract_router.post("/assistant1/chat/stream")
     async def extract_assistant1_chat_stream(
         request: Request,
         payload: Assistant1ChatStreamRequest,
@@ -177,7 +183,7 @@ def build_router() -> APIRouter:
             payload.model_copy(update={"extra_context": extra_context}),
         )
 
-    @router.get("/extract/assistant1/sessions/{session_id}")
+    @extract_router.get("/assistant1/sessions/{session_id}")
     async def extract_assistant1_session(
         session_id: str,
         request: Request,
@@ -193,7 +199,7 @@ def build_router() -> APIRouter:
             limit=limit,
         )
 
-    @router.post("/extract/cache/clear", response_model=CacheClearResponse)
+    @extract_router.post("/cache/clear", response_model=CacheClearResponse)
     async def extract_cache_clear(
         request: Request,
         scope: str = Query(default="results", pattern="^(results|runtime|all)$"),
@@ -207,7 +213,7 @@ def build_router() -> APIRouter:
             return await extraction_service.clear_cache(settings, scope=scope, request=request)
         return await extraction_service.clear_cache(settings, scope=scope)
 
-    @router.api_route("/extract/layout-preview/{artifact_name}", methods=["GET", "HEAD"])
+    @extract_router.api_route("/layout-preview/{artifact_name}", methods=["GET", "HEAD"])
     async def extract_layout_preview(
         artifact_name: str,
         request: Request,
@@ -229,7 +235,7 @@ def build_router() -> APIRouter:
         )
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @router.api_route("/extract/layout-preview/by-file/{file_id}", methods=["GET", "HEAD"])
+    @extract_router.api_route("/layout-preview/by-file/{file_id}", methods=["GET", "HEAD"])
     async def extract_layout_preview_by_file(
         file_id: str,
         request: Request,
@@ -247,7 +253,7 @@ def build_router() -> APIRouter:
         )
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @router.api_route("/extract/artifact/by-file/{file_id}", methods=["GET", "HEAD"])
+    @extract_router.api_route("/artifact/by-file/{file_id}", methods=["GET", "HEAD"])
     async def extract_artifact_by_file(
         file_id: str,
         request: Request,
@@ -265,7 +271,7 @@ def build_router() -> APIRouter:
         )
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @router.api_route("/extract/artifact/{artifact_path:path}", methods=["GET", "HEAD"])
+    @extract_router.api_route("/artifact/{artifact_path:path}", methods=["GET", "HEAD"])
     async def extract_artifact(
         artifact_path: str,
         request: Request,
@@ -287,6 +293,7 @@ def build_router() -> APIRouter:
         )
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
+    router.include_router(extract_router)
     return router
 
 

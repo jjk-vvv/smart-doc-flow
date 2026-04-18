@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,15 @@ REPO_ROOT = next(
 )
 BACKEND_DIR = (REPO_ROOT / "backend").resolve()
 MODULE3_DIR = BASE_DIR.resolve()
+BACKEND_ENV_PATH = (BACKEND_DIR / ".env").resolve()
 ENV_PATH = (MODULE3_DIR / ".env").resolve()
 LEGACY_STORAGE_DIR = (MODULE3_DIR / "storage").resolve()
 
 
 def _load_module3_env() -> None:
+    # Load unified backend runtime env first so auth/session config remains
+    # consistent when module3 is started as an independent service.
+    load_dotenv(dotenv_path=BACKEND_ENV_PATH, encoding="utf-8-sig", override=False)
     load_dotenv(dotenv_path=ENV_PATH, encoding="utf-8-sig", override=False)
     custom_env_file = str(os.getenv("MODULE3_ENV_FILE", "") or "").strip()
     if custom_env_file:
@@ -74,6 +79,107 @@ DEFAULT_PROMPT = (
 )
 PREVIEW_LINE_LIMIT = 0
 PREVIEW_CHAR_LIMIT = 0
+DEFAULT_STRUCTURED_METRIC_PROFILE: dict[str, Any] = {
+    "header_aliases": {
+        "region": ["国家/地区", "国家地区", "country/region", "country", "region"],
+        "gdp_per_capita": ["人均GDP", "人均 gdp", "gdp per capita"],
+        "population": ["人口", "总人口", "population"],
+        "daily_tests": ["每日检测数", "检测数", "每日检测", "daily tests", "tests"],
+        "cases": ["病例数", "病例", "确诊数", "cases", "case count"],
+    },
+    "root_regions": ["中国", "China", "PRC"],
+    "region_suffixes": ["省", "市", "自治区", "特别行政区"],
+    "cn_numeric_multipliers": [
+        ["万亿", 1_000_000_000_000.0],
+        ["亿", 100_000_000.0],
+        ["万", 10_000.0],
+        ["千", 1_000.0],
+    ],
+    "case_exclude_keywords": ["解除隔离", "解除医学观察", "治愈", "出院", "康复"],
+    "case_strong_keywords": ["确诊", "无症状"],
+    "case_weak_keywords": ["疑似"],
+}
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    output: list[str] = []
+    for item in value:
+        token = str(item or "").strip()
+        if token:
+            output.append(token)
+    return output
+
+
+def _normalize_multiplier_list(value: Any) -> list[tuple[str, float]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    output: list[tuple[str, float]] = []
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        unit = str(item[0] or "").strip()
+        if not unit:
+            continue
+        try:
+            multiplier = float(item[1])
+        except (TypeError, ValueError):
+            continue
+        output.append((unit, multiplier))
+    return output
+
+
+def read_structured_metric_profile() -> dict[str, Any]:
+    _load_module3_env()
+    raw = str(os.getenv("MODULE3_STRUCTURED_METRIC_PROFILE_JSON", "") or "").strip()
+
+    profile: dict[str, Any] = {
+        "header_aliases": {
+            key: list(value)
+            for key, value in DEFAULT_STRUCTURED_METRIC_PROFILE["header_aliases"].items()
+        },
+        "root_regions": list(DEFAULT_STRUCTURED_METRIC_PROFILE["root_regions"]),
+        "region_suffixes": list(DEFAULT_STRUCTURED_METRIC_PROFILE["region_suffixes"]),
+        "cn_numeric_multipliers": [
+            (str(unit), float(multiplier))
+            for unit, multiplier in DEFAULT_STRUCTURED_METRIC_PROFILE["cn_numeric_multipliers"]
+        ],
+        "case_exclude_keywords": list(DEFAULT_STRUCTURED_METRIC_PROFILE["case_exclude_keywords"]),
+        "case_strong_keywords": list(DEFAULT_STRUCTURED_METRIC_PROFILE["case_strong_keywords"]),
+        "case_weak_keywords": list(DEFAULT_STRUCTURED_METRIC_PROFILE["case_weak_keywords"]),
+    }
+
+    if not raw:
+        return profile
+
+    try:
+        override = json.loads(raw)
+    except json.JSONDecodeError:
+        return profile
+    if not isinstance(override, dict):
+        return profile
+
+    header_aliases = override.get("header_aliases")
+    if isinstance(header_aliases, dict):
+        for key, aliases in header_aliases.items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            normalized_aliases = _normalize_string_list(aliases)
+            if normalized_aliases:
+                profile["header_aliases"][key_text] = normalized_aliases
+
+    for list_key in ("root_regions", "region_suffixes", "case_exclude_keywords", "case_strong_keywords", "case_weak_keywords"):
+        normalized = _normalize_string_list(override.get(list_key))
+        if normalized:
+            profile[list_key] = normalized
+
+    multiplier_items = _normalize_multiplier_list(override.get("cn_numeric_multipliers"))
+    if multiplier_items:
+        profile["cn_numeric_multipliers"] = multiplier_items
+
+    return profile
 
 
 def normalize_base_url(raw: str) -> str:
@@ -145,6 +251,7 @@ __all__ = [
     "ALLOWED_TEMPLATE_SUFFIXES",
     "BASE_DIR",
     "BACKEND_DIR",
+    "DEFAULT_STRUCTURED_METRIC_PROFILE",
     "DEFAULT_HEADER_ROW",
     "DEFAULT_PROMPT",
     "DEFAULT_WRITE_ROW",
@@ -161,4 +268,5 @@ __all__ = [
     "normalize_base_url",
     "read_database_url",
     "read_runtime_settings",
+    "read_structured_metric_profile",
 ]

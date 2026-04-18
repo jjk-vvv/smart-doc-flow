@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 import requests
 from requests.exceptions import HTTPError, RequestException
 
-from ..llm_provider import resolve_llm_native_api_url
+from ...integrations.llm.provider import resolve_llm_native_api_url
 from ..integration.gemini_native_transport_runtime import GeminiNativeTransportRuntime
 
 

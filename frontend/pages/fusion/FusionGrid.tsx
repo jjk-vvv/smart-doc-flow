@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, {
   useEffect,
   useMemo,
   useRef,
@@ -8,12 +8,11 @@
 import { createPortal } from "react-dom";
 import {
   AlertCircle,
-  CheckCircle,
   ChevronDown,
-  Clock,
   Download,
   Eye,
   File as FileIcon,
+  FileSpreadsheet,
   FolderOpen,
   HelpCircle,
   Loader2,
@@ -22,32 +21,34 @@ import {
   Trash2,
   UploadCloud,
   X,
-  XCircle,
   Save,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import "luckysheet/dist/plugins/css/pluginsCss.css";
-import "luckysheet/dist/plugins/plugins.css";
-import "luckysheet/dist/css/luckysheet.css";
-import "luckysheet/dist/assets/iconfont/iconfont.css";
 import {
   cancelModule3Run,
   createModule3Run,
   fetchModule3RunStatus,
   fetchModule3DocumentPreviewText,
   module3RunDownloadUrl,
+  parseModule3ExcelJson,
+  parseModule3MissingResource,
   saveModule3RunOutput,
   normalizeModule3Status,
   uploadModule3Docset,
   uploadModule3Template,
+  type Module3WorkbookSheet,
   type Module3RunStatusResponse,
   type Module3TaskStatus,
   type Module3TemplateField,
 } from "../../lib/module3Api";
 import {
+  clearFusionGridStateStorage,
+  createEmptyFusionGridState,
   readFusionGridState,
+  readFusionGridOwnerScope,
+  writeFusionGridOwnerScope,
   writeFusionGridState,
   type FusionDocumentType,
   type FusionGridDocsetRecord,
@@ -55,16 +56,33 @@ import {
   type FusionGridTaskRecord,
   type FusionGridTemplateRecord,
 } from "../../lib/fusionGridStore";
+import { getCurrentUser } from "../../shared/api/auth";
 import { Module3WordPreview } from "./Module3WordPreview";
+import "luckysheet/dist/plugins/css/pluginsCss.css";
+import "luckysheet/dist/plugins/plugins.css";
+import "luckysheet/dist/css/luckysheet.css";
+import "luckysheet/dist/assets/iconfont/iconfont.css";
 
 import wordIconUrl from "../../assets/WORD.png";
 import excelIconUrl from "../../assets/xlsx.png";
 import mdIconUrl from "../../assets/md.png";
 import txtIconUrl from "../../assets/txt.png";
+import fusionLogoUrl from "../../assets/fusion_logo.svg";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const resolveModule3OwnerScope = async (): Promise<string> => {
+  try {
+    const payload = await getCurrentUser();
+    const user = payload?.user;
+    const candidate = String(user?.tenantId || user?.id || "anonymous").trim();
+    return candidate || "anonymous";
+  } catch {
+    return "anonymous";
+  }
+};
 
 type TaskStatus = Module3TaskStatus;
 type DocumentType = "xlsx" | "docx" | "txt" | "md" | "other";
@@ -114,7 +132,6 @@ type SegmentedOption = {
   dropdownAlign?: "left" | "right";
 };
 
-type VerticalSelectorTone = "purple" | "cyan";
 type PreviewSheet = {
   id: string;
   name: string;
@@ -122,112 +139,24 @@ type PreviewSheet = {
   kind: "sheet" | "table" | "text";
 };
 
-type LuckysheetRuntime = {
-  create?: (config: Record<string, unknown>) => void;
-  destroy?: () => void;
-  getAllSheets?: () => Array<Record<string, unknown>>;
+const toPreviewTextCell = (
+  value: string | number | boolean | null | undefined,
+): string => {
+  if (value === null || value === undefined) return "";
+  return String(value);
 };
 
-type JQueryCompat = Record<string, unknown> & {
-  isArray?: (value: unknown) => boolean;
-  isFunction?: (value: unknown) => boolean;
-  isNumeric?: (value: unknown) => boolean;
-  trim?: (value: unknown) => string;
-  type?: (value: unknown) => string;
-  fn?: Record<string, unknown>;
-};
-
-let luckysheetRuntimePromise: Promise<LuckysheetRuntime> | null = null;
-
-const resolveLuckysheetRuntime = (moduleExport: unknown): LuckysheetRuntime | null => {
-  if (!moduleExport || typeof moduleExport !== "object") return null;
-  const value = moduleExport as Record<string, unknown>;
-  const direct = value as LuckysheetRuntime;
-  if (typeof direct.create === "function") return direct;
-
-  const named = value.luckysheet as LuckysheetRuntime | undefined;
-  if (named && typeof named.create === "function") return named;
-
-  const defaultExport = value.default as Record<string, unknown> | undefined;
-  if (!defaultExport || typeof defaultExport !== "object") return null;
-  const defaultRuntime = defaultExport as LuckysheetRuntime;
-  if (typeof defaultRuntime.create === "function") return defaultRuntime;
-  const nested = defaultExport.luckysheet as LuckysheetRuntime | undefined;
-  if (nested && typeof nested.create === "function") return nested;
-  return null;
-};
-
-const installJQueryCompat = (raw: unknown): void => {
-  const jq = raw as JQueryCompat;
-  if (!jq || (typeof jq !== "function" && typeof jq !== "object")) return;
-
-  if (typeof jq.isArray !== "function") {
-    jq.isArray = (value: unknown) => Array.isArray(value);
-  }
-  if (typeof jq.isFunction !== "function") {
-    jq.isFunction = (value: unknown) => typeof value === "function";
-  }
-  if (typeof jq.isNumeric !== "function") {
-    jq.isNumeric = (value: unknown) => {
-      if (typeof value === "number") return Number.isFinite(value);
-      if (typeof value === "string" && value.trim() !== "") {
-        return Number.isFinite(Number(value));
-      }
-      return false;
-    };
-  }
-  if (typeof jq.trim !== "function") {
-    jq.trim = (value: unknown) => String(value ?? "").trim();
-  }
-  if (typeof jq.type !== "function") {
-    jq.type = (value: unknown) =>
-      Object.prototype.toString.call(value).slice(8, -1).toLowerCase();
-  }
-  if (jq.fn && typeof jq.fn.mousewheel !== "function") {
-    jq.fn.mousewheel = function mousewheelShim(this: unknown): unknown {
-      return this;
-    };
-  }
-};
-
-const ensureLuckysheetRuntime = async (): Promise<LuckysheetRuntime> => {
-  if (typeof window === "undefined") {
-    throw new Error("当前环境不支持 Excel 预览");
-  }
-
-  const currentRuntime = (window as any).luckysheet as LuckysheetRuntime | undefined;
-  if (currentRuntime && typeof currentRuntime.create === "function") {
-    return currentRuntime;
-  }
-
-  if (!luckysheetRuntimePromise) {
-    luckysheetRuntimePromise = (async () => {
-      const jqMod = await import("jquery");
-      const jqValue = (jqMod as { default?: unknown }).default ?? jqMod;
-      installJQueryCompat(jqValue);
-      (window as any).$ = jqValue;
-      (window as any).jQuery = jqValue;
-
-      await import("luckysheet/dist/plugins/js/plugin.js");
-      const luckysheetModule = await import("luckysheet/dist/luckysheet.umd.js");
-      const runtime =
-        ((window as any).luckysheet as LuckysheetRuntime | undefined) ||
-        resolveLuckysheetRuntime(luckysheetModule);
-
-      if (!runtime || typeof runtime.create !== "function") {
-        throw new Error("Luckysheet 初始化失败");
-      }
-
-      (window as any).luckysheet = runtime;
-      return runtime;
-    })().catch((error) => {
-      luckysheetRuntimePromise = null;
-      throw error;
-    });
-  }
-
-  return luckysheetRuntimePromise;
-};
+const workbookSheetsToPreviewSheets = (
+  sheets: Module3WorkbookSheet[],
+): PreviewSheet[] =>
+  sheets.map((sheet, index) => ({
+    id: sheet.id || `sheet-${index}`,
+    name: sheet.name || `Sheet ${index + 1}`,
+    kind: "sheet",
+    rows: (sheet.rows || []).map((row) =>
+      (row || []).map((cell) => toPreviewTextCell(cell)),
+    ),
+  }));
 
 const formatBytes = (bytes: number): string => {
   if (!Number.isFinite(bytes) || bytes <= 0) return "未知大小";
@@ -455,6 +384,83 @@ const getFileIcon = (type: DocumentType) => {
   }
 };
 
+const UnifiedFileListItem = ({
+  file,
+  icon,
+  isSelected,
+  onClick,
+  onRemove,
+  onReupload,
+  children
+}: {
+  file: { id: string; name: string; size?: string };
+  icon: React.ReactNode;
+  isSelected: boolean;
+  onClick: () => void;
+  onRemove: () => void;
+  onReupload?: () => void;
+  children?: React.ReactNode;
+}) => {
+  return (
+    <div
+      onClick={onClick}
+      className={cn(
+        "group relative flex flex-col gap-2 rounded-[12px] p-2.5 transition-all cursor-pointer border",
+        isSelected
+          ? "bg-white dark:bg-white/[0.04] shadow-sm border-slate-200/60 dark:border-white/[0.05]"
+          : "bg-transparent border-transparent hover:bg-white dark:hover:bg-white/[0.02] hover:shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:hover:shadow-none hover:border-slate-200/40 dark:hover:border-white/[0.02]"
+      )}
+    >
+      <div className="flex items-center justify-between min-w-0 gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <div className="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg bg-slate-50 dark:bg-white/[0.04]">
+            {icon}
+          </div>
+          <div className="flex flex-col min-w-0 gap-0.5">
+            <p className={cn(
+              "truncate text-[13px] font-medium leading-none",
+              isSelected ? "text-slate-800 dark:text-slate-200" : "text-slate-700 dark:text-slate-300"
+            )}>
+              {file.name}
+            </p>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 leading-none">
+              {file.size || "未知大小"}
+            </p>
+          </div>
+        </div>
+        
+        <div
+          className={cn(
+            "shrink-0 flex items-center gap-1 transition-opacity",
+            isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          )}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {onReupload && (
+            <button
+              type="button"
+              onClick={onReupload}
+              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700/50 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+              title="替换文件"
+            >
+              <UploadCloud size={14} />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRemove}
+            className="p-1.5 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg text-slate-400 hover:text-red-500 transition-colors"
+            title="删除"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+};
+
 const spreadsheetColumnLabel = (index: number): string => {
   let current = index + 1;
   let label = "";
@@ -634,6 +640,153 @@ const parsePreviewSheets = (
   ];
 };
 
+type LuckysheetRuntime = {
+  create: (config: Record<string, unknown>) => void;
+  destroy: () => void;
+  getAllSheets: () => Array<{
+    name?: string;
+    data?: Array<Array<{ v?: string | number | boolean | null } | null>>;
+  }>;
+};
+
+type LuckysheetRuntimeWindow = Window & {
+  luckysheet?: LuckysheetRuntime;
+  __luckysheetLoaderPromise?: Promise<void>;
+};
+
+const LUCKYSHEET_CDN_STYLE_URLS = [
+  "https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css",
+  "https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/plugins.css",
+  "https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css",
+  "https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/assets/iconfont/iconfont.css",
+];
+
+const LUCKYSHEET_CDN_SCRIPT_URLS = [
+  "https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/js/plugin.js",
+  "https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.umd.js",
+];
+
+const ensureLuckysheetStyles = () => {
+  if (typeof document === "undefined") return;
+  LUCKYSHEET_CDN_STYLE_URLS.forEach((href) => {
+    if (
+      document.querySelector(`link[data-luckysheet-style="${href}"]`) instanceof
+      HTMLLinkElement
+    ) {
+      return;
+    }
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    link.setAttribute("data-luckysheet-style", href);
+    document.head.appendChild(link);
+  });
+};
+
+const loadLuckysheetFromLocalBundle = async (
+  hostWindow: LuckysheetRuntimeWindow,
+) => {
+  await import("luckysheet/dist/plugins/js/plugin.js");
+  const module = await import("luckysheet/dist/luckysheet.umd.js");
+  const maybeRuntime =
+    (module as { default?: LuckysheetRuntime; luckysheet?: LuckysheetRuntime })
+      .default ??
+    (module as { default?: LuckysheetRuntime; luckysheet?: LuckysheetRuntime })
+      .luckysheet ??
+    hostWindow.luckysheet;
+  if (maybeRuntime && !hostWindow.luckysheet) {
+    hostWindow.luckysheet = maybeRuntime;
+  }
+  if (!hostWindow.luckysheet) {
+    throw new Error("Luckysheet 初始化失败");
+  }
+};
+
+const loadLuckysheetScript = (src: string) =>
+  new Promise<void>((resolve, reject) => {
+    if (typeof document === "undefined") {
+      reject(new Error("当前环境不支持 Luckysheet"));
+      return;
+    }
+
+    const existing = document.querySelector(
+      `script[data-luckysheet-script="${src}"]`,
+    ) as HTMLScriptElement | null;
+
+    if (existing) {
+      if (existing.dataset.loaded === "true") {
+        resolve();
+        return;
+      }
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener(
+        "error",
+        () => reject(new Error("Luckysheet 脚本加载失败")),
+        { once: true },
+      );
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.setAttribute("data-luckysheet-script", src);
+    script.addEventListener(
+      "load",
+      () => {
+        script.dataset.loaded = "true";
+        resolve();
+      },
+      { once: true },
+    );
+    script.addEventListener(
+      "error",
+      () => reject(new Error("Luckysheet 脚本加载失败")),
+      { once: true },
+    );
+    document.body.appendChild(script);
+  });
+
+const loadLuckysheetFromCdn = async (hostWindow: LuckysheetRuntimeWindow) => {
+  ensureLuckysheetStyles();
+  for (const src of LUCKYSHEET_CDN_SCRIPT_URLS) {
+    await loadLuckysheetScript(src);
+  }
+  if (!hostWindow.luckysheet) {
+    throw new Error("Luckysheet 初始化失败");
+  }
+};
+
+const ensureLuckysheetLoaded = async (): Promise<LuckysheetRuntime> => {
+  if (typeof window === "undefined") {
+    throw new Error("当前环境不支持 Luckysheet");
+  }
+
+  const hostWindow = window as LuckysheetRuntimeWindow;
+
+  if (hostWindow.luckysheet) return hostWindow.luckysheet;
+
+  if (!hostWindow.__luckysheetLoaderPromise) {
+    hostWindow.__luckysheetLoaderPromise = (async () => {
+      try {
+        await loadLuckysheetFromLocalBundle(hostWindow);
+      } catch {
+        // 兜底到 CDN，避免历史部署环境中本地包未命中的场景。
+        await loadLuckysheetFromCdn(hostWindow);
+      }
+    })().catch((error) => {
+      hostWindow.__luckysheetLoaderPromise = undefined;
+      throw error;
+    });
+  }
+
+  await hostWindow.__luckysheetLoaderPromise;
+  if (!hostWindow.luckysheet) {
+    throw new Error("Luckysheet 初始化失败");
+  }
+  return hostWindow.luckysheet;
+};
+
 const LuckysheetPreview = ({
   document,
   content,
@@ -644,13 +797,25 @@ const LuckysheetPreview = ({
   sheets?: PreviewSheet[] | null;
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const containerIdRef = useRef(
+    `luckysheet-web-${document.id.replace(/[^a-z0-9_-]/gi, "-")}`,
+  );
   const [isSaving, setIsSaving] = useState(false);
+  const [isBootingSheet, setIsBootingSheet] = useState(false);
+  const [engineError, setEngineError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
   const [toastMessage, setToastMessage] = useState<{
     text: string;
     type: "success" | "error";
   } | null>(null);
-  const [isBootingSheet, setIsBootingSheet] = useState(false);
-  const [sheetError, setSheetError] = useState("");
+  const [headerActionsContainer, setHeaderActionsContainer] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const el = window.document.getElementById("preview-header-actions");
+    if (el) {
+      setHeaderActionsContainer(el);
+    }
+  }, []);
 
   const sheets = useMemo(
     () =>
@@ -664,13 +829,21 @@ const LuckysheetPreview = ({
     if (!containerRef.current) return;
     let cancelled = false;
     setIsBootingSheet(true);
-    setSheetError("");
+    setEngineError("");
 
     const mountLuckysheet = async () => {
+      let luckysheet: any;
       try {
-        const luckysheet = await ensureLuckysheetRuntime();
-        if (cancelled || !containerRef.current) return;
+        luckysheet = await ensureLuckysheetLoaded();
+        if (cancelled || !luckysheet) return;
 
+        luckysheet.destroy();
+      } catch {
+        // Ignore stale instance cleanup failures.
+      }
+
+      try {
+        if (!luckysheet) return;
         const luckysheetData = sheets.map((sheet, index) => {
           const celldata: any[] = [];
           sheet.rows.forEach((row, rIndex) => {
@@ -679,7 +852,7 @@ const LuckysheetPreview = ({
                 celldata.push({
                   r: rIndex,
                   c: cIndex,
-                  v: { v: cell, m: cell },
+                  v: { v: cell, m: String(cell) },
                 });
               }
             });
@@ -694,14 +867,8 @@ const LuckysheetPreview = ({
           };
         });
 
-        try {
-          luckysheet.destroy?.();
-        } catch {
-          // Ignore stale singleton cleanup failures.
-        }
-
-        luckysheet.create?.({
-          container: containerRef.current.id,
+        luckysheet.create({
+          container: containerIdRef.current,
           data: luckysheetData,
           showinfobar: false,
           showtoolbar: true,
@@ -713,7 +880,9 @@ const LuckysheetPreview = ({
         });
       } catch (error) {
         if (!cancelled) {
-          setSheetError(error instanceof Error ? error.message : "Excel 预览加载失败");
+          setEngineError(
+            error instanceof Error ? error.message : "Luckysheet 加载失败",
+          );
         }
       } finally {
         if (!cancelled) {
@@ -727,17 +896,17 @@ const LuckysheetPreview = ({
     return () => {
       cancelled = true;
       try {
-        ((window as any).luckysheet as LuckysheetRuntime | undefined)?.destroy?.();
+        (window as any).luckysheet?.destroy();
       } catch {
-        // Ignore stale singleton cleanup failures.
+        // Ignore cleanup failures from the global singleton.
       }
     };
-  }, [sheets]);
+  }, [document.id, sheets, reloadToken]);
 
   const handleSave = async () => {
     const luckysheet = (window as any).luckysheet;
     if (!luckysheet) {
-      setToastMessage({ text: "Excel 预览尚未加载完成", type: "error" });
+      setToastMessage({ text: "表格引擎尚未加载完成", type: "error" });
       setTimeout(() => setToastMessage(null), 3000);
       return;
     }
@@ -797,44 +966,62 @@ const LuckysheetPreview = ({
           {toastMessage.text}
         </div>
       )}
-      <div className="absolute top-2 right-[20px] z-[1000]">
+      {headerActionsContainer && createPortal(
         <button
           onClick={handleSave}
-          disabled={isSaving || isBootingSheet || Boolean(sheetError)}
-          className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100 text-white px-4 py-2 rounded-[10px] text-[13px] font-medium shadow-sm transition-colors disabled:opacity-50"
+          disabled={isSaving}
+          title="保存修改"
+          className="flex items-center justify-center w-[22px] h-[22px] bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-transparent dark:ring-1 dark:ring-white/[0.05] text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/[0.05] hover:text-slate-900 dark:hover:text-slate-200 rounded-[4px] shadow-sm transition-all active:scale-95 disabled:opacity-50"
         >
           {isSaving ? (
-            <Loader2 size={15} className="animate-spin" />
+            <Loader2 size={12} className="animate-spin" />
           ) : (
-            <Save size={15} />
+            <Save size={12} />
           )}
-          保存修改
-        </button>
-      </div>
-      {(isBootingSheet || sheetError) && (
-        <div className="absolute inset-0 z-[900] flex items-center justify-center bg-white/90 px-6 text-center dark:bg-[#0B1120]/90">
-          <div className="max-w-[360px] space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-slate-900">
-            {isBootingSheet ? (
-              <Loader2 size={24} className="mx-auto animate-spin text-slate-500" />
-            ) : (
-              <AlertCircle size={24} className="mx-auto text-red-500" />
-            )}
-            <div className="text-[14px] font-medium text-slate-800 dark:text-slate-100">
-              {isBootingSheet ? "正在加载 Excel 预览组件" : "Excel 预览加载失败"}
-            </div>
-            {sheetError && (
-              <div className="text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
-                {sheetError}
-              </div>
-            )}
-          </div>
-        </div>
+        </button>,
+        headerActionsContainer
       )}
       <div
-        id="luckysheet-container"
+        id={containerIdRef.current}
         ref={containerRef}
         className="flex-1 w-full h-full relative"
       />
+      {isBootingSheet ? (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/85 text-sm text-slate-500 dark:bg-[#0B1120]/85 dark:text-slate-300">
+          <div className="flex items-center gap-2">
+            <Loader2 size={16} className="animate-spin" />
+            正在加载 Excel 预览引擎...
+          </div>
+        </div>
+      ) : null}
+      {engineError ? (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/92 p-6 dark:bg-[#0B1120]/92">
+          <div className="flex max-w-md flex-col items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-6 py-5 text-center shadow-sm dark:border-amber-900/50 dark:bg-amber-500/10">
+            <AlertCircle size={24} className="text-amber-600 dark:text-amber-400" />
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
+                Excel 预览引擎初始化失败
+              </p>
+              <p className="text-xs leading-6 text-amber-700 dark:text-amber-300">
+                当前文件仍会坚持走 Luckysheet 预览链路，不再降级为普通表格视图。请重试初始化，若仍失败请检查文件内容或转换结果。
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setReloadToken((value) => value + 1)}
+                className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-xs font-medium text-white transition hover:bg-amber-700 dark:bg-amber-500 dark:text-slate-950 dark:hover:bg-amber-400"
+              >
+                <RefreshCw size={14} />
+                重新加载 Luckysheet
+              </button>
+            </div>
+            <p className="text-[11px] text-amber-700/80 dark:text-amber-200/70">
+              {engineError}
+            </p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -1234,97 +1421,6 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
   );
 };
 
-const VerticalSlidingSelector = ({
-  items,
-  selectedId,
-  onSelect,
-  emptyIcon: EmptyIcon,
-  emptyTitle,
-  emptyHint,
-  renderActions,
-}: {
-  items: DocumentItem[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  tone?: VerticalSelectorTone;
-  emptyIcon: React.ComponentType<{ size?: number; className?: string }>;
-  emptyTitle: string;
-  emptyHint?: string;
-  renderActions?: (item: DocumentItem) => React.ReactNode;
-}) => {
-  const listRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
-
-  useEffect(() => {
-    if (!selectedId) return;
-    const node = itemRefs.current[selectedId];
-    node?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [selectedId, items]);
-
-  if (items.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center rounded-[16px] border border-slate-200 bg-slate-50/30 dark:border-white/[0.05] dark:bg-[#0B1120]">
-        <div className="text-center text-sm text-slate-500 dark:text-slate-400">
-          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-white dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/[0.05] shadow-sm">
-            <EmptyIcon size={24} className="text-slate-400 dark:text-slate-500" />
-          </div>
-          <p className="font-medium text-slate-700 dark:text-slate-300">{emptyTitle}</p>
-          {emptyHint ? <p className="mt-1.5 text-[13px] text-slate-500 dark:text-slate-400 max-w-[200px] leading-relaxed mx-auto">{emptyHint}</p> : null}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex h-full min-h-0 flex-col bg-slate-50/30 dark:bg-white/[0.01] rounded-[16px] p-1.5">
-      <div ref={listRef} className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10 pr-1">
-        <div className="flex flex-col gap-1">
-          {items.map((item) => (
-            <div
-              key={item.id}
-              ref={(node) => {
-                itemRefs.current[item.id] = node;
-              }}
-              onClick={() => onSelect(item.id)}
-              className={cn(
-                "group relative flex cursor-pointer items-center justify-between gap-3 rounded-[12px] p-2.5 transition-all border",
-                selectedId === item.id
-                  ? "bg-white dark:bg-white/[0.04] shadow-sm border-blue-200/60 dark:border-blue-500/20"
-                  : "border-transparent hover:bg-slate-100/50 dark:hover:bg-white/[0.02]"
-              )}
-            >
-              <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                <div className="shrink-0 flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 dark:bg-white/[0.04]">
-                  {getFileIcon(item.type)}
-                </div>
-                <div className="flex flex-col min-w-0 gap-0.5">
-                  <p className={cn(
-                    "truncate text-[13px] font-medium leading-none",
-                    selectedId === item.id ? "text-blue-600 dark:text-blue-400" : "text-slate-700 dark:text-slate-300"
-                  )}>{item.name}</p>
-                  <p className="text-[11px] text-slate-400 dark:text-slate-500 leading-none">{item.size || "未知大小"}</p>
-                </div>
-              </div>
-              
-              {renderActions && (
-                <div
-                  className={cn(
-                    "shrink-0 flex items-center gap-1 transition-opacity",
-                    selectedId === item.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                  )}
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  {renderActions(item)}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-};
-
 export const FusionGrid: React.FC = () => {
   const [leftPanelWidth, setLeftPanelWidth] = useState(25); // Percentage width of the left panel
   const isResizingRef = useRef(false);
@@ -1381,7 +1477,7 @@ export const FusionGrid: React.FC = () => {
     null,
   );
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-  const [infoMessage, setInfoMessage] = useState(
+  const [, setInfoMessage] = useState(
     "请先上传模板，再上传文档，最后点击开始填充。",
   );
   const [errorMessage, setErrorMessage] = useState("");
@@ -1390,11 +1486,6 @@ export const FusionGrid: React.FC = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [cancellingTaskIds, setCancellingTaskIds] = useState<string[]>([]);
-
-  // 左列组件放大状态：null 表示没有放大，'template' | 'docset' | 'tasks' 表示对应组件放大
-  const [expandedLeftPanel, setExpandedLeftPanel] = useState<
-    null | "template" | "docset" | "tasks"
-  >(null);
 
   const templateInputRef = useRef<HTMLInputElement>(null);
   const docsetInputRef = useRef<HTMLInputElement>(null);
@@ -1466,6 +1557,26 @@ export const FusionGrid: React.FC = () => {
   useEffect(() => {
     writeFusionGridState(gridState);
   }, [gridState]);
+
+  useEffect(() => {
+    let active = true;
+
+    resolveModule3OwnerScope().then((ownerScope) => {
+      if (!active) return;
+      const previousOwnerScope = readFusionGridOwnerScope();
+      if (previousOwnerScope && previousOwnerScope !== ownerScope) {
+        clearFusionGridStateStorage();
+        setGridState(createEmptyFusionGridState());
+        setErrorMessage("");
+        setInfoMessage("已切换到当前账号对应的填表工作区。");
+      }
+      writeFusionGridOwnerScope(ownerScope);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     setGridState((current) => {
@@ -1567,6 +1678,35 @@ export const FusionGrid: React.FC = () => {
       ),
     );
   }, [tasks]);
+
+  const dropMissingRunDependency = useCallback(
+    (kind: "template" | "docset", missingId: string) => {
+      setGridState((current) => {
+        if (kind === "template") {
+          const templates = current.templates.filter((item) => item.id !== missingId);
+          return {
+            ...current,
+            templates,
+            selectedTemplateId:
+              current.selectedTemplateId === missingId
+                ? (templates[0]?.id ?? null)
+                : current.selectedTemplateId,
+          };
+        }
+
+        const docsets = current.docsets.filter((item) => item.id !== missingId);
+        return {
+          ...current,
+          docsets,
+          selectedDocsetId:
+            current.selectedDocsetId === missingId
+              ? (docsets[0]?.id ?? null)
+              : current.selectedDocsetId,
+        };
+      });
+    },
+    [],
+  );
 
   const stats = useMemo(() => {
     const total = taskItems.length;
@@ -1764,7 +1904,18 @@ export const FusionGrid: React.FC = () => {
             : `任务已创建：${record.id}`,
       );
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "启动任务失败");
+      const missingResource = parseModule3MissingResource(error);
+      if (missingResource?.kind === "template") {
+        dropMissingRunDependency("template", missingResource.id);
+        setInfoMessage("检测到失效模板缓存，已自动从当前列表中移除。");
+        setErrorMessage("当前模板已失效或不属于当前登录账号，请重新上传模板后再试。");
+      } else if (missingResource?.kind === "docset") {
+        dropMissingRunDependency("docset", missingResource.id);
+        setInfoMessage("检测到失效文档集缓存，已自动从当前列表中移除。");
+        setErrorMessage("当前文档集已失效或不属于当前登录账号，请重新上传文档后再试。");
+      } else {
+        setErrorMessage(error instanceof Error ? error.message : "启动任务失败");
+      }
     } finally {
       setIsRunning(false);
     }
@@ -1922,14 +2073,32 @@ export const FusionGrid: React.FC = () => {
   };
 
   const loadPreviewContent = async ({
+    runId,
     fileId,
     type,
     fallbackContent,
   }: {
+    runId: string;
     fileId: string;
     type: DocumentType;
     fallbackContent: string;
   }) => {
+    if (type === "xlsx") {
+      try {
+        const workbookPreview = await parseModule3ExcelJson(runId);
+        const structuredSheets = workbookSheetsToPreviewSheets(
+          workbookPreview.sheets || [],
+        );
+        if (structuredSheets.length > 0) {
+          setPreviewSheets(structuredSheets);
+          setPreviewContent("");
+          return;
+        }
+      } catch {
+        // Fallback to text preview when parse-json is unavailable.
+      }
+    }
+
     if (type === "docx") {
       setPreviewSheets(null);
       setPreviewContent("");
@@ -1993,6 +2162,7 @@ export const FusionGrid: React.FC = () => {
 
     try {
       await loadPreviewContent({
+        runId: task.id,
         fileId: outputFileId,
         type: outputType,
         fallbackContent,
@@ -2007,7 +2177,7 @@ export const FusionGrid: React.FC = () => {
 
   // 模板上传下拉内容
   const templateDropdownContent = (
-    <div className="p-3 w-[340px] flex flex-col gap-2">
+    <div className="p-3 w-[340px] flex flex-col gap-2 max-h-[400px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10">
       {templateItems.length === 0 ? (
         <button
           type="button"
@@ -2032,95 +2202,62 @@ export const FusionGrid: React.FC = () => {
           </p>
           <p className="text-[11px] text-slate-400">支持 XLSX, DOCX</p>
         </button>
-      ) : null}
+      ) : (
+        <div className="flex items-center justify-between gap-1 rounded-[12px] border border-slate-200 px-2.5 py-2 text-[11px] text-slate-600 dark:border-white/[0.05] dark:bg-white/[0.02] dark:text-slate-300 shadow-sm bg-white dark:bg-[#0B1120] shrink-0">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <FileSpreadsheet size={14} className="shrink-0 text-blue-500" />
+            <span className="truncate font-medium">模板文件</span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                templateInputRef.current?.click();
+              }}
+              className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700/50 rounded-[6px] text-blue-500 hover:text-blue-600 transition-colors flex items-center gap-1 bg-blue-50 dark:bg-blue-500/10"
+              title="上传新模板"
+            >
+              <UploadCloud size={12} />
+              <span className="text-[10px] font-medium pr-0.5">重传</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 模板列表 */}
       {templateItems.length > 0 && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1 min-h-0 bg-slate-50/30 dark:bg-white/[0.01] rounded-[16px] p-1.5 border border-transparent dark:border-white/[0.02]">
           {templateItems.map((tpl) => (
-            <div key={tpl.id} className="flex flex-col gap-1.5">
-              <div
-                onClick={() =>
-                  setGridState((current) => ({
-                    ...current,
-                    selectedTemplateId: tpl.id,
-                  }))
-                }
-                className={cn(
-                  "flex flex-col p-2.5 rounded-[16px] cursor-pointer transition-all border",
-                  selectedTemplateId === tpl.id
-                    ? "bg-white dark:bg-white/[0.04] border-blue-200/60 dark:border-blue-500/20 shadow-sm"
-                    : "bg-slate-50 border-transparent hover:bg-slate-100/50 dark:bg-white/[0.01] dark:hover:bg-white/[0.02]"
-                )}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    {tpl.name.toLowerCase().endsWith(".docx") ||
-                    tpl.name.toLowerCase().endsWith(".doc") ? (
-                      <img
-                        src={wordIconUrl}
-                        alt="Word"
-                        className="w-6 h-6 object-contain shrink-0"
-                      />
-                    ) : (
-                      <img
-                        src={excelIconUrl}
-                        alt="Excel"
-                        className="w-6 h-6 object-contain shrink-0"
-                      />
-                    )}
-                    <div className="min-w-0 flex flex-col gap-0.5">
-                      <p className="truncate font-medium text-slate-800 dark:text-slate-200 text-[13px] leading-none">
-                        {tpl.name}
-                      </p>
-                      <p className="text-[11px] text-slate-400 dark:text-slate-500 leading-none">
-                        {tpl.size}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0 ml-2">
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        templateInputRef.current?.click();
-                      }}
-                      className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700/50 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
-                      title="替换模板"
-                    >
-                      <UploadCloud size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleRemoveTemplate(tpl.id);
-                      }}
-                      className="p-1.5 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg text-slate-400 hover:text-red-500 transition-colors"
-                      title="删除"
-                    >
-                      <X size={14} />
-                    </button>
+            <UnifiedFileListItem
+              key={tpl.id}
+              file={tpl}
+              icon={
+                tpl.name.toLowerCase().endsWith(".docx") || tpl.name.toLowerCase().endsWith(".doc") ? (
+                  <img src={wordIconUrl} alt="Word" className="w-6 h-6 object-contain" />
+                ) : (
+                  <img src={excelIconUrl} alt="Excel" className="w-6 h-6 object-contain" />
+                )
+              }
+              isSelected={selectedTemplateId === tpl.id}
+              onClick={() => setGridState((current) => ({ ...current, selectedTemplateId: tpl.id }))}
+              onRemove={() => handleRemoveTemplate(tpl.id)}
+            >
+              {selectedTemplateRecord && selectedTemplateRecord.id === tpl.id && (
+                <div className="mt-1 pt-2 border-t border-slate-100 dark:border-white/[0.05]">
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedTemplateRecord.fields.map((field, idx) => (
+                      <span
+                        key={`${field.key}-${idx}`}
+                        className="inline-flex items-center rounded-[6px] bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400"
+                      >
+                        {field.header}
+                      </span>
+                    ))}
                   </div>
                 </div>
-
-                {/* 模板解析结构 */}
-                {selectedTemplateRecord && selectedTemplateRecord.id === tpl.id && (
-                  <div className="mt-2.5 pt-2.5 border-t border-slate-100 dark:border-white/[0.05]">
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedTemplateRecord.fields.map((field, idx) => (
-                        <span
-                          key={`${field.key}-${idx}`}
-                          className="inline-flex items-center rounded-[6px] bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400"
-                        >
-                          {field.header}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
+              )}
+            </UnifiedFileListItem>
           ))}
         </div>
       )}
@@ -2157,7 +2294,7 @@ export const FusionGrid: React.FC = () => {
   };
 
   const docsetDropdownContent = (
-    <div className="p-3 w-[340px] flex flex-col gap-2">
+    <div className="p-3 w-[340px] flex flex-col gap-2 max-h-[400px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10">
       {documentItems.length === 0 ? (
         <div
           onClick={() => docsetInputRef.current?.click()}
@@ -2222,7 +2359,7 @@ export const FusionGrid: React.FC = () => {
 
       {/* 当有文档时，显示紧凑的头部控制区 */}
       {documentItems.length > 0 && (
-        <div className="flex items-center justify-between gap-1 rounded-[12px] border border-slate-200 px-2.5 py-2 text-[11px] text-slate-600 dark:border-white/[0.05] dark:bg-white/[0.02] dark:text-slate-300 shadow-sm bg-white dark:bg-[#0B1120]">
+        <div className="flex items-center justify-between gap-1 rounded-[12px] border border-slate-200 px-2.5 py-2 text-[11px] text-slate-600 dark:border-white/[0.05] dark:bg-white/[0.02] dark:text-slate-300 shadow-sm bg-white dark:bg-[#0B1120] shrink-0">
           <div className="flex min-w-0 items-center gap-1.5">
             <FolderOpen size={14} className="shrink-0 text-blue-500" />
             <span className="truncate font-medium">
@@ -2273,30 +2410,21 @@ export const FusionGrid: React.FC = () => {
       )}
 
       {documentItems.length > 0 && (
-        <div className="h-[280px] min-h-0">
-          <VerticalSlidingSelector
-            items={documentItems}
-            selectedId={selectedDocument}
-            onSelect={setSelectedDocument}
-            tone="purple"
-            emptyIcon={FolderOpen}
-            emptyTitle="无文档"
-            renderActions={(doc) => (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (selectedDocsetId) {
-                    handleRemoveDocument(selectedDocsetId, doc.id);
-                  }
-                }}
-                className="p-1.5 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg text-slate-400 hover:text-red-500 transition-colors"
-                title="删除文档"
-              >
-                <X size={14} />
-              </button>
-            )}
-          />
+        <div className="flex flex-col gap-1 min-h-0 bg-slate-50/30 dark:bg-white/[0.01] rounded-[16px] p-1.5 border border-transparent dark:border-white/[0.02]">
+          {documentItems.map((doc) => (
+            <UnifiedFileListItem
+              key={doc.id}
+              file={doc}
+              icon={getFileIcon(doc.type)}
+              isSelected={selectedDocument === doc.id}
+              onClick={() => setSelectedDocument(doc.id)}
+              onRemove={() => {
+                if (selectedDocsetId) {
+                  handleRemoveDocument(selectedDocsetId, doc.id);
+                }
+              }}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -2351,7 +2479,7 @@ export const FusionGrid: React.FC = () => {
               <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/[0.05] px-6 py-4 bg-transparent">
                 <h3 className="font-medium text-slate-800 dark:text-slate-200 flex items-center gap-2 text-[14px]">
                   <HelpCircle size={16} className="text-slate-500" />
-                  多源数据融合 - 使用说明
+                  自定义智能填表 - 使用说明
                 </h3>
                 <button
                   onClick={() => setIsHelpModalOpen(false)}
@@ -2469,10 +2597,15 @@ export const FusionGrid: React.FC = () => {
       >
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <div className="min-w-[210px] flex-1">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <div className="h-4 w-1 rounded-full bg-blue-600" />
-              <h1 className="truncate font-['Microsoft_YaHei'] text-[18px] font-bold tracking-tight text-slate-900 dark:text-white sm:text-[19px]">
-                多源数据融合
+            <div className="flex shrink-0 items-center -ml-5 translate-y-[2px]">
+              <img 
+                  src={fusionLogoUrl} 
+                  alt="Fusion" 
+                  className="h-[32px] w-auto origin-left scale-[3.0] translate-y-1 object-contain transition-all duration-300 mr-[110px]" 
+              />
+              <h1 className="flex shrink-0 items-center space-x-[1px] font-['Microsoft_YaHei'] text-[20px] font-bold tracking-widest -ml-0.5 translate-y-[2px] whitespace-nowrap">
+                <span className="text-[#334155] dark:text-slate-200">自定义</span>
+                <span className="text-[#3b82f6] dark:text-blue-400">智能填表</span>
               </h1>
             </div>
           </div>
@@ -2762,11 +2895,15 @@ export const FusionGrid: React.FC = () => {
 
           {/* 文件预览区 */}
           <div className="flex-1 min-h-0 flex flex-col">
-            <div className="shrink-0 border-b border-slate-200 dark:border-white/[0.05] px-4 py-2 flex items-center gap-1.5 bg-slate-50/30 dark:bg-[#0B1120]">
-              <LookIcon size={14} className="text-slate-500 dark:text-slate-400" />
-              <h3 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                文件预览
-              </h3>
+            <div className="shrink-0 border-b border-slate-200 dark:border-white/[0.05] px-4 py-2 flex items-center justify-between bg-slate-50/30 dark:bg-[#0B1120]">
+              <div className="flex items-center gap-1.5">
+                <LookIcon size={14} className="text-slate-500 dark:text-slate-400" />
+                <h3 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                  文件预览
+                </h3>
+                <div id="preview-header-actions" className="flex items-center ml-2 empty:hidden"></div>
+              </div>
+              <div className="flex items-center gap-2"></div>
             </div>
             <div className="flex-1 min-h-0 bg-white dark:bg-[#0B1120] relative">
               {isPreviewLoading ? (

@@ -13,6 +13,9 @@ load_module4_env = _service_module.load_module4_env
 cors_origins = _service_module.cors_origins
 default_tenant = _service_module.default_tenant
 tenant_from_request = _service_module.tenant_from_request
+validate_internal_request = _service_module.validate_internal_request
+module4_internal_token_mode = _service_module.module4_internal_token_mode
+module4_internal_token = _service_module.module4_internal_token
 now_utc = _service_module.now_utc
 parse_csv_list = _service_module.parse_csv_list
 build_insight_runtime_helpers = _service_module.build_insight_runtime_helpers
@@ -28,6 +31,9 @@ __all__ = [
     "cors_origins",
     "default_tenant",
     "tenant_from_request",
+    "validate_internal_request",
+    "module4_internal_token_mode",
+    "module4_internal_token",
     "now_utc",
     "parse_csv_list",
     "build_insight_runtime_helpers",

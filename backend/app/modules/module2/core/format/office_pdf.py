@@ -583,10 +583,7 @@ def _acquire_cache_lock_or_wait_for_result(
     lock_path = _office_preview_lock_path(file_hash)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     poll_sec = max(0.05, float(os.getenv("MODULE2_OFFICE_CACHE_LOCK_POLL_SEC", "0.20")))
-    stale_sec = max(
-        30.0,
-        float(os.getenv("MODULE2_OFFICE_CACHE_LOCK_STALE_SEC", str(max(120.0, float(timeout_sec) * 2.0)))),
-    )
+    stale_sec = _resolve_cache_lock_stale_sec(timeout_sec)
 
     while True:
         cache_hit = _load_cached_pdf(file_hash)
@@ -609,12 +606,75 @@ def _acquire_cache_lock_or_wait_for_result(
                 )
             return token, waited_ms, None
         except FileExistsError:
+            if _lock_file_owner_inactive(lock_path):
+                _break_stale_lock(lock_path)
+                continue
             if _lock_file_is_stale(lock_path, stale_sec=stale_sec):
                 _break_stale_lock(lock_path)
                 continue
             if time.perf_counter() >= deadline:
                 raise TimeoutError(f"office_cache_lock_timeout:{file_hash}")
             time.sleep(poll_sec)
+
+
+def _resolve_cache_lock_stale_sec(timeout_sec: float) -> float:
+    timeout_limit = max(2.0, float(timeout_sec))
+    configured_stale_sec = max(
+        8.0,
+        float(os.getenv("MODULE2_OFFICE_CACHE_LOCK_STALE_SEC", str(max(120.0, timeout_limit * 2.0)))),
+    )
+    # Keep enough budget after lock recovery to allow a fallback conversion attempt in this request.
+    min_recovery_budget_sec = max(20.0, timeout_limit * 0.35)
+    stale_cap_sec = max(12.0, timeout_limit - min_recovery_budget_sec)
+    return max(8.0, min(configured_stale_sec, stale_cap_sec))
+
+
+def _lock_file_owner_inactive(lock_path: Path) -> bool:
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    raw_pid = payload.get("pid")
+    try:
+        pid = int(raw_pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    return not _is_process_alive(pid)
+
+
+def _is_process_alive(pid: int) -> bool:
+    if int(pid or 0) <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(int(pid), 0)
+        except OSError:
+            return False
+        except Exception:
+            return True
+        return True
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        process = kernel32.OpenProcess(0x1000, False, int(pid))
+        if not process:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code)):
+                return False
+            return int(exit_code.value) == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(process)
+    except Exception:
+        # Be conservative on unexpected runtime errors and avoid breaking active locks.
+        return True
 
 
 def _release_cache_lock(*, file_hash: str, token: str) -> None:

@@ -14,7 +14,7 @@ from app.core.middleware import register_middleware
 def create_app() -> FastAPI:
     """Build the unified FastAPI application instance."""
 
-    load_managed_env_files(scopes=("module2", "module3", "module4", "backend"))
+    load_managed_env_files(scopes=("module1", "module2", "module3", "module4", "backend"))
     settings = get_settings()
     configure_app_logging()
 

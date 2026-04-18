@@ -23,3 +23,17 @@ def test_module4_native_backend_shell_removed() -> None:
         / "native_backend"
     )
     assert not native_backend_dir.exists()
+
+
+def test_module4_graph_endpoint_compat_shim_removed() -> None:
+    graph_endpoint_shim = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "modules"
+        / "module4"
+        / "api"
+        / "v1"
+        / "endpoints"
+        / "graph.py"
+    )
+    assert not graph_endpoint_shim.exists()

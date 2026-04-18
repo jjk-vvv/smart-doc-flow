@@ -1,304 +1,2033 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ResponsiveContainer, Tooltip } from "recharts";
-import { UploadCloud, FileText, Activity, AlertOctagon, Terminal, Zap, BrainCircuit } from "lucide-react";
-import { motion } from "framer-motion";
-import { cn } from "../../lib/utils";
+﻿﻿﻿﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  readExtractionDocuments,
-  readExtractionUpdatedAt,
-  subscribeExtractionUpdates,
-  type ExtractionDocument,
-  type ExtractionEntity,
-} from "../../shared/state/extractionDocuments";
+  AlertTriangle,
+  Bot,
+  BrainCircuit,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Database,
+  Download,
+  Eye,
+  File,
+  FileSearch,
+  FileSpreadsheet,
+  FileText,
+  Filter,
+  FolderOpen,
+  FolderPlus,
+  GitGraph,
+  Home,
+  Image as ImageIcon,
+  Loader2,
+  LayoutGrid,
+  MessageSquare,
+  PencilLine,
+  RotateCw,
+  Search,
+  Sparkles,
+  Star,
+  Trash2,
+  UploadCloud,
+  Wand2,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 
-type StatCardProps = {
-  title: string;
-  value: string;
-  icon: React.ElementType;
-  trend: string;
-  isDanger?: boolean;
-  index: number;
+import { cn } from '../../lib/utils';
+import type { AuthUser } from '../../shared/api/auth';
+import { buildModule1ApiUrl } from '../../shared/api/module1';
+import { PdfJsViewer, type PdfViewMode } from '../../components/PdfJsViewer';
+import { LuckysheetPreview } from '../../components/LuckysheetPreview';
+import {
+  HOME_WORKBENCH_ROOT_FOLDER_ID,
+  type HomeWorkbenchFolder,
+  type HomeWorkbenchItem,
+  type HomeWorkbenchSession,
+  type HomeWorkbenchView,
+  clearModule4DraftFromHomeWorkbench,
+  createDefaultHomeWorkbenchSession,
+  deleteHomeWorkbenchFile,
+  ensureHomeWorkbenchPersistenceReady,
+  getHomeWorkbenchConvertedPdf,
+  getHomeWorkbenchFile,
+  isHomeWorkbenchPersistenceReady,
+  readHomeWorkbenchSession,
+  readModule4DraftFromHomeWorkbench,
+  registerHomeWorkbenchConvertedPdf,
+  registerHomeWorkbenchFiles,
+  resolveHomeWorkbenchFile,
+  subscribeHomeWorkbenchBinaryStore,
+  writeHomeWorkbenchSession,
+  writeModule1DraftFromHomeWorkbench,
+  writeModule2DraftFromHomeWorkbench,
+  writeModule4DraftFromHomeWorkbench,
+} from '../../shared/state/homeWorkbench';
+import {
+  readFusionGridState,
+  type FusionGridDocsetRecord,
+  type FusionGridState,
+  type FusionGridTemplateRecord,
+  writeFusionGridState,
+} from '../../lib/fusionGridStore';
+import { uploadModule3Docset, uploadModule3Template } from '../../lib/module3Api';
+
+import pdfIcon from '../../assets/pdf.png';
+import wordIcon from '../../assets/WORD.png';
+import xlsxIcon from '../../assets/xlsx.png';
+import txtIcon from '../../assets/txt.png';
+import mdIcon from '../../assets/md.png';
+import customDocIcon from '../../assets/文档.png';
+
+type DashboardProps = {
+  onNavigate?: (tab: string) => void;
+  user?: AuthUser;
 };
 
-const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, trend, isDanger, index }) => (
-  <motion.div
-    initial={{ opacity: 0, y: 20 }}
-    animate={{ opacity: 1, y: 0 }}
-    transition={{ delay: index * 0.08, duration: 0.35 }}
-    className="glass-card p-5 flex flex-col justify-between group hover:border-primary/30 hover:shadow-[0_0_20px_rgba(56,189,248,0.1)] relative overflow-hidden bg-white/50 dark:bg-slate-900/40"
-  >
-    <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
-      <Icon className="w-12 h-12 text-primary" />
+type PreviewMode = 'pdf' | 'text' | 'image' | 'spreadsheet' | 'unsupported';
+
+type ToastState = {
+  tone: 'info' | 'good' | 'warn' | 'error';
+  text: string;
+};
+
+type ModuleTarget = 'module2' | 'module3-template' | 'module3-source' | 'module4';
+
+type WordToPdfConversionResult =
+  | {
+      ok: true;
+      pdfBlob: Blob;
+    }
+  | {
+      ok: false;
+      errorMessage: string;
+    };
+
+const MODULE1_QUICK_PROMPTS = [
+  '请先总结这份文档的核心内容，再给出可执行建议',
+  '请帮我提炼这份文件里的关键事实、时间点和结论',
+  '请检查这份材料是否存在风险点、歧义点或表述遗漏',
+  '请把这份文档改写成更适合正式汇报的版本',
+];
+
+const queueShellClassName =
+  'rounded-[28px] border border-[#dbe6f2] bg-white/92 shadow-[0_26px_80px_-44px_rgba(77,99,132,0.22)] backdrop-blur-xl';
+
+const createId = (prefix: string): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+};
+
+const fileExt = (name: string): string => {
+  const raw = String(name || '').trim().split('.').pop() || '';
+  return raw.toLowerCase();
+};
+
+const formatBytes = (value: number): string => {
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+};
+
+const formatTimestamp = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const formatRelativeTime = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '刚刚';
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.max(0, Math.round(diffMs / 60000));
+  if (diffMinutes < 1) return '刚刚';
+  if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} 小时前`;
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays} 天前`;
+};
+
+const detectMime = (file: File): string => {
+  if (file.type) return file.type;
+  const ext = fileExt(file.name);
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (ext === 'doc') return 'application/msword';
+  if (ext === 'xlsx') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (ext === 'xls') return 'application/vnd.ms-excel';
+  if (['txt', 'md', 'markdown', 'csv', 'json'].includes(ext)) return 'text/plain';
+  if (['jpg', 'jpeg'].includes(ext)) return 'image/jpeg';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'gif') return 'image/gif';
+  return 'application/octet-stream';
+};
+
+const isPdfFile = (item: Pick<HomeWorkbenchItem, 'ext' | 'mime'>): boolean =>
+  item.ext === 'pdf' || item.mime.includes('pdf');
+
+const isWordFile = (item: Pick<HomeWorkbenchItem, 'ext' | 'mime'>): boolean =>
+  item.ext === 'docx' || item.ext === 'doc' || item.mime.includes('word');
+
+const isSpreadsheetFile = (item: Pick<HomeWorkbenchItem, 'ext' | 'mime'>): boolean =>
+  item.ext === 'xlsx' || item.ext === 'xls' || item.mime.includes('sheet') || item.mime.includes('excel');
+
+const isTextFile = (item: Pick<HomeWorkbenchItem, 'ext' | 'mime'>): boolean =>
+  ['txt', 'md', 'markdown', 'csv', 'json'].includes(item.ext) || item.mime.startsWith('text/');
+
+const isImageFile = (item: Pick<HomeWorkbenchItem, 'ext' | 'mime'>): boolean =>
+  ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(item.ext) || item.mime.startsWith('image/');
+
+const resolvePreviewMode = (item: HomeWorkbenchItem | null | undefined): PreviewMode => {
+  if (!item) return 'unsupported';
+  if (isPdfFile(item) || isWordFile(item)) return 'pdf';
+  if (isTextFile(item)) return 'text';
+  if (isImageFile(item)) return 'image';
+  if (isSpreadsheetFile(item)) return 'spreadsheet';
+  return 'unsupported';
+};
+
+const parseApiErrorMessage = async (response: Response): Promise<string> => {
+  try {
+    const bodyText = (await response.text()).trim();
+    if (!bodyText) return `HTTP ${response.status}`;
+    try {
+      const payload = JSON.parse(bodyText) as { error?: string; detail?: string; message?: string };
+      return String(payload.error || payload.detail || payload.message || bodyText).trim();
+    } catch {
+      return bodyText;
+    }
+  } catch {
+    return `HTTP ${response.status}`;
+  }
+};
+
+const isLikelyPdfBlob = async (blob: Blob): Promise<boolean> => {
+  if (!blob || blob.size < 5) return false;
+  try {
+    const header = await blob.slice(0, 5).text();
+    return header === '%PDF-';
+  } catch {
+    return false;
+  }
+};
+
+const buildItemFromFile = (file: File, folderId: string | null): HomeWorkbenchItem => {
+  const now = new Date().toISOString();
+  return {
+    id: createId('home-file'),
+    name: file.name,
+    originalName: file.name,
+    ext: fileExt(file.name),
+    mime: detectMime(file),
+    size: file.size,
+    folderId,
+    createdAt: now,
+    updatedAt: now,
+    starred: false,
+    trashed: false,
+    source: 'upload',
+    status: 'ready',
+    errorMessage: null,
+    convertedPdfReady: false,
+  };
+};
+
+const getFolderChildren = (folders: HomeWorkbenchFolder[], parentId: string | null) =>
+  folders.filter((folder) => folder.parentId === parentId);
+
+const getItemAvailabilityLabel = (
+  item: HomeWorkbenchItem,
+  options?: { persistenceReady?: boolean }
+): string => {
+  if (options?.persistenceReady === false) return '恢复中';
+  if (item.status === 'converting') return '转换中';
+  if (item.status === 'error') return '预览异常';
+  if (!getHomeWorkbenchFile(item.id) && !getHomeWorkbenchConvertedPdf(item.id)) return '需重传';
+  if (isWordFile(item) && item.convertedPdfReady) return 'PDF 就绪';
+  return '已就绪';
+};
+
+const getItemIcon = (item: HomeWorkbenchItem, className = 'h-5 w-5') => {
+  if (isPdfFile(item)) {
+    return <img src={pdfIcon} alt="PDF" className={cn(className, 'object-contain drop-shadow-sm')} />;
+  }
+  if (isWordFile(item)) {
+    return <img src={wordIcon} alt="Word" className={cn(className, 'object-contain drop-shadow-sm')} />;
+  }
+  if (isSpreadsheetFile(item)) {
+    return <img src={xlsxIcon} alt="Excel" className={cn(className, 'object-contain drop-shadow-sm')} />;
+  }
+  if (isTextFile(item)) {
+    if (item.ext === 'md' || item.ext === 'markdown') {
+      return <img src={mdIcon} alt="Markdown" className={cn(className, 'object-contain drop-shadow-sm')} />;
+    }
+    return <img src={txtIcon} alt="Text" className={cn(className, 'object-contain drop-shadow-sm')} />;
+  }
+  if (isImageFile(item)) {
+    return <ImageIcon className={cn(className, 'text-[#9f6b32]')} />;
+  }
+  return <img src={customDocIcon} alt="Document" className={cn(className, 'object-contain drop-shadow-sm')} />;
+};
+
+const getFolderPathLabel = (folders: HomeWorkbenchFolder[], folderId: string | null): string => {
+  if (!folderId) return '未分组';
+  const folder = folders.find((entry) => entry.id === folderId);
+  return folder?.name || '未分组';
+};
+
+const readInitialModule3Requirements = (): string => {
+  try {
+    return readFusionGridState().draftRequirements || '';
+  } catch {
+    return '';
+  }
+};
+
+const convertWordToPdf = async (file: File): Promise<WordToPdfConversionResult> => {
+  const formData = new FormData();
+  formData.append('file', file, file.name || 'document.docx');
+
+  try {
+    const response = await fetch(buildModule1ApiUrl('/convert/docx-to-pdf'), {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const errorMessage = await parseApiErrorMessage(response);
+      return {
+        ok: false,
+        errorMessage: `Word 转 PDF 失败：${errorMessage}`,
+      };
+    }
+
+    const contentType = response.headers.get('content-type');
+    if (!contentType?.includes('application/pdf')) {
+      return {
+        ok: false,
+        errorMessage: `返回内容不是 PDF：${contentType || 'unknown'}`,
+      };
+    }
+
+    const pdfBlob = await response.blob();
+    if (pdfBlob.size === 0) {
+      return { ok: false, errorMessage: '返回的 PDF 内容为空。' };
+    }
+
+    const looksLikePdf = await isLikelyPdfBlob(pdfBlob);
+    if (!looksLikePdf) {
+      return { ok: false, errorMessage: '返回内容不是有效 PDF。' };
+    }
+
+    return { ok: true, pdfBlob };
+  } catch (error) {
+    return {
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : 'Word 转 PDF 失败。',
+    };
+  }
+};
+
+const QueueToolbar: React.FC<{
+  searchValue: string;
+  onSearchChange: (value: string) => void;
+  isToolboxOpen: boolean;
+}> = ({ searchValue, onSearchChange, isToolboxOpen }) => (
+  <div className="flex flex-col gap-4 border-b border-slate-100 dark:border-white/[0.05] bg-white dark:bg-[#0B1120] px-6 py-4 lg:px-7">
+    <div className={cn("flex flex-col gap-4 xl:flex-row xl:items-center", !isToolboxOpen && "xl:justify-center")}>
+      <label className="flex flex-1 max-w-2xl items-center gap-2 rounded-md bg-[#F2F3F5] dark:bg-white/[0.02] px-3 py-2 transition-colors focus-within:bg-white dark:focus-within:bg-[#0B1120] focus-within:ring-1 focus-within:ring-blue-500 dark:focus-within:ring-blue-400">
+        <Search size={16} className="text-slate-400 dark:text-slate-500" />
+        <input
+          value={searchValue}
+          onChange={(event) => onSearchChange(event.target.value)}
+          placeholder="搜索文档、文件夹或最近处理内容"
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-slate-800 dark:text-slate-200 outline-none placeholder:text-slate-400 dark:placeholder:text-slate-500"
+        />
+      </label>
     </div>
-    <div className="flex justify-between items-start z-10">
-      <div className="text-[10px] font-bold font-sans text-muted-foreground dark:text-white tracking-widest uppercase">{title}</div>
-      <Icon className={cn("w-4 h-4", isDanger ? "text-destructive" : "text-primary")} />
-    </div>
-    <div className="flex items-end justify-between mt-4 z-10">
-      <div className="text-3xl font-mono font-bold text-foreground tracking-tighter">{value}</div>
-      <div
-        className={cn(
-          "text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1",
-          trend.startsWith("+") ? "bg-emerald-500/10 text-emerald-500" : "bg-slate-100 dark:bg-slate-800 text-muted-foreground"
-        )}
-      >
-        {trend}
-      </div>
-    </div>
-  </motion.div>
+  </div>
 );
 
-const averageConfidence = (documents: ExtractionDocument[]): number => {
-  const entities: ExtractionEntity[] = [];
-  for (const doc of documents) {
-    for (const value of Object.values(doc.result || {})) {
-      entities.push(value);
-    }
-  }
-  if (entities.length === 0) return 0;
-  const sum = entities.reduce((acc, item) => acc + Number(item.confidence || 0), 0);
-  return Math.round((sum / entities.length) * 100);
-};
+const SidebarNavItem: React.FC<{
+  label: string;
+  active?: boolean;
+  icon: React.ReactNode;
+  detail?: string;
+  onClick: () => void;
+}> = ({ label, active = false, icon, detail, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={cn(
+      'group relative flex w-full items-center justify-between rounded-md px-3 py-2 text-left transition-colors',
+      active
+        ? 'bg-slate-100/60 dark:bg-white/[0.05] font-semibold text-slate-900 dark:text-slate-100'
+        : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/[0.02] hover:text-slate-900 dark:hover:text-slate-200 font-medium'
+    )}
+  >
+    {active && <div className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-sm bg-blue-600 dark:bg-blue-500" />}
+    <span className="flex items-center gap-3">
+      <span className={cn('flex items-center justify-center', active ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500 group-hover:text-slate-500 dark:group-hover:text-slate-400')}>
+        {icon}
+      </span>
+      <span>
+        <span className="block text-[14px]">{label}</span>
+      </span>
+    </span>
+  </button>
+);
 
-const buildRadarData = (documents: ExtractionDocument[]) => {
-  if (documents.length === 0) {
-    return [
-      { subject: "完整性", A: 0 },
-      { subject: "置信度", A: 0 },
-      { subject: "可追溯性", A: 0 },
-      { subject: "缓存命中", A: 0 },
-      { subject: "吞吐量", A: 0 },
-    ];
-  }
+const FileRow: React.FC<{
+  item: HomeWorkbenchItem;
+  folderLabel: string;
+  selected: boolean;
+  persistenceReady: boolean;
+  onOpen: () => void;
+  onSelect: () => void;
+  onToggleStar: () => void;
+  onRename: () => void;
+  onTrash: () => void;
+  onDownload: () => void;
+  onDragStart: (event: React.DragEvent<HTMLDivElement>) => void;
+}> = ({
+  item,
+  folderLabel,
+  selected,
+  persistenceReady,
+  onOpen,
+  onSelect,
+  onToggleStar,
+  onRename,
+  onTrash,
+  onDownload,
+  onDragStart,
+}) => (
+  <div
+    role="button"
+    tabIndex={0}
+    draggable
+    onDragStart={onDragStart}
+    onClick={onOpen}
+    onFocus={onSelect}
+    onKeyDown={(event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        onOpen();
+      }
+    }}
+    className={cn(
+      'group grid w-full grid-cols-[minmax(0,2.2fr)_140px_120px_140px_180px] items-center gap-3 border-b border-slate-100 dark:border-white/[0.05] px-6 py-3 text-left transition-colors',
+      selected
+        ? 'bg-blue-50/50 dark:bg-blue-500/10'
+        : 'bg-transparent hover:bg-slate-50 dark:hover:bg-white/[0.02]'
+    )}
+  >
+    <div className="flex min-w-0 items-center gap-3">
+      <div className="flex shrink-0 items-center justify-center bg-transparent">
+        {getItemIcon(item, 'h-5 w-5 opacity-90')}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-[14px] font-medium text-slate-800 dark:text-slate-200">{item.name}</div>
+      </div>
+    </div>
 
-  const docCount = documents.length;
-  const noErrorCount = documents.filter((d) => d.errors.length === 0).length;
-  const cachedCount = documents.filter((d) => d.cached).length;
-  const allEntities = documents.flatMap((d) => Object.values(d.result || {}));
-  const traceable = allEntities.filter((e) => Boolean(e.source_ref_id)).length;
-  const traceability = allEntities.length === 0 ? 0 : Math.round((traceable / allEntities.length) * 100);
+    <div className="text-[13px] text-slate-500 dark:text-slate-400">{folderLabel}</div>
+    <div className="text-[13px] text-slate-500 dark:text-slate-400">本地上传</div>
+    <div className="text-[13px] text-slate-500 dark:text-slate-400">{formatRelativeTime(item.updatedAt)}</div>
 
-  return [
-    { subject: "完整性", A: Math.round((noErrorCount / docCount) * 100) },
-    { subject: "置信度", A: averageConfidence(documents) },
-    { subject: "可追溯性", A: traceability },
-    { subject: "缓存命中", A: Math.round((cachedCount / docCount) * 100) },
-    { subject: "吞吐量", A: Math.min(100, docCount * 20) },
-  ];
-};
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-[13px] text-slate-500 dark:text-slate-400 shrink-0">
+        {getItemAvailabilityLabel(item, { persistenceReady })}
+      </span>
 
-const buildLogText = (documents: ExtractionDocument[], updatedAt: string | null): string => {
-  const at = updatedAt ? new Date(updatedAt).toLocaleString() : "--";
-  if (documents.length === 0) {
-    return `[${at}] 暂无抽取记录。\n请先在“非结构化文档信息需求模块”上传并抽取文档。`;
-  }
+      <div
+        className={cn("flex shrink-0 items-center gap-1 opacity-0 transition", selected ? "opacity-100" : "group-hover:opacity-100")}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onToggleStar}
+          className={cn('rounded-md p-1.5 transition hover:bg-slate-200 dark:hover:bg-white/[0.05]', item.starred ? 'text-yellow-500 dark:text-amber-500' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300')}
+          title={item.starred ? '取消收藏' : '加入收藏'}
+        >
+          <Star size={15} className={item.starred ? 'fill-current' : ''} />
+        </button>
+        <button
+          type="button"
+          onClick={onRename}
+          className="rounded-md p-1.5 text-slate-400 dark:text-slate-500 transition hover:bg-slate-200 dark:hover:bg-white/[0.05] hover:text-slate-700 dark:hover:text-slate-300"
+          title="重命名"
+        >
+          <PencilLine size={15} />
+        </button>
+        <button
+          type="button"
+          onClick={onDownload}
+          className="rounded-md p-1.5 text-slate-400 dark:text-slate-500 transition hover:bg-slate-200 dark:hover:bg-white/[0.05] hover:text-slate-700 dark:hover:text-slate-300"
+          title="下载"
+        >
+          <Download size={15} />
+        </button>
+        <button
+          type="button"
+          onClick={onTrash}
+          className="rounded-md p-1.5 text-slate-400 dark:text-slate-500 transition hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400"
+          title="移入回收站"
+        >
+          <Trash2 size={15} />
+        </button>
+      </div>
+    </div>
+  </div>
+);
 
-  const lines: string[] = [];
-  lines.push(`[${at}] 已加载 ${documents.length} 份抽取文档。`);
-  for (const doc of documents.slice(0, 6)) {
-    const fieldCount = Object.keys(doc.result || {}).length;
-    const errCount = doc.errors.length;
-    lines.push(
-      `- ${doc.file_name} | 轨道=${doc.track} | 字段=${fieldCount} | 异常=${errCount} | 缓存=${doc.cached ? "是" : "否"}`
-    );
-  }
-  if (documents.length > 6) {
-    lines.push(`... 其余 ${documents.length - 6} 份文档已省略。`);
-  }
-  return lines.join("\n");
-};
-
-export const Dashboard: React.FC = () => {
-  const [documents, setDocuments] = useState<ExtractionDocument[]>([]);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
-  const [logIndex, setLogIndex] = useState(0);
-  const [displayedLog, setDisplayedLog] = useState("");
+export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
+  const [session, setSession] = useState<HomeWorkbenchSession>(() => readHomeWorkbenchSession());
+  const [searchValue, setSearchValue] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [folderDraft, setFolderDraft] = useState('');
+  const [previewItemId, setPreviewItemId] = useState<string | null>(null);
+  const [previewToolboxOpen, setPreviewToolboxOpen] = useState(true);
+  const [isToolboxOpen, setIsToolboxOpen] = useState(true);
+  const [previewScale, setPreviewScale] = useState(1);
+  const [previewRotation, setPreviewRotation] = useState(0);
+  const [pdfViewMode, setPdfViewMode] = useState<PdfViewMode>('fit-width');
+  const [previewTextMap, setPreviewTextMap] = useState<Record<string, string>>({});
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [dragTarget, setDragTarget] = useState<ModuleTarget | null>(null);
+  const [module3Requirements, setModule3Requirements] = useState(() => readInitialModule3Requirements());
+  const [module3Busy, setModule3Busy] = useState<'template' | 'source' | null>(null);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const [folderRenameDraft, setFolderRenameDraft] = useState('');
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [itemRenameDraft, setItemRenameDraft] = useState('');
+  const [module4BannerVisible, setModule4BannerVisible] = useState(() => Boolean(readModule4DraftFromHomeWorkbench()));
+  const homepageUploadInputRef = useRef<HTMLInputElement>(null);
+  const module2UploadInputRef = useRef<HTMLInputElement>(null);
+  const module4UploadInputRef = useRef<HTMLInputElement>(null);
+  const module3TemplateInputRef = useRef<HTMLInputElement>(null);
+  const module3SourceInputRef = useRef<HTMLInputElement>(null);
+  const objectUrlMapRef = useRef<Map<string, string>>(new Map());
+  const [binaryStoreReady, setBinaryStoreReady] = useState(() => isHomeWorkbenchPersistenceReady());
+  const [binaryStoreRevision, setBinaryStoreRevision] = useState(0);
+  const [filterType, setFilterType] = useState<string | null>(null);
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, folderId: string } | null>(null);
+  const [uploadDialogFiles, setUploadDialogFiles] = useState<File[] | null>(null);
+  const [uploadTargetFolderId, setUploadTargetFolderId] = useState<string | null>(null);
+  const [uploadNewFolderDraft, setUploadNewFolderDraft] = useState('');
+  const [isCreatingFolderInUpload, setIsCreatingFolderInUpload] = useState(false);
 
   useEffect(() => {
-    const load = () => {
-      setDocuments(readExtractionDocuments());
-      setUpdatedAt(readExtractionUpdatedAt());
+    writeHomeWorkbenchSession(session);
+  }, [session]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncBinaryStoreState = () => {
+      if (cancelled) return;
+      setBinaryStoreReady(isHomeWorkbenchPersistenceReady());
+      setBinaryStoreRevision((current) => current + 1);
     };
-    load();
-    return subscribeExtractionUpdates(load);
+
+    const unsubscribe = subscribeHomeWorkbenchBinaryStore(syncBinaryStoreState);
+
+    void ensureHomeWorkbenchPersistenceReady().then(() => {
+      syncBinaryStoreState();
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, []);
 
-  const fullLog = useMemo(() => buildLogText(documents, updatedAt), [documents, updatedAt]);
-  const radarData = useMemo(() => buildRadarData(documents), [documents]);
-
-  const errorCount = useMemo(() => documents.filter((d) => d.errors.length > 0).length, [documents]);
-  const avgConfidence = useMemo(() => averageConfidence(documents), [documents]);
-  const activeAgents = useMemo(() => {
-    if (documents.length === 0) return 0;
-    const resultCount = documents.reduce((acc, d) => acc + Object.keys(d.result || {}).length, 0);
-    return Math.max(1, Math.min(6, Math.ceil(resultCount / 6)));
-  }, [documents]);
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = window.setTimeout(() => setToast(null), 2800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
-    setLogIndex(0);
-    setDisplayedLog("");
-  }, [fullLog]);
+    if (typeof window === 'undefined') return undefined;
+    return () => {
+      objectUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url));
+      objectUrlMapRef.current.clear();
+    };
+  }, []);
 
-  useEffect(() => {
-    if (logIndex < fullLog.length) {
-      const timeout = setTimeout(() => {
-        setDisplayedLog((prev) => prev + fullLog[logIndex]);
-        setLogIndex((prev) => prev + 1);
-      }, 8);
-      return () => clearTimeout(timeout);
+  const pushToast = useCallback((tone: ToastState['tone'], text: string) => {
+    setToast({ tone, text });
+  }, []);
+
+  const selectedItem = useMemo(
+    () => session.items.find((item) => item.id === session.selectedItemId) ?? null,
+    [session.items, session.selectedItemId]
+  );
+
+  const previewItem = useMemo(
+    () => session.items.find((item) => item.id === previewItemId) ?? null,
+    [previewItemId, session.items]
+  );
+
+  const rootFolder = useMemo(
+    () => session.folders.find((folder) => folder.id === HOME_WORKBENCH_ROOT_FOLDER_ID) ?? session.folders[0] ?? null,
+    [session.folders]
+  );
+
+  const activeFolderId = session.activeView.kind === 'folder'
+    ? session.activeView.folderId
+    : HOME_WORKBENCH_ROOT_FOLDER_ID;
+
+  const visibleItems = useMemo(() => {
+    const query = searchValue.trim().toLowerCase();
+    const baseItems = session.items.filter((item) => {
+      if (session.activeView.kind === 'recycle') return item.trashed;
+      if (item.trashed) return false;
+      if (session.activeView.kind === 'favorites') return item.starred;
+      if (session.activeView.kind === 'folder') return item.folderId === session.activeView.folderId;
+      return true;
+    });
+
+    let filtered = query
+      ? baseItems.filter((item) => item.name.toLowerCase().includes(query))
+      : baseItems;
+
+    if (filterType) {
+      filtered = filtered.filter((item) => {
+        if (filterType === 'pdf') return isPdfFile(item);
+        if (filterType === 'word') return isWordFile(item);
+        if (filterType === 'xlsx') return isSpreadsheetFile(item);
+        if (filterType === 'md') return isTextFile(item) && item.name.toLowerCase().endsWith('.md');
+        if (filterType === 'txt') return isTextFile(item) && item.name.toLowerCase().endsWith('.txt');
+        return true;
+      });
     }
-    return undefined;
-  }, [fullLog, logIndex]);
 
-  const trendDocs = documents.length > 0 ? `+${documents.length}` : "--";
-  const trendRisk = errorCount > 0 ? `+${errorCount}` : "--";
-  const trendConf = avgConfidence > 0 ? `+${avgConfidence}%` : "--";
-  const trendAgents = activeAgents > 0 ? `+${activeAgents}` : "--";
+    return [...filtered].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }, [searchValue, session.activeView, session.items, filterType]);
 
-  return (
-    <div className="h-[calc(100vh-2rem)] w-full overflow-hidden bg-background text-foreground p-2 font-sans">
-      <div className="grid grid-cols-12 grid-rows-12 gap-4 h-full max-w-[1920px] mx-auto">
-        <div className="col-span-12 row-span-2 grid grid-cols-4 gap-4">
-          <StatCard title="已处理文档" value={String(documents.length)} icon={FileText} trend={trendDocs} index={0} />
-          <StatCard title="异常文档" value={String(errorCount)} icon={AlertOctagon} trend={trendRisk} isDanger index={1} />
-          <StatCard title="平均置信度" value={`${avgConfidence}%`} icon={Zap} trend={trendConf} index={2} />
-          <StatCard title="活跃智能体" value={String(activeAgents)} icon={Activity} trend={trendAgents} index={3} />
+  const getOrCreateObjectUrl = useCallback((cacheKey: string, blob: Blob): string => {
+    const existing = objectUrlMapRef.current.get(cacheKey);
+    if (existing) return existing;
+    const next = URL.createObjectURL(blob);
+    objectUrlMapRef.current.set(cacheKey, next);
+    return next;
+  }, []);
+
+  const updateSession = useCallback((updater: (current: HomeWorkbenchSession) => HomeWorkbenchSession) => {
+    setSession((current) => updater(current));
+  }, []);
+
+  const updateItem = useCallback((itemId: string, updater: (item: HomeWorkbenchItem) => HomeWorkbenchItem) => {
+    updateSession((current) => ({
+      ...current,
+      items: current.items.map((item) => (item.id === itemId ? updater(item) : item)),
+    }));
+  }, [updateSession]);
+
+  const appendFilesToWorkbench = useCallback((files: File[], options?: {
+    folderId?: string | null;
+    selectFirst?: boolean;
+  }) => {
+    const folderId = options?.folderId ?? activeFolderId ?? HOME_WORKBENCH_ROOT_FOLDER_ID;
+    const accepted = files.filter((file) => file instanceof globalThis.File);
+    if (accepted.length === 0) return [] as HomeWorkbenchItem[];
+
+    const entries = accepted.map((file) => {
+      const item = buildItemFromFile(file, folderId);
+      return { item, file };
+    });
+
+    registerHomeWorkbenchFiles(entries.map((entry) => ({ itemId: entry.item.id, file: entry.file })));
+
+    updateSession((current) => ({
+      ...current,
+      items: [...entries.map((entry) => entry.item), ...current.items],
+      selectedItemId: options?.selectFirst === false ? current.selectedItemId : entries[0]?.item.id ?? current.selectedItemId,
+      activeView: current.activeView.kind === 'recycle'
+        ? { kind: 'home' }
+        : current.activeView,
+    }));
+
+    return entries.map((entry) => entry.item);
+  }, [activeFolderId, updateSession]);
+
+  const handleHomepageUpload = useCallback((files: FileList | File[] | null) => {
+    if (!files || files.length === 0) return;
+    const normalized = Array.from(files);
+    setUploadDialogFiles(normalized);
+    setUploadTargetFolderId(activeFolderId || HOME_WORKBENCH_ROOT_FOLDER_ID);
+    setUploadNewFolderDraft('');
+    setIsCreatingFolderInUpload(false);
+  }, [activeFolderId]);
+
+  const confirmUpload = useCallback(() => {
+    if (!uploadDialogFiles) return;
+    let finalFolderId = uploadTargetFolderId || HOME_WORKBENCH_ROOT_FOLDER_ID;
+
+    if (isCreatingFolderInUpload) {
+      const name = uploadNewFolderDraft.trim();
+      if (!name) {
+        pushToast('warn', '请输入新文件夹名称。');
+        return;
+      }
+      const now = new Date().toISOString();
+      const nextFolder: HomeWorkbenchFolder = {
+        id: createId('home-folder'),
+        name,
+        parentId: HOME_WORKBENCH_ROOT_FOLDER_ID,
+        createdAt: now,
+        updatedAt: now,
+      };
+      updateSession((current) => ({
+        ...current,
+        folders: [...current.folders, nextFolder],
+      }));
+      finalFolderId = nextFolder.id;
+    }
+
+    const items = appendFilesToWorkbench(uploadDialogFiles, { folderId: finalFolderId });
+    if (items.length > 0) {
+      pushToast('good', `已加入 ${items.length} 个文件到指定文件夹。`);
+      updateSession((current) => ({ ...current, activeView: { kind: 'folder', folderId: finalFolderId } }));
+    }
+    setUploadDialogFiles(null);
+  }, [uploadDialogFiles, uploadTargetFolderId, isCreatingFolderInUpload, uploadNewFolderDraft, appendFilesToWorkbench, pushToast, updateSession]);
+
+  const cancelUpload = useCallback(() => {
+    setUploadDialogFiles(null);
+  }, []);
+
+  const handleCreateFolder = useCallback(() => {
+    const name = folderDraft.trim();
+    if (!name) {
+      pushToast('warn', '请输入文件夹名称。');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const nextFolder: HomeWorkbenchFolder = {
+      id: createId('home-folder'),
+      name,
+      parentId: activeFolderId || HOME_WORKBENCH_ROOT_FOLDER_ID,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    updateSession((current) => ({
+      ...current,
+      folders: [...current.folders, nextFolder],
+      activeView: { kind: 'folder', folderId: nextFolder.id },
+    }));
+    setCreatingFolder(false);
+    setFolderDraft('');
+    pushToast('good', `文件夹“${name}”已创建。`);
+  }, [activeFolderId, folderDraft, pushToast, updateSession]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || typeof window === 'undefined') return undefined;
+
+    const debugHost = window as Window & {
+      __homeWorkbenchDebug?: {
+        injectTextFile: (name?: string, text?: string) => string | null;
+        injectSvgFile: (name?: string, label?: string) => string | null;
+        reset: () => void;
+      };
+    };
+
+    debugHost.__homeWorkbenchDebug = {
+      injectTextFile: (name = '首页调试说明.txt', text = '这是首页调试注入的文本文件，用于验证全屏预览、右侧工具箱和跨模块投递。') => {
+        const file = new globalThis.File([text], name, { type: 'text/plain' });
+        const [item] = appendFilesToWorkbench([file]);
+        return item?.id ?? null;
+      },
+      injectSvgFile: (name = '首页示意图.svg', label = 'Workbench Preview') => {
+        const svg = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+            <defs>
+              <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#f7fbff" />
+                <stop offset="100%" stop-color="#dcecff" />
+              </linearGradient>
+            </defs>
+            <rect width="1600" height="900" rx="48" fill="url(#bg)" />
+            <rect x="88" y="92" width="1424" height="108" rx="28" fill="#ffffff" stroke="#d8e5f3" />
+            <rect x="88" y="240" width="420" height="540" rx="32" fill="#ffffff" stroke="#d8e5f3" />
+            <rect x="548" y="240" width="964" height="540" rx="32" fill="#ffffff" stroke="#d8e5f3" />
+            <text x="132" y="158" font-size="34" font-family="Microsoft YaHei, PingFang SC, sans-serif" fill="#26446b">首页调试图像</text>
+            <text x="132" y="330" font-size="52" font-weight="700" font-family="Microsoft YaHei, PingFang SC, sans-serif" fill="#1c2b42">${label}</text>
+            <text x="132" y="400" font-size="26" font-family="Microsoft YaHei, PingFang SC, sans-serif" fill="#5f748d">用于验证首页预览、图片渲染和布局层级。</text>
+            <circle cx="1310" cy="370" r="118" fill="#2a65f4" opacity="0.12" />
+            <circle cx="1380" cy="430" r="86" fill="#7cb7ff" opacity="0.24" />
+          </svg>
+        `.trim();
+        const file = new globalThis.File([svg], name, { type: 'image/svg+xml' });
+        const [item] = appendFilesToWorkbench([file]);
+        return item?.id ?? null;
+      },
+      reset: () => setSession(createDefaultHomeWorkbenchSession()),
+    };
+
+    return () => {
+      delete debugHost.__homeWorkbenchDebug;
+    };
+  }, [appendFilesToWorkbench]);
+
+  const handleRenameFolder = useCallback((folderId: string) => {
+    const nextName = folderRenameDraft.trim();
+    if (!nextName) {
+      pushToast('warn', '文件夹名称不能为空。');
+      return;
+    }
+    updateSession((current) => ({
+      ...current,
+      folders: current.folders.map((folder) => (
+        folder.id === folderId
+          ? { ...folder, name: nextName, updatedAt: new Date().toISOString() }
+          : folder
+      )),
+    }));
+    setEditingFolderId(null);
+    setFolderRenameDraft('');
+    pushToast('good', '文件夹名称已更新。');
+  }, [folderRenameDraft, pushToast, updateSession]);
+
+  const handleRenameItem = useCallback((itemId: string) => {
+    const nextName = itemRenameDraft.trim();
+    if (!nextName) {
+      pushToast('warn', '文件名不能为空。');
+      return;
+    }
+    updateItem(itemId, (item) => ({
+      ...item,
+      name: nextName,
+      updatedAt: new Date().toISOString(),
+    }));
+    setEditingItemId(null);
+    setItemRenameDraft('');
+    pushToast('good', '文件名称已更新。');
+  }, [itemRenameDraft, pushToast, updateItem]);
+
+  const openPreview = useCallback((itemId: string) => {
+    updateSession((current) => ({ ...current, selectedItemId: itemId }));
+    setPreviewItemId(itemId);
+    setPreviewToolboxOpen(true);
+    setPreviewScale(1);
+    setPreviewRotation(0);
+    setPdfViewMode('fit-width');
+  }, [updateSession]);
+
+  useEffect(() => {
+    if (!previewItem || !isTextFile(previewItem)) return;
+    if (previewTextMap[previewItem.id]) return;
+    let cancelled = false;
+    void resolveHomeWorkbenchFile(previewItem.id)
+      .then((file) => (file ? file.text() : null))
+      .then((text) => {
+        if (cancelled || typeof text !== 'string') return;
+        setPreviewTextMap((current) => ({ ...current, [previewItem.id]: text }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPreviewTextMap((current) => ({ ...current, [previewItem.id]: '文本预览加载失败。' }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [binaryStoreRevision, previewItem, previewTextMap]);
+
+  useEffect(() => {
+    if (!previewItem || !isWordFile(previewItem)) return;
+    const targetItemId = previewItem.id;
+    if (getHomeWorkbenchConvertedPdf(targetItemId)) return;
+    const file = getHomeWorkbenchFile(targetItemId);
+    if (!file) return;
+    if (previewItem.status === 'converting') return;
+    updateItem(targetItemId, (item) => ({
+      ...item,
+      status: 'converting',
+      errorMessage: null,
+    }));
+
+    void convertWordToPdf(file).then((result) => {
+      if (result.ok) {
+        registerHomeWorkbenchConvertedPdf(targetItemId, result.pdfBlob);
+        updateItem(targetItemId, (item) => ({
+          ...item,
+          status: 'converted',
+          convertedPdfReady: true,
+          updatedAt: new Date().toISOString(),
+          errorMessage: null,
+        }));
+        return;
+      }
+      updateItem(targetItemId, (item) => ({
+        ...item,
+        status: 'error',
+        errorMessage: 'Word 转 PDF 失败，可尝试重新上传文件。',
+      }));
+    });
+
+  }, [previewItem, updateItem]);
+
+  const previewSource = useMemo(() => {
+    if (!previewItem) return null;
+    if (isPdfFile(previewItem)) {
+      const file = getHomeWorkbenchFile(previewItem.id);
+      return file ? getOrCreateObjectUrl(`file:${previewItem.id}`, file) : null;
+    }
+    if (isWordFile(previewItem)) {
+      const converted = getHomeWorkbenchConvertedPdf(previewItem.id);
+      return converted ? getOrCreateObjectUrl(`converted:${previewItem.id}`, converted) : null;
+    }
+    if (isImageFile(previewItem)) {
+      const file = getHomeWorkbenchFile(previewItem.id);
+      return file ? getOrCreateObjectUrl(`file:${previewItem.id}`, file) : null;
+    }
+    return null;
+  }, [getOrCreateObjectUrl, previewItem]);
+
+  const handleDownloadItem = useCallback((item: HomeWorkbenchItem) => {
+    const converted = isWordFile(item) ? getHomeWorkbenchConvertedPdf(item.id) : null;
+    const file = getHomeWorkbenchFile(item.id);
+    const blob = converted || file;
+    if (!blob) {
+      pushToast('warn', '当前会话中已找不到这个文件，请重新上传后再下载。');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = converted ? item.name.replace(/\.[^.]+$/, '.pdf') : item.name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    window.setTimeout(() => URL.revokeObjectURL(url), 120);
+  }, [pushToast]);
+
+  const stageForModule2 = useCallback((itemIds: string[]) => {
+    const availableIds = itemIds.filter((itemId) => Boolean(getHomeWorkbenchFile(itemId)));
+    if (availableIds.length === 0) {
+      pushToast('warn', '这些文件当前只保留了元数据，请重新上传后再送入模块二。');
+      return;
+    }
+    writeModule2DraftFromHomeWorkbench(availableIds);
+    pushToast('good', `已把 ${availableIds.length} 个文件送入模块二待处理区。`);
+  }, [pushToast]);
+
+  const stageForModule4 = useCallback((itemIds: string[]) => {
+    if (itemIds.length === 0) {
+      pushToast('warn', '请先选择一个文件。');
+      return;
+    }
+    writeModule4DraftFromHomeWorkbench(itemIds);
+    setModule4BannerVisible(true);
+    pushToast('good', '已把文件加入图谱候选清单，建议先在模块二完成抽取再进入模块四。');
+  }, [pushToast]);
+
+  const syncTemplateToModule3 = useCallback(async (file: File) => {
+    setModule3Busy('template');
+    try {
+      const response = await uploadModule3Template(file);
+      const record: FusionGridTemplateRecord = {
+        id: response.template_id,
+        name: file.name,
+        backendFilename: response.filename,
+        size: formatBytes(file.size),
+        uploadTime: new Date().toLocaleString('zh-CN', { hour12: false }),
+        fields: response.fields,
+      };
+
+      const state = readFusionGridState();
+      const nextTemplates = [
+        record,
+        ...state.templates.filter((item) => item.id !== record.id),
+      ];
+      writeFusionGridState({
+        ...state,
+        templates: nextTemplates,
+        selectedTemplateId: record.id,
+        draftRequirements: module3Requirements,
+      });
+      pushToast('good', `模板“${file.name}”已同步到模块三。`);
+    } catch (error) {
+      pushToast('error', error instanceof Error ? error.message : '模板上传失败。');
+    } finally {
+      setModule3Busy(null);
+    }
+  }, [module3Requirements, pushToast]);
+
+  const syncSourceToModule3 = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
+    setModule3Busy('source');
+    try {
+      const response = await uploadModule3Docset(files);
+      const record: FusionGridDocsetRecord = {
+        id: response.doc_set_id,
+        count: response.count,
+        uploadTime: new Date().toLocaleString('zh-CN', { hour12: false }),
+        files: response.files.map((item, index) => {
+          const original = files[index];
+          const ext = fileExt(item.filename);
+          return {
+            filename: item.filename,
+            fileId: item.file_id ?? null,
+            size: original ? formatBytes(original.size) : '鏈煡澶у皬',
+            type: ext === 'xlsx' ? 'xlsx' : ext === 'docx' ? 'docx' : ext === 'txt' ? 'txt' : ext === 'md' ? 'md' : 'other',
+          };
+        }),
+      };
+      const state = readFusionGridState();
+      const nextDocsets = [
+        record,
+        ...state.docsets.filter((item) => item.id !== record.id),
+      ];
+      writeFusionGridState({
+        ...state,
+        docsets: nextDocsets,
+        selectedDocsetId: record.id,
+        draftRequirements: module3Requirements,
+      });
+      pushToast('good', `已把 ${files.length} 个源文件同步到模块三。`);
+    } catch (error) {
+      pushToast('error', error instanceof Error ? error.message : '源文件同步失败。');
+    } finally {
+      setModule3Busy(null);
+    }
+  }, [module3Requirements, pushToast]);
+
+  const handleModule1Prompt = useCallback((prompt: string) => {
+    if (!selectedItem) {
+      pushToast('warn', '请先选中文件，再把它带入模块一。');
+      return;
+    }
+    if (!getHomeWorkbenchFile(selectedItem.id)) {
+      pushToast('warn', '当前文件在这次会话里已不可用，请重新上传后再带入模块一。');
+      return;
+    }
+    writeModule1DraftFromHomeWorkbench({
+      prompt,
+      itemIds: [selectedItem.id],
+    });
+    onNavigate?.('doc-processing');
+  }, [onNavigate, pushToast, selectedItem]);
+
+  const handleItemDropToTarget = useCallback(async (target: ModuleTarget, itemId: string) => {
+    const item = session.items.find((entry) => entry.id === itemId);
+    if (!item) return;
+
+    if (target === 'module2') {
+      stageForModule2([item.id]);
+      return;
+    }
+
+    if (target === 'module4') {
+      stageForModule4([item.id]);
+      return;
+    }
+
+    const file = getHomeWorkbenchFile(item.id);
+    if (!file) {
+      pushToast('warn', '这个文件当前已没有可用的原始内容，请重新上传后再拖入工具箱。');
+      return;
+    }
+
+    if (target === 'module3-template') {
+      await syncTemplateToModule3(file);
+      return;
+    }
+
+    await syncSourceToModule3([file]);
+  }, [pushToast, session.items, stageForModule2, stageForModule4, syncSourceToModule3, syncTemplateToModule3]);
+
+  const handleDragStart = useCallback((itemId: string, event: React.DragEvent<HTMLDivElement>) => {
+    event.dataTransfer.effectAllowed = 'copyMove';
+    event.dataTransfer.setData('application/x-smart-doc-home-item', itemId);
+  }, []);
+
+  const bindDropTarget = useCallback((target: ModuleTarget) => ({
+    onDragOver: (event: React.DragEvent<HTMLElement>) => {
+      event.preventDefault();
+      setDragTarget(target);
+    },
+    onDragLeave: () => setDragTarget((current) => (current === target ? null : current)),
+    onDrop: (event: React.DragEvent<HTMLElement>) => {
+      event.preventDefault();
+      const itemId = event.dataTransfer.getData('application/x-smart-doc-home-item');
+      setDragTarget(null);
+      if (!itemId) return;
+      void handleItemDropToTarget(target, itemId);
+    },
+  }), [handleItemDropToTarget]);
+
+  const currentFolderChildren = useMemo(
+    () => getFolderChildren(session.folders, HOME_WORKBENCH_ROOT_FOLDER_ID).filter((folder) => folder.id !== HOME_WORKBENCH_ROOT_FOLDER_ID),
+    [session.folders]
+  );
+
+  const previewMode = resolvePreviewMode(previewItem);
+  const previewHasLiveSource = previewItem
+    ? Boolean(getHomeWorkbenchFile(previewItem.id) || getHomeWorkbenchConvertedPdf(previewItem.id))
+    : false;
+
+  const renderToolbox = (mode: 'dock' | 'drawer') => {
+    const cardClassName = cn(
+      'group flex items-center justify-start gap-3 rounded-[8px] bg-[#F7F8FA] dark:bg-white/[0.02] px-3 py-2.5 transition-all duration-200',
+      'hover:bg-[#EFF3F9] dark:hover:bg-white/[0.05]',
+      mode === 'drawer' ? '' : ''
+    );
+    
+    return (
+      <div className={cn('flex h-full flex-col gap-5', mode === 'drawer' ? 'w-[320px] px-6 py-6' : 'w-[280px] px-5 py-5')}>
+        <div className="flex items-center justify-between">
+          <div className="text-[15px] font-bold text-slate-800 dark:text-slate-200 tracking-wide">工具箱</div>
+          {mode === 'drawer' ? (
+            <button
+              type="button"
+              onClick={() => setPreviewToolboxOpen(false)}
+              className="rounded-full p-1.5 text-slate-400 dark:text-slate-500 hover:bg-slate-200/50 dark:hover:bg-white/[0.05] hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+            >
+              <X size={16} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsToolboxOpen(false)}
+              className="rounded-full p-1.5 text-slate-400 dark:text-slate-500 hover:bg-slate-200/50 dark:hover:bg-white/[0.05] hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+            >
+              <X size={16} />
+            </button>
+          )}
         </div>
 
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.2, duration: 0.45 }}
-          className="col-span-8 row-span-4 glass-card p-6 relative overflow-hidden group border-primary/20 bg-white/60 dark:bg-slate-900/40"
-        >
-          <div className="absolute inset-0 bg-gradient-to-r from-primary/5 via-transparent to-primary/5 opacity-50" />
-          <div className="relative z-10 h-full flex flex-col">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xs font-bold font-sans tracking-[0.2em] uppercase flex items-center gap-2 text-muted-foreground">
-                <BrainCircuit size={16} className="text-primary" />
-                运行时流水线
-              </h3>
+        <section className="pb-5 border-b border-slate-200/60 dark:border-white/[0.05]">
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center justify-center">
+                {selectedItem ? (
+                  getItemIcon(selectedItem, 'h-7 w-7 object-contain')
+                ) : (
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50/50 dark:bg-blue-500/10">
+                    <img src={customDocIcon} alt="Document" className="h-5 w-5 object-contain opacity-60 dark:opacity-40" />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] font-semibold text-slate-800 dark:text-slate-200">
+                  {selectedItem?.name || '未选中文件'}
+                </div>
+                <div className="mt-0.5 truncate text-[12px] font-medium text-slate-500 dark:text-slate-400">
+                  {selectedItem
+                    ? `${formatBytes(selectedItem.size)} · ${getFolderPathLabel(session.folders, selectedItem.folderId)}`
+                    : '选择文件后即可同步到对应模块'}
+                </div>
+              </div>
             </div>
-            <div className="flex-1 flex items-center justify-center px-12 relative w-full h-full">
-              <div className="flex flex-col items-center gap-4 group/step relative z-10 w-24">
-                <div className="w-16 h-16 rounded-2xl bg-white/50 dark:bg-slate-900/50 backdrop-blur border border-border flex items-center justify-center relative group-hover/step:-translate-y-2 transition-transform duration-500 shadow-lg">
-                  <FileText className="text-muted-foreground group-hover/step:text-primary transition-colors" />
-                  <div className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-[10px] font-bold px-1.5 py-0.5 rounded-md shadow-md">
-                    {documents.length}
+          </div>
+        </section>
+
+        <div className="flex flex-col gap-3">
+          <div className="text-[13px] font-bold text-slate-800 dark:text-slate-200">推荐功能</div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => onNavigate?.('doc-processing')}
+              className={cardClassName}
+            >
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] bg-blue-500 text-white transition-colors group-hover:bg-blue-600 dark:bg-blue-600 dark:group-hover:bg-blue-500">
+                <Wand2 size={16} />
+              </div>
+              <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">文档处理</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onNavigate?.('deepread')}
+              className={cardClassName}
+              {...bindDropTarget('module2')}
+            >
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] bg-emerald-500 text-white transition-colors group-hover:bg-emerald-600 dark:bg-emerald-600 dark:group-hover:bg-emerald-500">
+                <FileSearch size={16} />
+              </div>
+              <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">信息提取</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onNavigate?.('fusion')}
+              className={cardClassName}
+              {...bindDropTarget('module3-template')}
+            >
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] bg-amber-500 text-white transition-colors group-hover:bg-amber-600 dark:bg-amber-600 dark:group-hover:bg-amber-500">
+                <Database size={16} />
+              </div>
+              <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">智能填表</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onNavigate?.('nexus')}
+              className={cardClassName}
+              {...bindDropTarget('module4')}
+            >
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] bg-violet-500 text-white transition-colors group-hover:bg-violet-600 dark:bg-violet-600 dark:group-hover:bg-violet-500">
+                <GitGraph size={16} />
+              </div>
+              <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">知识图谱</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="h-[100dvh] w-full overflow-hidden bg-[#F2F3F5] text-[#1a273a] dark:bg-[#0B1120] dark:text-slate-300 relative">
+      <div className="flex h-full w-full flex-col">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent">
+          <div className={cn(
+            "grid min-h-0 flex-1 overflow-hidden",
+            isToolboxOpen ? "grid-cols-[240px_minmax(0,1fr)_300px]" : "grid-cols-[240px_minmax(0,1fr)]"
+          )}>
+            <aside className="border-r border-slate-200 dark:border-white/[0.05] bg-[#F9FAFB] dark:bg-[#0B1120] px-4 py-5 flex flex-col">
+              <div className="flex flex-col gap-3 mb-6">
+                <button
+                  type="button"
+                  onClick={() => setCreatingFolder(true)}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#1E6FFF] dark:bg-blue-600 px-4 py-2 text-[14px] font-medium text-white transition hover:bg-[#165DFF] dark:hover:bg-blue-500"
+                >
+                  <FolderPlus size={16} />
+                  新建文件夹
+                </button>
+                <button
+                  type="button"
+                  onClick={() => homepageUploadInputRef.current?.click()}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] px-4 py-2 text-[14px] font-medium text-slate-700 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                >
+                  <UploadCloud size={16} />
+                  上传文件
+                </button>
+              </div>
+
+              <div className="space-y-2 mt-2">
+                <SidebarNavItem
+                  icon={<Home size={18} strokeWidth={2.5} />}
+                  label="首页"
+                  detail={`${session.items.filter((item) => !item.trashed).length} 份文档`}
+                  active={session.activeView.kind === 'home'}
+                  onClick={() => updateSession((current) => ({ ...current, activeView: { kind: 'home' } }))}
+                />
+                <SidebarNavItem
+                  icon={<Trash2 size={18} strokeWidth={2.5} />}
+                  label="回收站"
+                  active={session.activeView.kind === 'recycle'}
+                  onClick={() => updateSession((current) => ({ ...current, activeView: { kind: 'recycle' } }))}
+                />
+              </div>
+
+              <div className="space-y-2 mt-2">
+                <SidebarNavItem
+                  icon={<LayoutGrid size={18} strokeWidth={2.5} />}
+                  label="工具箱"
+                  active={isToolboxOpen}
+                  onClick={() => setIsToolboxOpen((current) => !current)}
+                />
+              </div>
+
+              <div className="mt-6">
+                <div className="mb-2 flex items-center justify-between gap-3 px-2">
+                  <div className="text-[12px] font-semibold text-slate-500 dark:text-slate-400">我的文件夹</div>
+                </div>
+
+                {creatingFolder ? (
+                  <div className="mb-2 rounded-md border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] px-2 py-2 shadow-sm">
+                    <input
+                      value={folderDraft}
+                      onChange={(event) => setFolderDraft(event.target.value)}
+                      placeholder="新建文件夹"
+                      className="w-full rounded bg-slate-50 dark:bg-black/20 px-2 py-1.5 text-[13px] outline-none placeholder:text-slate-400 dark:text-slate-200"
+                    />
+                    <div className="mt-2 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreatingFolder(false);
+                          setFolderDraft('');
+                        }}
+                        className="rounded px-2 py-1 text-[12px] font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.05]"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCreateFolder}
+                        className="rounded bg-blue-600 px-2 py-1 text-[12px] font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                      >
+                        创建
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="space-y-1">
+                  {rootFolder ? (
+                    <div className="group rounded-md px-2 py-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-white/[0.05]">
+                      {editingFolderId === rootFolder.id ? (
+                        <div className="rounded border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] p-2 shadow-sm">
+                          <input
+                            value={folderRenameDraft}
+                            onChange={(event) => setFolderRenameDraft(event.target.value)}
+                            className="w-full rounded bg-slate-50 dark:bg-black/20 px-2 py-1 text-[13px] outline-none dark:text-slate-200"
+                          />
+                          <div className="mt-2 flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingFolderId(null);
+                                setFolderRenameDraft('');
+                              }}
+                              className="rounded px-2 py-1 text-[12px] font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.05]"
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRenameFolder(rootFolder.id)}
+                              className="rounded bg-blue-600 px-2 py-1 text-[12px] font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                            >
+                              保存
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                          <div
+                            className="flex items-center justify-between gap-3 w-full"
+                            onDoubleClick={() => {
+                              setEditingFolderId(rootFolder.id);
+                              setFolderRenameDraft(rootFolder.name);
+                            }}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              setContextMenu({ x: e.clientX, y: e.clientY, folderId: rootFolder.id });
+                            }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => updateSession((current) => ({ ...current, activeView: { kind: 'folder', folderId: rootFolder.id } }))}
+                              className={cn(
+                                'flex min-w-0 items-center gap-2 text-[13px] font-medium w-full',
+                                session.activeView.kind === 'folder' && session.activeView.folderId === rootFolder.id
+                                  ? 'text-blue-600 dark:text-blue-400'
+                                  : 'text-slate-700 dark:text-slate-300'
+                              )}
+                            >
+                              <FolderOpen size={16} className={session.activeView.kind === 'folder' && session.activeView.folderId === rootFolder.id ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500 group-hover:text-slate-500 dark:group-hover:text-slate-400'} />
+                              <span className="truncate">{rootFolder.name}</span>
+                            </button>
+                          </div>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {currentFolderChildren.map((folder) => {
+                    const isEditing = editingFolderId === folder.id;
+                    const isActive = session.activeView.kind === 'folder' && session.activeView.folderId === folder.id;
+                    return (
+                      <div
+                        key={folder.id}
+                        className={cn(
+                          'group rounded-md px-2 py-1.5 transition-colors',
+                          isActive ? 'bg-slate-100/60 dark:bg-white/[0.05]' : 'hover:bg-slate-100 dark:hover:bg-white/[0.05]'
+                        )}
+                      >
+                        {isEditing ? (
+                          <div className="rounded border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] p-2 shadow-sm">
+                            <input
+                              value={folderRenameDraft}
+                              onChange={(event) => setFolderRenameDraft(event.target.value)}
+                              className="w-full rounded bg-slate-50 dark:bg-black/20 px-2 py-1 text-[13px] outline-none dark:text-slate-200"
+                            />
+                            <div className="mt-2 flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingFolderId(null);
+                                  setFolderRenameDraft('');
+                                }}
+                                className="rounded px-2 py-1 text-[12px] font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.05]"
+                              >
+                                取消
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRenameFolder(folder.id)}
+                                className="rounded bg-blue-600 px-2 py-1 text-[12px] font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                              >
+                                保存
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            className="flex items-center justify-between gap-3 w-full"
+                            onDoubleClick={() => {
+                              setEditingFolderId(folder.id);
+                              setFolderRenameDraft(folder.name);
+                            }}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              setContextMenu({ x: e.clientX, y: e.clientY, folderId: folder.id });
+                            }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => updateSession((current) => ({ ...current, activeView: { kind: 'folder', folderId: folder.id } }))}
+                              className="flex min-w-0 items-center gap-2 text-left w-full"
+                            >
+                              {isActive ? <ChevronDown size={15} className="text-blue-600 dark:text-blue-400" /> : <ChevronRight size={15} className="text-slate-400 dark:text-slate-500 group-hover:text-slate-500 dark:group-hover:text-slate-400" />}
+                              <span className={cn('truncate text-[13px] font-medium', isActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-700 dark:text-slate-300')}>
+                                {folder.name}
+                              </span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </aside>
+
+            <section className="flex min-h-0 flex-col overflow-hidden bg-white dark:bg-[#0B1120]">
+              <QueueToolbar
+                searchValue={searchValue}
+                onSearchChange={setSearchValue}
+                isToolboxOpen={isToolboxOpen}
+              />
+
+              <div className="flex items-center gap-6 border-b border-slate-100 dark:border-white/[0.05] px-6 pt-4">
+                <button 
+                  onClick={() => updateSession((current) => ({ ...current, activeView: { kind: 'recent' } }))}
+                  className={cn(
+                    "border-b-2 pb-3 text-[14px] font-medium transition-colors",
+                    session.activeView.kind === 'recent' 
+                      ? "border-blue-600 text-slate-900 dark:border-blue-500 dark:text-slate-100" 
+                      : "border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
+                  )}
+                >
+                  最近                </button>
+                <button 
+                  onClick={() => updateSession((current) => ({ ...current, activeView: { kind: 'favorites' } }))}
+                  className={cn(
+                    "border-b-2 pb-3 text-[14px] font-medium transition-colors",
+                    session.activeView.kind === 'favorites' 
+                      ? "border-blue-600 text-slate-900 dark:border-blue-500 dark:text-slate-100" 
+                      : "border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
+                  )}
+                >
+                  收藏
+                </button>
+                <div className="ml-auto pb-3 relative">
+                  <button 
+                    onClick={() => setIsFilterOpen(!isFilterOpen)}
+                    className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-white/[0.05] dark:hover:text-slate-300"
+                  >
+                    <Filter size={14} />
+                    筛选                  </button>
+
+                  {isFilterOpen ? (
+                    <div className="absolute right-0 top-full z-10 mt-1 w-36 rounded-lg border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-slate-900 py-1.5 shadow-lg">
+                      <button
+                        onClick={() => { setFilterType(null); setIsFilterOpen(false); }}
+                        className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-[13px] hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                      >
+                        <div className="flex h-5 w-5 items-center justify-center" />
+                        <span className={cn(filterType === null ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300')}>全部类型</span>
+                      </button>
+                      <button
+                        onClick={() => { setFilterType('pdf'); setIsFilterOpen(false); }}
+                        className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-[13px] hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                      >
+                        <img src={pdfIcon} alt="PDF" className="h-5 w-5 object-contain" />
+                        <span className={cn(filterType === 'pdf' ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300')}>PDF 文档</span>
+                      </button>
+                      <button
+                        onClick={() => { setFilterType('word'); setIsFilterOpen(false); }}
+                        className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-[13px] hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                      >
+                        <img src={wordIcon} alt="Word" className="h-5 w-5 object-contain" />
+                        <span className={cn(filterType === 'word' ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300')}>Word 文档</span>
+                      </button>
+                      <button
+                        onClick={() => { setFilterType('xlsx'); setIsFilterOpen(false); }}
+                        className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-[13px] hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                      >
+                        <img src={xlsxIcon} alt="Excel" className="h-5 w-5 object-contain" />
+                        <span className={cn(filterType === 'xlsx' ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300')}>Excel 表格</span>
+                      </button>
+                      <button
+                        onClick={() => { setFilterType('txt'); setIsFilterOpen(false); }}
+                        className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-[13px] hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                      >
+                        <img src={txtIcon} alt="TXT" className="h-5 w-5 object-contain" />
+                        <span className={cn(filterType === 'txt' ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300')}>纯文本 (TXT)</span>
+                      </button>
+                      <button
+                        onClick={() => { setFilterType('md'); setIsFilterOpen(false); }}
+                        className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-[13px] hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                      >
+                        <img src={mdIcon} alt="Markdown" className="h-5 w-5 object-contain" />
+                        <span className={cn(filterType === 'md' ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300')}>Markdown</span>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-hidden flex flex-col relative">
+                <div className="absolute inset-0 overflow-auto custom-scrollbar bg-white dark:bg-[#0B1120]">
+                  <div className="min-w-[800px] flex flex-col min-h-full relative">
+                    <div className="sticky top-0 z-30 grid grid-cols-[minmax(0,2.2fr)_140px_120px_140px_180px] gap-3 border-b border-slate-100 dark:border-white/[0.05] bg-white/95 dark:bg-[#0B1120]/95 backdrop-blur-sm px-6 py-2.5 text-[12px] font-medium text-slate-500 dark:text-slate-400">
+                      <span>名称</span>
+                      <span>文件夹</span>
+                      <span>来源</span>
+                      <span>更新时间</span>
+                      <span>状态</span>
+                    </div>
+
+                    <div className="flex-1 flex flex-col relative py-2">
+                      {visibleItems.length === 0 ? (
+                        <div className="absolute inset-0 overflow-hidden pointer-events-none select-none flex flex-col">
+                          <div className="bg-gradient-to-b from-transparent via-white/40 dark:via-[#0B1120]/40 to-white dark:to-[#0B1120] absolute inset-0 z-10" />
+          {Array.from({ length: 15 }).map((_, i) => (
+            <div key={i} className="grid grid-cols-[minmax(0,2.2fr)_140px_120px_140px_180px] gap-3 items-center border-b border-slate-50 dark:border-white/[0.02] py-3 px-6 opacity-60">
+              <div className="flex items-center gap-3">
+                <div className="h-7 w-7 rounded bg-slate-200 dark:bg-white/[0.05]" />
+                <div className="h-3 w-48 rounded bg-slate-200 dark:bg-white/[0.05]" />
+              </div>
+              <div className="h-3 w-20 rounded bg-slate-200 dark:bg-white/[0.05]" />
+              <div className="h-3 w-12 rounded bg-slate-200 dark:bg-white/[0.05]" />
+              <div className="h-3 w-24 rounded bg-slate-200 dark:bg-white/[0.05]" />
+              <div className="h-3 w-16 rounded bg-slate-200 dark:bg-white/[0.05]" />
+            </div>
+          ))}
+                          
+                          {searchValue ? (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center text-center z-20">
+                              <div className="flex h-16 w-16 items-center justify-center rounded-[24px] bg-slate-50 dark:bg-white/[0.02] text-slate-400 dark:text-slate-500">
+                                <Search size={28} />
+                              </div>
+                              <div className="mt-5 text-[14px] font-medium text-slate-500 dark:text-slate-400">
+                                没有找到匹配的文件
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="space-y-0">
+                          {visibleItems.map((item) => {
+                            const isEditing = editingItemId === item.id;
+                            const folderLabel = getFolderPathLabel(session.folders, item.folderId);
+                            return (
+                              <div key={item.id}>
+                                {isEditing ? (
+                                  <div className="rounded-lg border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] px-4 py-3 shadow-sm">
+                                    <input
+                                      value={itemRenameDraft}
+                                      onChange={(event) => setItemRenameDraft(event.target.value)}
+                                      className="w-full rounded border border-slate-200 dark:border-white/[0.05] bg-slate-50 dark:bg-black/20 px-3 py-2 text-[14px] outline-none dark:text-slate-200"
+                                    />
+                                    <div className="mt-2 flex items-center justify-end gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingItemId(null);
+                                          setItemRenameDraft('');
+                                        }}
+                                        className="rounded px-3 py-1.5 text-[13px] font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.05]"
+                                      >
+                                        取消
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRenameItem(item.id)}
+                                        className="rounded bg-blue-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                                      >
+                                        保存
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <FileRow
+                                    item={item}
+                                    folderLabel={folderLabel}
+                                    selected={session.selectedItemId === item.id}
+                                    persistenceReady={binaryStoreReady}
+                                    onOpen={() => openPreview(item.id)}
+                                    onSelect={() => updateSession((current) => ({ ...current, selectedItemId: item.id }))}
+                                    onToggleStar={() => updateItem(item.id, (current) => ({ ...current, starred: !current.starred, updatedAt: new Date().toISOString() }))}
+                                    onRename={() => {
+                                      setEditingItemId(item.id);
+                                      setItemRenameDraft(item.name);
+                                    }}
+                                    onTrash={() => {
+                                      updateItem(item.id, (current) => ({
+                                        ...current,
+                                        trashed: !current.trashed,
+                                        updatedAt: new Date().toISOString(),
+                                      }));
+                                      if (session.selectedItemId === item.id) {
+                                        updateSession((current) => ({ ...current, selectedItemId: null }));
+                                      }
+                                    }}
+                                    onDownload={() => handleDownloadItem(item)}
+                                    onDragStart={(event) => handleDragStart(item.id, event)}
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <span className="text-[10px] font-bold font-sans text-muted-foreground tracking-widest absolute -bottom-8 whitespace-nowrap">数据摄入</span>
               </div>
-              <div className="flex-1 max-w-[120px] relative mx-2 h-20 flex flex-col justify-center gap-4 px-1">
-                <div className="h-[1px] bg-primary/10 relative overflow-hidden w-full">
-                  <div className="absolute inset-y-0 w-8 bg-gradient-to-r from-transparent via-primary to-transparent animate-[flow-particle_1.5s_linear_infinite]" />
-                </div>
-                <div className="h-[3px] bg-primary/10 relative overflow-hidden w-full rounded-full">
-                  <div className="absolute inset-y-0 w-16 bg-gradient-to-r from-transparent via-primary to-transparent animate-[flow-beam_2s_linear_infinite] shadow-[0_0_10px_rgba(56,189,248,0.5)]" />
-                </div>
-                <div className="h-[1px] bg-primary/10 relative overflow-hidden w-full">
-                  <div className="absolute inset-y-0 w-8 bg-gradient-to-r from-transparent via-primary to-transparent animate-[flow-particle_1.5s_linear_infinite]" />
-                </div>
-              </div>
-              <div className="flex flex-col items-center gap-4 relative z-10 w-32">
-                <div className="w-24 h-24 rounded-full bg-white/80 dark:bg-slate-900/80 backdrop-blur border border-primary/30 shadow-[0_0_30px_rgba(56,189,248,0.15)] flex items-center justify-center relative animate-[float_4s_ease-in-out_infinite]">
-                  <BrainCircuit className="w-10 h-10 text-primary drop-shadow-[0_0_10px_rgba(56,189,248,0.5)]" />
-                  <div className="absolute inset-0 border border-primary rounded-full animate-ping opacity-20" />
-                </div>
-                <span className="text-sm font-bold font-sans text-primary tracking-widest absolute -bottom-10 whitespace-nowrap">认知分析引擎</span>
-              </div>
-              <div className="flex-1 max-w-[120px] relative mx-2 h-20 flex flex-col justify-center gap-4 px-1">
-                <div className="h-[1px] bg-primary/10 relative overflow-hidden w-full">
-                  <div className="absolute inset-y-0 w-8 bg-gradient-to-r from-transparent via-primary to-transparent animate-[flow-particle_1.8s_linear_infinite_0.2s]" />
-                </div>
-                <div className="h-[3px] bg-primary/10 relative overflow-hidden w-full rounded-full">
-                  <div className="absolute inset-y-0 w-20 bg-gradient-to-r from-transparent via-primary to-transparent animate-[flow-beam_2.2s_linear_infinite_0.5s] shadow-[0_0_10px_rgba(56,189,248,0.5)]" />
-                </div>
-                <div className="h-[1px] bg-primary/10 relative overflow-hidden w-full">
-                  <div className="absolute inset-y-0 w-8 bg-gradient-to-r from-transparent via-primary to-transparent animate-[flow-particle_1.8s_linear_infinite_0.2s]" />
-                </div>
-              </div>
-              <div className="flex flex-col items-center gap-4 group/step relative z-10 w-24">
-                <div className="w-16 h-16 rounded-2xl bg-white/50 dark:bg-slate-900/50 backdrop-blur border border-border flex items-center justify-center group-hover/step:-translate-y-2 transition-transform duration-500 delay-100 shadow-lg">
-                  <Activity className="text-emerald-500" />
-                </div>
-                <span className="text-[10px] font-bold font-sans text-muted-foreground tracking-widest absolute -bottom-8 whitespace-nowrap">智能洞察</span>
-              </div>
-            </div>
-          </div>
-        </motion.div>
+            </section>
 
-        <motion.div
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: 0.25, duration: 0.45 }}
-          className="col-span-4 row-span-6 glass-card p-6 flex flex-col relative overflow-hidden"
-        >
-          <div className="absolute top-0 right-0 w-32 h-32 bg-destructive/5 rounded-full blur-3xl -z-10 pointer-events-none" />
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-xs font-bold font-sans text-muted-foreground uppercase tracking-[0.2em]">质量雷达</h3>
-            <Activity size={14} className="text-destructive/50" />
+            {isToolboxOpen ? (
+              <aside className="border-l border-slate-200 dark:border-white/[0.05] bg-white dark:bg-[#0B1120] min-h-0 overflow-y-auto custom-scrollbar">
+                {renderToolbox('dock')}
+              </aside>
+            ) : null}
           </div>
-          <div className="flex-1 min-h-0 -ml-4 relative">
-            <ResponsiveContainer width="100%" height="100%">
-              <RadarChart cx="50%" cy="50%" outerRadius="70%" data={radarData}>
-                <PolarGrid stroke="var(--border)" />
-                <PolarAngleAxis dataKey="subject" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600, fontFamily: "Microsoft YaHei" }} />
-                <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
-                <Radar name="质量指数" dataKey="A" stroke="hsl(var(--destructive))" strokeWidth={2} fill="hsl(var(--destructive))" fillOpacity={0.3} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "rgba(15, 23, 42, 0.9)",
-                    borderColor: "rgba(255,255,255,0.1)",
-                    color: "white",
-                    backdropFilter: "blur(8px)",
-                    borderRadius: "8px",
-                    fontSize: "12px",
-                  }}
-                  itemStyle={{ color: "white" }}
-                />
-              </RadarChart>
-            </ResponsiveContainer>
-          </div>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3, duration: 0.45 }}
-          className="col-span-8 row-span-6 glass-card flex flex-col font-mono relative overflow-hidden border-t-2 border-t-primary/50 bg-white/50 dark:bg-slate-900/40"
-        >
-          <div className="h-10 border-b border-border bg-white/80 dark:bg-slate-900/50 flex items-center px-4 justify-between backdrop-blur-md">
-            <div className="flex items-center gap-2">
-              <Terminal className="w-3.5 h-3.5 text-primary animate-pulse" />
-              <span className="text-[10px] font-bold font-sans text-muted-foreground tracking-widest">系统日志</span>
-            </div>
-          </div>
-          <div className="flex-1 p-4 overflow-hidden bg-slate-50 dark:bg-black/40 relative">
-            <div className="absolute inset-0 bg-scanline opacity-5 pointer-events-none" />
-            <div className="text-xs leading-relaxed text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono typewriter">
-              <span className="text-primary mr-2">{">"}</span>
-              {displayedLog}
-              <span className="inline-block w-2 h-4 bg-primary align-middle ml-1 animate-pulse" />
-            </div>
-          </div>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.35, duration: 0.45 }}
-          className="col-span-4 row-span-4 glass-card p-1 relative group cursor-pointer hover:border-primary/50 transition-all duration-300 bg-white/80 dark:bg-slate-900/40 dark:border-slate-800"
-        >
-          <div className="h-full w-full border-2 border-dashed border-slate-300 dark:border-slate-800 rounded-lg flex flex-col items-center justify-center bg-transparent hover:bg-primary/5 transition-colors">
-            <div className="p-4 bg-primary/10 rounded-full mb-4 shadow-sm group-hover:shadow-[0_0_20px_rgba(56,189,248,0.2)] group-hover:scale-110 transition-all duration-300 border border-primary/20">
-              <UploadCloud className="w-8 h-8 text-primary/70 group-hover:text-primary transition-colors animate-bounce" />
-            </div>
-            <h3 className="text-sm font-bold font-sans text-foreground tracking-wider uppercase">快速上传</h3>
-            <p className="text-[10px] text-muted-foreground mt-1 font-bold font-sans">使用深度解析以刷新指标</p>
-          </div>
-        </motion.div>
+        </div>
       </div>
+
+      <input
+        ref={homepageUploadInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          handleHomepageUpload(event.target.files);
+          event.currentTarget.value = '';
+        }}
+      />
+      <input
+        ref={module2UploadInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          const items = appendFilesToWorkbench(files);
+          if (items.length > 0) {
+            stageForModule2(items.map((item) => item.id));
+          }
+          event.currentTarget.value = '';
+        }}
+      />
+      <input
+        ref={module4UploadInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          const items = appendFilesToWorkbench(files);
+          if (items.length > 0) {
+            stageForModule4(items.map((item) => item.id));
+          }
+          event.currentTarget.value = '';
+        }}
+      />
+      <input
+        ref={module3TemplateInputRef}
+        type="file"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          appendFilesToWorkbench([file], { selectFirst: false });
+          void syncTemplateToModule3(file);
+          event.currentTarget.value = '';
+        }}
+      />
+      <input
+        ref={module3SourceInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          if (files.length === 0) return;
+          appendFilesToWorkbench(files, { selectFirst: false });
+          void syncSourceToModule3(files);
+          event.currentTarget.value = '';
+        }}
+      />
+
+      <AnimatePresence>
+        {contextMenu ? (
+          <div
+            className="fixed inset-0 z-50"
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setContextMenu(null);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.1 }}
+              className="absolute w-40 rounded-lg border border-slate-200 bg-white py-1.5 shadow-lg"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingFolderId(contextMenu.folderId);
+                  setFolderRenameDraft(session.folders.find((f) => f.id === contextMenu.folderId)?.name || '');
+                  setContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-[13px] text-slate-700 hover:bg-slate-100"
+              >
+                <PencilLine size={14} />
+                重命名              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const folder = session.folders.find((f) => f.id === contextMenu.folderId);
+                  if (folder && folder.parentId) {
+                    updateSession((current) => ({
+                      ...current,
+                      folders: current.folders.filter((f) => f.id !== contextMenu.folderId),
+                    }));
+                  }
+                  setContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-[13px] text-red-600 hover:bg-red-50"
+              >
+                <Trash2 size={14} />
+                鍒犻櫎鏂囦欢澶?              </button>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {toast ? (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="absolute bottom-6 right-6 z-[80]"
+          >
+            <div
+              className={cn(
+                'rounded-2xl border px-4 py-3 text-sm shadow-[0_20px_50px_-30px_rgba(57,75,105,0.42)] backdrop-blur-xl',
+                toast.tone === 'good' && 'border-[#cfe8db] bg-white/96 text-[#24593f]',
+                toast.tone === 'warn' && 'border-[#f0e0bf] bg-white/96 text-[#8f641f]',
+                toast.tone === 'error' && 'border-[#f2d3ce] bg-white/96 text-[#a24f45]',
+                toast.tone === 'info' && 'border-[#d6e2f1] bg-white/96 text-[#31557f]'
+              )}
+            >
+              <div className="flex items-center gap-2">
+                {toast.tone === 'good' ? <CheckCircle2 size={16} /> : toast.tone === 'warn' || toast.tone === 'error' ? <AlertTriangle size={16} /> : <BrainCircuit size={16} />}
+                <span>{toast.text}</span>
+              </div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {module4BannerVisible ? (
+          <motion.div
+            initial={{ opacity: 0, y: -16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -16 }}
+            className="absolute left-1/2 top-5 z-[72] -translate-x-1/2"
+          >
+            <div className="flex items-center gap-3 rounded-full border border-[#d9e4f2] bg-white/96 px-4 py-2 text-sm text-[#325178] shadow-[0_18px_42px_-28px_rgba(76,97,128,0.34)] backdrop-blur-xl">
+              <GitGraph size={16} />
+              <span>已有文件从首页加入模块四候选清单。模块四会优先显示图谱工作台，建议先在模块二完成抽取再继续。</span>
+              <button
+                type="button"
+                onClick={() => {
+                  clearModule4DraftFromHomeWorkbench();
+                  setModule4BannerVisible(false);
+                }}
+                className="rounded-full p-1 text-[#7f93ab] transition hover:bg-[#eef4fb] hover:text-[#34567f]"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {previewItem ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[70] bg-[#F2F3F5] dark:bg-[#0B1120]"
+          >
+            <div className="flex h-full flex-col">
+              <header className="flex items-center justify-between border-b border-slate-200 dark:border-white/[0.05] bg-white dark:bg-[#0B1120] px-5 py-3 shadow-sm dark:shadow-none">
+                <div className="flex min-w-0 items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewItemId(null)}
+                    className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[14px] font-medium text-slate-600 dark:text-slate-400 transition hover:bg-slate-100 dark:hover:bg-white/[0.05] dark:hover:text-slate-300"
+                  >
+                    <ChevronLeft size={16} />
+                    返回
+                  </button>
+                  <div className="h-4 w-px bg-slate-200 dark:bg-white/[0.05]" />
+                  <div className="min-w-0">
+                    <div className="truncate text-[14px] font-semibold text-slate-800 dark:text-slate-200">{previewItem.name}</div>
+                    <div className="mt-0.5 text-[12px] text-slate-500 dark:text-slate-400">
+                      {formatBytes(previewItem.size)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {previewMode === 'pdf' ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setPdfViewMode((current) => (current === 'fit-width' ? 'fit-page' : current === 'fit-page' ? 'actual' : 'fit-width'))}
+                        className="rounded-md border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] px-3 py-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400 transition hover:bg-slate-50 dark:hover:bg-white/[0.05] dark:hover:text-slate-300"
+                      >
+                        {pdfViewMode === 'fit-width' ? '适应宽度' : pdfViewMode === 'fit-page' ? '适应页面' : '实际大小'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewScale((current) => Math.min(current + 0.1, 2.2))}
+                        className="rounded-md border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] p-1.5 text-slate-600 dark:text-slate-400 transition hover:bg-slate-50 dark:hover:bg-white/[0.05] dark:hover:text-slate-300"
+                      >
+                        <ZoomIn size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewScale((current) => Math.max(current - 0.1, 0.6))}
+                        className="rounded-md border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] p-1.5 text-slate-600 dark:text-slate-400 transition hover:bg-slate-50 dark:hover:bg-white/[0.05] dark:hover:text-slate-300"
+                      >
+                        <ZoomOut size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewRotation((current) => (current + 90) % 360)}
+                        className="rounded-md border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] p-1.5 text-slate-600 dark:text-slate-400 transition hover:bg-slate-50 dark:hover:bg-white/[0.05] dark:hover:text-slate-300"
+                      >
+                        <RotateCw size={16} />
+                      </button>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setPreviewToolboxOpen((value) => !value)}
+                    className="rounded-md border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] px-3 py-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400 transition hover:bg-slate-50 dark:hover:bg-white/[0.05] dark:hover:text-slate-300"
+                  >
+                    {previewToolboxOpen ? '隐藏工具箱' : '显示工具箱'}
+                  </button>
+                </div>
+              </header>
+
+              <div className="relative flex min-h-0 flex-1 overflow-hidden bg-[#F2F3F5] dark:bg-[#0B1120]">
+                <div className="min-h-0 flex-1 overflow-hidden relative">
+                  {!previewHasLiveSource ? (
+                    <div className="flex h-full flex-col items-center justify-center rounded-none border-0 bg-white dark:bg-[#0B1120] px-8 text-center">
+                      <div className="flex h-16 w-16 items-center justify-center rounded-[24px] border border-[#dbe5f0] dark:border-white/[0.05] bg-[#f7fbff] dark:bg-white/[0.02] text-[#2d64aa] dark:text-slate-400">
+                        <AlertTriangle size={28} />
+                      </div>
+                      <div className="mt-5 text-xl font-semibold text-[#1d2d43] dark:text-slate-200">当前会话里已缺少文件原文</div>
+                      <div className="mt-2 max-w-xl text-sm leading-7 text-[#6c7d92] dark:text-slate-400">
+                        这个队列条目仍保留元数据，但用于预览和拖入模块的原始文件已经不在当前浏览器会话中。请重新上传它，以恢复完整操作能力。
+                      </div>
+                    </div>
+                  ) : previewMode === 'pdf' ? (
+                    previewItem.status === 'converting' && !previewSource ? (
+                      <div className="flex h-full flex-col items-center justify-center rounded-none border-0 bg-white dark:bg-[#0B1120]">
+                        <Loader2 size={34} className="animate-spin text-[#3267ad] dark:text-blue-400" />
+                        <div className="mt-4 text-xl font-semibold text-[#1f3047] dark:text-slate-200">正在把 Word 转为 PDF 预览</div>
+                        <div className="mt-2 text-sm text-[#6b7d92] dark:text-slate-400">转换完成后会直接进入全屏 PDF 预览。</div>
+                      </div>
+                    ) : previewItem.status === 'error' && !previewSource ? (
+                      <div className="flex h-full flex-col items-center justify-center rounded-none border-0 bg-white dark:bg-[#0B1120] px-8 text-center">
+                        <AlertTriangle size={32} className="text-[#bb5b4f] dark:text-red-400" />
+                        <div className="mt-4 text-xl font-semibold text-[#1f3047] dark:text-slate-200">PDF 预览准备失败</div>
+                        <div className="mt-2 max-w-lg text-sm leading-7 text-[#6b7d92] dark:text-slate-400">
+                          {previewItem.errorMessage || 'Word 转 PDF 失败，请稍后重试。'}
+                        </div>
+                      </div>
+                    ) : previewSource ? (
+                      <div className="h-full w-full overflow-hidden bg-white dark:bg-[#0B1120]">
+                        <PdfJsViewer
+                          src={previewSource}
+                          scale={previewScale}
+                          rotation={previewRotation}
+                          viewMode={pdfViewMode}
+                        />
+                      </div>
+                    ) : null
+                  ) : previewMode === 'image' && previewSource ? (
+                    <div className="flex h-full items-center justify-center overflow-auto rounded-none border-0 bg-white dark:bg-[#0B1120]">
+                      <img
+                        src={previewSource}
+                        alt={previewItem.name}
+                        className="max-h-full max-w-full object-contain"
+                        style={{ transform: `scale(${previewScale}) rotate(${previewRotation}deg)` }}
+                      />
+                    </div>
+                  ) : previewMode === 'text' ? (
+                    <div className="h-full overflow-auto rounded-none border-0 bg-white dark:bg-[#0B1120] px-8 py-7 custom-scrollbar">
+                      <pre className="whitespace-pre-wrap break-words text-[15px] leading-8 text-[#26384f] dark:text-slate-300">
+                        {previewTextMap[previewItem.id] || '正在加载文本预览...'}
+                      </pre>
+                    </div>
+                  ) : previewMode === 'spreadsheet' && getHomeWorkbenchFile(previewItem.id) ? (
+                    <div className="h-full overflow-hidden rounded-none border-0 bg-white dark:bg-[#0B1120]">
+                      <LuckysheetPreview file={getHomeWorkbenchFile(previewItem.id)} />
+                    </div>
+                  ) : (
+                    <div className="flex h-full flex-col items-center justify-center rounded-none border-0 bg-white dark:bg-[#0B1120] px-8 text-center">
+                      <div className="flex h-16 w-16 items-center justify-center rounded-[24px] border border-[#dbe5f0] dark:border-white/[0.05] bg-[#f7fbff] dark:bg-white/[0.02]">
+                        {getItemIcon(previewItem, 'h-8 w-8 object-contain drop-shadow-sm opacity-80')}
+                      </div>
+                      <div className="mt-5 text-xl font-semibold text-[#1d2d43] dark:text-slate-200">当前格式暂不支持浏览器内预览</div>
+                      <div className="mt-2 max-w-xl text-sm leading-7 text-[#6c7d92] dark:text-slate-400">
+                        你可以先下载原文件，或者直接把它送入右侧工具箱中的对应模块继续处理。
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <AnimatePresence>
+                  {previewToolboxOpen ? (
+                    <motion.aside
+                      initial={{ opacity: 0, x: 32 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 32 }}
+                      transition={{ duration: 0.22 }}
+                      className="shrink-0 w-[300px] lg:w-[320px] border-l border-slate-200 dark:border-white/[0.05] bg-[#F2F3F5] dark:bg-[#0B1120] shadow-[-4px_0_12px_rgba(0,0,0,0.03)] dark:shadow-none z-10"
+                    >
+                      <div className="h-full overflow-y-auto custom-scrollbar">
+                        {renderToolbox('drawer')}
+                      </div>
+                    </motion.aside>
+                  ) : null}
+                </AnimatePresence>
+              </div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {uploadDialogFiles ? (
+          <div className="absolute inset-0 z-[100] flex items-center justify-center bg-slate-900/20 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-md rounded-xl bg-white shadow-xl"
+            >
+              <div className="border-b border-slate-100 px-6 py-4">
+                <h3 className="text-lg font-semibold text-slate-800">上传 {uploadDialogFiles.length} 个文件</h3>
+              </div>
+              <div className="px-6 py-5">
+                <div className="mb-3 text-[13px] font-medium text-slate-700">选择目标文件夹</div>
+                <div className="space-y-2">
+                  <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-3 hover:bg-slate-50">
+                    <input
+                      type="radio"
+                      name="upload-folder"
+                      checked={!isCreatingFolderInUpload}
+                      onChange={() => setIsCreatingFolderInUpload(false)}
+                      className="text-blue-600 focus:ring-blue-500"
+                    />
+                    <select
+                      value={uploadTargetFolderId || HOME_WORKBENCH_ROOT_FOLDER_ID}
+                      onChange={(e) => setUploadTargetFolderId(e.target.value)}
+                      disabled={isCreatingFolderInUpload}
+                      className="flex-1 bg-transparent text-[14px] outline-none disabled:opacity-50"
+                    >
+                      {session.folders.map(f => (
+                        <option key={f.id} value={f.id}>{f.name}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-3 hover:bg-slate-50">
+                    <input
+                      type="radio"
+                      name="upload-folder"
+                      checked={isCreatingFolderInUpload}
+                      onChange={() => setIsCreatingFolderInUpload(true)}
+                      className="text-blue-600 focus:ring-blue-500"
+                    />
+                    <div className="flex flex-1 items-center gap-2">
+                      <span className="text-[14px] text-slate-700 disabled:opacity-50">新建文件夹</span>
+                      <input
+                        value={uploadNewFolderDraft}
+                        onChange={(e) => setUploadNewFolderDraft(e.target.value)}
+                        disabled={!isCreatingFolderInUpload}
+                        placeholder="输入文件夹名称"
+                        className="flex-1 rounded border border-slate-200 px-2 py-1 text-[13px] outline-none focus:border-blue-500 disabled:opacity-50"
+                      />
+                    </div>
+                  </label>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-3 border-t border-slate-100 bg-slate-50 px-6 py-4 rounded-b-xl">
+                <button
+                  type="button"
+                  onClick={cancelUpload}
+                  className="rounded-lg px-4 py-2 text-[14px] font-medium text-slate-600 hover:bg-slate-200 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmUpload}
+                  className="rounded-lg bg-blue-600 px-5 py-2 text-[14px] font-medium text-white hover:bg-blue-700 transition-colors"
+                >
+                  确认上传
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 };
+

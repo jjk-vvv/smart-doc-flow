@@ -1,67 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
-from pathlib import Path
+from importlib import import_module
 
 
-def _ensure_package(name: str) -> None:
-    if name in sys.modules:
-        return
-    module = types.ModuleType(name)
-    module.__path__ = []  # type: ignore[attr-defined]
-    sys.modules[name] = module
-
-
-def _load_module(path_parts: list[str], module_name: str):
-    module_path = Path(__file__).resolve().parents[1]
-    for part in path_parts:
-        module_path = module_path / part
-
-    _ensure_package("_smart_doc_flow_module2")
-    _ensure_package("_smart_doc_flow_module2.core")
-    _ensure_package("_smart_doc_flow_module2.core.visual")
-    _ensure_package("_smart_doc_flow_module2.core.integration")
-
-    llm_provider_module = types.ModuleType("_smart_doc_flow_module2.core.llm_provider")
-    llm_provider_module.resolve_llm_native_api_url = lambda *args, **kwargs: ""
-    sys.modules["_smart_doc_flow_module2.core.llm_provider"] = llm_provider_module
-
-    transport_module = types.ModuleType(
-        "_smart_doc_flow_module2.core.integration.gemini_native_transport_runtime"
-    )
-
-    class _FakeGeminiNativeTransportRuntime:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def build_google_native_url(self, model: str) -> str:
-            return ""
-
-        def apply_model_to_native_url(self, url: str, model: str) -> str:
-            return url
-
-        def build_headers(self, api_key: str) -> dict[str, str]:
-            return {}
-
-    transport_module.GeminiNativeTransportRuntime = _FakeGeminiNativeTransportRuntime
-    sys.modules[
-        "_smart_doc_flow_module2.core.integration.gemini_native_transport_runtime"
-    ] = transport_module
-
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-vision_extractor_module = _load_module(
-    ["app", "modules", "module2", "core", "visual", "vision_extractor.py"],
-    "_smart_doc_flow_module2.core.visual.vision_extractor",
-)
+vision_extractor_module = import_module("app.modules.module2.core.visual.vision_extractor")
 
 GeminiVisionExtractor = vision_extractor_module.GeminiVisionExtractor
 

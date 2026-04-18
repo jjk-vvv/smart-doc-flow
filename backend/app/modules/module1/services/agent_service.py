@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import logging
+import queue
 import sys
+import threading
 from pathlib import Path
 from typing import Iterator, List, Optional
 
@@ -12,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 logger = logging.getLogger(__name__)
+STREAM_END = object()
 
 IMAGE_MIME_TYPES = {
     ".png": "image/png",
@@ -25,7 +28,7 @@ IMAGE_MIME_TYPES = {
 try:
     import sniffio  # type: ignore
 except ImportError:  # pragma: no cover - local fallback for offline envs
-    from app.modules.module1.utils import sniffio_compat as sniffio  # type: ignore
+    from ..utils import sniffio_compat as sniffio  # type: ignore
 
     sys.modules.setdefault("sniffio", sniffio)
 
@@ -142,7 +145,15 @@ class LayoutExpertAgent:
             "你是一个专业的文档内容分析助手。"
             "请严格基于当前上传文档和当前对话上下文回答，不能混入旧文档信息。"
             "如果用户当前上传了多份文档，要先识别它们之间的关系，再给出统一分析。"
-            "输出时默认使用清晰的 Markdown 分层结构，只允许使用 #、##、### 三级标题。"
+            "输出必须为正式、结构化、可直接交付的分析/提取报告。"
+            "全文只允许三级结构，禁止出现第四级及以下层级。"
+            "一级标题统一使用“一、二、三”格式；"
+            "二级标题统一使用“1. 2. 3.”格式；"
+            "三级标题统一使用“(1)(2)(3)”格式。"
+            "标题序号必须连续、唯一，不能混用 Markdown 标题、短横线列表、星号列表或其他编号样式。"
+            "不要输出 #、##、###、*、-、>、``` 等 Markdown 符号。"
+            "正文要自然分段，每段聚焦一个意思，避免大段堆叠和杂乱换行。"
+            "段落之间保留适度空行，整体风格简洁、正式、美观。"
             "优先给出核心结论、关键事实/数据、问题或风险、下一步建议。"
             "如果用户更偏向提取，就把关键信息整理成分点、字段清单或简短表格式文本；"
             "如果用户更偏向分析，就在提取事实后补充趋势判断、原因归纳、影响分析和建议。"
@@ -152,6 +163,7 @@ class LayoutExpertAgent:
             f"用户指令：{instruction}\n\n"
             f"当前文档内容：\n{simple_content[:12000]}\n\n"
             "请直接输出可阅读、可继续编辑的分析/提取报告。"
+            "若内容较短，也必须保持规范标题层级和正式排版。"
         )
 
         response = self.client.chat.completions.create(
@@ -166,6 +178,45 @@ class LayoutExpertAgent:
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta
+
+    def stream_analysis_with_first_token_timeout(
+        self,
+        instruction: str,
+        simple_content: str,
+        conversation_context: Optional[List[dict[str, str]]] = None,
+        *,
+        first_token_timeout_sec: float = 18.0,
+    ) -> Iterator[str]:
+        if not self.client:
+            raise RuntimeError("智谱AI未配置")
+
+        result_queue: queue.Queue[object] = queue.Queue()
+
+        def worker() -> None:
+            try:
+                for chunk in self.stream_analysis(instruction, simple_content, conversation_context):
+                    if chunk:
+                        result_queue.put(chunk)
+                result_queue.put(STREAM_END)
+            except Exception as exc:  # pragma: no cover - runtime/network dependent
+                result_queue.put(exc)
+
+        threading.Thread(target=worker, daemon=True).start()
+        received_first_chunk = False
+
+        while True:
+            try:
+                item = result_queue.get(timeout=first_token_timeout_sec if not received_first_chunk else None)
+            except queue.Empty as exc:
+                raise TimeoutError(f"分析首个结果等待超过 {first_token_timeout_sec:.0f} 秒") from exc
+
+            if item is STREAM_END:
+                return
+            if isinstance(item, Exception):
+                raise item
+
+            received_first_chunk = True
+            yield str(item)
 
     def stream_chat(
         self,
@@ -219,6 +270,10 @@ class LayoutExpertAgent:
             "insert_text 可使用：text, position, paragraph_index, line_index, reference_text。"
             "alignment 只能是 left、center、right、justify。heading_level 只能是 0、1、2、3，其中 0 表示正文。"
             "position 只能是 start、end、before、after。"
+            "如果用户只提到一个或少数几个格式属性，只输出这些明确提到的字段，不要补充默认值。"
+            "例如用户只要求改颜色时，不要输出 bold、heading_level、alignment、font_size 等无关字段。"
+            "只有用户明确说取消某个样式时，才允许输出对应布尔字段为 false。"
+            "不要为了看起来完整而重置未提到的样式。"
             "如果用户要求调整标题颜色、标题字体、标题字号、居中、段落格式、层级结构，就优先输出 text_run_format。"
             "如果用户明确说了‘替换某段文字’、‘把A替换成B’，就输出 replace_text。"
             "如果用户明确说了‘在开头/结尾/某段前后/某句话前后插入内容’，就输出 insert_text。"

@@ -8,9 +8,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.config import Settings
-from app.modules.auth.deps import AuthenticatedUser
+from app.core.auth_deps import AuthenticatedUser
 from app.modules.module2.schemas.extraction import TraceLocateRequest
-from app.services.extraction_service import ExtractionService
+from app.modules.module2.services.api.extraction_service import ExtractionService
 
 
 def _settings(
@@ -70,33 +70,12 @@ def test_extraction_service_health_payload_reports_local_routes(monkeypatch, tmp
     )
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_assistant1_facade",
+        "app.modules.module2.services.api.extraction_service.get_assistant1_facade",
         lambda: fake_facade,
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.resolve_live_module2_upstream_url",
-        lambda _settings: "http://127.0.0.1:8010",
-    )
-    monkeypatch.setattr(
-        "app.services.extraction_service.probe_module2_upstream",
-        lambda base_url, timeout_sec: {
-            "ok": True,
-            "base_url": base_url,
-            "health_url": f"{base_url}/healthz",
-            "payload": {"status": "ok"},
-        },
-    )
-    monkeypatch.setattr(
-        "app.services.extraction_service.get_module2_sidecar_manager",
-        lambda: SimpleNamespace(
-            health_payload=lambda _settings: {
-                "requested_mode": "auto",
-                "active_mode": "external",
-                "healthy": True,
-                "running": False,
-                "preferred_base_url": "http://127.0.0.1:8010",
-            }
-        ),
+        "app.modules.module2.services.api.extraction_service.build_embedded_module2_health_payload",
+        lambda: {"status": "ok", "storage_db_connected": True},
     )
 
     payload = service.health_payload(settings)
@@ -104,8 +83,9 @@ def test_extraction_service_health_payload_reports_local_routes(monkeypatch, tmp
     assert payload["ok"] is True
     assert payload["assistant1"]["configured"] is True
     assert payload["assistant1"]["active_mode"] == "legacy"
-    assert payload["module2_upstream"]["resolved_url"] == "http://127.0.0.1:8010"
-    assert payload["module2_sidecar"]["active_mode"] == "external"
+    assert payload["module2_upstream"]["resolved_url"] == "embedded://module2"
+    assert payload["module2_upstream"]["mode"] == "embedded"
+    assert payload["module2_sidecar"]["active_mode"] == "embedded"
     assert payload["routes"]["local"]["extract_batch"] == "local"
     assert payload["routes"]["local"]["extract_assistant1_session"] == "local"
 
@@ -130,10 +110,14 @@ def test_extraction_service_get_assistant1_session_forwards_auth_context(monkeyp
         return {"ok": True, "session_id": session_id}
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_assistant1_facade",
+        "app.modules.module2.services.api.extraction_service.get_assistant1_facade",
         lambda: SimpleNamespace(
             upstream_runtime=SimpleNamespace(fetch_session_response=_fake_fetch_session_response),
         ),
+    )
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_extraction_settings",
+        lambda: SimpleNamespace(assistant1_mode="upstream"),
     )
 
     request = SimpleNamespace(
@@ -175,13 +159,13 @@ def test_extraction_service_clear_cache_merges_runtime_counters(monkeypatch, tmp
         }
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_module2_execution_facade",
+        "app.modules.module2.services.api.extraction_service.get_module2_execution_facade",
         lambda: SimpleNamespace(
             clear_cache=fake_clear_cache
         ),
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.clear_shadow_extraction_runtime_state",
+        "app.modules.module2.services.api.extraction_service.clear_shadow_extraction_runtime_state",
         lambda _settings, *, remove_snapshots: {
             "cleared_shadow_jobs_memory": 5,
             "cleared_shadow_pollers_memory": 6,
@@ -189,7 +173,7 @@ def test_extraction_service_clear_cache_merges_runtime_counters(monkeypatch, tmp
         },
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.get_extraction_artifact_runtime",
+        "app.modules.module2.services.api.extraction_service.get_extraction_artifact_runtime",
         lambda: SimpleNamespace(
             clear_office_preview_runtime_state=lambda: {
                 "cleared_office_preview_jobs_memory": 8,
@@ -230,7 +214,7 @@ def test_extraction_service_create_job_resolves_user_preferred_tenant(monkeypatc
         return {"job_id": "extract_job_demo123", "status": "queued", "terminal": False}
 
     monkeypatch.setattr(
-        "app.services.extraction_service.start_shadow_extraction_job",
+        "app.modules.module2.services.api.extraction_service.start_shadow_extraction_job",
         fake_start_shadow_extraction_job,
     )
 
@@ -267,11 +251,11 @@ def test_extraction_service_extract_batch_forwards_resolved_tenant_header(monkey
         return {"documents": []}
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_module2_execution_facade",
+        "app.modules.module2.services.api.extraction_service.get_module2_execution_facade",
         lambda: SimpleNamespace(extract_batch=fake_extract_batch),
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.read_uploads_for_upstream",
+        "app.modules.module2.services.api.extraction_service.read_uploads_for_upstream",
         lambda uploads: asyncio.sleep(
             0,
             result=[("files", ("demo.pdf", b"%PDF-1.4", "application/pdf"))],
@@ -306,7 +290,7 @@ def test_extraction_service_extract_batch_rejects_mismatched_tenant_in_strict_mo
     service = ExtractionService()
 
     monkeypatch.setattr(
-        "app.services.extraction_service.read_uploads_for_upstream",
+        "app.modules.module2.services.api.extraction_service.read_uploads_for_upstream",
         lambda uploads: asyncio.sleep(
             0,
             result=[("files", ("demo.pdf", b"%PDF-1.4", "application/pdf"))],
@@ -363,15 +347,15 @@ def test_extraction_service_get_job_status_augments_artifact_file_links(monkeypa
         return mapping[fragment]
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_shadow_extraction_job_status",
+        "app.modules.module2.services.api.extraction_service.get_shadow_extraction_job_status",
         lambda *_args, **_kwargs: payload,
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.get_extraction_artifact_runtime",
+        "app.modules.module2.services.api.extraction_service.get_extraction_artifact_runtime",
         lambda: SimpleNamespace(resolve_existing_artifact_path=_resolve_existing_artifact_path),
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.register_file",
+        "app.modules.module2.services.api.extraction_service.register_file",
         lambda **kwargs: {"file_id": f"fa_{Path(str(kwargs['path'])).stem}"},
     )
 
@@ -383,9 +367,11 @@ def test_extraction_service_get_job_status_augments_artifact_file_links(monkeypa
     assert trace_hit["artifact_file_id"] == "fa_doc"
     assert trace_hit["artifact_download_url"] == "/download/fa_doc"
     assert trace_hit["artifact_by_file_url"] == "/extract/artifact/by-file/fa_doc"
+    assert trace_hit["artifact_url"] == "/extract/artifact/by-file/fa_doc"
     assert diagnostics["assistant_payload_artifact_file_id"] == "fa_assistant"
     assert diagnostics["assistant_payload_artifact_download_url"] == "/download/fa_assistant"
     assert diagnostics["assistant_payload_artifact_by_file_url"] == "/extract/artifact/by-file/fa_assistant"
+    assert diagnostics["assistant_payload_artifact_url"] == "/extract/artifact/by-file/fa_assistant"
 
 
 def test_extraction_service_office_preview_status_augments_file_link(monkeypatch, tmp_path: Path) -> None:
@@ -406,14 +392,14 @@ def test_extraction_service_office_preview_status_augments_file_link(monkeypatch
         }
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_extraction_artifact_runtime",
+        "app.modules.module2.services.api.extraction_service.get_extraction_artifact_runtime",
         lambda: SimpleNamespace(
             get_office_preview_status=_fake_get_office_preview_status,
             resolve_existing_artifact_path=lambda _settings, fragment: preview_pdf if fragment == "preview/op/demo.pdf" else preview_pdf,
         ),
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.register_file",
+        "app.modules.module2.services.api.extraction_service.register_file",
         lambda **_kwargs: {"file_id": "fa_preview"},
     )
 
@@ -422,6 +408,7 @@ def test_extraction_service_office_preview_status_augments_file_link(monkeypatch
     assert result["artifact_file_id"] == "fa_preview"
     assert result["artifact_download_url"] == "/download/fa_preview"
     assert result["artifact_by_file_url"] == "/extract/artifact/by-file/fa_preview"
+    assert result["artifact_url"] == "/extract/artifact/by-file/fa_preview"
 
 
 def test_extraction_service_trace_locate_augments_artifact_file_links(monkeypatch, tmp_path: Path) -> None:
@@ -435,13 +422,13 @@ def test_extraction_service_trace_locate_augments_artifact_file_links(monkeypatc
     register_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_extraction_artifact_runtime",
+        "app.modules.module2.services.api.extraction_service.get_extraction_artifact_runtime",
         lambda: SimpleNamespace(
             resolve_existing_artifact_path=lambda _settings, fragment: trace_image if fragment == "trace/hit.png" else trace_image,
         ),
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.register_file",
+        "app.modules.module2.services.api.extraction_service.register_file",
         lambda **kwargs: register_calls.append(dict(kwargs)) or {"file_id": "fa_hit"},
     )
 
@@ -490,6 +477,7 @@ def test_extraction_service_trace_locate_augments_artifact_file_links(monkeypatc
     assert response.hits[0].artifact_file_id == "fa_hit"
     assert response.hits[0].artifact_download_url == "/download/fa_hit"
     assert response.hits[0].artifact_by_file_url == "/extract/artifact/by-file/fa_hit"
+    assert response.hits[0].artifact_url == "/extract/artifact/by-file/fa_hit"
     assert register_calls and register_calls[0]["owner_id"] == "user-123"
 
 
@@ -505,13 +493,13 @@ def test_extraction_service_trace_locate_augments_artifact_file_links_from_artif
     trace_image.write_bytes(b"\x89PNG\r\n\x1a\n")
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_extraction_artifact_runtime",
+        "app.modules.module2.services.api.extraction_service.get_extraction_artifact_runtime",
         lambda: SimpleNamespace(
             resolve_existing_artifact_path=lambda _settings, fragment: trace_image if fragment == "trace/url-hit.png" else trace_image,
         ),
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.register_file",
+        "app.modules.module2.services.api.extraction_service.register_file",
         lambda **_kwargs: {"file_id": "fa_url_hit"},
     )
 
@@ -559,6 +547,7 @@ def test_extraction_service_trace_locate_augments_artifact_file_links_from_artif
     assert response.hits[0].artifact_file_id == "fa_url_hit"
     assert response.hits[0].artifact_download_url == "/download/fa_url_hit"
     assert response.hits[0].artifact_by_file_url == "/extract/artifact/by-file/fa_url_hit"
+    assert response.hits[0].artifact_url == "/extract/artifact/by-file/fa_url_hit"
 
 
 def test_extraction_service_start_office_preview_augments_file_link(monkeypatch, tmp_path: Path) -> None:
@@ -580,14 +569,14 @@ def test_extraction_service_start_office_preview_augments_file_link(monkeypatch,
         }
 
     monkeypatch.setattr(
-        "app.services.extraction_service.get_extraction_artifact_runtime",
+        "app.modules.module2.services.api.extraction_service.get_extraction_artifact_runtime",
         lambda: SimpleNamespace(
             start_office_preview=_fake_start,
             resolve_existing_artifact_path=lambda _settings, fragment: preview_pdf if fragment == "preview/op/start.pdf" else preview_pdf,
         ),
     )
     monkeypatch.setattr(
-        "app.services.extraction_service.register_file",
+        "app.modules.module2.services.api.extraction_service.register_file",
         lambda **_kwargs: {"file_id": "fa_start_preview"},
     )
 
@@ -605,3 +594,4 @@ def test_extraction_service_start_office_preview_augments_file_link(monkeypatch,
     assert result["artifact_file_id"] == "fa_start_preview"
     assert result["artifact_download_url"] == "/download/fa_start_preview"
     assert result["artifact_by_file_url"] == "/extract/artifact/by-file/fa_start_preview"
+    assert result["artifact_url"] == "/extract/artifact/by-file/fa_start_preview"

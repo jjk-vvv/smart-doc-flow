@@ -115,7 +115,7 @@ The FastAPI application is created in `create_app.py` and mounts six feature mod
 |---|---|
 | `Dashboard` | Upload hub, extraction job status |
 | `DeepReadWorkbench` | Document viewer + extracted results |
-| `AIAssistant` | Streaming multi-turn chat |
+| `PlatformAssistant` | Streaming multi-turn chat |
 | `KnowledgeNexus` | Neo4j graph visualization |
 | `FusionGrid` | Multi-document analysis |
 

@@ -168,6 +168,8 @@ class OfficePreviewService:
         deadline = time.perf_counter() + max(2.0, float(timeout_sec))
         wait_started = time.perf_counter()
         saw_running = False
+        last_job_id = ""
+        last_job_status = ""
 
         while True:
             async with self.lock:
@@ -175,6 +177,8 @@ class OfficePreviewService:
                 job = self._find_by_hash_locked(file_hash, file_name)
                 if job is None:
                     return None, {}
+                last_job_id = str(job.job_id or "")
+                last_job_status = str(job.status or "")
 
                 if job.status == "completed":
                     try:
@@ -207,8 +211,37 @@ class OfficePreviewService:
                 saw_running = job.status in {"queued", "running"}
 
             if time.perf_counter() >= deadline:
+                async with self.lock:
+                    self.cleanup_jobs_locked()
+                    final_job = self._find_by_hash_locked(file_hash, file_name)
+                    if final_job is not None and final_job.status == "completed":
+                        try:
+                            pdf_bytes = self._read_artifact_bytes(final_job)
+                        except Exception as exc:
+                            final_job.status = "failed"
+                            final_job.updated_at = time.time()
+                            if not str(final_job.error or "").strip():
+                                final_job.error = f"artifact_read_failed:{type(exc).__name__}:{exc}"
+                            return None, {
+                                "office_pdf_preview_error": final_job.error,
+                                "office_pdf_preview_job_id": final_job.job_id,
+                            }
+                        return pdf_bytes, {
+                            "office_pdf_preview_reused": True,
+                            "office_pdf_preview_job_id": final_job.job_id,
+                            "artifact_path": final_job.artifact_path,
+                            "artifact_url": final_job.artifact_url,
+                            "converter": str(final_job.converter or "").strip() or "preview_cache",
+                            "elapsed_ms": int(final_job.elapsed_ms or 0),
+                            "waited_ms": int((time.perf_counter() - wait_started) * 1000),
+                        }
+                    if final_job is not None:
+                        last_job_id = str(final_job.job_id or last_job_id or "")
+                        last_job_status = str(final_job.status or last_job_status or "")
                 if saw_running:
-                    raise TimeoutError(f"office_preview_wait_timeout:{file_name}")
+                    raise TimeoutError(
+                        f"office_preview_wait_timeout:{file_name}:job={last_job_id or 'unknown'}:status={last_job_status or 'unknown'}"
+                    )
                 return None, {}
             await asyncio.sleep(0.35)
 
@@ -467,4 +500,3 @@ class OfficePreviewRequestService:
 # Backward-compatible aliases during migration.
 OfficePreviewRuntime = OfficePreviewService
 OfficePreviewRequestRuntime = OfficePreviewRequestService
-

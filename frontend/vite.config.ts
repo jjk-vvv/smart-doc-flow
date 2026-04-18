@@ -36,9 +36,7 @@ export default defineConfig(({ mode }) => {
   loadEnv(mode, '.', '');
   const gatewayPort = parsePort(process.env.GATEWAY_PORT, 3001);
   const frontendPort = parsePort(process.env.FRONTEND_PORT, 3000);
-  const module3Port = parsePort(process.env.MODULE3_PORT, 8001);
   const backendEntryUrl = process.env.VITE_BACKEND_ENTRY_URL || `http://localhost:${gatewayPort}`;
-  const module3EntryUrl = process.env.VITE_MODULE3_ENTRY_URL || `http://localhost:${module3Port}`;
   const devProxyTimeoutMs = Math.max(
     180_000,
     Number.parseInt(process.env.VITE_DEV_PROXY_TIMEOUT_MS || '600000', 10) || 600_000,
@@ -78,7 +76,14 @@ export default defineConfig(({ mode }) => {
           proxyTimeout: devProxyTimeoutMs,
         },
         '/module3': {
-          target: module3EntryUrl,
+          target: backendEntryUrl,
+          changeOrigin: true,
+          secure: false,
+          timeout: devProxyTimeoutMs,
+          proxyTimeout: devProxyTimeoutMs,
+        },
+        '/module1': {
+          target: backendEntryUrl,
           changeOrigin: true,
           secure: false,
           timeout: devProxyTimeoutMs,

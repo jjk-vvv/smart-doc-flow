@@ -17,6 +17,7 @@ class Module4RouterDeps:
     neo4j_graph_projector_getter: Callable[[], Any]
     graphrag_indexer_getter: Callable[[], Any]
     tenant_from_request: Callable[[Optional[Request], Optional[str]], str]
+    validate_internal_request: Callable[[Optional[Request]], None]
     parse_csv_list: Callable[[Optional[str]], list[str]]
     submit_ingest_job: Callable[[IngestRequest, Request], Awaitable[IngestResponse]]
     schedule_rebuild_job: Callable[[str, RebuildRequest], None]

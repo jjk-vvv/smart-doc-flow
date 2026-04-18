@@ -68,6 +68,15 @@ export const requestExtractionJobStatus = async (
   );
 };
 
+export const requestExtractionHealth = async (
+  preferredBase = '',
+): Promise<ExtractionApiFetchResult> =>
+  requestExtraction(
+    '/healthz',
+    { method: 'GET' },
+    preferredBase,
+  );
+
 export const requestExtractionSummary = async (
   payload: Record<string, unknown>,
   preferredBase = '',
@@ -143,4 +152,3 @@ export const requestAssistant1ChatStream = async (
     },
     preferredBase,
   );
-

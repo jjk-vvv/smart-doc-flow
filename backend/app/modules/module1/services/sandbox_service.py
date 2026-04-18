@@ -9,14 +9,9 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import UploadFile
+from werkzeug.utils import secure_filename
 
-from app.modules.module1.models import SavedUpload
-
-try:
-    from werkzeug.utils import secure_filename
-except Exception:  # pragma: no cover - optional dependency
-    def secure_filename(value: str) -> str:
-        return Path(str(value or "")).name
+from ..domain import SavedUpload
 
 
 logger = logging.getLogger(__name__)
