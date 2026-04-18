@@ -161,7 +161,7 @@ class MineruLayoutExtractor:
             return ""
         path = Path(raw)
         if path.is_absolute():
-            return str(path.resolve()) if path.exists() else raw
+            return str(path.resolve()) if path.exists() else ""
         candidates = [
             (self._repo_root() / path).resolve(),
             (self._module2_root() / path).resolve(),
@@ -170,6 +170,17 @@ class MineruLayoutExtractor:
         for candidate in candidates:
             if candidate.exists():
                 return str(candidate)
+        # Bare commands (e.g. "mineru", "python3") should still resolve via PATH.
+        # But path-like values from host env files (e.g. ".venv.../Scripts/python.exe")
+        # must not be returned when missing inside Linux containers.
+        looks_like_path = (
+            "/" in raw
+            or "\\" in raw
+            or raw.startswith(".")
+            or raw.endswith((".exe", ".bat", ".cmd", ".sh"))
+        )
+        if looks_like_path:
+            return ""
         return raw
 
     def _resolve_configured_directory(self, raw_value: str) -> str:

@@ -6,6 +6,7 @@ __pycache__/
 
 # Environment variables
 .env
+docker/app.env
 .env.local
 .env.*.local
 .env.*

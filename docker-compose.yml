@@ -1,0 +1,109 @@
+# Smart Doc Flow — 多容器编排：应用 + PostgreSQL（pgvector）+ Neo4j。
+#
+# 0) （推荐）应用层大量环境变量：cp docker/app.env.example docker/app.env，按需编辑；
+#    可不创建 docker/app.env（可选文件）。compose 里 app.environment 与编排相关的项会覆盖 app.env 中同名变量。
+# 1) cp docker/env.example .env   # 供 compose 替换 ${...}：密码、AUTH_SECRET_KEY、公网 CORS 等
+# 2) 先构建基础镜像（仅系统依赖，较慢但不常做）：
+#    docker build -f docker/Dockerfile.base -t smart-doc-flow-runtime-base:bookworm .
+# 3) 再构建应用镜像（常做）：
+#    docker compose build app
+# 4) docker compose up -d
+# 5) 浏览器访问 http://127.0.0.1:3001（或用环境变量 APP_PUBLISH_PORT 改映射端口）；生产环境请在宿主机用 Nginx 反代并配置 HTTPS。
+#
+# 首次构建基础镜像会拉取 LibreOffice/CJK 字体等大包，请预留时间与磁盘空间。
+
+name: smart-doc-flow
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: smartdoc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartdoc}
+      POSTGRES_DB: smartdoc
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartdoc -d smartdoc"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  neo4j:
+    image: neo4j:5-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-changeme}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -a bolt://127.0.0.1:7687 -u neo4j -p \"${NEO4J_PASSWORD:-changeme}\" 'RETURN 1'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        BASE_IMAGE: ${APP_BASE_IMAGE:-smart-doc-flow-runtime-base:bookworm}
+    image: smart-doc-flow:local
+    env_file:
+      # 按“根配置 -> 各模块配置 -> docker/app.env 手工补充”的顺序加载。
+      # 若同名变量在多个 env_file 中出现，以后面的文件为准。
+      - path: backend/.env
+        required: false
+      - path: backend/app/modules/module1/.env
+        required: false
+      - path: backend/app/modules/module2/.env
+        required: false
+      - path: backend/app/modules/module3/.env
+        required: false
+      - path: backend/app/modules/module4/.env
+        required: false
+      - path: docker/app.env
+        required: false
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    ports:
+      - "${APP_PUBLISH_PORT:-3001}:3001"
+    # 这里只保留容器编排强相关覆盖项（端口、容器内数据库/图库地址）。
+    # 其他业务配置统一放 backend/.env 与 module1/2/3/4/.env（通过 env_file 加载）。
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: "3001"
+      SMART_DOC_FLOW_RUNTIME_ROOT: /app
+      SMART_DOC_FLOW_DATA_ROOT: /app/runtime-data
+      AUTH_DATABASE_DSN: postgresql://smartdoc:${POSTGRES_PASSWORD:-smartdoc}@postgres:5432/smartdoc
+      MODULE4_DATABASE_DSN: postgresql://smartdoc:${POSTGRES_PASSWORD:-smartdoc}@postgres:5432/smartdoc
+      MODULE2_DATABASE_DSN: postgresql://smartdoc:${POSTGRES_PASSWORD:-smartdoc}@postgres:5432/smartdoc
+      ASSISTANT1_DATABASE_DSN: postgresql://smartdoc:${POSTGRES_PASSWORD:-smartdoc}@postgres:5432/smartdoc
+      MODULE3_DATABASE_URL: postgresql+psycopg://smartdoc:${POSTGRES_PASSWORD:-smartdoc}@postgres:5432/smartdoc
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
+      MODULE4_NEO4J_URI: bolt://neo4j:7687
+      MODULE4_NEO4J_USERNAME: neo4j
+      MODULE4_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
+      MODULE4_NEO4J_DATABASE: neo4j
+    volumes:
+      - app_runtime:/app/runtime-data
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  app_runtime:

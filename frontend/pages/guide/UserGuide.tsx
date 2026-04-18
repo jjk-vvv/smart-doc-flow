@@ -26,12 +26,12 @@ import {
   type Variants,
 } from "framer-motion";
 
-import guideLogo from "../../userguide_images/logo.png";
-import section1MainImage from "../../userguide_images/生成办公场景图片 (4).png";
-import sec2_1 from "../../userguide_images/sec2_1.png";
-import sec2_2 from "../../userguide_images/sec2_2.png";
-import sec2_3 from "../../userguide_images/sec2_3.png";
-import sec2_4 from "../../userguide_images/sec2_4.png";
+import guideLogo from "../../assets/使用说明插图.png";
+import section1MainImage from "../../assets/使用说明插图.png";
+import sec2_1 from "../../assets/使用说明插图.png";
+import sec2_2 from "../../assets/使用说明插图.png";
+import sec2_3 from "../../assets/使用说明插图.png";
+import sec2_4 from "../../assets/使用说明插图.png";
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }

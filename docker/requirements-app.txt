@@ -1,0 +1,4 @@
+# Docker image installs unified gateway + all mounted modules (order matters for pip resolution).
+-r ../backend/requirements.txt
+-r ../backend/app/modules/module3/requirements.txt
+-r ../backend/app/modules/module2/requirements.txt

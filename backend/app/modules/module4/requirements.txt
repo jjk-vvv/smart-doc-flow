@@ -6,8 +6,10 @@ pydantic-settings>=2.4.0
 python-dotenv>=1.0.0
 bcrypt>=4.1.3
 PyJWT>=2.8.0
-numpy>=2.1,<2.2
-scipy>=1.14,<1.15
+# graphrag==0.3.0 requires numpy<2.0.0
+numpy>=1.25.2,<2.0.0
+# graphrag==0.3.0 pins scipy==1.12.0
+scipy==1.12.0
 pandas>=2.2.2
 graphrag==0.3.0
 neo4j>=6.1.0

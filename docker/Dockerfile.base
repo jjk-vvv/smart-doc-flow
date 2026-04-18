@@ -1,0 +1,74 @@
+# syntax=docker/dockerfile:1
+# Base image with OS-level heavy deps only (LibreOffice/CJK fonts/system libs).
+
+FROM python:3.11-bookworm
+ARG APT_MIRROR=deb.debian.org
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=0
+
+# Mirror/proxy jitter is common in heavy apt layers; increase resiliency.
+RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+    && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "120";\nAcquire::https::Timeout "120";\n' \
+    > /etc/apt/apt.conf.d/80-retries
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    bash -lc 'set -euo pipefail; \
+      for i in 1 2 3 4 5; do \
+        apt-get update && apt-get install -y --no-install-recommends \
+          -o Acquire::Retries=8 \
+          -o Acquire::http::Timeout=120 \
+          -o Acquire::https::Timeout=120 \
+          build-essential \
+          libpq-dev \
+          libgl1 \
+          libglib2.0-0 \
+          libsm6 \
+          libxext6 \
+          libxrender1 \
+          libgomp1 \
+          curl && exit 0; \
+        echo "apt base libs failed, retry ${i}/5"; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+      done; \
+      exit 1'
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    bash -lc 'set -euo pipefail; \
+      for i in 1 2 3 4 5; do \
+        apt-get update && apt-get install -y --no-install-recommends \
+          -o Acquire::Retries=8 \
+          -o Acquire::http::Timeout=120 \
+          -o Acquire::https::Timeout=120 \
+          libreoffice-writer \
+          libreoffice-calc \
+          fontconfig && exit 0; \
+        echo "apt libreoffice failed, retry ${i}/5"; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 10; \
+      done; \
+      exit 1'
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    bash -lc 'set -euo pipefail; \
+      for i in 1 2 3 4 5; do \
+        apt-get update && apt-get install -y --no-install-recommends \
+          -o Acquire::Retries=8 \
+          -o Acquire::http::Timeout=120 \
+          -o Acquire::https::Timeout=120 \
+          fonts-noto-cjk \
+          fonts-wqy-zenhei \
+          fonts-wqy-microhei && exit 0; \
+        echo "apt fonts failed, retry ${i}/5"; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+      done; \
+      exit 1'
+
+WORKDIR /app
