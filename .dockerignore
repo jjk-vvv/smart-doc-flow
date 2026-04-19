@@ -10,6 +10,7 @@ runtime-data
 dist-electron*
 dist-electron-rebuild*
 *.tar
+*.tar.gz
 *.log
 .DS_Store
 docs

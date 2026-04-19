@@ -17,6 +17,7 @@ RUN npm run build
 FROM ${BASE_IMAGE} AS runtime
 
 WORKDIR /app
+ARG INSTALL_APP_DEPS=1
 
 # Requirement files only (so nested `-r` paths in docker/requirements-app.txt resolve during pip).
 COPY backend/requirements.txt /app/backend/requirements.txt
@@ -26,9 +27,14 @@ COPY backend/app/modules/module4/requirements.txt /app/backend/app/modules/modul
 COPY docker/requirements-app.txt /app/docker/requirements-app.txt
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install --upgrade pip setuptools wheel \
-    && pip install -r /app/docker/requirements-app.txt \
-    && pip install "werkzeug>=3.0.0"
+    bash -lc 'set -euo pipefail; \
+      python -m pip install --upgrade pip setuptools wheel; \
+      if [ "${INSTALL_APP_DEPS}" = "1" ]; then \
+        pip install --no-cache-dir -r /app/docker/requirements-app.txt; \
+        pip install --no-cache-dir "werkzeug>=3.0.0"; \
+      else \
+        echo "Skipping Python dependency install (INSTALL_APP_DEPS=${INSTALL_APP_DEPS})"; \
+      fi'
 
 COPY backend /app/backend
 

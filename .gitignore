@@ -36,6 +36,8 @@ dist/
 build/
 dist-electron/
 dist-electron-*/
+*.tar
+*.tar.gz
 *.log
 npm-debug.log*
 yarn-debug.log*

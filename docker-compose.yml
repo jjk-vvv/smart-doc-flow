@@ -57,6 +57,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         BASE_IMAGE: ${APP_BASE_IMAGE:-smart-doc-flow-runtime-base:bookworm}
+        INSTALL_APP_DEPS: ${APP_INSTALL_DEPS:-1}
     image: smart-doc-flow:local
     env_file:
       # 按“根配置 -> 各模块配置 -> docker/app.env 手工补充”的顺序加载。
