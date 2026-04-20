@@ -9,7 +9,7 @@ import { loginForProtectedApp, openProtectedTab } from "./auth-session.mjs";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..", "..");
-const appUrl = process.env.MODULE4_APP_URL || "http://127.0.0.1:3001";
+const appUrl = process.env.MODULE4_APP_URL || "http://127.0.0.1:3002";
 const module4ApiBase = String(process.env.MODULE4_API_BASE || appUrl).trim().replace(/\/+$/, "");
 const outputRoot =
   process.env.MODULE4_MULTI_DOC_OUTPUT_DIR ||

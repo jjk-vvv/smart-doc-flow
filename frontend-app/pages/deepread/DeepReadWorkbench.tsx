@@ -603,6 +603,10 @@ type TraceLocateResponse = {
 };
 
 type TraceDisplayKind = 'field' | 'table' | 'image' | 'chart' | 'other';
+type GraphSyncUiState = 'idle' | 'submitting' | 'success' | 'error';
+
+const GRAPH_SYNC_SUPPORTED_EXTENSIONS = new Set(['pdf', 'docx', 'txt', 'md']);
+const GRAPH_SYNC_EXCLUDED_EXTENSIONS = new Set(['xlsx', 'xls']);
 
 const formatResultSoftWarning = (warningRaw: unknown): string => {
     const warning = String(warningRaw || '').trim();
@@ -1096,8 +1100,7 @@ const normalizeExtractArtifactUrl = (
     const relative = toRelativeExtractPath(rawUrl);
     if (relative) {
         if (isLegacyExtractArtifactRoute(relative)) return '';
-        const absolute = toAbsoluteExtractUrl(relative, preferredBase);
-        return absolute || relative;
+        return relative;
     }
     if (isLegacyExtractArtifactRoute(rawUrl)) return '';
     return toAbsoluteExtractUrl(rawUrl, preferredBase);
@@ -1168,13 +1171,13 @@ const hydrateFileFromArtifact = async (item: PersistedWorkbenchFile): Promise<Fi
     const candidates = Array.from(
         new Set(
             [
-                byFileRelativeWithBase,
-                byFileRouteWithBase,
                 byFileRelativeUrl,
                 artifactByFileRoute,
-                relativeWithBase,
                 relativeUrl,
                 directArtifactUrl,
+                byFileRelativeWithBase,
+                byFileRouteWithBase,
+                relativeWithBase,
                 /^https?:\/\//i.test(directArtifactUrl) ? directArtifactUrl : toAbsoluteExtractUrl(directArtifactUrl, ''),
             ].filter(Boolean),
         ),
@@ -1182,7 +1185,9 @@ const hydrateFileFromArtifact = async (item: PersistedWorkbenchFile): Promise<Fi
     let response: Response | null = null;
     for (const candidate of candidates) {
         try {
-            const fetched = await fetch(candidate);
+            const fetched = await fetch(candidate, {
+                credentials: 'include',
+            });
             if (fetched.ok) {
                 response = fetched;
                 break;
@@ -2038,15 +2043,16 @@ const fetchExtractWithFallback = async (
     const tried: string[] = [];
     let lastError = '';
     const retryNotFound = options?.retryNotFound !== false;
-    const configuredCandidates = [
-        normalizeExtractBase(preferredBase),
-        normalizeExtractBase(getViteExtractBase()),
-        normalizeExtractBase(getLocalStorageExtractBase()),
-    ].filter(Boolean);
-    const candidates =
-        configuredCandidates.length > 0
-            ? [...buildExtractBaseCandidates(preferredBase), '']
-            : ['', ...buildExtractBaseCandidates(preferredBase)];
+    const preferredCandidate = normalizeExtractBase(preferredBase);
+    const candidates = Array.from(
+        new Set(
+            [
+                preferredCandidate || '',
+                '',
+                ...buildExtractBaseCandidates(preferredBase),
+            ].filter((item) => item !== undefined && item !== null),
+        ),
+    );
 
     for (const base of candidates) {
         if (tried.includes(base)) continue;
@@ -2508,6 +2514,8 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
     const [activeSummaryLoading, setActiveSummaryLoading] = useState(false);
     const [isSummaryExpanded, setIsSummaryExpanded] = useState(true);
     const [summaryDocName, setSummaryDocName] = useState('');
+    const [graphSyncState, setGraphSyncState] = useState<GraphSyncUiState>('idle');
+    const [graphSyncMessage, setGraphSyncMessage] = useState('');
     const [traceHits, setTraceHits] = useState<TraceHit[]>([]);
     const [traceLoading, setTraceLoading] = useState(false);
     const [traceError, setTraceError] = useState('');
@@ -2803,6 +2811,9 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
     const activeExt = activeSourceFile ? fileExt(activeSourceFile.name) : (activeDoc ? fileExt(activeDoc.file_name) : '');
     const activeDisplayName = activeDoc?.file_name || activeSourceFile?.name || '当前文档';
     const activeSelectionCount = Math.max(documents.length, selectedFiles.length);
+    const graphSyncSupported = Boolean(activeDoc && GRAPH_SYNC_SUPPORTED_EXTENSIONS.has(activeExt));
+    const graphSyncExcluded = GRAPH_SYNC_EXCLUDED_EXTENSIONS.has(activeExt);
+    const graphSyncDisabled = !graphSyncSupported || isProcessing || Boolean(activeDoc?.errors?.length);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [previewText, setPreviewText] = useState<string>('');
     const [officePreviewMap, setOfficePreviewMap] = useState<Record<string, OfficePreviewState>>({});
@@ -3366,6 +3377,11 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
     }, [activeDoc?.file_hash]);
 
     useEffect(() => {
+        setGraphSyncState('idle');
+        setGraphSyncMessage('');
+    }, [activeDoc?.file_hash]);
+
+    useEffect(() => {
         const panel = assistantDialogRef.current;
         if (!panel) return;
         panel.scrollTop = panel.scrollHeight;
@@ -3458,6 +3474,45 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
             if (seq === traceRequestSeqRef.current) {
                 setTraceLoading(false);
             }
+        }
+    };
+
+    const requestGraphSync = async (doc: DocumentResult) => {
+        if (!doc || !GRAPH_SYNC_SUPPORTED_EXTENSIONS.has(fileExt(doc.file_name))) {
+            return;
+        }
+        setGraphSyncState('submitting');
+        setGraphSyncMessage('');
+        try {
+            const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
+            const fetchResult = await fetchExtractWithFallback(
+                '/extract/graph-sync',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        job_id: normalizeExtractionJobId(extractionJob?.job_id),
+                        file_name: doc.file_name,
+                        file_hash: doc.file_hash,
+                        document: doc,
+                    }),
+                },
+                preferredBase,
+            );
+            extractionJobApiBaseRef.current = fetchResult.usedBase || preferredBase;
+            const response = fetchResult.response;
+            if (!response.ok) {
+                throw new Error(await readResponseErrorMessage(response));
+            }
+            const payload = await response.json().catch(() => ({} as Record<string, unknown>));
+            setGraphSyncState('success');
+            setGraphSyncMessage(
+                String(payload?.message || '').trim()
+                || '已提交知识图谱构建请求，请前往模块四查看进度。'
+            );
+        } catch (error) {
+            setGraphSyncState('error');
+            setGraphSyncMessage(error instanceof Error ? error.message : '知识图谱构建提交失败');
         }
     };
 
@@ -4061,7 +4116,7 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
             }
             try {
                 const fetchResult = await fetchExtractWithFallback(
-                    `/extract/jobs/status/${encodeURIComponent(normalizedJobId)}?include_documents=true`,
+                    `/extract/jobs/status/${encodeURIComponent(normalizedJobId)}?include_documents=false&status_only=true`,
                     undefined,
                     preferredBase || extractionJobApiBaseRef.current || '',
                     { retryNotFound: false },
@@ -4095,10 +4150,48 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
 
                 if (visibleJob?.terminal) {
                     extractionJobPollRef.current = '';
-                    if (visibleDocuments.length > 0) {
-                        applyExtractionDocuments(visibleDocuments, { apiBase: usedBase });
-                    } else if (Array.isArray(payload.errors) && payload.errors.length > 0) {
-                        setErrorMessage(payload.errors.join(' | '));
+                    let terminalPayload: (ExtractionJobState & {
+                        progress: ExtractionJobState['progress'];
+                        terminal: boolean;
+                        documents?: DocumentResult[];
+                    }) = payload;
+                    let terminalBase = usedBase;
+                    let terminalVisibleJob = visibleJob;
+                    let terminalVisibleDocuments = visibleDocuments;
+
+                    try {
+                        const terminalFetchResult = await fetchExtractWithFallback(
+                            `/extract/jobs/status/${encodeURIComponent(normalizedJobId)}?include_documents=true`,
+                            undefined,
+                            usedBase || preferredBase || extractionJobApiBaseRef.current || '',
+                            { retryNotFound: false },
+                        );
+                        terminalBase = terminalFetchResult.usedBase || terminalBase;
+                        extractionJobApiBaseRef.current = terminalBase;
+                        terminalPayload = (await terminalFetchResult.response.json()) as ExtractionJobState & {
+                            progress: ExtractionJobState['progress'];
+                            terminal: boolean;
+                            documents?: DocumentResult[];
+                        };
+
+                        const normalizedTerminalJob = normalizeExtractionJobPayload(
+                            terminalPayload,
+                            terminalBase,
+                            extractionJobStateRef.current,
+                        );
+                        terminalVisibleJob = reconcileVisibleExtractionJob(normalizedTerminalJob, terminalBase);
+                        terminalVisibleDocuments = Array.isArray(terminalPayload.documents)
+                            ? filterVisibleDocumentsForJobFiles(terminalPayload.documents, terminalVisibleJob?.files || [])
+                            : [];
+                        setExtractionJob(terminalVisibleJob);
+                    } catch (terminalFetchError) {
+                        console.warn('module2 terminal documents fetch failed', terminalFetchError);
+                    }
+
+                    if (terminalVisibleDocuments.length > 0) {
+                        applyExtractionDocuments(terminalVisibleDocuments, { apiBase: terminalBase || usedBase });
+                    } else if (Array.isArray(terminalPayload.errors) && terminalPayload.errors.length > 0) {
+                        setErrorMessage(terminalPayload.errors.join(' | '));
                     } else {
                         setInfoMessage('抽取任务已结束，暂无可展示结果。');
                     }
@@ -7085,6 +7178,57 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
                                                             </div>
                                                         </div>
                                                     </div>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        {graphSyncSupported && (
+                                                            <button
+                                                                type="button"
+                                                                data-testid="module2-trigger-graph-sync"
+                                                                onClick={() => activeDoc && void requestGraphSync(activeDoc)}
+                                                                disabled={graphSyncDisabled || graphSyncState === 'submitting'}
+                                                                className={cn(
+                                                                    'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-all',
+                                                                    (graphSyncDisabled || graphSyncState === 'submitting')
+                                                                        ? 'cursor-not-allowed bg-slate-100 text-slate-400 ring-1 ring-inset ring-slate-200/80 dark:bg-white/[0.04] dark:text-slate-500 dark:ring-white/[0.08]'
+                                                                        : graphSyncState === 'success'
+                                                                            ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-500/20 hover:bg-emerald-100/70 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/20'
+                                                                            : 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-500/20 hover:bg-blue-100/80 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-blue-500/20'
+                                                                )}
+                                                                title={graphSyncDisabled && activeDoc?.errors?.length
+                                                                    ? '当前文件存在解析错误，暂不能构建知识图谱'
+                                                                    : '将当前解析产物提交到知识图谱构建链路'}
+                                                            >
+                                                                {graphSyncState === 'submitting' ? (
+                                                                    <Loader2 size={12} className="animate-spin" />
+                                                                ) : (
+                                                                    <BarChart3 size={12} />
+                                                                )}
+                                                                <span>
+                                                                    {graphSyncState === 'submitting'
+                                                                        ? '提交中...'
+                                                                        : graphSyncState === 'success'
+                                                                            ? '已提交构图'
+                                                                            : '构建知识图谱'}
+                                                                </span>
+                                                            </button>
+                                                        )}
+                                                        {graphSyncExcluded && (
+                                                            <span className="inline-flex items-center rounded-lg bg-slate-100/80 px-3 py-1.5 text-[11px] font-medium text-slate-600 ring-1 ring-inset ring-slate-200/70 dark:bg-white/[0.04] dark:text-slate-300 dark:ring-white/[0.08]">
+                                                                Excel 文件不进行知识图谱渲染
+                                                            </span>
+                                                        )}
+                                                        {graphSyncMessage && (
+                                                            <span
+                                                                className={cn(
+                                                                    'text-[11px] font-medium',
+                                                                    graphSyncState === 'error'
+                                                                        ? 'text-rose-600 dark:text-rose-300'
+                                                                        : 'text-slate-500 dark:text-slate-400'
+                                                                )}
+                                                            >
+                                                                {graphSyncMessage}
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                     
                                                     {(activeSummaryLoading || activeSummaryText) && (
                                                         <div className="mt-1">
@@ -7717,7 +7861,7 @@ export const DeepReadWorkbench: React.FC<DeepReadWorkbenchProps> = ({
                                                 </div>
                                             )}
 
-                                            {hasFieldResults && activeSoftWarningLabels.length > 0 && (
+                                            {false && hasFieldResults && activeSoftWarningLabels.length > 0 && (
                                                 <div className="rounded-xl border border-blue-200/80 bg-blue-50/80 px-3 py-2 text-[10.5px] text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
                                                     <div className="flex items-start gap-2">
                                                         <AlertCircle size={12} className="mt-0.5 shrink-0" />

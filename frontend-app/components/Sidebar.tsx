@@ -8,7 +8,6 @@ import {
   Sun,
   User,
   LogOut,
-  ArrowRight,
   ChevronLeft,
   ChevronDown,
   Bot,
@@ -18,7 +17,6 @@ import {
 import LogoImage from '../assets/app-logo.png';
 import { logoutAuth, type AuthUser } from '../shared/api/auth';
 import { cn } from '../lib/utils';
-import { motion } from 'framer-motion';
 
 const SIDEBAR_TEXT = {
   collapseSidebar: '收起侧边栏',
@@ -26,7 +24,6 @@ const SIDEBAR_TEXT = {
   logoAlt: '平台徽标',
   appTitle: '文枢智动',
   appSubtitle: '你的智能文档流转平台',
-  guideLabel: '平台操作指南',
   lightMode: '亮色模式',
   darkMode: '深色模式',
   switchToLight: '切换亮色模式',
@@ -159,16 +156,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}>
             <div className="flex items-center gap-2.5 w-full mt-0.5">
               <h1 className="font-sans font-bold text-[17px] tracking-wide text-slate-800 dark:text-slate-100 leading-none drop-shadow-[0_0_2px_rgba(255,255,255,0.5)] dark:drop-shadow-none truncate whitespace-nowrap">{SIDEBAR_TEXT.appTitle}</h1>
-              <motion.button
-                onClick={() => setActiveTab('guide')}
-                className="flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-300 group/btn cursor-pointer shrink-0 mt-[2px]"
-                title={SIDEBAR_TEXT.guideLabel}
-                animate={{ y: [0, -2, 0, 2, 0] }}
-                transition={{ duration: 2.5, ease: "easeInOut", repeat: Infinity }}
-              >
-                <span className="text-[10px] font-bold leading-none tracking-wide">{SIDEBAR_TEXT.guideLabel}</span>
-                <ArrowRight size={10} className="group-hover/btn:translate-x-[2px] transition-transform duration-300" strokeWidth={2.5} />
-              </motion.button>
             </div>
             <p className="text-[11px] font-medium tracking-wide truncate bg-clip-text text-transparent bg-[linear-gradient(110deg,#64748b,45%,#cbd5e1,55%,#64748b)] dark:bg-[linear-gradient(110deg,#94a3b8,45%,#f8fafc,55%,#94a3b8)] bg-[length:200%_auto] animate-text-shimmer pb-[1px]">{SIDEBAR_TEXT.appSubtitle}</p>
           </div>

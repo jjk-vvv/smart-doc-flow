@@ -8,11 +8,42 @@ export type ExtractionApiFetchResult = {
 
 export const resolveExtractBase = (preferredBase = ''): string => resolveApiBase(preferredBase);
 
+const EXTRACT_INTERNAL_PATH_PREFIXES = ['/extract/', '/download/', '/file-assets/'] as const;
+
+const isExtractInternalPath = (path: string): boolean => {
+  const normalized = String(path || '').trim();
+  if (!normalized.startsWith('/')) return false;
+  return EXTRACT_INTERNAL_PATH_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+};
+
+const toRelativeExtractInternalPath = (value: string): string => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      const candidate = `${parsed.pathname || ''}${parsed.search || ''}${parsed.hash || ''}`;
+      return isExtractInternalPath(parsed.pathname || '') ? candidate : '';
+    } catch {
+      return '';
+    }
+  }
+
+  const normalized = raw.startsWith('/') ? raw : `/${raw}`;
+  return isExtractInternalPath(normalized) ? normalized : '';
+};
+
 export const toAbsoluteExtractUrl = (value: string, preferredBase = ''): string => {
   const raw = String(value || '').trim();
   if (!raw) return '';
+
+  const internalRelative = toRelativeExtractInternalPath(raw);
+  if (internalRelative) return internalRelative;
   if (/^https?:\/\//i.test(raw)) return raw;
+
   const normalized = raw.startsWith('/') ? raw : `/${raw}`;
+  if (isExtractInternalPath(normalized)) return normalized;
   const usedBase = resolveExtractBase(preferredBase);
   return usedBase ? `${usedBase}${normalized}` : normalized;
 };

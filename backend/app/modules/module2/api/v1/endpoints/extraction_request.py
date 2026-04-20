@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Body, File, Form, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, File, Form, Request, UploadFile
 
 try:
     from app.schemas import BatchExtractionResponse
@@ -34,6 +34,18 @@ def build_router(*, extraction_request_runtime) -> APIRouter:
     @router.post("/jobs/{job_id}/cancel-file")
     async def extract_jobs_cancel_file(job_id: str, payload: Dict[str, Any] = Body(default_factory=dict)) -> Dict[str, Any]:
         return await extraction_request_runtime.cancel_job_file(job_id=job_id, payload=payload)
+
+    @router.post("/graph-sync")
+    async def extract_graph_sync(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        payload: Dict[str, Any] = Body(default_factory=dict),
+    ) -> Dict[str, Any]:
+        return await extraction_request_runtime.trigger_graph_sync(
+            request=request,
+            payload=payload,
+            background_tasks=background_tasks,
+        )
 
     @router.post("/batch", response_model=BatchExtractionResponse)
     async def extract_batch(

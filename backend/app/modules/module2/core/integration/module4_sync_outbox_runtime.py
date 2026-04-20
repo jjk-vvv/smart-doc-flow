@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import os
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 
 HeadersFactory = Callable[[str], Dict[str, str]]
@@ -31,6 +34,9 @@ class Module4SyncOutboxRuntime:
     """Handle module4 sync outbox delivery, retry orchestration, and row serialization."""
 
     _MODULE4_GRAPH_ELIGIBLE_SUFFIXES = {".docx", ".pdf", ".txt", ".md"}
+    _LOCAL_HOSTS = {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+    _TRANSPORT_EXECUTOR_LOCK = threading.Lock()
+    _TRANSPORT_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 
     def __init__(
         self,
@@ -69,6 +75,110 @@ class Module4SyncOutboxRuntime:
         self._transport = transport or self._default_transport
         self._sleep = sleep_fn or asyncio.sleep
 
+    @classmethod
+    def _transport_executor(cls) -> concurrent.futures.ThreadPoolExecutor:
+        with cls._TRANSPORT_EXECUTOR_LOCK:
+            if cls._TRANSPORT_EXECUTOR is None:
+                raw_workers = str(os.getenv("MODULE2_MODULE4_SYNC_TRANSPORT_WORKERS", "4") or "").strip()
+                try:
+                    workers = int(raw_workers)
+                except Exception:
+                    workers = 4
+                cls._TRANSPORT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(1, min(workers, 8)),
+                    thread_name_prefix="module2-sync-http",
+                )
+        return cls._TRANSPORT_EXECUTOR
+
+    @staticmethod
+    def _transport_timeout_budget(timeout_sec: float) -> float:
+        base_timeout = max(1.0, float(timeout_sec or 0.0))
+        return min(max(base_timeout + 2.0, base_timeout * 1.25), base_timeout + 15.0)
+
+    @classmethod
+    def _normalized_host(cls, raw: str) -> str:
+        return str(raw or "").strip().lower()
+
+    @classmethod
+    def _is_local_host(cls, raw: str) -> bool:
+        return cls._normalized_host(raw) in cls._LOCAL_HOSTS
+
+    @staticmethod
+    def _resolved_port(parsed) -> int | None:
+        try:
+            if parsed.port is not None:
+                return int(parsed.port)
+        except Exception:
+            return None
+        scheme = str(parsed.scheme or "").strip().lower()
+        if scheme == "https":
+            return 443
+        if scheme == "http":
+            return 80
+        return None
+
+    @staticmethod
+    def _gateway_port() -> int | None:
+        raw = str(os.getenv("GATEWAY_PORT", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except Exception:
+            return None
+
+    def _should_use_inprocess_transport(self, url: str) -> bool:
+        parsed = urlparse(str(url or "").strip())
+        if str(parsed.path or "").rstrip("/") != "/module4/ingest":
+            return False
+        target_port = self._resolved_port(parsed)
+        gateway_port = self._gateway_port()
+        if target_port is None or gateway_port is None or target_port != gateway_port:
+            return False
+        target_host = self._normalized_host(parsed.hostname or "")
+        gateway_host = self._normalized_host(os.getenv("GATEWAY_HOST", "") or "")
+        if not target_host or not gateway_host:
+            return False
+        if target_host == gateway_host:
+            return True
+        return self._is_local_host(target_host) and self._is_local_host(gateway_host)
+
+    async def _inprocess_transport(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        data: bytes,
+    ) -> Tuple[int, str]:
+        del url
+        try:
+            from types import SimpleNamespace
+
+            from fastapi import HTTPException
+
+            from app.modules.module4.core.application import module4_app_runtime
+            from app.modules.module4.core.app_runtime import validate_internal_request
+            from app.modules.module4.schemas import IngestRequest
+
+            normalized_headers = {
+                str(key or "").strip().lower(): str(value or "").strip()
+                for key, value in (headers or {}).items()
+                if str(key or "").strip()
+            }
+            request = SimpleNamespace(headers=normalized_headers)
+            validate_internal_request(request)
+            payload_model = IngestRequest.model_validate(json.loads(data.decode("utf-8")))
+            response = await module4_app_runtime.submit_ingest_job(
+                payload_model,
+                request,
+                schedule_ingest_job_callback=module4_app_runtime.schedule_ingest_job,
+            )
+            response_payload = (
+                response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response or {})
+            )
+            return 200, json.dumps(response_payload, ensure_ascii=False)
+        except HTTPException as exc:
+            return int(exc.status_code or 500), json.dumps({"detail": exc.detail}, ensure_ascii=False)
+
     async def _default_transport(
         self,
         url: str,
@@ -76,6 +186,9 @@ class Module4SyncOutboxRuntime:
         data: bytes,
         timeout_sec: float,
     ) -> Tuple[int, str]:
+        if self._should_use_inprocess_transport(url):
+            return await self._inprocess_transport(url, headers, data)
+
         def _post() -> Tuple[int, str]:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
@@ -86,7 +199,8 @@ class Module4SyncOutboxRuntime:
                 body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
                 return int(getattr(exc, "code", 0) or 0), body
 
-        return await asyncio.to_thread(_post)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._transport_executor(), _post)
 
     @staticmethod
     def _normalize_tenant_guard_mode(raw_mode: Any) -> str:
@@ -374,7 +488,16 @@ class Module4SyncOutboxRuntime:
         headers = self._headers_factory(tenant_id)
         timeout_sec = self._timeout_factory()
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        status, body = await self._transport(url, headers, data, timeout_sec)
+        transport_timeout_sec = self._transport_timeout_budget(timeout_sec)
+        try:
+            status, body = await asyncio.wait_for(
+                self._transport(url, headers, data, timeout_sec),
+                timeout=transport_timeout_sec,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"module4 sync transport exceeded {transport_timeout_sec:.1f}s"
+            ) from exc
         if status >= 400:
             raise Module4SyncHttpError(status, body)
         try:

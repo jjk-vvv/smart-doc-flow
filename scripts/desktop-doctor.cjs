@@ -53,6 +53,15 @@ const checkValue = (label, targetPath, expected, actual, ok) => ({
   ok,
 });
 
+const firstExistingPath = (...candidates) => {
+  for (const candidate of candidates.filter(Boolean)) {
+    if (exists(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates.find(Boolean) || '';
+};
+
 const runPythonImportCheck = (pythonPath, modules) => {
   if (!exists(pythonPath) || statKind(pythonPath) !== 'file') {
     return {
@@ -157,6 +166,14 @@ const readJson = (targetPath) => {
 const packageJsonPath = path.join(sourceRootDir, 'package.json');
 const packageJson = readJson(packageJsonPath);
 const packageAuthor = typeof packageJson?.author === 'string' ? packageJson.author.trim() : '';
+const sourceUnifiedPythonPath = firstExistingPath(
+  path.join(sourceRootDir, '.venv', 'Scripts', 'python.exe'),
+  path.join(sourceRootDir, '.venv-module2-py311', 'Scripts', 'python.exe'),
+);
+const sourceGraphPythonPath = firstExistingPath(
+  path.join(sourceRootDir, '.venv', 'Scripts', 'python.exe'),
+  path.join(sourceRootDir, '.venv-module4-py311', 'Scripts', 'python.exe'),
+);
 
 const sourceChecks = [
   checkItem('electron_main', path.join(sourceRootDir, 'electron', 'main.cjs'), 'file'),
@@ -168,19 +185,30 @@ const sourceChecks = [
   checkItem('start_backend_fastapi', path.join(sourceRootDir, 'scripts', 'start-backend-fastapi.cjs'), 'file'),
   checkItem('desktop_local_launcher', path.join(sourceRootDir, 'scripts', 'start-electron-local.cjs'), 'file'),
   checkItem('desktop_dev_launcher', path.join(sourceRootDir, 'scripts', 'start-electron-dev.cjs'), 'file'),
-  checkItem('module2_python', path.join(sourceRootDir, '.venv-module2-py311', 'Scripts', 'python.exe'), 'file'),
-  checkItem('module4_python', path.join(sourceRootDir, '.venv-module4-py311', 'Scripts', 'python.exe'), 'file'),
+  checkItem('backend_python', sourceUnifiedPythonPath, 'file'),
+  checkItem('graphrag_python', sourceGraphPythonPath, 'file'),
   checkValue('package_author', packageJsonPath, 'non-empty string', packageAuthor || 'missing', Boolean(packageAuthor)),
   (() => {
-    const pythonPath = path.join(sourceRootDir, '.venv-module4-py311', 'Scripts', 'python.exe');
-    const probe = runPythonImportCheck(pythonPath, ['asyncpg', 'pandas', 'graphrag', 'neo4j', 'pyarrow']);
-    return checkValue('module4_python_imports', pythonPath, probe.expected, probe.actual, probe.ok);
+    const pythonPath = sourceUnifiedPythonPath;
+    const probe = runPythonImportCheck(
+      pythonPath,
+      ['asyncpg', 'openpyxl', 'docx', 'pypdf', 'sqlalchemy', 'pandas', 'graphrag', 'neo4j', 'pyarrow'],
+    );
+    return checkValue('backend_python_imports', pythonPath, probe.expected, probe.actual, probe.ok);
   })(),
 ];
 
 const packagedChecks = exists(packagedOutputRoot)
   ? (() => {
       const packagedBackendRoot = path.join(packagedRuntimeRoot, 'backend');
+      const packagedUnifiedPythonPath = firstExistingPath(
+        path.join(packagedRuntimeRoot, '.venv', 'Scripts', 'python.exe'),
+        path.join(packagedRuntimeRoot, '.venv-module2-py311', 'Scripts', 'python.exe'),
+      );
+      const packagedGraphPythonPath = firstExistingPath(
+        path.join(packagedRuntimeRoot, '.venv', 'Scripts', 'python.exe'),
+        path.join(packagedRuntimeRoot, '.venv-module4-py311', 'Scripts', 'python.exe'),
+      );
       const unexpectedBackendEntries = countMatchingEntries(packagedBackendRoot, {
         dirNames: ['__pycache__', '.runlogs', '.runtime', '.mcache', '.pytest_cache', 'tests', 'trace_rois'],
         fileNames: ['.env.example', 'auth.runtime.log', 'check_db.py', 'package-lock.json', 'users.json'],
@@ -197,12 +225,8 @@ const packagedChecks = exists(packagedOutputRoot)
           path.join(packagedRuntimeRoot, 'scripts', 'start-backend-fastapi.cjs'),
           'file',
         ),
-        checkItem('packaged_module2_python', path.join(packagedRuntimeRoot, '.venv-module2-py311', 'Scripts', 'python.exe'), 'file'),
-        checkItem(
-          'packaged_module4_python',
-          path.join(packagedRuntimeRoot, '.venv-module4-py311', 'Scripts', 'python.exe'),
-          'file',
-        ),
+        checkItem('packaged_backend_python', packagedUnifiedPythonPath, 'file'),
+        checkItem('packaged_graphrag_python', packagedGraphPythonPath, 'file'),
         checkMissing('packaged_module2_artifacts_absent', path.join(packagedRuntimeRoot, 'backend', 'module2', 'artifacts')),
         checkMissing('packaged_legacy_backend_tree_absent', path.join(packagedRuntimeRoot, 'backend', 'backend')),
         checkMissing('packaged_module2_legacy_backend_absent', path.join(packagedRuntimeRoot, 'backend', 'module2', 'backend')),
@@ -223,9 +247,12 @@ const packagedChecks = exists(packagedOutputRoot)
           unexpectedBackendEntries.total === 0,
         ),
         (() => {
-          const pythonPath = path.join(packagedRuntimeRoot, '.venv-module4-py311', 'Scripts', 'python.exe');
-          const probe = runPythonImportCheck(pythonPath, ['asyncpg', 'pandas', 'graphrag', 'neo4j', 'pyarrow']);
-          return checkValue('packaged_module4_python_imports', pythonPath, probe.expected, probe.actual, probe.ok);
+          const pythonPath = packagedUnifiedPythonPath;
+          const probe = runPythonImportCheck(
+            pythonPath,
+            ['asyncpg', 'openpyxl', 'docx', 'pypdf', 'sqlalchemy', 'pandas', 'graphrag', 'neo4j', 'pyarrow'],
+          );
+          return checkValue('packaged_backend_python_imports', pythonPath, probe.expected, probe.actual, probe.ok);
         })(),
       ];
     })()

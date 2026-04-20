@@ -1,0 +1,32 @@
+[
+  {
+    "case_id": "case-docx-hangzhou-2024",
+    "display_name": "示例图谱 - 杭州市生态环境状况公报 (DOCX)",
+    "description": "公开只读 DOCX 示例图谱，供已登录用户查看、渲染与问答。",
+    "tags": ["docx", "示例图谱"],
+    "sort_order": 10,
+    "enabled": true,
+    "source_tenant_id": "default",
+    "source_file_hash": "8b547903a92e8c12814648490add40bdef65d460e0b87c431ee6d38958120840"
+  },
+  {
+    "case_id": "case-md-health-2024",
+    "display_name": "示例图谱 - 卫生健康统计公报 (MD)",
+    "description": "公开只读 Markdown 示例图谱，供已登录用户查看、渲染与问答。",
+    "tags": ["md", "示例图谱"],
+    "sort_order": 20,
+    "enabled": true,
+    "source_tenant_id": "default",
+    "source_file_hash": "461a6e3089a767325acc3526ad50bf53605448568474ae6cc4d540b2a6ca4677"
+  },
+  {
+    "case_id": "case-txt-hefei-2024",
+    "display_name": "示例图谱 - 合肥市统计公报 (TXT)",
+    "description": "公开只读 TXT 示例图谱，供已登录用户查看、渲染与问答。",
+    "tags": ["txt", "示例图谱"],
+    "sort_order": 30,
+    "enabled": true,
+    "source_tenant_id": "default",
+    "source_file_hash": "7568b14283187a3803eb5dc27b14c4dec03ee15ac8f1fefe655d78eeb9714ed8"
+  }
+]

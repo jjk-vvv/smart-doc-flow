@@ -174,8 +174,7 @@ def test_extraction_job_executor_run_file_task_success(tmp_path: Path) -> None:
     assert job.documents and job.documents[0].file_name == "demo.pdf"
     assert any(force is False for _, force in persist_calls)
     assert any(force is True for _, force in persist_calls)
-    assert sync_calls and sync_calls[0]["tenant_id"] == "tenant-a"
-    assert sync_calls[0]["mode"] == "per_file"
+    assert sync_calls == []
 
 
 def test_extraction_job_executor_run_job_finalizes_and_syncs_batch(tmp_path: Path) -> None:
@@ -217,5 +216,5 @@ def test_extraction_job_executor_run_job_finalizes_and_syncs_batch(tmp_path: Pat
     assert job.status == "completed"
     assert job.current_stage == "completed"
     assert job.documents and job.documents[0].file_hash == "hash-1"
-    assert [call["mode"] for call in final_sync_calls] == ["per_file", "final_batch"]
+    assert final_sync_calls == []
     assert any(force is True for _, force in persist_calls)

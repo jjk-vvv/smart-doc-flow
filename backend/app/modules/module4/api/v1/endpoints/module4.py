@@ -37,7 +37,10 @@ from ....services.graphrag.query_service import (
     GraphRAGQueryServiceError,
     search_graph as graphrag_query_response_service,
 )
-from ....services.ingestion.runtime import submit_rebuild_job as submit_rebuild_job_service
+from ....services.ingestion.runtime import (
+    refresh_running_job_progress_from_logs as refresh_running_job_progress_from_logs_service,
+    submit_rebuild_job as submit_rebuild_job_service,
+)
 from ....services.insights.runtime import (
     explain_response as explain_response_service,
     simulate_response as simulate_response_service,
@@ -60,6 +63,32 @@ from ....services.query.runtime import (
     rules_response as rules_response_service,
 )
 
+_STATUS_ONLY_RESULT_KEYS = (
+    "stage",
+    "failure_stage",
+    "failure_category",
+)
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _build_job_response_payload(row: dict[str, Any], *, status_only: bool) -> JobResponse:
+    if not status_only:
+        return JobResponse(**row)
+
+    raw_result = _as_dict(row.get("result"))
+    trimmed_result = {
+        key: raw_result.get(key)
+        for key in _STATUS_ONLY_RESULT_KEYS
+        if raw_result.get(key) not in (None, "", [], {})
+    }
+    payload = dict(row)
+    payload["payload"] = {}
+    payload["result"] = trimmed_result
+    return JobResponse(**payload)
+
 
 def build_router(*, deps: Module4RouterDeps) -> APIRouter:
     async def _require_internal_request(request: Request) -> None:
@@ -76,12 +105,21 @@ def build_router(*, deps: Module4RouterDeps) -> APIRouter:
         return await deps.submit_ingest_job(payload, request)
 
     @router.get("/jobs/{job_id}", response_model=JobResponse)
-    async def module4_job_status(job_id: str, request: Request, tenant_id: str = Query(default="")) -> JobResponse:
+    async def module4_job_status(
+        job_id: str,
+        request: Request,
+        tenant_id: str = Query(default=""),
+        status_only: bool = Query(default=False),
+    ) -> JobResponse:
         resolved_tenant = deps.tenant_from_request(request, tenant_id)
         row = await deps.storage_getter().get_job(job_id, tenant_id=resolved_tenant)
         if not row:
             raise HTTPException(status_code=404, detail="Job not found")
-        return JobResponse(**row)
+        row = await refresh_running_job_progress_from_logs_service(
+            storage=deps.storage_getter(),
+            row=row,
+        )
+        return _build_job_response_payload(row, status_only=status_only)
 
     @router.post("/rebuild", response_model=RebuildResponse)
     async def module4_rebuild(body: RebuildRequest, request: Request) -> RebuildResponse:

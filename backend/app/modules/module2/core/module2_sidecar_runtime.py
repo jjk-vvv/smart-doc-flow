@@ -567,6 +567,8 @@ class Module2SidecarManager:
             return worker_python
 
         candidates = [
+            settings.runtime_root_dir / ".venv" / "Scripts" / "python.exe",
+            settings.runtime_root_dir / ".venv" / "bin" / "python",
             settings.runtime_root_dir / ".venv-module2-py311" / "Scripts" / "python.exe",
             settings.runtime_root_dir / ".venv-module2-py311" / "bin" / "python",
             self._module2_root(settings) / ".venv-module2-py311" / "Scripts" / "python.exe",

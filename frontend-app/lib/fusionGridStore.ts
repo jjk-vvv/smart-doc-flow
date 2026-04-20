@@ -54,6 +54,7 @@ export type FusionGridState = {
 
 export const FUSION_GRID_STORAGE_KEY = "module3_fusion_grid_state";
 export const FUSION_GRID_OWNER_STORAGE_KEY = "module3_fusion_grid_owner";
+export const FUSION_GRID_UPDATED_EVENT = "module3-fusion-grid-updated";
 
 const EMPTY_STATE: FusionGridState = {
   templates: [],
@@ -211,11 +212,13 @@ export const readFusionGridState = (): FusionGridState => {
 export const writeFusionGridState = (state: FusionGridState): void => {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(FUSION_GRID_STORAGE_KEY, JSON.stringify(state));
+  window.dispatchEvent(new Event(FUSION_GRID_UPDATED_EVENT));
 };
 
 export const clearFusionGridStateStorage = (): void => {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(FUSION_GRID_STORAGE_KEY);
+  window.dispatchEvent(new Event(FUSION_GRID_UPDATED_EVENT));
 };
 
 export const readFusionGridOwnerScope = (): string | null => {
@@ -229,7 +232,30 @@ export const writeFusionGridOwnerScope = (scope: string): void => {
   const normalized = scope.trim();
   if (!normalized) {
     window.localStorage.removeItem(FUSION_GRID_OWNER_STORAGE_KEY);
+    window.dispatchEvent(new Event(FUSION_GRID_UPDATED_EVENT));
     return;
   }
   window.localStorage.setItem(FUSION_GRID_OWNER_STORAGE_KEY, normalized);
+  window.dispatchEvent(new Event(FUSION_GRID_UPDATED_EVENT));
+};
+
+export const subscribeFusionGridStateUpdates = (
+  handler: () => void,
+): (() => void) => {
+  if (typeof window === "undefined") return () => undefined;
+  const onCustom = () => handler();
+  const onStorage = (event: StorageEvent) => {
+    if (
+      event.key === FUSION_GRID_STORAGE_KEY
+      || event.key === FUSION_GRID_OWNER_STORAGE_KEY
+    ) {
+      handler();
+    }
+  };
+  window.addEventListener(FUSION_GRID_UPDATED_EVENT, onCustom);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(FUSION_GRID_UPDATED_EVENT, onCustom);
+    window.removeEventListener("storage", onStorage);
+  };
 };

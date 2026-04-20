@@ -128,6 +128,7 @@ def build_module2_http_runtime_bundle(
         module4_tenant=module4_tenant,
         extraction_job_runtime=extraction_job_runtime,
         module4_sync_callback_bundle=module4_sync_callback_bundle,
+        document_validate=document_validate,
         extraction_result_factory=extraction_result_factory,
         document_response_factory=document_response_factory,
         batch_response_factory=batch_response_factory,

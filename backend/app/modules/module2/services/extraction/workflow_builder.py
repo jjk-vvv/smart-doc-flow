@@ -16,6 +16,7 @@ from ...core.pipeline.document_pipeline_runtime import (
     DocumentPipelineRuntime,
     DocumentPipelineSchemaBundle,
 )
+from ...core.pipeline.direct_semantic_extract_runtime import DirectSemanticExtractRuntime
 from ...core.pipeline.document_postprocess_runtime import (
     DocumentPostprocessDependencyBundle,
     DocumentPostprocessRuntime,
@@ -82,10 +83,18 @@ def build_module2_main_workflow_bundle(
     disable_fasttrack_fallback,
     build_visual_chain_contract,
     extraction_llm_semaphore,
+    graph,
     detect_domain_template,
     extract_text_for_schema,
     resolve_effective_schema,
     resolve_dynamic_extract_timeout_sec,
+    schema_target_fields,
+    normalize_schema_fields,
+    schema_auto_infer_requested,
+    sanitize_field_name,
+    coerce_field_type,
+    upsert_schema_field_candidate,
+    filter_auto_schema_fields,
     run_graph,
     resolve_extract_progress_ramp_sec,
     quick_extract_from_tables,
@@ -200,12 +209,26 @@ def build_module2_main_workflow_bundle(
         quick_extract_from_tables=quick_extract_from_tables,
         disable_quick_table_fallback=disable_quick_table_fallback,
     )
+    direct_semantic_extract_runtime = DirectSemanticExtractRuntime(
+        graph=graph,
+        extraction_llm_semaphore=extraction_llm_semaphore,
+        schema_target_fields=schema_target_fields,
+        normalize_schema_fields=normalize_schema_fields,
+        schema_auto_infer_requested=schema_auto_infer_requested,
+        sanitize_field_name=sanitize_field_name,
+        coerce_field_type=coerce_field_type,
+        upsert_schema_field_candidate=upsert_schema_field_candidate,
+        filter_auto_schema_fields=filter_auto_schema_fields,
+        detect_domain_template=detect_domain_template,
+        extract_text_for_schema=extract_text_for_schema,
+    )
 
     document_pipeline_runtime = DocumentPipelineRuntime(
         input_bundle=document_pipeline_input_bundle,
         parse_bundle=document_pipeline_parse_bundle,
         schema_bundle=document_pipeline_schema_bundle,
         graph_bundle=document_pipeline_graph_bundle,
+        direct_semantic_extract_runtime=direct_semantic_extract_runtime,
         build_visual_chain_contract=build_visual_chain_contract,
         xlsx_workbook_artifact_runtime=xlsx_workbook_artifact_runtime,
         logger=logger,

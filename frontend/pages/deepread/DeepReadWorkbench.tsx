@@ -33,7 +33,8 @@ import {
     FileImage,
     Plus,
     Paperclip,
-    ArrowUp
+    ArrowUp,
+    BarChart3,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import module2Svg from '../../assets/deepread-workbench.svg';
@@ -68,6 +69,7 @@ import {
 } from '../../shared/state/workbenchSession';
 import { consumeModule2DraftFromHomeWorkbench } from '../../shared/state/homeWorkbench';
 import { getCurrentUser } from '../../shared/api/auth';
+import { fetchModule4GraphFileDetail, fetchModule4JobStatus } from '../../shared/api/knowledgeGraph';
 import { LuckysheetPreview, clearLuckysheetPreviewCache } from '../../components/LuckysheetPreview';
 import { PdfJsViewer, type PdfViewMode } from '../../components/PdfJsViewer';
 import { AssistantActionPreviewCard } from './assistant/AssistantActionPreviewCard';
@@ -128,6 +130,8 @@ type WorkbenchPaneLayout = {
     rightWidth: number;
 };
 
+type PaneLayoutStage = 'default' | 'text';
+
 type PaneResizeSide = 'left' | 'right';
 type SmartUnitTabId = 'results' | 'assistant';
 
@@ -177,6 +181,15 @@ const getTextPreviewWorkbenchPaneLayout = (viewportWidth: number): WorkbenchPane
         rightWidth: TEXT_PREVIEW_RIGHT_PANE_COMPACT_WIDTH,
     };
 };
+
+const resolveWorkbenchPaneLayoutDefaults = (
+    viewportWidth: number,
+    stage: PaneLayoutStage,
+): WorkbenchPaneLayout => (
+    stage === 'text'
+        ? getTextPreviewWorkbenchPaneLayout(viewportWidth)
+        : getDefaultWorkbenchPaneLayout(viewportWidth)
+);
 
 const readWorkbenchPaneLayout = (): WorkbenchPaneLayout => {
     const defaultLayout = typeof window === 'undefined'
@@ -606,6 +619,33 @@ type TraceLocateResponse = {
 };
 
 type TraceDisplayKind = 'field' | 'table' | 'image' | 'chart' | 'other';
+type GraphSyncUiState = 'idle' | 'submitting' | 'success' | 'error';
+
+const GRAPH_SYNC_SUPPORTED_EXTENSIONS = new Set(['pdf', 'docx', 'txt', 'md']);
+const GRAPH_SYNC_EXCLUDED_EXTENSIONS = new Set(['xlsx', 'xls']);
+
+const formatGraphSyncShortId = (value: unknown, width = 8): string => {
+    const normalized = String(value || '').trim();
+    if (!normalized) return '';
+    return normalized.length <= width ? normalized : normalized.slice(0, width);
+};
+
+const formatGraphSyncProgress = (value: unknown): string => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '';
+    const normalized = numeric <= 1 ? numeric * 100 : numeric;
+    return `${Math.max(0, Math.min(100, normalized)).toFixed(normalized >= 10 ? 0 : 1)}%`;
+};
+
+const waitForGraphSyncPoll = (ms: number): Promise<void> =>
+    new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const GRAPH_SYNC_DISCOVERY_POLL_MS = 1200;
+const GRAPH_SYNC_ACTIVE_POLL_MS = 2000;
+const GRAPH_SYNC_DISCOVERY_TIMEOUT_MS = 60_000;
+const GRAPH_SYNC_ACTIVE_TIMEOUT_MS = 45 * 60 * 1000;
+const GRAPH_SYNC_DISCOVERY_MAX_ATTEMPTS = Math.ceil(GRAPH_SYNC_DISCOVERY_TIMEOUT_MS / GRAPH_SYNC_DISCOVERY_POLL_MS);
+const GRAPH_SYNC_ACTIVE_MAX_ATTEMPTS = Math.ceil(GRAPH_SYNC_ACTIVE_TIMEOUT_MS / GRAPH_SYNC_ACTIVE_POLL_MS);
 
 const formatResultSoftWarning = (warningRaw: unknown): string => {
     const warning = String(warningRaw || '').trim();
@@ -1095,8 +1135,7 @@ const normalizeExtractArtifactUrl = (
     const relative = toRelativeExtractPath(rawUrl);
     if (relative) {
         if (isLegacyExtractArtifactRoute(relative)) return '';
-        const absolute = toAbsoluteExtractUrl(relative, preferredBase);
-        return absolute || relative;
+        return relative;
     }
     if (isLegacyExtractArtifactRoute(rawUrl)) return '';
     return toAbsoluteExtractUrl(rawUrl, preferredBase);
@@ -1167,13 +1206,13 @@ const hydrateFileFromArtifact = async (item: PersistedWorkbenchFile): Promise<Fi
     const candidates = Array.from(
         new Set(
             [
-                byFileRelativeWithBase,
-                byFileRouteWithBase,
                 byFileRelativeUrl,
                 artifactByFileRoute,
-                relativeWithBase,
                 relativeUrl,
                 directArtifactUrl,
+                byFileRelativeWithBase,
+                byFileRouteWithBase,
+                relativeWithBase,
                 /^https?:\/\//i.test(directArtifactUrl) ? directArtifactUrl : toAbsoluteExtractUrl(directArtifactUrl, ''),
             ].filter(Boolean),
         ),
@@ -1181,7 +1220,9 @@ const hydrateFileFromArtifact = async (item: PersistedWorkbenchFile): Promise<Fi
     let response: Response | null = null;
     for (const candidate of candidates) {
         try {
-            const fetched = await fetch(candidate);
+            const fetched = await fetch(candidate, {
+                credentials: 'include',
+            });
             if (fetched.ok) {
                 response = fetched;
                 break;
@@ -1716,7 +1757,6 @@ const pickExtractionJobFileState = (
         (item) => String(item.file_name || '').trim().toLowerCase() === normalizedName,
     );
     if (matched.length === 1) return matched[0];
-    if (byIndex) return byIndex;
     return matched[0] || null;
 };
 
@@ -1735,8 +1775,9 @@ const pickDocumentResultForFile = (
         (item) => normalizeWorkbenchFileName(item.file_name) === normalizedName,
     );
     if (matched.length === 1) return matched[0];
-    if (byIndex) return byIndex;
-    return matched[0] || null;
+    return (byIndex && normalizeWorkbenchFileName(byIndex.file_name) === normalizedName)
+        ? byIndex
+        : matched[0] || null;
 };
 
 const mergeExtractionDocumentsForSelection = (
@@ -1841,6 +1882,20 @@ const removeDocumentResultForFile = (
     const targetName = normalizeWorkbenchFileName(file.name);
     if (!targetName) return docs;
     return docs.filter((doc) => normalizeWorkbenchFileName(doc.file_name) !== targetName);
+};
+
+const removeDocumentResultsForNames = (
+    docs: DocumentResult[],
+    fileNames: Iterable<string>,
+): DocumentResult[] => {
+    if (!Array.isArray(docs) || docs.length === 0) return [];
+    const normalizedTargets = new Set(
+        Array.from(fileNames)
+            .map((item) => normalizeWorkbenchFileName(item))
+            .filter(Boolean),
+    );
+    if (normalizedTargets.size === 0) return docs;
+    return docs.filter((doc) => !normalizedTargets.has(normalizeWorkbenchFileName(doc.file_name)));
 };
 
 type ExtractFetchResult = {
@@ -2037,15 +2092,16 @@ const fetchExtractWithFallback = async (
     const tried: string[] = [];
     let lastError = '';
     const retryNotFound = options?.retryNotFound !== false;
-    const configuredCandidates = [
-        normalizeExtractBase(preferredBase),
-        normalizeExtractBase(getViteExtractBase()),
-        normalizeExtractBase(getLocalStorageExtractBase()),
-    ].filter(Boolean);
-    const candidates =
-        configuredCandidates.length > 0
-            ? [...buildExtractBaseCandidates(preferredBase), '']
-            : ['', ...buildExtractBaseCandidates(preferredBase)];
+    const preferredCandidate = normalizeExtractBase(preferredBase);
+    const candidates = Array.from(
+        new Set(
+            [
+                preferredCandidate || '',
+                '',
+                ...buildExtractBaseCandidates(preferredBase),
+            ].filter((item) => item !== undefined && item !== null),
+        ),
+    );
 
     for (const base of candidates) {
         if (tried.includes(base)) continue;
@@ -2555,6 +2611,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const [activeSummaryLoading, setActiveSummaryLoading] = useState(false);
     const [isSummaryExpanded, setIsSummaryExpanded] = useState(true);
     const [summaryDocName, setSummaryDocName] = useState('');
+    const [graphSyncState, setGraphSyncState] = useState<GraphSyncUiState>('idle');
+    const [graphSyncMessage, setGraphSyncMessage] = useState('');
     const [traceHits, setTraceHits] = useState<TraceHit[]>([]);
     const [traceLoading, setTraceLoading] = useState(false);
     const [traceError, setTraceError] = useState('');
@@ -2602,6 +2660,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const suppressedExtractionJobFilesRef = useRef<Record<string, Set<string>>>({});
     const summaryRequestSeqRef = useRef(0);
     const traceRequestSeqRef = useRef(0);
+    const graphSyncPollRunIdRef = useRef(0);
     const officePreviewMapRef = useRef<Record<string, OfficePreviewState>>({});
     const officePreviewPollRef = useRef<Record<string, string>>({});
     const officePreviewApiBaseRef = useRef<Record<string, string>>({});
@@ -2609,6 +2668,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const extractionJobPollRunIdRef = useRef(0);
     const extractionJobApiBaseRef = useRef<string>('');
     const terminalJobResyncRef = useRef<string>('');
+    const restoredSessionJobIdRef = useRef<string>('');
     const persistedSelectedFilesRef = useRef<PersistedWorkbenchFile[]>([]);
     const assistantAbortRef = useRef<AbortController | null>(null);
     const paneResizeFrameRef = useRef<number | null>(null);
@@ -2619,6 +2679,9 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         rightWidth: number;
         side: PaneResizeSide;
     } | null>(null);
+    const paneLayoutStageRef = useRef<PaneLayoutStage | null>(null);
+    const standardPaneLayoutRef = useRef<WorkbenchPaneLayout | null>(null);
+    const textPaneLayoutRef = useRef<WorkbenchPaneLayout | null>(null);
 
     useEffect(() => {
         extractionJobStateRef.current = extractionJob;
@@ -2849,6 +2912,9 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const activeExt = activeSourceFile ? fileExt(activeSourceFile.name) : (activeDoc ? fileExt(activeDoc.file_name) : '');
     const activeDisplayName = activeDoc?.file_name || activeSourceFile?.name || '当前文档';
     const activeSelectionCount = Math.max(documents.length, selectedFiles.length);
+    const graphSyncSupported = Boolean(activeDoc && GRAPH_SYNC_SUPPORTED_EXTENSIONS.has(activeExt));
+    const graphSyncExcluded = GRAPH_SYNC_EXCLUDED_EXTENSIONS.has(activeExt);
+    const graphSyncDisabled = !graphSyncSupported || isProcessing || Boolean(activeDoc?.errors?.length);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [previewText, setPreviewText] = useState<string>('');
     const [officePreviewMap, setOfficePreviewMap] = useState<Record<string, OfficePreviewState>>({});
@@ -2863,6 +2929,13 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         [activeDoc]
     );
     const showLeftPanel = !isPreviewFocused;
+    const isTextPreviewStage = ['txt', 'md'].includes(activeExt);
+    const currentPaneLayoutStage: PaneLayoutStage = isTextPreviewStage ? 'text' : 'default';
+    const resolvePaneLayoutViewportWidth = () => (
+        workbenchViewportWidth > 0
+            ? workbenchViewportWidth
+            : (typeof window === 'undefined' ? 0 : window.innerWidth)
+    );
 
     useEffect(() => {
         const target = workbenchViewportRef.current;
@@ -2878,6 +2951,72 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
         return () => observer.disconnect();
     }, []);
+
+    useEffect(() => {
+        if (selectedFiles.length === 0) {
+            paneLayoutStageRef.current = null;
+            return;
+        }
+
+        const viewportWidth = resolvePaneLayoutViewportWidth();
+        const nextStage = currentPaneLayoutStage;
+
+        if (paneLayoutStageRef.current === null) {
+            paneLayoutStageRef.current = nextStage;
+            if (nextStage === 'text') {
+                const nextLayout = clampWorkbenchPaneLayout(
+                    textPaneLayoutRef.current || resolveWorkbenchPaneLayoutDefaults(viewportWidth, 'text'),
+                    viewportWidth,
+                    showLeftPanel,
+                );
+                setPaneLayout((prev) => (
+                    prev.leftWidth === nextLayout.leftWidth && prev.rightWidth === nextLayout.rightWidth
+                        ? prev
+                        : nextLayout
+                ));
+            }
+            return;
+        }
+
+        if (paneLayoutStageRef.current === nextStage) return;
+
+        if (paneLayoutStageRef.current === 'text') {
+            textPaneLayoutRef.current = paneLayout;
+        } else {
+            standardPaneLayoutRef.current = paneLayout;
+        }
+
+        paneLayoutStageRef.current = nextStage;
+        const restoredLayout = nextStage === 'text'
+            ? (textPaneLayoutRef.current || resolveWorkbenchPaneLayoutDefaults(viewportWidth, 'text'))
+            : (standardPaneLayoutRef.current || resolveWorkbenchPaneLayoutDefaults(viewportWidth, 'default'));
+        const nextLayout = clampWorkbenchPaneLayout(restoredLayout, viewportWidth, showLeftPanel);
+        setPaneLayout((prev) => (
+            prev.leftWidth === nextLayout.leftWidth && prev.rightWidth === nextLayout.rightWidth
+                ? prev
+                : nextLayout
+        ));
+    }, [
+        currentPaneLayoutStage,
+        paneLayout,
+        selectedFiles.length,
+        showLeftPanel,
+        workbenchViewportWidth,
+    ]);
+
+    useEffect(() => {
+        if (selectedFiles.length === 0) return;
+        if (currentPaneLayoutStage === 'text') {
+            textPaneLayoutRef.current = paneLayout;
+            return;
+        }
+        standardPaneLayoutRef.current = paneLayout;
+    }, [
+        currentPaneLayoutStage,
+        paneLayout.leftWidth,
+        paneLayout.rightWidth,
+        selectedFiles.length,
+    ]);
 
     useEffect(() => {
         if (!workbenchViewportWidth) return;
@@ -3114,6 +3253,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             extractionJobPollRunIdRef.current += 1;
             extractionJobApiBaseRef.current = '';
             terminalJobResyncRef.current = '';
+            restoredSessionJobIdRef.current = '';
         };
     }, []);
 
@@ -3160,6 +3300,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             session.extractionJob && normalizeExtractionJobId(session.extractionJob.job_id)
                 ? session.extractionJob
                 : null;
+        restoredSessionJobIdRef.current = persistedJob ? normalizeExtractionJobId(persistedJob.job_id) : '';
         setActiveDocIndex(Math.max(0, Number(session.activeDocIndex || 0)));
         setSmartUnitTab(session.smartUnitTab === 'assistant' ? 'assistant' : 'results');
         setOfficePreviewMap(session.officePreviewMap || {});
@@ -3411,6 +3552,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     }, [activeDoc?.file_hash]);
 
     useEffect(() => {
+        graphSyncPollRunIdRef.current += 1;
+        setGraphSyncState('idle');
+        setGraphSyncMessage('');
+    }, [activeDoc?.file_hash]);
+
+    useEffect(() => {
         const panel = assistantDialogRef.current;
         if (!panel) return;
         panel.scrollTop = panel.scrollHeight;
@@ -3505,6 +3652,208 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             }
         }
     };
+
+    const syncGraphRetryVisibility = async (
+        doc: DocumentResult,
+        expectedSourceBatchKey: string,
+        previousJobId: string,
+        previousBatchId: string,
+        runId: number,
+    ) => {
+        const normalizedSourceBatchKey = String(expectedSourceBatchKey || '').trim();
+        let activeJobId = '';
+        let activeBatchId = '';
+        let activeSourceBatchKey = normalizedSourceBatchKey;
+
+        for (
+            let attempt = 0;
+            attempt < GRAPH_SYNC_DISCOVERY_MAX_ATTEMPTS + GRAPH_SYNC_ACTIVE_MAX_ATTEMPTS;
+            attempt += 1
+        ) {
+            if (runId !== graphSyncPollRunIdRef.current) return;
+
+            try {
+                const detailPayload = await fetchModule4GraphFileDetail(doc.file_hash);
+                const item = detailPayload.item;
+                const metadata = item.metadata && typeof item.metadata === 'object'
+                    ? item.metadata as Record<string, unknown>
+                    : {};
+                const currentJobId = String(item.current_job_id || activeJobId).trim();
+                const graphStatus = String(item.status || '').trim().toLowerCase();
+                const batchId = String(metadata.batch_id || activeBatchId).trim();
+                const sourceBatchKey = String(metadata.source_batch_key || activeSourceBatchKey).trim();
+
+                const matchedCurrentRetry = (
+                    normalizedSourceBatchKey
+                        ? sourceBatchKey === normalizedSourceBatchKey
+                        : false
+                )
+                    || (!!batchId && batchId !== previousBatchId)
+                    || (!!currentJobId && currentJobId !== previousJobId)
+                    || (!!activeJobId && currentJobId === activeJobId);
+
+                if (matchedCurrentRetry) {
+                    activeJobId = currentJobId || activeJobId;
+                    activeBatchId = batchId || activeBatchId;
+                    activeSourceBatchKey = sourceBatchKey || activeSourceBatchKey;
+
+                    let jobStatus = '';
+                    let jobProgressLabel = '';
+                    if (activeJobId) {
+                        const jobPayload = await fetchModule4JobStatus(activeJobId, { statusOnly: true }).catch(() => null);
+                        if (jobPayload) {
+                            jobStatus = String(jobPayload.status || '').trim().toLowerCase();
+                            jobProgressLabel = formatGraphSyncProgress(jobPayload.progress);
+                        }
+                    }
+
+                    const messageParts = [
+                        activeSourceBatchKey
+                            ? `\u5df2\u63d0\u4ea4\u77e5\u8bc6\u56fe\u8c31\u6784\u5efa\u8bf7\u6c42\uff0c\u6279\u6b21 ${formatGraphSyncShortId(activeSourceBatchKey)}\u3002`
+                            : '\u5df2\u63d0\u4ea4\u77e5\u8bc6\u56fe\u8c31\u6784\u5efa\u8bf7\u6c42\u3002',
+                        activeJobId
+                            ? `\u6a21\u5757\u56db\u4efb\u52a1 ${formatGraphSyncShortId(activeJobId, 12)}${jobStatus ? ` ${jobStatus}` : ''}${jobProgressLabel ? ` (${jobProgressLabel})` : ''}\u3002`
+                            : '',
+                        !activeJobId && activeBatchId
+                            ? `\u6a21\u5757\u56db\u5df2\u63a5\u6536\u672c\u6b21\u8bf7\u6c42\uff0c\u5165\u56fe\u6279\u6b21 ${formatGraphSyncShortId(activeBatchId, 12)}\u3002`
+                            : '',
+                        graphStatus === 'ready'
+                            ? '\u56fe\u8c31\u5df2\u5b8c\u6210\uff0c\u53ef\u524d\u5f80\u6a21\u5757\u56db\u67e5\u770b\u3002'
+                            : graphStatus === 'failed'
+                                ? '\u6a21\u5757\u56db\u5df2\u8bb0\u5f55\u5931\u8d25\u4efb\u52a1\uff0c\u8bf7\u524d\u5f80\u6a21\u5757\u56db\u67e5\u770b\u8be6\u60c5\u3002'
+                                : '',
+                    ].filter(Boolean);
+                    /*
+                    const messageParts = [
+                        `已提交知识图谱构建请求，批次 ${formatGraphSyncShortId(normalizedSourceBatchKey)}。`,
+                        currentJobId
+                            ? `模块四任务 ${formatGraphSyncShortId(currentJobId, 12)}${jobStatus ? ` ${jobStatus}` : ''}${jobProgressLabel ? ` (${jobProgressLabel})` : ''}。`
+                            : '',
+                        !currentJobId && batchId
+                            ? `模块四已接收本次请求，入图批次 ${formatGraphSyncShortId(batchId, 12)}。`
+                            : '',
+                        graphStatus === 'ready'
+                            ? '图谱已完成，可前往模块四查看。'
+                            : graphStatus === 'failed'
+                                ? '模块四已记录失败任务，请前往模块四查看详情。'
+                                : '',
+                    ].filter(Boolean);
+                    */
+                    setGraphSyncMessage(messageParts.join(' '));
+
+                    if (graphStatus === 'failed' || jobStatus === 'failed' || jobStatus === 'cancelled') {
+                        setGraphSyncState('error');
+                        return;
+                    }
+
+                    if (graphStatus === 'ready') {
+                        setGraphSyncState('success');
+                        return;
+                    }
+                }
+            } catch {
+                // Keep the optimistic submission message while module4 receives the new batch.
+            }
+
+            await waitForGraphSyncPoll(activeJobId ? GRAPH_SYNC_ACTIVE_POLL_MS : GRAPH_SYNC_DISCOVERY_POLL_MS);
+        }
+    };
+
+    const requestGraphSync = async (doc: DocumentResult) => {
+        if (!doc || !GRAPH_SYNC_SUPPORTED_EXTENSIONS.has(fileExt(doc.file_name))) {
+            return;
+        }
+        const runId = graphSyncPollRunIdRef.current + 1;
+        graphSyncPollRunIdRef.current = runId;
+        setGraphSyncState('submitting');
+        setGraphSyncMessage('');
+        try {
+            const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
+            const previousDetail = await fetchModule4GraphFileDetail(doc.file_hash).catch(() => null);
+            const previousItem = previousDetail?.item;
+            const previousMetadata = previousItem?.metadata && typeof previousItem.metadata === 'object'
+                ? previousItem.metadata as Record<string, unknown>
+                : {};
+            const previousJobId = String(previousItem?.current_job_id || '').trim();
+            const previousBatchId = String(previousMetadata.batch_id || '').trim();
+            const fetchResult = await fetchExtractWithFallback(
+                '/extract/graph-sync',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        job_id: normalizeExtractionJobId(extractionJob?.job_id),
+                        file_name: doc.file_name,
+                        file_hash: doc.file_hash,
+                        document: doc,
+                    }),
+                },
+                preferredBase,
+            );
+            extractionJobApiBaseRef.current = fetchResult.usedBase || preferredBase;
+            const response = fetchResult.response;
+            if (!response.ok) {
+                throw new Error(await readResponseErrorMessage(response));
+            }
+            const payload = await response.json().catch(() => ({} as Record<string, unknown>));
+            const sourceBatchKey = String(payload?.source_batch_key || '').trim();
+            setGraphSyncState('success');
+            setGraphSyncMessage(
+                sourceBatchKey
+                    ? `\u5df2\u63d0\u4ea4\u77e5\u8bc6\u56fe\u8c31\u6784\u5efa\u8bf7\u6c42\uff0c\u6279\u6b21 ${formatGraphSyncShortId(sourceBatchKey)}\uff0c\u6b63\u5728\u7b49\u5f85\u6a21\u5757\u56db\u63a5\u6536\u3002`
+                    : String(payload?.message || '').trim()
+                        || '\u5df2\u63d0\u4ea4\u77e5\u8bc6\u56fe\u8c31\u6784\u5efa\u8bf7\u6c42\uff0c\u6b63\u5728\u7b49\u5f85\u6a21\u5757\u56db\u63a5\u6536\u3002'
+            );
+            void syncGraphRetryVisibility(doc, sourceBatchKey, previousJobId, previousBatchId, runId);
+        } catch (error) {
+            setGraphSyncState('error');
+            setGraphSyncMessage(
+                error instanceof Error
+                    ? error.message
+                    : '\u77e5\u8bc6\u56fe\u8c31\u6784\u5efa\u63d0\u4ea4\u5931\u8d25'
+            );
+        }
+    };
+    /*
+    const requestGraphSync = async (doc: DocumentResult) => {
+        if (!doc || !GRAPH_SYNC_SUPPORTED_EXTENSIONS.has(fileExt(doc.file_name))) {
+            return;
+        }
+        setGraphSyncState('submitting');
+        setGraphSyncMessage('');
+        try {
+            const preferredBase = extractionJobApiBaseRef.current || resolveExtractBase();
+            const fetchResult = await fetchExtractWithFallback(
+                '/extract/graph-sync',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        job_id: normalizeExtractionJobId(extractionJob?.job_id),
+                        file_name: doc.file_name,
+                        file_hash: doc.file_hash,
+                        document: doc,
+                    }),
+                },
+                preferredBase,
+            );
+            extractionJobApiBaseRef.current = fetchResult.usedBase || preferredBase;
+            const response = fetchResult.response;
+            if (!response.ok) {
+                throw new Error(await readResponseErrorMessage(response));
+            }
+            const payload = await response.json().catch(() => ({} as Record<string, unknown>));
+            setGraphSyncState('success');
+            setGraphSyncMessage(
+                String(payload?.message || '').trim()
+                || '已提交知识图谱构建请求，请前往模块四查看进度。'
+            );
+        } catch (error) {
+            setGraphSyncState('error');
+            setGraphSyncMessage(error instanceof Error ? error.message : '知识图谱构建提交失败');
+        }
+    };
+    */
 
     useEffect(() => {
         if (!activeDoc) {
@@ -4081,8 +4430,46 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         );
     };
 
-    const pollExtractionJob = async (jobId: string, preferredBase = '') => {
+    const clearFailedExtractionDocuments = (
+        jobFiles: RuntimeExtractionJobFileState[],
+    ) => {
+        const targetNames = new Set<string>();
+        jobFiles.forEach((item) => {
+            const normalized = normalizeWorkbenchFileName(item.file_name);
+            if (normalized) {
+                targetNames.add(normalized);
+            }
+        });
+        if (targetNames.size === 0) {
+            selectedFilesRef.current.forEach((file) => {
+                const normalized = normalizeWorkbenchFileName(file.name);
+                if (normalized) {
+                    targetNames.add(normalized);
+                }
+            });
+        }
+        if (targetNames.size === 0) return;
+
+        const previousDocuments = documentsRef.current;
+        const nextDocuments = removeDocumentResultsForNames(previousDocuments, targetNames);
+        if (nextDocuments.length === previousDocuments.length) return;
+
+        setDocuments(nextDocuments);
+        writeExtractionDocuments(nextDocuments);
+        if (activeDocIndexRef.current > Math.max(0, nextDocuments.length - 1)) {
+            setActiveDocIndex(Math.max(0, nextDocuments.length - 1));
+        }
+        setPdfViewportPage(1);
+        setPdfScrollRequest(createPdfScrollRequest(1));
+    };
+
+    const pollExtractionJob = async (
+        jobId: string,
+        preferredBase = '',
+        options?: { silentMissingJob?: boolean },
+    ) => {
         const normalizedJobId = normalizeExtractionJobId(jobId);
+        const silentMissingJob = Boolean(options?.silentMissingJob);
         if (!normalizedJobId) {
             extractionJobPollRef.current = '';
             extractionJobApiBaseRef.current = '';
@@ -4106,7 +4493,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             }
             try {
                 const fetchResult = await fetchExtractWithFallback(
-                    `/extract/jobs/status/${encodeURIComponent(normalizedJobId)}?include_documents=true`,
+                    `/extract/jobs/status/${encodeURIComponent(normalizedJobId)}?include_documents=false&status_only=true`,
                     undefined,
                     preferredBase || extractionJobApiBaseRef.current || '',
                     { retryNotFound: false },
@@ -4140,12 +4527,66 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
                 if (visibleJob?.terminal) {
                     extractionJobPollRef.current = '';
-                    if (visibleDocuments.length > 0) {
-                        applyExtractionDocuments(visibleDocuments, { apiBase: usedBase });
-                    } else if (Array.isArray(payload.errors) && payload.errors.length > 0) {
-                        setErrorMessage(payload.errors.join(' | '));
+                    let terminalPayload: (ExtractionJobState & {
+                        progress: ExtractionJobState['progress'];
+                        terminal: boolean;
+                        documents?: DocumentResult[];
+                    }) = payload;
+                    let terminalBase = usedBase;
+                    let terminalVisibleJob = visibleJob;
+                    let terminalVisibleDocuments = visibleDocuments;
+
+                    try {
+                        const terminalFetchResult = await fetchExtractWithFallback(
+                            `/extract/jobs/status/${encodeURIComponent(normalizedJobId)}?include_documents=true`,
+                            undefined,
+                            usedBase || preferredBase || extractionJobApiBaseRef.current || '',
+                            { retryNotFound: false },
+                        );
+                        terminalBase = terminalFetchResult.usedBase || terminalBase;
+                        extractionJobApiBaseRef.current = terminalBase;
+                        terminalPayload = (await terminalFetchResult.response.json()) as ExtractionJobState & {
+                            progress: ExtractionJobState['progress'];
+                            terminal: boolean;
+                            documents?: DocumentResult[];
+                        };
+
+                        const normalizedTerminalJob = normalizeExtractionJobPayload(
+                            terminalPayload,
+                            terminalBase,
+                            extractionJobStateRef.current,
+                        );
+                        terminalVisibleJob = reconcileVisibleExtractionJob(normalizedTerminalJob, terminalBase);
+                        terminalVisibleDocuments = Array.isArray(terminalPayload.documents)
+                            ? filterVisibleDocumentsForJobFiles(terminalPayload.documents, terminalVisibleJob?.files || [])
+                            : [];
+                        setExtractionJob(terminalVisibleJob);
+                    } catch (terminalFetchError) {
+                        console.warn('module2 terminal documents fetch failed', terminalFetchError);
+                    }
+
+                    if (terminalVisibleDocuments.length > 0) {
+                        applyExtractionDocuments(terminalVisibleDocuments, { apiBase: terminalBase || usedBase });
                     } else {
+                        const terminalStatus = String(
+                            terminalVisibleJob?.status || terminalPayload.status || '',
+                        ).trim().toLowerCase();
+                        const terminalFileFailure = (terminalVisibleJob?.files || []).some((item) => {
+                            const status = String(item.status || '').trim().toLowerCase();
+                            return status === 'failed' || status === 'cancelled';
+                        });
+                        if (
+                            terminalStatus === 'failed'
+                            || terminalFileFailure
+                            || (Array.isArray(terminalPayload.errors) && terminalPayload.errors.length > 0)
+                        ) {
+                            clearFailedExtractionDocuments(terminalVisibleJob?.files || []);
+                        }
+                        if (Array.isArray(terminalPayload.errors) && terminalPayload.errors.length > 0) {
+                            setErrorMessage(terminalPayload.errors.join(' | '));
+                        } else {
                         setInfoMessage('抽取任务已结束，暂无可展示结果。');
+                    }
                     }
                     return;
                 }
@@ -4166,7 +4607,14 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     setExtractionJob(null);
                     setIsProcessing(false);
                     setActiveSummaryLoading(false);
-                    if (documentsRef.current.length > 0) {
+                    if (silentMissingJob) {
+                        setErrorMessage('');
+                        setInfoMessage(
+                            documentsRef.current.length > 0
+                                ? '检测到历史任务已过期，已自动忽略旧任务状态并保留最近一次解析结果。'
+                                : '检测到历史任务已过期，界面已自动恢复为可重新发起解析的状态。',
+                        );
+                    } else if (documentsRef.current.length > 0) {
                         setErrorMessage('');
                         setInfoMessage('历史抽取任务状态已从后端释放，当前页面已保留最近一次解析结果。');
                     } else {
@@ -4191,17 +4639,33 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
     useEffect(() => {
         if (!extractionJob || extractionJob.terminal) return;
-        if (extractionJobPollRef.current === extractionJob.job_id) return;
-        void pollExtractionJob(extractionJob.job_id, extractionJobApiBaseRef.current || '');
+        const normalizedJobId = normalizeExtractionJobId(extractionJob.job_id);
+        if (!normalizedJobId) return;
+        if (extractionJobPollRef.current === normalizedJobId) return;
+        const isRestoredSessionJob = restoredSessionJobIdRef.current === normalizedJobId;
+        void pollExtractionJob(
+            normalizedJobId,
+            extractionJobApiBaseRef.current || '',
+            { silentMissingJob: isRestoredSessionJob },
+        );
     }, [extractionJob?.job_id, extractionJob?.terminal]);
 
     useEffect(() => {
         if (!extractionJob || !extractionJob.terminal) return;
         const normalizedJobId = normalizeExtractionJobId(extractionJob.job_id);
         if (!normalizedJobId) return;
+        const isRestoredSessionJob = restoredSessionJobIdRef.current === normalizedJobId;
+        if (isRestoredSessionJob && documentsRef.current.length > 0) {
+            terminalJobResyncRef.current = normalizedJobId;
+            return;
+        }
         if (terminalJobResyncRef.current === normalizedJobId) return;
         terminalJobResyncRef.current = normalizedJobId;
-        void pollExtractionJob(normalizedJobId, extractionJobApiBaseRef.current || '');
+        void pollExtractionJob(
+            normalizedJobId,
+            extractionJobApiBaseRef.current || '',
+            { silentMissingJob: isRestoredSessionJob },
+        );
     }, [extractionJob?.job_id, extractionJob?.terminal]);
 
     useEffect(() => {
@@ -4225,14 +4689,28 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         }
 
         const byIdentity = new Map<string, File>();
-        [...selectedFiles, ...incoming].forEach((file) => {
+        const currentSelectedFiles = selectedFilesRef.current;
+        const existingKeySet = new Set(currentSelectedFiles.map((file) => fileIdentityKey(file)));
+        [...currentSelectedFiles, ...incoming].forEach((file) => {
             const key = fileIdentityKey(file);
             byIdentity.set(key, file);
             fileBlobCache.set(key, file); // 存入全局缓存
         });
         const merged = Array.from(byIdentity.values());
         const limited = merged.slice(0, 5);
+        const retainedNewFileKeys = new Set(
+            limited
+                .map((file) => fileIdentityKey(file))
+                .filter((key) => !existingKeySet.has(key)),
+        );
         setSelectedFiles(limited);
+        if (retainedNewFileKeys.size > 0) {
+            for (let index = limited.length - 1; index >= 0; index -= 1) {
+                if (!retainedNewFileKeys.has(fileIdentityKey(limited[index]))) continue;
+                setActiveDocIndex(index);
+                break;
+            }
+        }
         if (merged.length > 5) {
             setInfoMessage("批处理上限为 5 个文件，超出部分已忽略。");
         } else if (rejectedCount > 0) {
@@ -4472,7 +4950,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         setIsProcessing(true);
         setExtractionJob(null);
         extractionJobPollRef.current = '';
+        extractionJobPollRunIdRef.current += 1;
         extractionJobApiBaseRef.current = '';
+        terminalJobResyncRef.current = '';
+        restoredSessionJobIdRef.current = '';
         suppressedExtractionJobFilesRef.current = {};
         setInfoMessage(`正在提交 ${targetFile.name} 的抽取任务...`);
         setActiveSummaryLoading(true);
@@ -4562,6 +5043,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                 if (visibleDocuments.length > 0) {
                     applyExtractionDocuments(visibleDocuments, { apiBase: usedBase });
                 } else if (visibleJob.errors.length > 0) {
+                    clearFailedExtractionDocuments(visibleJob.files || []);
                     setErrorMessage(visibleJob.errors.join(' | '));
                 }
             } else {
@@ -5461,14 +5943,16 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     };
 
     const resetPaneWidth = (side: PaneResizeSide) => {
+        const viewportWidth = resolvePaneLayoutViewportWidth();
+        const stageDefaults = resolveWorkbenchPaneLayoutDefaults(viewportWidth, currentPaneLayoutStage);
         setPaneLayout((prev) =>
             clampWorkbenchPaneLayout(
                 {
                     ...prev,
-                    leftWidth: side === 'left' ? LEFT_PANE_DEFAULT_WIDTH : prev.leftWidth,
-                    rightWidth: side === 'right' ? RIGHT_PANE_DEFAULT_WIDTH : prev.rightWidth,
+                    leftWidth: side === 'left' ? stageDefaults.leftWidth : prev.leftWidth,
+                    rightWidth: side === 'right' ? stageDefaults.rightWidth : prev.rightWidth,
                 },
-                workbenchViewportWidth,
+                viewportWidth,
                 showLeftPanel,
             ),
         );
@@ -5542,24 +6026,11 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         window.addEventListener('pointercancel', handleUp);
     };
 
-    const isTextPreviewStage = ['txt', 'md'].includes(activeRenderExt);
-    const textPreviewPaneLayout = getTextPreviewWorkbenchPaneLayout(
-        workbenchViewportWidth > 0
-            ? workbenchViewportWidth
-            : (typeof window === 'undefined' ? 0 : window.innerWidth),
-    );
-    const effectiveLeftPaneWidth = selectedFiles.length > 0 && isTextPreviewStage && showLeftPanel
-        ? Math.min(paneLayout.leftWidth, textPreviewPaneLayout.leftWidth)
-        : paneLayout.leftWidth;
-    const effectiveRightPaneWidth = selectedFiles.length > 0 && isTextPreviewStage
-        ? Math.min(paneLayout.rightWidth, textPreviewPaneLayout.rightWidth)
-        : paneLayout.rightWidth;
-
     const workbenchGridMinWidth = selectedFiles.length === 0
         ? CENTER_PANE_SAFE_WIDTH
         : (showLeftPanel
-            ? effectiveLeftPaneWidth + effectiveRightPaneWidth + (PANE_DIVIDER_WIDTH * 2) + CENTER_PANE_SAFE_WIDTH
-            : effectiveRightPaneWidth + PANE_DIVIDER_WIDTH + CENTER_PANE_SAFE_WIDTH);
+            ? paneLayout.leftWidth + paneLayout.rightWidth + (PANE_DIVIDER_WIDTH * 2) + CENTER_PANE_SAFE_WIDTH
+            : paneLayout.rightWidth + PANE_DIVIDER_WIDTH + CENTER_PANE_SAFE_WIDTH);
              
     const workbenchGridStyle = selectedFiles.length === 0
         ? {
@@ -5568,11 +6039,11 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
           }
         : (showLeftPanel
             ? {
-                gridTemplateColumns: `${effectiveLeftPaneWidth}px ${PANE_DIVIDER_WIDTH}px minmax(0,1fr) ${PANE_DIVIDER_WIDTH}px ${effectiveRightPaneWidth}px`,
+                gridTemplateColumns: `${paneLayout.leftWidth}px ${PANE_DIVIDER_WIDTH}px minmax(0,1fr) ${PANE_DIVIDER_WIDTH}px ${paneLayout.rightWidth}px`,
                 minWidth: `${workbenchGridMinWidth}px`,
             }
             : {
-                gridTemplateColumns: `minmax(0,1fr) ${PANE_DIVIDER_WIDTH}px ${effectiveRightPaneWidth}px`,
+                gridTemplateColumns: `minmax(0,1fr) ${PANE_DIVIDER_WIDTH}px ${paneLayout.rightWidth}px`,
                 minWidth: `${workbenchGridMinWidth}px`,
             });
     const extractionOverallRatio = estimateRuntimeExtractionOverallRatio(
@@ -7039,6 +7510,57 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                             </div>
                                                         </div>
                                                     </div>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        {graphSyncSupported && (
+                                                            <button
+                                                                type="button"
+                                                                data-testid="module2-trigger-graph-sync"
+                                                                onClick={() => activeDoc && void requestGraphSync(activeDoc)}
+                                                                disabled={graphSyncDisabled || graphSyncState === 'submitting'}
+                                                                className={cn(
+                                                                    'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-all',
+                                                                    (graphSyncDisabled || graphSyncState === 'submitting')
+                                                                        ? 'cursor-not-allowed bg-slate-100 text-slate-400 ring-1 ring-inset ring-slate-200/80 dark:bg-white/[0.04] dark:text-slate-500 dark:ring-white/[0.08]'
+                                                                        : graphSyncState === 'success'
+                                                                            ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-500/20 hover:bg-emerald-100/70 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/20'
+                                                                            : 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-500/20 hover:bg-blue-100/80 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-blue-500/20'
+                                                                )}
+                                                                title={graphSyncDisabled && activeDoc?.errors?.length
+                                                                    ? '当前文件存在解析错误，暂不能构建知识图谱'
+                                                                    : '将当前解析产物提交到知识图谱构建链路'}
+                                                            >
+                                                                {graphSyncState === 'submitting' ? (
+                                                                    <Loader2 size={12} className="animate-spin" />
+                                                                ) : (
+                                                                    <BarChart3 size={12} />
+                                                                )}
+                                                                <span>
+                                                                    {graphSyncState === 'submitting'
+                                                                        ? '提交中...'
+                                                                        : graphSyncState === 'success'
+                                                                            ? '已提交构图'
+                                                                            : '构建知识图谱'}
+                                                                </span>
+                                                            </button>
+                                                        )}
+                                                        {graphSyncExcluded && (
+                                                            <span className="inline-flex items-center rounded-lg bg-slate-100/80 px-3 py-1.5 text-[11px] font-medium text-slate-600 ring-1 ring-inset ring-slate-200/70 dark:bg-white/[0.04] dark:text-slate-300 dark:ring-white/[0.08]">
+                                                                Excel 文件不进行知识图谱渲染
+                                                            </span>
+                                                        )}
+                                                        {graphSyncMessage && (
+                                                            <span
+                                                                className={cn(
+                                                                    'text-[11px] font-medium',
+                                                                    graphSyncState === 'error'
+                                                                        ? 'text-rose-600 dark:text-rose-300'
+                                                                        : 'text-slate-500 dark:text-slate-400'
+                                                                )}
+                                                            >
+                                                                {graphSyncMessage}
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             )}
                                         </div>
@@ -7587,7 +8109,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                 </div>
                                             )}
 
-                                            {hasFieldResults && activeSoftWarningLabels.length > 0 && (
+                                            {false && hasFieldResults && activeSoftWarningLabels.length > 0 && (
                                                 <div className="rounded-xl border border-blue-200/80 bg-blue-50/80 px-3 py-2 text-[10.5px] text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
                                                     <div className="flex items-start gap-2">
                                                         <AlertCircle size={12} className="mt-0.5 shrink-0" />

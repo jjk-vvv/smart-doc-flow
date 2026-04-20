@@ -211,6 +211,7 @@ def test_http_runtime_bundle_builds_shared_extraction_chain(tmp_path: Path, monk
     assert bundle.extraction_job_persist_markers is bundle.extraction_job_runtime.persist_markers
     assert bundle.extraction_request_runtime._extraction_job_runtime is bundle.extraction_job_runtime
     assert bundle.extraction_request_runtime._module4_sync_callback_bundle is module4_sync_callback_bundle
+    assert callable(bundle.extraction_request_runtime._document_validate)
     assert bundle.extraction_job_executor._extraction_job_runtime is bundle.extraction_job_runtime
     assert bundle.extraction_job_executor._module4_sync_callback_bundle is module4_sync_callback_bundle
     assert preview_payload["job_id"].startswith("preview-")

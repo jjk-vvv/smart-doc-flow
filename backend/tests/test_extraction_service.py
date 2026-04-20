@@ -231,6 +231,177 @@ def test_extraction_service_create_job_resolves_user_preferred_tenant(monkeypatc
     assert captured["tenant_id"] == "user-123"
 
 
+def test_extraction_service_status_only_uses_shadow_snapshot_and_compacts_payload(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    service = ExtractionService()
+    captured: dict[str, object] = {}
+
+    def fake_snapshot_status(
+        _settings,
+        job_id: str,
+        *,
+        include_documents: bool = False,
+        expected_tenant_id: str = "",
+    ) -> dict[str, object]:
+        del _settings
+        captured["job_id"] = job_id
+        captured["include_documents"] = include_documents
+        captured["expected_tenant_id"] = expected_tenant_id
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "status": "completed",
+            "terminal": True,
+            "created_at": 1,
+            "updated_at": 2,
+            "progress": {
+                "total_files": 1,
+                "completed_files": 1,
+                "failed_files": 0,
+                "current_file_index": 1,
+                "current_file_name": "demo.txt",
+                "current_stage": "completed",
+                "progress_ratio": 1.0,
+                "queued_files": 0,
+                "active_stages": {"completed": 1},
+            },
+            "errors": [],
+            "files": [
+                {
+                    "file_name": "demo.txt",
+                    "status": "completed",
+                }
+            ],
+            "documents": [
+                {
+                    "file_name": "demo.txt",
+                }
+            ],
+    }
+
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_shadow_extraction_job_status_snapshot",
+        fake_snapshot_status,
+    )
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_module2_execution_facade",
+        lambda: SimpleNamespace(),
+    )
+
+    result = service.get_job_status(
+        settings,
+        request=None,
+        job_id="extract_job_demo123",
+        include_documents=True,
+        status_only=True,
+        tenant_id="tenant-a",
+    )
+
+    assert captured == {
+        "job_id": "extract_job_demo123",
+        "include_documents": False,
+        "expected_tenant_id": "tenant-a",
+    }
+    assert result == {
+        "ok": True,
+        "job_id": "extract_job_demo123",
+        "status": "completed",
+        "terminal": True,
+        "created_at": 1,
+        "updated_at": 2,
+        "progress": {
+            "total_files": 1,
+            "completed_files": 1,
+            "failed_files": 0,
+            "current_file_index": 1,
+            "current_file_name": "demo.txt",
+            "current_stage": "completed",
+            "progress_ratio": 1.0,
+            "queued_files": 0,
+            "active_stages": {"completed": 1},
+        },
+        "errors": [],
+    }
+
+
+def test_extraction_service_status_only_falls_back_to_live_status_when_snapshot_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    service = ExtractionService()
+    captured: dict[str, object] = {}
+
+    def fake_snapshot_status(*_args, **_kwargs):
+        raise HTTPException(status_code=404, detail="snapshot missing")
+
+    def fake_live_status(
+        _settings,
+        job_id: str,
+        *,
+        execution_facade_factory,
+        include_documents: bool = False,
+        expected_tenant_id: str = "",
+    ) -> dict[str, object]:
+        del _settings, execution_facade_factory
+        captured["job_id"] = job_id
+        captured["include_documents"] = include_documents
+        captured["expected_tenant_id"] = expected_tenant_id
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "status": "running",
+            "terminal": False,
+            "created_at": 1,
+            "updated_at": 2,
+            "progress": {
+                "total_files": 1,
+                "completed_files": 0,
+                "failed_files": 0,
+                "current_file_index": 1,
+                "current_file_name": "demo.txt",
+                "current_stage": "extracting",
+                "progress_ratio": 0.5,
+                "queued_files": 0,
+                "active_stages": {"extracting": 1},
+            },
+            "errors": [],
+        }
+
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_shadow_extraction_job_status_snapshot",
+        fake_snapshot_status,
+    )
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_shadow_extraction_job_status",
+        fake_live_status,
+    )
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_module2_execution_facade",
+        lambda: SimpleNamespace(),
+    )
+
+    result = service.get_job_status(
+        settings,
+        request=None,
+        job_id="extract_job_demo123",
+        include_documents=True,
+        status_only=True,
+        tenant_id="tenant-a",
+    )
+
+    assert captured == {
+        "job_id": "extract_job_demo123",
+        "include_documents": False,
+        "expected_tenant_id": "tenant-a",
+    }
+    assert result["status"] == "running"
+    assert result["progress"]["current_stage"] == "extracting"
+
+
 def test_extraction_service_extract_batch_forwards_resolved_tenant_header(monkeypatch, tmp_path: Path) -> None:
     settings = _settings(tmp_path, auth_tenant_mode="user_preferred")
     service = ExtractionService()
@@ -372,6 +543,189 @@ def test_extraction_service_get_job_status_augments_artifact_file_links(monkeypa
     assert diagnostics["assistant_payload_artifact_download_url"] == "/download/fa_assistant"
     assert diagnostics["assistant_payload_artifact_by_file_url"] == "/extract/artifact/by-file/fa_assistant"
     assert diagnostics["assistant_payload_artifact_url"] == "/extract/artifact/by-file/fa_assistant"
+
+
+def test_extraction_service_trigger_graph_sync_recovers_document_from_shadow_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, auth_tenant_mode="user_preferred")
+    service = ExtractionService()
+    captured: dict[str, object] = {}
+
+    def _fake_snapshot_status(
+        _settings,
+        job_id: str,
+        *,
+        include_documents: bool = False,
+        expected_tenant_id: str = "",
+    ) -> dict[str, object]:
+        captured["snapshot_job_id"] = job_id
+        captured["snapshot_include_documents"] = include_documents
+        captured["snapshot_expected_tenant_id"] = expected_tenant_id
+        return {
+            "job_id": job_id,
+            "documents": [
+                {
+                    "file_name": "demo.pdf",
+                    "file_hash": "hash-demo",
+                    "track": "VisualTrack",
+                    "cached": False,
+                    "result": {},
+                    "errors": [],
+                    "diagnostics": {},
+                }
+            ],
+        }
+
+    async def _fake_trigger_embedded_graph_sync(*, request, payload=None, background_tasks=None):
+        del request, background_tasks
+        captured["forwarded_payload"] = dict(payload or {})
+        return {
+            "ok": True,
+            "enqueued": True,
+            "file_name": str((payload or {}).get("file_name") or ""),
+            "file_hash": str((payload or {}).get("file_hash") or ""),
+        }
+
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_shadow_extraction_job_status_snapshot",
+        _fake_snapshot_status,
+    )
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.trigger_embedded_graph_sync",
+        _fake_trigger_embedded_graph_sync,
+    )
+
+    request = SimpleNamespace(
+        headers={},
+        query_params={},
+        state=SimpleNamespace(authenticated_user=_fake_user()),
+    )
+
+    result = asyncio.run(
+        service.trigger_graph_sync(
+            settings,
+            request,
+            {
+                "job_id": "extract_job_demo123",
+                "file_hash": "hash-demo",
+            },
+        )
+    )
+
+    assert result == {
+        "ok": True,
+        "enqueued": True,
+        "file_name": "demo.pdf",
+        "file_hash": "hash-demo",
+    }
+    assert captured["snapshot_job_id"] == "extract_job_demo123"
+    assert captured["snapshot_include_documents"] is True
+    assert captured["snapshot_expected_tenant_id"] == "user-123"
+    forwarded_payload = captured["forwarded_payload"]
+    assert isinstance(forwarded_payload, dict)
+    assert forwarded_payload["file_name"] == "demo.pdf"
+    assert forwarded_payload["file_hash"] == "hash-demo"
+    assert forwarded_payload["document"]["file_name"] == "demo.pdf"
+
+
+def test_extraction_service_trigger_graph_sync_falls_back_to_live_status_when_shadow_snapshot_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, auth_tenant_mode="user_preferred")
+    service = ExtractionService()
+    captured: dict[str, object] = {}
+
+    def _fake_snapshot_status(*_args, **_kwargs):
+        raise HTTPException(status_code=404, detail="shadow snapshot missing")
+
+    def _fake_get_job_status(
+        _self,
+        _settings,
+        _request,
+        job_id: str,
+        *,
+        include_documents: bool = False,
+        status_only: bool = False,
+        tenant_id: str = "",
+    ) -> dict[str, object]:
+        captured["live_job_id"] = job_id
+        captured["live_include_documents"] = include_documents
+        captured["live_status_only"] = status_only
+        captured["live_tenant_id"] = tenant_id
+        return {
+            "job_id": job_id,
+            "documents": [
+                {
+                    "file_name": "demo.txt",
+                    "file_hash": "hash-live",
+                    "track": "FastTrack",
+                    "cached": True,
+                    "result": {},
+                    "errors": [],
+                    "diagnostics": {},
+                }
+            ],
+        }
+
+    async def _fake_trigger_embedded_graph_sync(*, request, payload=None, background_tasks=None):
+        del request, background_tasks
+        captured["forwarded_payload"] = dict(payload or {})
+        return {
+            "ok": True,
+            "enqueued": True,
+            "file_name": str((payload or {}).get("file_name") or ""),
+            "file_hash": str((payload or {}).get("file_hash") or ""),
+        }
+
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_shadow_extraction_job_status_snapshot",
+        _fake_snapshot_status,
+    )
+    monkeypatch.setattr(
+        ExtractionService,
+        "get_job_status",
+        _fake_get_job_status,
+    )
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.trigger_embedded_graph_sync",
+        _fake_trigger_embedded_graph_sync,
+    )
+
+    request = SimpleNamespace(
+        headers={},
+        query_params={},
+        state=SimpleNamespace(authenticated_user=_fake_user()),
+    )
+
+    result = asyncio.run(
+        service.trigger_graph_sync(
+            settings,
+            request,
+            {
+                "job_id": "extract_job_demo456",
+                "file_hash": "hash-live",
+            },
+        )
+    )
+
+    assert result == {
+        "ok": True,
+        "enqueued": True,
+        "file_name": "demo.txt",
+        "file_hash": "hash-live",
+    }
+    assert captured["live_job_id"] == "extract_job_demo456"
+    assert captured["live_include_documents"] is True
+    assert captured["live_status_only"] is False
+    assert captured["live_tenant_id"] == ""
+    forwarded_payload = captured["forwarded_payload"]
+    assert isinstance(forwarded_payload, dict)
+    assert forwarded_payload["file_name"] == "demo.txt"
+    assert forwarded_payload["file_hash"] == "hash-live"
+    assert forwarded_payload["document"]["file_name"] == "demo.txt"
 
 
 def test_extraction_service_office_preview_status_augments_file_link(monkeypatch, tmp_path: Path) -> None:

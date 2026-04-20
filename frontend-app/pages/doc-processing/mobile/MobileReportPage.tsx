@@ -149,12 +149,12 @@ export const MobileReportPage: React.FC<MobileReportPageProps> = ({
   }
 
   return (
-    <div ref={reportPreviewScrollRef} className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1120px]">
+    <div ref={reportPreviewScrollRef} className="h-full w-full overflow-hidden bg-white dark:bg-slate-950">
+      <div className="h-full w-full overflow-y-auto">
         <div
-          ref={reportContentRef}
-          className={`rounded-[22px] border bg-[linear-gradient(180deg,#ffffff,#fcfdff)] px-5 py-5 shadow-[0_18px_38px_-32px_rgba(42,100,246,0.14)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.9),rgba(15,23,42,0.82))] dark:shadow-[0_24px_48px_-36px_rgba(2,6,23,0.78)] sm:px-8 sm:py-7 ${panelSoftClassName}`}
-        >
+            ref={reportContentRef}
+            className="w-full bg-white px-5 py-6 dark:bg-slate-950 sm:px-8 sm:py-8 min-h-full"
+          >
           {blocks.map((block, index) => {
             const isStreamingTailBlock = activeStatus === 'active' && index === blocks.length - 1;
             const blockFormatting = formatting[block.key];

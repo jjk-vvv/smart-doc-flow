@@ -53,6 +53,10 @@ backend/auth/node_modules/
 .codex-temp/
 .codex-logs/
 .runtime-logs/
+.tmp-codex/
+backend/.tmp-codex/
+artifacts/
+rt4/
 .venv-*/
 .agents/
 skills-lock.json
@@ -121,6 +125,7 @@ backend/module4/.runtime/
 backend/module4/.venv/
 backend/module4/runtime-data/
 backend/.migration-backups/
+backend/runtime-data/
 backend/app/modules/module2/.cache/
 backend/app/modules/module2/.mcache/
 backend/app/modules/module2/.runlogs/

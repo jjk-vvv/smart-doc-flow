@@ -9,7 +9,8 @@ import { loginForProtectedApp, openProtectedTab } from "./auth-session.mjs";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..", "..");
-const appUrl = process.env.MODULE4_APP_URL || "http://127.0.0.1:3001";
+const appUrl = process.env.MODULE4_APP_URL || "http://127.0.0.1:3002";
+const appOrigin = new URL(appUrl).origin;
 const outputRoot =
   process.env.MODULE4_FRONTEND_OUTPUT_DIR ||
   path.join(projectRoot, ".runlogs", "module4-frontend-regression", new Date().toISOString().replace(/[:.]/g, "-"));
@@ -396,7 +397,7 @@ async function installMockRoutes(page, state) {
               snippet: "报告指出该笔资金流转存在多次异常拆分与高频转移。",
               locator: { page_no: 3, section: "3.2 风险发现" },
               bbox: [],
-              artifact_url: "http://127.0.0.1:3001/extract/artifacts/demo-risk-01.png",
+              artifact_url: `${appOrigin}/extract/artifacts/demo-risk-01.png`,
               confidence: 0.95,
               created_at: shortNow(),
             },

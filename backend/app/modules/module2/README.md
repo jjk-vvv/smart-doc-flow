@@ -37,17 +37,17 @@ npm run dev
 npm run dev:module2
 ```
 
-`npm run dev:module2` 会固定优先使用仓库根目录下的 `.venv-module2-py311`。
+`npm run dev:module2` 会固定优先使用仓库根目录下的 `.venv`。
 
 ```powershell
-$env:MODULE2_PYTHON="D:\smart_doc_flow\smart-doc-flow\.venv-module2-py311\Scripts\python.exe"
+$env:MODULE2_PYTHON="D:\smart_doc_flow\smart-doc-flow\.venv\Scripts\python.exe"
 npm run dev:module2
 ```
 
 或直接执行：
 
 ```powershell
-D:\smart_doc_flow\smart-doc-flow\.venv-module2-py311\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload --reload-dir app
+D:\smart_doc_flow\smart-doc-flow\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload --reload-dir app
 ```
 
 ## 环境准备

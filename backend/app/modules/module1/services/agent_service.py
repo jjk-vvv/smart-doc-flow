@@ -5,10 +5,13 @@ import logging
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Iterator, List, Optional
 
 from dotenv import load_dotenv
+
+from ..core.config import Settings, get_settings
 
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -33,29 +36,48 @@ except ImportError:  # pragma: no cover - local fallback for offline envs
     sys.modules.setdefault("sniffio", sniffio)
 
 try:
-    from zhipuai import ZhipuAI
+    from openai import OpenAI
 except ImportError:  # pragma: no cover - optional dependency
-    ZhipuAI = None
+    OpenAI = None  # type: ignore[assignment]
 
 
 class LayoutExpertAgent:
     """模块一的排版/文档处理智能体封装。"""
 
-    def __init__(self, api_key: str) -> None:
-        self.api_key = (api_key or "").strip()
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        self.api_key = str(self.settings.llm_api_key or "").strip()
+        self.base_url = str(self.settings.llm_base_url or "").strip()
+        self.text_model = str(self.settings.llm_model or "").strip()
+        self.vision_model = str(self.settings.llm_vision_model or self.text_model).strip()
+        self.timeout_sec = float(self.settings.llm_timeout_sec)
         self.client = self._build_client()
 
-    def _build_client(self) -> Optional["ZhipuAI"]:
-        if not self.api_key or self.api_key == "your-api-key-here" or ZhipuAI is None:
-            logger.warning("未配置有效的智谱 AI 客户端，模块一 AI 功能将不可用")
+    def _build_client(self) -> Optional["OpenAI"]:
+        if (
+            not self.api_key
+            or self.api_key == "your-api-key-here"
+            or not self.base_url
+            or not self.text_model
+            or OpenAI is None
+        ):
+            logger.warning("未配置有效的模块一 LLM 客户端，模块一 AI 功能将不可用")
             return None
 
         try:
-            client = ZhipuAI(api_key=self.api_key)
-            logger.info("智谱 AI 客户端初始化成功")
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout_sec,
+            )
+            logger.info(
+                "模块一 LLM 客户端初始化成功: base_url=%s model=%s",
+                self.base_url,
+                self.text_model,
+            )
             return client
         except Exception as exc:  # pragma: no cover - network/runtime dependent
-            logger.error("智谱 AI 客户端初始化失败: %s", exc)
+            logger.error("模块一 LLM 客户端初始化失败: %s", exc)
             return None
 
     @property
@@ -89,7 +111,7 @@ class LayoutExpertAgent:
             image_base64 = base64.b64encode(image_file.read()).decode("utf-8")
 
         response = self.client.chat.completions.create(
-            model="glm-4v",
+            model=self.vision_model,
             messages=[
                 {
                     "role": "user",
@@ -139,7 +161,7 @@ class LayoutExpertAgent:
         conversation_context: Optional[List[dict[str, str]]] = None,
     ) -> Iterator[str]:
         if not self.client:
-            raise RuntimeError("智谱AI未配置")
+            raise RuntimeError("模块一 LLM 未配置")
 
         system_prompt = (
             "你是一个专业的文档内容分析助手。"
@@ -167,7 +189,7 @@ class LayoutExpertAgent:
         )
 
         response = self.client.chat.completions.create(
-            model="glm-4",
+            model=self.text_model,
             messages=self._build_messages(system_prompt, user_prompt, conversation_context),
             temperature=0.45,
             max_tokens=3600,
@@ -186,11 +208,17 @@ class LayoutExpertAgent:
         conversation_context: Optional[List[dict[str, str]]] = None,
         *,
         first_token_timeout_sec: float = 18.0,
+        hard_timeout_sec: float | None = None,
     ) -> Iterator[str]:
         if not self.client:
-            raise RuntimeError("智谱AI未配置")
+            raise RuntimeError("模块一 LLM 未配置")
 
         result_queue: queue.Queue[object] = queue.Queue()
+        soft_timeout_sec = max(0.0, float(first_token_timeout_sec))
+        overall_timeout_sec = max(
+            max(soft_timeout_sec, 1.0),
+            float(hard_timeout_sec or self.settings.analysis_hard_timeout_sec or self.timeout_sec),
+        )
 
         def worker() -> None:
             try:
@@ -203,12 +231,38 @@ class LayoutExpertAgent:
 
         threading.Thread(target=worker, daemon=True).start()
         received_first_chunk = False
+        warned_slow_first_token = False
+        start_at = time.monotonic()
 
         while True:
             try:
-                item = result_queue.get(timeout=first_token_timeout_sec if not received_first_chunk else None)
+                if received_first_chunk:
+                    item = result_queue.get()
+                else:
+                    elapsed_sec = time.monotonic() - start_at
+                    remaining_sec = overall_timeout_sec - elapsed_sec
+                    if remaining_sec <= 0:
+                        raise TimeoutError(
+                            f"分析结果整体等待超过 {overall_timeout_sec:.0f} 秒，仍未收到 AI 返回"
+                        )
+                    if soft_timeout_sec > 0:
+                        wait_timeout_sec = min(soft_timeout_sec, remaining_sec)
+                    else:
+                        wait_timeout_sec = remaining_sec
+                    item = result_queue.get(timeout=wait_timeout_sec)
             except queue.Empty as exc:
-                raise TimeoutError(f"分析首个结果等待超过 {first_token_timeout_sec:.0f} 秒") from exc
+                elapsed_sec = time.monotonic() - start_at
+                if elapsed_sec >= overall_timeout_sec:
+                    raise TimeoutError(
+                        f"分析结果整体等待超过 {overall_timeout_sec:.0f} 秒，仍未收到 AI 返回"
+                    ) from exc
+                if not warned_slow_first_token and soft_timeout_sec > 0:
+                    warned_slow_first_token = True
+                    logger.warning(
+                        "模块一分析首包超过 %.0f 秒仍未返回，继续等待 AI 结果",
+                        soft_timeout_sec,
+                    )
+                continue
 
             if item is STREAM_END:
                 return
@@ -224,7 +278,7 @@ class LayoutExpertAgent:
         conversation_context: Optional[List[dict[str, str]]] = None,
     ) -> Iterator[str]:
         if not self.client:
-            raise RuntimeError("智谱AI未配置")
+            raise RuntimeError("模块一 LLM 未配置")
 
         system_prompt = (
             "你是一个直接回答问题的助手。"
@@ -232,9 +286,9 @@ class LayoutExpertAgent:
             "要承接当前对话历史继续回答，不要丢失上下文。"
         )
         user_prompt = instruction
-        
+
         response = self.client.chat.completions.create(
-            model="glm-4",
+            model=self.text_model,
             messages=self._build_messages(system_prompt, user_prompt, conversation_context),
             temperature=0.5,
             max_tokens=2000,
@@ -254,7 +308,7 @@ class LayoutExpertAgent:
         conversation_context: Optional[List[dict[str, str]]] = None,
     ) -> str:
         if not self.client:
-            raise RuntimeError("智谱AI未配置")
+            raise RuntimeError("模块一 LLM 未配置")
 
         system_prompt = (
             "你是一个专业的文档处理 AI 助手，能够理解用户的自然语言指令，并生成可执行的文档修改方案。"
@@ -287,10 +341,10 @@ class LayoutExpertAgent:
         )
 
         response = self.client.chat.completions.create(
-            model="glm-4",
+            model=self.text_model,
             messages=self._build_messages(system_prompt, user_prompt, conversation_context),
             temperature=0.3,
             max_tokens=4000,
             stream=False,
         )
-        return response.choices[0].message.content
+        return str(response.choices[0].message.content or "")

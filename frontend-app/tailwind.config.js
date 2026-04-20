@@ -63,6 +63,18 @@ module.exports = {
         sm: "calc(var(--radius) - 4px)",
       },
       keyframes: {
+        "fade-in-up": {
+          "0%": { opacity: "0", transform: "translateY(20px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+        "blink-cursor": {
+          "from, to": { borderColor: "transparent" },
+          "50%": { borderColor: "inherit" },
+        },
+        "typing-text": {
+          "0%": { width: "0" },
+          "100%": { width: "100%" },
+        },
         "accordion-down": {
           from: { height: "0" },
           to: { height: "var(--radix-accordion-content-height)" },
@@ -104,6 +116,8 @@ module.exports = {
         },
       },
       animation: {
+        "fade-in-up": "fade-in-up cubic-bezier(0.25, 1, 0.5, 1) forwards",
+        "typing-text": "typing-text steps(20, end) forwards, blink-cursor .75s step-end infinite",
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         shimmer: "shimmer 2s linear infinite",

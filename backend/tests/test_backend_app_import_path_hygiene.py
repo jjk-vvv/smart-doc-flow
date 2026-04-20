@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 
@@ -18,10 +19,18 @@ LEGACY_IMPORT_PREFIXES = (
 def _iter_backend_app_python_files() -> list[Path]:
     app_root = (Path(__file__).resolve().parents[1] / "app").resolve()
     files: list[Path] = []
-    for path in app_root.rglob("*.py"):
-        if "__pycache__" in path.parts:
-            continue
-        files.append(path)
+    ignored_dir_names = {"__pycache__", "workspaces", "runtime-data", ".cache"}
+
+    for root, dirnames, filenames in os.walk(app_root, topdown=True, onerror=lambda _exc: None):
+        dirnames[:] = [name for name in dirnames if name not in ignored_dir_names]
+        root_path = Path(root)
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            path = root_path / filename
+            if any(part in ignored_dir_names for part in path.parts):
+                continue
+            files.append(path)
     return files
 
 

@@ -5,7 +5,7 @@ import {
   ChevronLeft, ChevronRight, Diff,
   Clock, AlertCircle,
   ZoomIn, ZoomOut, RotateCw, Layers, ScanLine,
-  UploadCloud, Sparkles
+  UploadCloud, Sparkles, ArrowRight
 } from 'lucide-react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
@@ -38,6 +38,11 @@ import {
   type ReportSelectionSnapshot,
 } from './lib/reportSelection';
 import { buildModule1ApiUrl } from '@/shared/api/module1';
+import {
+  writeModule1RecentActivities,
+  type Module1RecentActivityRecord,
+  type Module1RecentActivityStatus,
+} from '../../shared/state/module1RecentActivities';
 
 import PdfIconImage from '../../assets/pdf.png';
 import DialogIllustrationImage from '../../assets/对话框插图.png';
@@ -46,6 +51,7 @@ import TxtIconImage from '../../assets/txt.png';
 import ExcelIconImage from '../../assets/xlsx.png';
 import MdIconImage from '../../assets/md.png';
 import CustomDocIconImage from '../../assets/文档.png';
+import AppLogoImage from '../../assets/app-logo.png';
 
 const pdfWorkerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 pdfjs.GlobalWorkerOptions.workerSrc = `${pdfWorkerSrc}?v=${pdfjs.version}`;
@@ -75,10 +81,10 @@ const METALLIC_PRIMARY_BUTTON_CLASS = `
 
 const METALLIC_SECONDARY_BUTTON_CLASS = `
   relative
-  border border-[#e2e8f0]
+  border border-slate-200/60
   bg-white
-  text-[#334155] shadow-[0_2px_8px_rgba(0,0,0,0.04)]
-  hover:-translate-y-0.5 hover:bg-[#f8fafc]
+  text-slate-600 shadow-[0_2px_8px_rgba(0,0,0,0.04)]
+  hover:-translate-y-0.5 hover:bg-slate-50
   hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)]
   dark:border-white/[0.05]
   dark:bg-slate-800/80
@@ -90,10 +96,10 @@ const METALLIC_SECONDARY_BUTTON_CLASS = `
 const METALLIC_SECONDARY_ACTIVE_BUTTON_CLASS = `
   relative
   border-0
-  bg-[#ccfbf1]
-  text-[#0f766e] shadow-[0_4px_12px_rgba(20,184,166,0.15)]
-  dark:bg-[#115e59]/40
-  dark:text-[#5eead4]
+  bg-cyan-50
+  text-cyan-700 shadow-[0_4px_12px_rgba(6,182,212,0.15)]
+  dark:bg-cyan-900/40
+  dark:text-cyan-300
 `.replace(/\s+/g, ' ').trim();
 const COBALT_GLASS_BUTTON_CLASS = `
   relative
@@ -592,6 +598,117 @@ const getConversationPreviewText = (messages: Message[]) => {
   return normalizedContent.length > 34 ? `${normalizedContent.slice(0, 34)}...` : normalizedContent;
 };
 
+const toRecentActivitySummary = (value: unknown, fallback: string): string => {
+  const normalized = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return fallback;
+  return normalized.length > 52 ? `${normalized.slice(0, 52)}...` : normalized;
+};
+
+const getLatestConversationMessageForFile = (
+  messages: Message[],
+  fileId: string,
+  matcher?: (message: Message) => boolean,
+): Message | null => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message.fileIds?.includes(fileId)) continue;
+    if (matcher && !matcher(message)) continue;
+    if (!message.content.trim()) continue;
+    return message;
+  }
+  return null;
+};
+
+const getModule1RecentActivityStatus = (
+  file: FileInfo,
+  hasReport: boolean,
+): Module1RecentActivityStatus => {
+  if (file.status === 'error') return 'failed';
+  if (file.status === 'processing' || file.status === 'uploading' || file.status === 'converting') {
+    return 'running';
+  }
+  if (file.status === 'completed' || hasReport || Boolean(file.sourceFileId)) {
+    return 'completed';
+  }
+  if (file.status === 'ready') return 'ready';
+  return 'review';
+};
+
+const getModule1RecentActivitySummary = (
+  file: FileInfo,
+  latestMessage: Message | null,
+  latestReportMessage: Message | null,
+  conversationPreview: string,
+): string => {
+  if (file.status === 'error') {
+    return toRecentActivitySummary(file.error || file.result, '处理失败，请重新上传');
+  }
+  if (file.status === 'uploading') return '文件上传中';
+  if (file.status === 'converting') return '预览转换中';
+  if (file.status === 'processing') return '文档处理中';
+  if (latestReportMessage) return '分析报告已生成';
+  if (file.sourceFileId) {
+    return toRecentActivitySummary(file.result, '已生成修改稿');
+  }
+  if (file.status === 'completed') {
+    return toRecentActivitySummary(file.result, '文档处理已完成');
+  }
+  if (file.result) {
+    return toRecentActivitySummary(file.result, '文件已就绪，可继续提问');
+  }
+  if (latestMessage) {
+    return toRecentActivitySummary(latestMessage.content, conversationPreview);
+  }
+  return conversationPreview || '文件已就绪，可继续提问';
+};
+
+const buildModule1RecentActivityRecords = (
+  conversations: ConversationRecord[],
+): Module1RecentActivityRecord[] => {
+  const records = conversations.flatMap((conversation) => {
+    const conversationPreview = getConversationPreviewText(conversation.messages);
+    return Object.values(conversation.files).map((file) => {
+      const latestReportMessage = getLatestConversationMessageForFile(
+        conversation.messages,
+        file.id,
+        (message) => message.type === 'assistant' && message.displayMode === 'report',
+      );
+      const latestMessage = getLatestConversationMessageForFile(
+        conversation.messages,
+        file.id,
+      );
+      const updatedAt = Math.max(
+        file.uploadTime.getTime(),
+        latestMessage?.timestamp.getTime() ?? 0,
+        latestReportMessage?.timestamp.getTime() ?? 0,
+      );
+      return {
+        id: `${conversation.id}:${file.id}`,
+        conversationId: conversation.id,
+        fileId: file.id,
+        fileName: file.name,
+        updatedAt: new Date(updatedAt).toISOString(),
+        status: getModule1RecentActivityStatus(file, Boolean(latestReportMessage)),
+        summary: getModule1RecentActivitySummary(
+          file,
+          latestMessage,
+          latestReportMessage,
+          conversationPreview,
+        ),
+        progressPercent: typeof file.progress === 'number'
+          ? Math.max(0, Math.min(100, Math.round(file.progress)))
+          : null,
+      };
+    });
+  });
+
+  return records
+    .sort((left, right) => (
+      new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+    ))
+    .slice(0, 20);
+};
+
 const formatConversationTimestamp = (timestamp: Date) => {
   const now = new Date();
   const diffMs = Math.max(0, now.getTime() - timestamp.getTime());
@@ -991,7 +1108,7 @@ const PdfScrollPreview = React.memo(({
 });
 
 // ---------- 主组件 ----------
-export const DocProcessingWorkbench: React.FC = () => {
+export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const initialConversation = useMemo(() => createConversationRecord(1), []);
   const hydratingConversationRef = useRef(false);
   const activeConversationIdRef = useRef(initialConversation.id);
@@ -1099,6 +1216,19 @@ export const DocProcessingWorkbench: React.FC = () => {
       conversation.id === activeConversationId ? syncConversationRecord(conversation) : conversation
     ))
   ), [activeConversationId, syncConversationRecord]);
+  const recentActivityConversations = useMemo(
+    () => conversations.map((conversation) => (
+      conversation.id === activeConversationId
+        ? {
+            ...conversation,
+            updatedAt: getConversationUpdatedAt(messages, files, conversation.updatedAt),
+            messages,
+            files,
+          }
+        : conversation
+    )),
+    [activeConversationId, conversations, files, messages],
+  );
   const selectedFile = useMemo(
     () => selectedFileId ? files[selectedFileId] : null,
     [files, selectedFileId]
@@ -1158,6 +1288,12 @@ export const DocProcessingWorkbench: React.FC = () => {
     if (hydratingConversationRef.current) return;
     setConversations((prev) => commitCurrentConversation(prev));
   }, [commitCurrentConversation]);
+
+  useEffect(() => {
+    writeModule1RecentActivities(
+      buildModule1RecentActivityRecords(recentActivityConversations),
+    );
+  }, [recentActivityConversations]);
 
   useEffect(() => {
     if (selectedFileId) return;
@@ -3563,57 +3699,56 @@ export const DocProcessingWorkbench: React.FC = () => {
     return (
       <div
         ref={workbenchRootRef}
-        className="relative h-full max-h-full min-h-0 w-full overflow-hidden bg-[linear-gradient(180deg,#eef3fb_0%,#f6f9fe_56%,#edf3fb_100%)] dark:bg-[linear-gradient(180deg,#020617_0%,#0f172a_44%,#020617_100%)]"
+        className="fixed inset-0 z-[100] flex flex-col overflow-hidden bg-[linear-gradient(180deg,#eef3fb_0%,#f6f9fe_56%,#edf3fb_100%)] dark:bg-[linear-gradient(180deg,#020617_0%,#0f172a_44%,#020617_100%)]"
       >
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(96,165,250,0.14),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(34,211,238,0.08),_transparent_24%)]" />
 
-        <div className="relative z-10 flex h-full min-h-0 flex-col">
-          <div className="border-b border-[#dce8fb] bg-white/90 px-4 py-3 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/84">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <button
-                  type="button"
-                  onClick={closeMobileWorkbenchView}
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${METALLIC_SECONDARY_BUTTON_CLASS}`}
-                  title="返回对话工作台"
-                  aria-label="返回对话工作台"
-                >
-                  <ChevronLeft size={18} />
-                </button>
-                <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6f859b] dark:text-slate-400">全屏任务页</p>
-                  <h2 className="truncate text-base font-semibold text-[#173750] dark:text-slate-100">{mobileTaskTitle}</h2>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {mobileView === 'preview' && mobileCurrentFile ? (
-                  <button
-                    type="button"
-                    onClick={() => downloadFile(previewedFile ?? mobileCurrentFile)}
-                    className={`flex h-10 w-10 items-center justify-center rounded-2xl ${METALLIC_PRIMARY_BUTTON_CLASS}`}
-                    title="下载当前文件"
-                    aria-label="下载当前文件"
-                  >
-                    <Download size={16} />
-                  </button>
-                ) : null}
-                {mobileView === 'report' && mobileCurrentFile ? (
-                  <button
-                    type="button"
-                    onClick={() => { void downloadEditedReport(mobileCurrentFile); }}
-                    disabled={!getEditableReportTextForFile(mobileCurrentFile.id)?.trim() || reportDownloadBusy}
-                    className={`flex h-10 w-10 items-center justify-center rounded-2xl disabled:cursor-not-allowed disabled:opacity-40 ${METALLIC_PRIMARY_BUTTON_CLASS}`}
-                    title="下载报告"
-                    aria-label="下载报告"
-                  >
-                    {reportDownloadBusy ? <Loader size={16} className="animate-spin" /> : <Download size={16} />}
-                  </button>
-                ) : null}
+        <div className="relative z-20 shrink-0 border-b border-slate-200/60 bg-white/95 px-4 py-3 backdrop-blur-xl dark:border-slate-800/80 dark:bg-slate-950/95 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <button
+                type="button"
+                onClick={closeMobileWorkbenchView}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-50 text-slate-600 transition-colors hover:bg-slate-100 active:bg-slate-200 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800"
+                title="返回对话工作台"
+                aria-label="返回对话工作台"
+              >
+                <ChevronLeft size={22} strokeWidth={2.5} className="-ml-0.5" />
+              </button>
+              <div className="min-w-0">
+                <p className="text-[12px] font-bold tracking-wider text-slate-500 dark:text-slate-400">{mobileTaskTitle}</p>
+                <h2 className="truncate text-[17px] font-black tracking-tight text-slate-800 dark:text-slate-100">{mobileCurrentFile?.name || '未知文件'}</h2>
               </div>
             </div>
+            <div className="flex items-center gap-2">
+              {mobileView === 'preview' && mobileCurrentFile ? (
+                <button
+                  type="button"
+                  onClick={() => downloadFile(previewedFile ?? mobileCurrentFile)}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-50 text-cyan-600 transition-colors hover:bg-cyan-100 active:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400 dark:hover:bg-cyan-900/50"
+                  title="下载当前文件"
+                  aria-label="下载当前文件"
+                >
+                  <Download size={18} strokeWidth={2.5} />
+                </button>
+              ) : null}
+              {mobileView === 'report' && mobileCurrentFile ? (
+                <button
+                  type="button"
+                  onClick={() => { void downloadEditedReport(mobileCurrentFile); }}
+                  disabled={!getEditableReportTextForFile(mobileCurrentFile.id)?.trim() || reportDownloadBusy}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-50 text-cyan-600 transition-colors hover:bg-cyan-100 active:bg-cyan-200 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-cyan-900/30 dark:text-cyan-400 dark:hover:bg-cyan-900/50"
+                  title="下载报告"
+                  aria-label="下载报告"
+                >
+                  {reportDownloadBusy ? <Loader size={18} strokeWidth={2.5} className="animate-spin" /> : <Download size={18} strokeWidth={2.5} />}
+                </button>
+              ) : null}
+            </div>
           </div>
+        </div>
 
-          <div className="min-h-0 flex-1">
+        <div className="relative z-10 min-h-0 flex-1 overflow-hidden bg-white dark:bg-slate-950">
             {mobileView === 'preview' ? (
               <MobilePreviewPage
                 currentFile={previewedFile}
@@ -3628,8 +3763,6 @@ export const DocProcessingWorkbench: React.FC = () => {
                 scale={scale}
                 secondaryButtonClassName={METALLIC_SECONDARY_BUTTON_CLASS}
                 secondaryActiveButtonClassName={METALLIC_SECONDARY_ACTIVE_BUTTON_CLASS}
-                primaryButtonClassName={METALLIC_PRIMARY_BUTTON_CLASS}
-                onDownload={() => downloadFile(previewedFile ?? mobileCurrentFile!)}
                 onSwitchMode={(mode) => setPreviewPaneMode(mode)}
                 onPdfPageInputChange={setPdfPageInput}
                 onPdfPageInputCommit={commitPdfPageInput}
@@ -3737,7 +3870,7 @@ export const DocProcessingWorkbench: React.FC = () => {
                       <p className="mt-2 text-sm text-[#6b8198] dark:text-slate-400">{previewedFile?.error || WORD_PREVIEW_FALLBACK_MESSAGE}</p>
                     </div>
                   ) : isPreviewPdf && previewPdfSource ? (
-                    <div className="flex h-full min-h-0 overflow-hidden rounded-[24px] px-0 py-1">
+                    <div className="relative flex h-full min-h-0 w-full overflow-hidden bg-white dark:bg-slate-950">
                       {usesPagedPdfPreview ? (
                         <PdfPagedPreview
                           fileSource={previewPdfSource}
@@ -3842,35 +3975,34 @@ export const DocProcessingWorkbench: React.FC = () => {
             )}
           </div>
         </div>
-      </div>
     );
   }
 
   return (
     <div
       ref={workbenchRootRef}
-      className="relative h-[100dvh] w-full overflow-hidden bg-[#EAF7F8] pb-[calc(env(safe-area-inset-bottom)+56px)] dark:bg-slate-950"
+      className="relative h-[100dvh] w-full overflow-hidden bg-[#F4FBFB] pb-[env(safe-area-inset-bottom)] dark:bg-slate-950"
       onDragEnter={handleDocumentDragEnter}
       onDragOver={handleDocumentDragOver}
       onDragLeave={handleDocumentDragLeave}
       onDrop={handleDocumentDrop}
     >
       <div className="relative z-10 flex h-full flex-col">
-        <div className="shrink-0 border-b border-slate-100/50 bg-white/80 px-4 py-3 pb-2 backdrop-blur-xl dark:border-white/[0.02] dark:bg-slate-950/80">
+        <div className="shrink-0 px-4 py-3 pb-2 pt-[max(12px,env(safe-area-inset-top))] transition-all duration-300 bg-transparent">
           <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              {onBack && (
+                <button
+                  type="button"
+                  onClick={onBack}
+                  className="flex h-8 w-8 -ml-2 items-center justify-center rounded-full text-slate-700 transition-all active:scale-95 dark:text-slate-300"
+                >
+                  <ChevronLeft size={24} strokeWidth={2.5} />
+                </button>
+              )}
               <h2 className="truncate text-[22px] font-black tracking-tight text-slate-800 dark:text-slate-100">AI文档处理</h2>
             </div>
             <div className="flex items-center gap-2.5">
-              <button
-                type="button"
-                onClick={createNewConversation}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-50 text-slate-500 transition-all hover:bg-slate-100 active:scale-95 dark:bg-slate-800/80 dark:text-slate-400 dark:hover:bg-slate-700/80"
-                title="新建对话"
-                aria-label="新建对话"
-              >
-                <Plus size={18} strokeWidth={2.5} />
-              </button>
               <button
                 type="button"
                 onClick={() => setShowUtilityDrawer(true)}
@@ -3886,35 +4018,74 @@ export const DocProcessingWorkbench: React.FC = () => {
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {isMobileHomeLanding ? (
-            <div className="mb-3 rounded-[24px] bg-white px-5 py-5 shadow-[0_8px_30px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 dark:bg-slate-900/60 dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]">
-              <p className="text-[17px] font-bold text-slate-800 dark:text-slate-100">先上传文件，再开始对话</p>
-              <p className="mt-2 text-[13px] leading-[1.6] text-slate-500 dark:text-slate-400">
-                你可以先上传一份文档，然后让我帮你总结、提取、分析或直接生成报告。
-              </p>
-              <div className="mt-5 flex flex-wrap gap-2">
+            <div className="flex min-h-[60vh] w-full flex-col items-center justify-center px-4 pt-12 pb-8">
+              {/* Logo / Ring */}
+              <div className="mb-6 flex items-center justify-center relative animate-fade-in-up" style={{ animationDuration: '0.8s', animationFillMode: 'both' }}>
+                <div className="absolute h-[90px] w-[90px] rounded-full bg-white blur-lg dark:bg-white/30 animate-pulse-slow"></div>
+                <div className="relative z-10 flex h-[72px] w-[72px] items-center justify-center">
+                  <img src={AppLogoImage} alt="App Logo" className="h-[64px] w-[64px] object-contain" />
+                </div>
+              </div>
+
+              {/* Title */}
+              <div className="mb-4 flex flex-col items-center">
+                <h3 className="text-[22px] font-bold tracking-tight text-slate-800 dark:text-slate-100 overflow-hidden whitespace-nowrap border-r-[3px] border-slate-800/40 dark:border-slate-100/40 animate-typing-text pr-1" style={{ animationDuration: '1.2s', animationDelay: '0.2s', animationFillMode: 'both', width: 'max-content' }}>
+                  今天想处理什么文档？
+                </h3>
+                <p className="mt-2 text-[14px] text-slate-500 dark:text-slate-400 animate-fade-in-up" style={{ animationDuration: '0.8s', animationDelay: '1.4s', animationFillMode: 'both' }}>
+                  点击问问看
+                </p>
+              </div>
+
+              {/* Shortcuts */}
+              <div className="w-full max-w-[340px] flex flex-col items-center space-y-3.5 animate-fade-in-up" style={{ animationDuration: '0.8s', animationDelay: '0.6s', animationFillMode: 'both' }}>
                 <button
                   type="button"
-                  onClick={triggerFileInput}
-                  className="inline-flex items-center gap-2 rounded-full bg-cyan-500 px-5 py-2.5 text-[14px] font-semibold text-white shadow-[0_4px_12px_rgba(6,182,212,0.25)] transition-all hover:-translate-y-0.5 hover:bg-cyan-600 hover:shadow-[0_6px_16px_rgba(6,182,212,0.35)] active:translate-y-0 active:scale-95"
+                  onClick={() => setInputText('总结该文档重点')}
+                  className="group relative flex w-fit items-center justify-center gap-2.5 rounded-full bg-white px-5 py-3 shadow-[0_2px_8px_rgba(0,0,0,0.04)] ring-1 ring-slate-100 transition-all active:scale-[0.98] active:bg-slate-50 dark:bg-slate-800 dark:ring-white/10 dark:active:bg-slate-700"
                 >
-                  <UploadCloud size={18} strokeWidth={2} />
-                  上传文件
+                  <div className="absolute inset-0 rounded-full opacity-0 transition-opacity group-active:opacity-100 bg-gradient-to-r from-violet-500/5 to-fuchsia-500/5 dark:from-violet-400/10 dark:to-fuchsia-400/10" />
+                  <span className="relative z-10 text-[18px] opacity-90">💡</span>
+                  <span className="relative z-10 text-[15px] font-normal text-[#1f2329] dark:text-slate-200">总结该文档重点</span>
+                  <ArrowRight size={16} className="relative z-10 ml-0.5 text-[#8f959e] transition-transform group-active:translate-x-1 dark:text-slate-500" strokeWidth={1.5} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInputText('提取文件关键信息')}
+                  className="group relative flex w-fit items-center justify-center gap-2.5 rounded-full bg-white px-5 py-3 shadow-[0_2px_8px_rgba(0,0,0,0.04)] ring-1 ring-slate-100 transition-all active:scale-[0.98] active:bg-slate-50 dark:bg-slate-800 dark:ring-white/10 dark:active:bg-slate-700"
+                >
+                  <div className="absolute inset-0 rounded-full opacity-0 transition-opacity group-active:opacity-100 bg-gradient-to-r from-blue-500/5 to-cyan-500/5 dark:from-blue-400/10 dark:to-cyan-400/10" />
+                  <span className="relative z-10 text-[18px] opacity-90">📄</span>
+                  <span className="relative z-10 text-[15px] font-normal text-[#1f2329] dark:text-slate-200">提取文件关键信息</span>
+                  <ArrowRight size={16} className="relative z-10 ml-0.5 text-[#8f959e] transition-transform group-active:translate-x-1 dark:text-slate-500" strokeWidth={1.5} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInputText('检查文件里面体现了什么风险')}
+                  className="group relative flex w-fit items-center justify-center gap-2.5 rounded-full bg-white px-5 py-3 shadow-[0_2px_8px_rgba(0,0,0,0.04)] ring-1 ring-slate-100 transition-all active:scale-[0.98] active:bg-slate-50 dark:bg-slate-800 dark:ring-white/10 dark:active:bg-slate-700"
+                >
+                  <div className="absolute inset-0 rounded-full opacity-0 transition-opacity group-active:opacity-100 bg-gradient-to-r from-emerald-500/5 to-teal-500/5 dark:from-emerald-400/10 dark:to-teal-400/10" />
+                  <span className="relative z-10 text-[18px] opacity-90">🛡️</span>
+                  <span className="relative z-10 text-[15px] font-normal text-[#1f2329] dark:text-slate-200">检查文件里面体现了什么风险</span>
+                  <ArrowRight size={16} className="relative z-10 ml-0.5 text-[#8f959e] transition-transform group-active:translate-x-1 dark:text-slate-500" strokeWidth={1.5} />
                 </button>
               </div>
             </div>
           ) : null}
 
-          <MobileCurrentFileCard
-            currentFile={mobileCurrentFile}
-            hasReport={mobileCurrentFileHasReport}
-            formatFileSize={formatFileSize}
-            renderFileIcon={renderMobileFileIcon}
-            onOpenPreview={() => openMobileWorkbenchView('preview', 'current')}
-            onOpenReport={() => openMobileWorkbenchView('report', 'report')}
-            primaryButtonClassName={COBALT_GLASS_BUTTON_CLASS}
-            secondaryButtonClassName={METALLIC_SECONDARY_BUTTON_CLASS}
-            softPanelClassName={METALLIC_PANEL_SOFT_CLASS}
-          />
+          {!isMobileHomeLanding && mobileCurrentFile ? (
+            <MobileCurrentFileCard
+              currentFile={mobileCurrentFile}
+              hasReport={mobileCurrentFileHasReport}
+              formatFileSize={formatFileSize}
+              renderFileIcon={renderMobileFileIcon}
+              onOpenPreview={() => openMobileWorkbenchView('preview', 'current')}
+              onOpenReport={() => openMobileWorkbenchView('report', 'report')}
+              primaryButtonClassName={COBALT_GLASS_BUTTON_CLASS}
+              secondaryButtonClassName={METALLIC_SECONDARY_BUTTON_CLASS}
+              softPanelClassName={METALLIC_PANEL_SOFT_CLASS}
+            />
+          ) : null}
 
           <MobileMessageList
             messages={messages}
@@ -3932,12 +4103,15 @@ export const DocProcessingWorkbench: React.FC = () => {
             }}
             renderFileIcon={renderMobileFileIcon}
             followUpItems={visibleFollowUpSuggestions}
-            showFollowUpSuggestions={Boolean(latestAssistantMessageWithSuggestions)}
+            showFollowUpSuggestions={Boolean(latestAssistantMessageWithSuggestions) && streamingAssistantMessageId === null}
             showBatchSwitcher={hasMultipleFollowUpSuggestionBatches}
             onRotateSuggestions={cycleFollowUpSuggestions}
             onPickSuggestion={(prompt) => { void sendMessage(prompt); }}
             disabled={isLoading}
           />
+          
+          {/* 为悬浮输入框留出安全的底部滚动空间 */}
+          <div className="h-[120px] shrink-0 pointer-events-none" />
         </div>
 
         <MobileComposer
@@ -3977,19 +4151,12 @@ export const DocProcessingWorkbench: React.FC = () => {
             active: conversation.id === activeConversationId,
           }))}
           selectedFileId={selectedFileId}
-          canOpenReport={mobileCurrentFileHasReport}
           emptyStateClassName={METALLIC_EMPTY_STATE_CLASS}
           primaryButtonClassName={COBALT_GLASS_BUTTON_CLASS}
           secondaryButtonClassName={METALLIC_SECONDARY_BUTTON_CLASS}
           renderFileIcon={renderMobileFileIcon}
           formatFileSize={formatFileSize}
           onClose={() => setShowUtilityDrawer(false)}
-          onUpload={() => {
-            setShowUtilityDrawer(false);
-            triggerFileInput();
-          }}
-          onOpenPreview={() => openMobileWorkbenchView('preview', 'current')}
-          onOpenReport={() => openMobileWorkbenchView('report', 'report')}
           onSelectFile={(fileId) => {
             handleSelectFile(fileId);
             setShowUtilityDrawer(false);

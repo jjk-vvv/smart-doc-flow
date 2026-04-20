@@ -5,11 +5,7 @@ import {
   ArrowRight,
   BarChart3,
   Database,
-  FileSearch,
   FileText,
-  ShieldCheck,
-  Sparkles,
-  User,
 } from 'lucide-react';
 
 import { cn } from '../../lib/utils';
@@ -19,13 +15,16 @@ import ImageModule2 from '../../assets/模块二.png';
 import ImageModule3 from '../../assets/模块三.png';
 import {
   readExtractionDocuments,
-  readExtractionUpdatedAt,
-  subscribeExtractionUpdates,
   type ExtractionDocument,
   type ExtractionEntity,
 } from '../../shared/state/extractionDocuments';
+import {
+  readRecentProcessingActivities,
+  subscribeRecentProcessingActivities,
+  type RecentProcessingActivity,
+} from '../../shared/state/recentProcessingActivities';
 
-type MobileDashboardAction = 'deepread_extraction' | 'fusion' | 'guide' | 'doc-processing';
+type MobileDashboardAction = 'deepread_extraction' | 'fusion' | 'doc-processing';
 
 type MobileDashboardProps = {
   user: AuthUser;
@@ -57,12 +56,40 @@ const averageConfidence = (documents: ExtractionDocument[]): number => {
   return Math.round((total / entities.length) * 100);
 };
 
+const getRecentActivityIconSrc = (activity: RecentProcessingActivity): string => {
+  switch (activity.iconKind) {
+    case 'word':
+      return '/assets/WORD.png';
+    case 'excel':
+      return '/assets/xlsx.png';
+    case 'pdf':
+      return '/assets/pdf.png';
+    case 'text':
+      return '/assets/txt.png';
+    default:
+      return '/assets/txt.png';
+  }
+};
+
+const getRecentActivityIconBgClass = (activity: RecentProcessingActivity): string => {
+  switch (activity.iconKind) {
+    case 'word':
+      return 'bg-blue-50 dark:bg-blue-500/10';
+    case 'excel':
+      return 'bg-green-50 dark:bg-green-500/10';
+    case 'pdf':
+      return 'bg-red-50 dark:bg-red-500/10';
+    default:
+      return 'bg-slate-50 dark:bg-slate-500/10';
+  }
+};
+
 export const MobileDashboard: React.FC<MobileDashboardProps> = ({
   user,
   onNavigate,
 }) => {
   const [documents, setDocuments] = useState<ExtractionDocument[]>([]);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [recentActivities, setRecentActivities] = useState<RecentProcessingActivity[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [activeCardIndex, setActiveCardIndex] = useState(0);
 
@@ -114,18 +141,18 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
   useEffect(() => {
     const load = () => {
       setDocuments(readExtractionDocuments());
-      setUpdatedAt(readExtractionUpdatedAt());
+      setRecentActivities(readRecentProcessingActivities());
     };
     load();
-    return subscribeExtractionUpdates(load);
+    return subscribeRecentProcessingActivities(load);
   }, []);
 
   const docCount = documents.length;
   const errorCount = documents.filter((item) => item.errors.length > 0).length;
   const confidence = averageConfidence(documents);
   const totalFieldCount = documents.reduce((acc, item) => acc + Object.keys(item.result || {}).length, 0);
-  const recentDocs = documents.slice(0, 3);
-  const latestUpdatedLabel = updatedAt ? new Date(updatedAt).toLocaleString() : '暂无';
+  const recentItems = recentActivities.slice(0, 3);
+  const historyTarget = recentItems[0]?.targetTab ?? 'deepread_extraction';
 
   const metrics = useMemo<MetricCard[]>(
     () => [
@@ -165,7 +192,7 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="-mb-28 relative flex min-h-[calc(100dvh-4.5rem)] flex-col overflow-hidden bg-[#F8FAFC] font-sans dark:bg-slate-950"
+      className="-mb-28 relative flex min-h-screen flex-col overflow-hidden bg-[#F8FAFC] font-sans dark:bg-slate-950"
     >
       {/* Impeccable Ambient Background Glow */}
       <div className="pointer-events-none absolute inset-0 opacity-[0.5] mix-blend-multiply dark:opacity-[0.15] dark:mix-blend-normal bg-[radial-gradient(circle_at_1px_1px,_rgba(15,23,42,0.06)_1px,_transparent_0)] dark:bg-[radial-gradient(circle_at_1px_1px,_rgba(255,255,255,0.06)_1px,_transparent_0)] bg-[length:24px_24px]" />
@@ -282,65 +309,67 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1], delay: 0.2 }}
-        className="-mt-2 flex-1 rounded-t-[32px] bg-white/95 px-4 pb-32 pt-6 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] backdrop-blur-2xl dark:bg-slate-900/95"
+        className="-mt-2 flex-1 rounded-t-[32px] bg-white/95 px-4 pb-[calc(env(safe-area-inset-bottom)+120px)] pt-6 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] backdrop-blur-2xl dark:bg-slate-900/95"
       >
         <section>
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-[16px] font-bold text-[#11323B] dark:text-slate-100">最近处理文档</h3>
-            <button type="button" onClick={() => onNavigate('deepread_extraction')} className="flex items-center gap-1 text-[13px] font-semibold text-[#64748B] transition-colors hover:text-[#11323B] dark:text-slate-400 dark:hover:text-slate-200">
+            <button type="button" onClick={() => onNavigate(historyTarget)} className="flex items-center gap-1 text-[13px] font-semibold text-[#64748B] transition-colors hover:text-[#11323B] dark:text-slate-400 dark:hover:text-slate-200">
               全部历史 <ArrowRight size={14} />
             </button>
           </div>
 
-          {recentDocs.length === 0 ? (
+          {recentItems.length === 0 ? (
             <div className="mt-2 flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200/60 bg-slate-50/50 py-14 text-center dark:border-slate-700/60 dark:bg-slate-800/20">
               <div className="mb-4 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] bg-white shadow-[0_8px_30px_rgba(6,182,212,0.15)] ring-1 ring-slate-100 dark:bg-slate-800 dark:shadow-[0_8px_30px_rgba(6,182,212,0.08)] dark:ring-slate-700">
                 <FileText size={28} className="text-cyan-500 dark:text-cyan-400" strokeWidth={1.5} />
               </div>
-              <p className="text-[15px] font-bold text-[#11323B] dark:text-slate-200">还没有解析文档</p>
+              <p className="text-[15px] font-bold text-[#11323B] dark:text-slate-200">还没有最近处理记录</p>
               <p className="mt-1.5 max-w-[220px] text-[13px] leading-relaxed text-[#64748B] dark:text-slate-400">
-                上传文件后，这里会展示最近的解析结果摘要
+                在模块一、模块二或模块三处理文件后，这里会同步最近进度摘要
               </p>
             </div>
           ) : (
             <div className="space-y-4">
-              {recentDocs.map((doc, index) => {
-                const hasError = doc.errors.length > 0;
-                const ext = doc.file_name.split('.').pop()?.toLowerCase() || '';
-                const iconSrc = ['doc', 'docx'].includes(ext)
-                  ? '/assets/WORD.png'
-                  : ['xls', 'xlsx'].includes(ext)
-                    ? '/assets/xlsx.png'
-                    : ext === 'pdf'
-                      ? '/assets/pdf.png'
-                      : '/assets/txt.png';
-                const iconBgColor = ['doc', 'docx'].includes(ext)
-                  ? 'bg-blue-50 dark:bg-blue-500/10'
-                  : ['xls', 'xlsx'].includes(ext)
-                    ? 'bg-green-50 dark:bg-green-500/10'
-                    : ext === 'pdf'
-                      ? 'bg-red-50 dark:bg-red-500/10'
-                      : 'bg-slate-50 dark:bg-slate-500/10';
+              {recentItems.map((activity, index) => {
+                const iconSrc = getRecentActivityIconSrc(activity);
+                const iconBgColor = getRecentActivityIconBgClass(activity);
 
                 return (
-                  <div key={doc.file_hash}>
-                    <button type="button" onClick={() => onNavigate('deepread_extraction')} className="group flex w-full items-center justify-between text-left active:scale-[0.98] transition-transform">
+                  <div key={activity.id}>
+                    <button type="button" onClick={() => onNavigate(activity.targetTab)} className="group flex w-full items-center justify-between text-left active:scale-[0.98] transition-transform">
                       <div className="flex items-center gap-3">
                         <div className={cn('flex h-12 w-12 shrink-0 items-center justify-center rounded-full shadow-sm', iconBgColor)}>
-                          <img src={iconSrc} alt={ext} className="h-6 w-6 object-contain drop-shadow-sm" />
+                          <img src={iconSrc} alt={activity.iconKind} className="h-6 w-6 object-contain drop-shadow-sm" />
                         </div>
                         <div className="flex min-w-0 flex-col items-start">
-                          <p className="line-clamp-1 text-[15px] font-bold text-[#11323B] group-hover:text-blue-600 transition-colors dark:text-slate-100 dark:group-hover:text-blue-400">{doc.file_name}</p>
+                          <p className="line-clamp-1 text-[15px] font-bold text-[#11323B] group-hover:text-blue-600 transition-colors dark:text-slate-100 dark:group-hover:text-blue-400">{activity.fileName}</p>
                           <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[12px] font-medium text-[#64748B] dark:text-slate-400">
-                            <span>{Object.keys(doc.result || {}).length} 个字段</span>
-                            <span className="text-slate-300 dark:text-slate-600">|</span>
-                            <span>{doc.cached ? '缓存命中' : '解析成功'}</span>
-                            {hasError && (
+                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                              {activity.moduleLabel}
+                            </span>
+                            <span className="line-clamp-1">{activity.summary}</span>
+                            {activity.status === 'running' && activity.progressPercent != null && (
+                              <>
+                                <span className="text-slate-300 dark:text-slate-600">|</span>
+                                <span>{activity.progressPercent}%</span>
+                              </>
+                            )}
+                            {activity.status === 'review' && (
                               <>
                                 <span className="text-slate-300 dark:text-slate-600">|</span>
                                 <span className="inline-flex items-center gap-1 text-amber-500">
                                   <AlertTriangle size={12} />
-                                  异常
+                                  待复核
+                                </span>
+                              </>
+                            )}
+                            {activity.status === 'failed' && (
+                              <>
+                                <span className="text-slate-300 dark:text-slate-600">|</span>
+                                <span className="inline-flex items-center gap-1 text-rose-500">
+                                  <AlertTriangle size={12} />
+                                  失败
                                 </span>
                               </>
                             )}
@@ -350,7 +379,7 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
                       <ArrowRight size={18} strokeWidth={2.5} className="shrink-0 text-slate-300 transition-colors group-hover:text-[#11323B] dark:text-slate-600 dark:group-hover:text-slate-400" />
                     </button>
                     {/* Divider */}
-                    {index < recentDocs.length - 1 && (
+                    {index < recentItems.length - 1 && (
                       <div className="ml-[60px] mt-4 h-px border-b border-dashed border-slate-200 dark:border-slate-800" />
                     )}
                   </div>

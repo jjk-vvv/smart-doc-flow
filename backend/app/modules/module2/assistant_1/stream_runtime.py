@@ -842,11 +842,12 @@ class Assistant1StreamingRuntime(Assistant1AgentRuntime):
             final_text = "我已经整理出这一步的执行预览，确认之后我再继续执行。"
         if not final_text:
             final_text = "这次没有拿到稳定结果，你可以换个更具体的问法，我继续帮你接着查。"
-        final_text = self._ground_answer_with_frontend_context(
+        final_text = self._finalize_answer_text(
             user_message=question,
             answer=final_text,
             extra_context=extra_context,
             allow_snapshot_override=not response_plan.must_clarify,
+            has_action_preview=bool(action_preview_payload),
         )
 
         user_visible_warnings = self._user_visible_warning_messages(warnings)

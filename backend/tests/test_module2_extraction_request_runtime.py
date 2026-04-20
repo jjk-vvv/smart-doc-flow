@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 
 runtime_module = import_module("app.modules.module2.services.extraction.request")
 ExtractionRequestService = runtime_module.ExtractionRequestService
@@ -194,14 +196,18 @@ class FakeExtractionJobRuntime:
 
 
 class FakeModule4SyncCallbackBundle:
-    def __init__(self, *, enqueue_for_seed=None) -> None:
+    def __init__(self, *, enqueue_for_seed=None, source_batch_key=None) -> None:
         async def _default_enqueue_for_seed(**kwargs) -> bool:
             return False
 
         self._enqueue_for_seed = enqueue_for_seed or _default_enqueue_for_seed
+        self._source_batch_key = source_batch_key or (lambda **kwargs: "source-batch-key")
 
     async def enqueue_document_sync_for_seed(self, **kwargs) -> bool:
         return await self._enqueue_for_seed(**kwargs)
+
+    def source_batch_key(self, **kwargs) -> str:
+        return str(self._source_batch_key(**kwargs))
 
 
 def _build_job_runtime(**overrides):
@@ -257,6 +263,15 @@ def _build_runtime(**overrides):
         ),
         module4_sync_callback_bundle=FakeModule4SyncCallbackBundle(
             enqueue_for_seed=_enqueue_document_sync_for_seed
+        ),
+        document_validate=lambda item: FakeDocument(
+            file_name=str(item.get("file_name") or ""),
+            file_hash=str(item.get("file_hash") or ""),
+            track=str(item.get("track") or "VisualTrack"),
+            cached=bool(item.get("cached", False)),
+            result=dict(item.get("result") or {}),
+            errors=list(item.get("errors") or []),
+            diagnostics=dict(item.get("diagnostics") or {}),
         ),
         extraction_result_factory=lambda payload: payload,
         document_response_factory=FakeDocument,
@@ -321,7 +336,7 @@ def test_extraction_request_runtime_create_job_schedules_and_persists(monkeypatc
     assert runtime_specs[job_id]["loaded_files"][0]["file_name"] == "demo.pdf"
 
 
-def test_extraction_request_runtime_extract_batch_wraps_errors_and_syncs(monkeypatch) -> None:
+def test_extraction_request_runtime_extract_batch_wraps_errors_without_auto_sync(monkeypatch) -> None:
     monkeypatch.setenv("MODULE2_BATCH_CONCURRENCY", "2")
 
     provider_ready_calls: list[str] = []
@@ -373,9 +388,7 @@ def test_extraction_request_runtime_extract_batch_wraps_errors_and_syncs(monkeyp
     assert payload.documents[0].file_name == "ok.pdf"
     assert payload.documents[1].file_name == "bad.pdf"
     assert payload.documents[1].errors == ["boom"]
-    assert sync_calls and sync_calls[0]["tenant_id"] == "tenant-a"
-    assert sync_calls[0]["mode"] == "default"
-    assert len(sync_calls[0]["documents"]) == 2
+    assert sync_calls == []
 
 
 def test_extraction_request_runtime_get_job_status_restores_snapshot() -> None:
@@ -414,3 +427,207 @@ def test_extraction_request_runtime_get_job_status_restores_snapshot() -> None:
         "status": "completed",
         "include_documents": True,
     }
+
+
+def test_extraction_request_runtime_trigger_graph_sync_enqueues_supported_document() -> None:
+    sync_calls: list[dict[str, Any]] = []
+    source_batch_key_calls: list[dict[str, Any]] = []
+    job_id = "extract_job_graphsync1"
+    document = FakeDocument(
+        file_name="demo.pdf",
+        file_hash="hash-demo",
+        track="VisualTrack",
+        cached=False,
+        result={"title": {"value": "demo"}},
+        errors=[],
+        diagnostics={},
+    )
+    job = FakeJobState(
+        job_id=job_id,
+        status="completed",
+        created_at=1.0,
+        updated_at=2.0,
+        total_files=1,
+        completed_files=1,
+        failed_files=0,
+        current_file_index=1,
+        current_file_name="demo.pdf",
+        current_stage="completed",
+        files=[],
+        documents=[document],
+        errors=[],
+    )
+    runtime = _build_runtime(
+        extraction_job_runtime=_build_job_runtime(
+            jobs={job_id: job},
+            runtime_specs={job_id: {"tenant_id": "tenant-a"}},
+        ),
+        module4_tenant=lambda request, explicit="": explicit or "tenant-a",
+        module4_sync_callback_bundle=FakeModule4SyncCallbackBundle(
+            enqueue_for_seed=lambda **kwargs: sync_calls.append(dict(kwargs)) or asyncio.sleep(0, result=True),
+            source_batch_key=lambda **kwargs: source_batch_key_calls.append(dict(kwargs)) or "source-batch-graph-sync",
+        ),
+    )
+
+    async def _scenario() -> dict[str, Any]:
+        return await runtime.trigger_graph_sync(
+            request=SimpleNamespace(headers={}),
+            payload={
+                "job_id": job_id,
+                "file_name": "demo.pdf",
+                "file_hash": "hash-demo",
+            },
+        )
+
+    payload = asyncio.run(_scenario())
+
+    assert payload == {
+        "ok": True,
+        "enqueued": True,
+        "file_name": "demo.pdf",
+        "file_hash": "hash-demo",
+        "source_batch_key": "source-batch-graph-sync",
+        "message": "已提交知识图谱构建请求，请前往模块四查看进度。",
+    }
+    assert len(sync_calls) == 1
+    assert sync_calls[0]["source"] == "module2"
+    assert sync_calls[0]["tenant_id"] == "tenant-a"
+    assert sync_calls[0]["documents"] == [document]
+    assert sync_calls[0]["mode"] == "default"
+    seed = str(sync_calls[0].get("seed") or "")
+    assert seed.startswith("manual_graph_sync:hash-demo:")
+    assert len(seed) > len("manual_graph_sync:hash-demo:")
+    assert source_batch_key_calls == [
+        {
+            "source": "module2",
+            "tenant_id": "tenant-a",
+            "documents": [document],
+            "seed": seed,
+        }
+    ]
+
+
+def test_extraction_request_runtime_trigger_graph_sync_accepts_file_hash_without_file_name() -> None:
+    sync_calls: list[dict[str, Any]] = []
+    job_id = "extract_job_graphsynchashonly1"
+    document = FakeDocument(
+        file_name="demo.pdf",
+        file_hash="hash-demo",
+        track="VisualTrack",
+        cached=False,
+        result={"title": {"value": "demo"}},
+        errors=[],
+        diagnostics={},
+    )
+    job = FakeJobState(
+        job_id=job_id,
+        status="completed",
+        created_at=1.0,
+        updated_at=2.0,
+        total_files=1,
+        completed_files=1,
+        failed_files=0,
+        current_file_index=1,
+        current_file_name="demo.pdf",
+        current_stage="completed",
+        files=[],
+        documents=[document],
+        errors=[],
+    )
+    runtime = _build_runtime(
+        extraction_job_runtime=_build_job_runtime(
+            jobs={job_id: job},
+            runtime_specs={job_id: {"tenant_id": "tenant-a"}},
+        ),
+        module4_tenant=lambda request, explicit="": explicit or "tenant-a",
+        module4_sync_callback_bundle=FakeModule4SyncCallbackBundle(
+            enqueue_for_seed=lambda **kwargs: sync_calls.append(dict(kwargs)) or asyncio.sleep(0, result=True),
+            source_batch_key=lambda **kwargs: "source-batch-hash-only",
+        ),
+    )
+
+    async def _scenario() -> dict[str, Any]:
+        return await runtime.trigger_graph_sync(
+            request=SimpleNamespace(headers={}),
+            payload={
+                "job_id": job_id,
+                "file_hash": "hash-demo",
+            },
+        )
+
+    payload = asyncio.run(_scenario())
+
+    assert payload["ok"] is True
+    assert payload["file_name"] == "demo.pdf"
+    assert payload["file_hash"] == "hash-demo"
+    assert payload["source_batch_key"] == "source-batch-hash-only"
+    assert len(sync_calls) == 1
+    assert sync_calls[0]["documents"] == [document]
+
+
+def test_extraction_request_runtime_trigger_graph_sync_rejects_xlsx() -> None:
+    runtime = _build_runtime(
+        module4_tenant=lambda request, explicit="": explicit or "tenant-a",
+    )
+
+    async def _scenario() -> None:
+        await runtime.trigger_graph_sync(
+            request=SimpleNamespace(headers={}),
+            payload={
+                "file_name": "demo.xlsx",
+                "file_hash": "hash-demo",
+                "document": {
+                    "file_name": "demo.xlsx",
+                    "file_hash": "hash-demo",
+                    "track": "SemanticTrack",
+                    "cached": False,
+                    "result": {},
+                    "errors": [],
+                    "diagnostics": {},
+                },
+            },
+        )
+
+    with pytest.raises(runtime_module.HTTPException) as exc_info:
+        asyncio.run(_scenario())
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Excel 文件不支持知识图谱构建"
+
+
+def test_extraction_request_runtime_trigger_graph_sync_falls_back_to_document_payload_when_job_missing() -> None:
+    sync_calls: list[dict[str, Any]] = []
+    runtime = _build_runtime(
+        module4_tenant=lambda request, explicit="": explicit or "tenant-a",
+        module4_sync_callback_bundle=FakeModule4SyncCallbackBundle(
+            enqueue_for_seed=lambda **kwargs: sync_calls.append(dict(kwargs)) or asyncio.sleep(0, result=True),
+            source_batch_key=lambda **kwargs: "source-batch-fallback",
+        ),
+    )
+
+    async def _scenario() -> dict[str, Any]:
+        return await runtime.trigger_graph_sync(
+            request=SimpleNamespace(headers={}),
+            payload={
+                "job_id": "extract_job_missing1",
+                "file_name": "memo.txt",
+                "file_hash": "hash-memo",
+                "document": {
+                    "file_name": "memo.txt",
+                    "file_hash": "hash-memo",
+                    "track": "SemanticTrack",
+                    "cached": False,
+                    "result": {"summary": {"value": "memo"}},
+                    "errors": [],
+                    "diagnostics": {},
+                },
+            },
+        )
+
+    payload = asyncio.run(_scenario())
+
+    assert payload["ok"] is True
+    assert payload["file_name"] == "memo.txt"
+    assert payload["file_hash"] == "hash-memo"
+    assert payload["source_batch_key"] == "source-batch-fallback"
+    assert sync_calls and sync_calls[0]["documents"][0].file_name == "memo.txt"

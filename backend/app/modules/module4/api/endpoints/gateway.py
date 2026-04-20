@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from app.core.config import Settings
@@ -18,12 +19,12 @@ def build_router() -> APIRouter:
     async def gateway_health(settings: Settings = Depends(get_settings)):
         payload = await service.build_gateway_health(settings)
         status_code = 200 if payload.get("ok") else 503
-        return JSONResponse(status_code=status_code, content=payload)
+        return JSONResponse(status_code=status_code, content=jsonable_encoder(payload))
 
     @router.get("/gateway/ready")
     async def gateway_ready(scope: str = "all", settings: Settings = Depends(get_settings)):
         payload, ready = await service.build_gateway_readiness(settings, scope)
-        return JSONResponse(status_code=200 if ready else 503, content=payload)
+        return JSONResponse(status_code=200 if ready else 503, content=jsonable_encoder(payload))
 
     return router
 

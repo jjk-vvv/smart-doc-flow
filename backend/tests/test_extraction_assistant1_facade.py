@@ -95,6 +95,44 @@ def test_facade_health_payload_uses_legacy_when_native_is_not_ready(tmp_path: Pa
     assert payload["base_url"] == "https://legacy.example.test"
 
 
+def test_facade_health_payload_skips_upstream_probe_when_mode_is_not_upstream(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    facade = Assistant1Facade(
+        _extraction_settings(mode="native", fallback_to_legacy=True),
+        legacy_runtime_factory=lambda: SimpleNamespace(
+            provider=SimpleNamespace(
+                configured=True,
+                model="legacy-model",
+                base_url="https://legacy.example",
+                endpoint_path="/v1/responses",
+            ),
+            tavily=SimpleNamespace(settings=SimpleNamespace(tavily_api_key="tv-key")),
+        ),
+        native_runtime=SimpleNamespace(
+            health_payload=lambda _settings: {
+                "ok": True,
+                "configured": True,
+                "runtime_ready": True,
+                "model": "native-model",
+                "base_url": "https://native.example",
+                "endpoint_path": "/v1/responses",
+            }
+        ),
+        upstream_runtime=SimpleNamespace(
+            assistant_path="/extract/assistant1/chat/stream",
+            health_payload=lambda _settings: (_ for _ in ()).throw(RuntimeError("must not probe upstream")),
+        ),
+    )
+
+    payload = facade.health_payload(settings)
+
+    assert payload["requested_mode"] == "native"
+    assert payload["active_mode"] == "native"
+    assert payload["ok"] is True
+    assert payload["upstream"]["probe"] == {"skipped": True, "reason": "inactive_mode"}
+    assert payload["upstream"]["base_url"] == "http://127.0.0.1:8000"
+
+
 def test_facade_native_stream_falls_back_to_legacy_before_first_chunk(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
 

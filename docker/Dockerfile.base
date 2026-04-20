@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Base image with OS-level heavy deps only (LibreOffice/CJK fonts/system libs).
 
 FROM python:3.11-bookworm

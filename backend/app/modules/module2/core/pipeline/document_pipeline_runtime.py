@@ -8,6 +8,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
 
+from .direct_semantic_extract_runtime import DirectSemanticExtractRuntime
+
 
 @dataclass(frozen=True)
 class DocumentPipelineInputBundle:
@@ -1030,6 +1032,7 @@ class DocumentPipelineRuntime:
         document_pipeline_parse_runtime: DocumentPipelineParseRuntime | None = None,
         document_pipeline_schema_runtime: DocumentPipelineSchemaRuntime | None = None,
         document_pipeline_graph_runtime: DocumentPipelineGraphRuntime | None = None,
+        direct_semantic_extract_runtime: DirectSemanticExtractRuntime | None = None,
         perf_counter: Callable[[], float] = time.perf_counter,
         parsed_progress_message: str = "版面解析完成，正在抽取字段与图表",
     ) -> None:
@@ -1221,6 +1224,7 @@ class DocumentPipelineRuntime:
         )
         self._document_pipeline_schema_runtime = document_pipeline_schema_runtime or DocumentPipelineSchemaRuntime()
         self._document_pipeline_graph_runtime = document_pipeline_graph_runtime or DocumentPipelineGraphRuntime()
+        self._direct_semantic_extract_runtime = direct_semantic_extract_runtime
         self._perf_counter = perf_counter
         self._parsed_progress_message = parsed_progress_message
 
@@ -1367,6 +1371,68 @@ class DocumentPipelineRuntime:
             build_visual_chain_contract=self._build_visual_chain_contract,
         )
         await emit_progress("parsed", 0.76, self._parsed_progress_message)
+
+        if self._direct_semantic_extract_runtime is not None and self._direct_semantic_extract_runtime.supports(file_name):
+            direct_outcome = await self._direct_semantic_extract_runtime.execute(
+                file_name=file_name,
+                file_bytes=file_bytes,
+                marked_markdown=marked_markdown,
+                bbox_map=bbox_map,
+                table_blocks=table_blocks,
+                figure_blocks=figure_blocks,
+                requested_schema=requested_schema,
+                extract_timeout_sec=extract_timeout_sec,
+                emit_progress=emit_progress,
+                logger=self._logger,
+            )
+            marked_markdown = direct_outcome.marked_markdown
+            bbox_map = direct_outcome.bbox_map
+            table_blocks = direct_outcome.table_blocks
+            naming_template = direct_outcome.naming_template
+            schema_context_preview = direct_outcome.schema_context_preview
+            allow_schema_llm = direct_outcome.allow_schema_llm
+            effective_schema = direct_outcome.effective_schema
+            schema_meta = direct_outcome.schema_meta
+            effective_schema_fields = direct_outcome.effective_schema_fields
+            dynamic_extract_timeout_meta = direct_outcome.dynamic_extract_timeout_meta
+            file_size_mb = direct_outcome.file_size_mb
+            final_state = direct_outcome.final_state
+            extract_ms = direct_outcome.extract_ms
+            used_quick_fallback = direct_outcome.used_quick_fallback
+
+            return self._document_pipeline_finalize_runtime.build_outcome(
+                parse_timeout_sec=parse_timeout_sec,
+                extract_timeout_sec=extract_timeout_sec,
+                nonpdf_preflight=nonpdf_preflight,
+                nonpdf_budget=nonpdf_budget,
+                nonpdf_total_budget_sec=nonpdf_total_budget_sec,
+                word_parse_extract_budget_sec=word_parse_extract_budget_sec,
+                word_convert_budget_sec=word_convert_budget_sec,
+                word_parse_via_pdf=word_parse_via_pdf,
+                parse_input_name=parse_input_name,
+                parse_input_bytes=parse_input_bytes,
+                parse_track=parse_track,
+                parse_warning=str(parse_warning or ""),
+                conversion_diag=conversion_diag,
+                parse_ms=parse_ms,
+                chain_contract=chain_contract,
+                marked_markdown=marked_markdown,
+                bbox_map=bbox_map,
+                table_blocks=table_blocks,
+                figure_blocks=figure_blocks,
+                parse_stats=parse_stats,
+                naming_template=naming_template,
+                schema_context_preview=schema_context_preview,
+                allow_schema_llm=allow_schema_llm,
+                effective_schema=effective_schema,
+                schema_meta=schema_meta,
+                effective_schema_fields=effective_schema_fields,
+                dynamic_extract_timeout_meta=dynamic_extract_timeout_meta,
+                file_size_mb=file_size_mb,
+                final_state=final_state,
+                extract_ms=extract_ms,
+                used_quick_fallback=used_quick_fallback,
+            )
 
         schema_session = await self._document_pipeline_schema_runtime.resolve(
             file_name=file_name,

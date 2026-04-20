@@ -210,8 +210,8 @@ class MineruLayoutExtractor:
             return self._resolved_command
 
         candidates = [
-            self._repo_root() / ".venv-module2-py311" / "Scripts" / "mineru.exe",
             self._repo_root() / ".venv" / "Scripts" / "mineru.exe",
+            self._repo_root() / ".venv-module2-py311" / "Scripts" / "mineru.exe",
             self._module2_root() / ".venv" / "Scripts" / "mineru.exe",
             Path(sys.executable).resolve().with_name("mineru.exe"),
         ]
@@ -242,8 +242,8 @@ class MineruLayoutExtractor:
                 return self._resolved_probe_python
 
         candidates = [
-            self._repo_root() / ".venv-module2-py311" / "Scripts" / "python.exe",
             self._repo_root() / ".venv" / "Scripts" / "python.exe",
+            self._repo_root() / ".venv-module2-py311" / "Scripts" / "python.exe",
             self._module2_root() / ".venv" / "Scripts" / "python.exe",
             Path(sys.executable).resolve(),
         ]
@@ -808,7 +808,7 @@ class MineruLayoutExtractor:
                 self._runtime_probe_meta = dict(cached)
                 return copy.deepcopy(cached)
 
-        cmd = [probe_python, "-c", "import torch; print('torch_runtime_probe_ok')"]
+        cmd = [probe_python, "-c", self._build_runtime_probe_script()]
         started = time.perf_counter()
         try:
             proc = subprocess.run(
@@ -855,7 +855,7 @@ class MineruLayoutExtractor:
                 "stdout_tail": stdout[-400:],
                 "stderr_tail": stderr[-400:],
                 "cmd": " ".join(cmd),
-                "error": (combined or f"torch import timed out after {self.runtime_probe_timeout_sec}s")[:800],
+                "error": (combined or f"MinerU runtime probe timed out after {self.runtime_probe_timeout_sec}s")[:800],
             }
 
         self._runtime_probe_meta = meta
@@ -882,10 +882,21 @@ class MineruLayoutExtractor:
             "config_path": str(runtime_meta.get("config_path", "") or ""),
             "pipeline_root": str(runtime_meta.get("pipeline_root", "") or ""),
             "runtime_models_dir": str(self.runtime_models_dir),
+            "enable_table": bool(self.enable_table),
+            "enable_formula": bool(self.enable_formula),
         }
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")
         ).hexdigest()
+
+    def _build_runtime_probe_script(self) -> str:
+        probe_lines = [
+            "import torch",
+        ]
+        if self.enable_table:
+            probe_lines.append("from mineru.model.table.rec.unet_table import utils_table_line_rec  # noqa: F401")
+        probe_lines.append("print('mineru_runtime_probe_ok')")
+        return "\n".join(probe_lines)
 
     @staticmethod
     def _build_run_key(

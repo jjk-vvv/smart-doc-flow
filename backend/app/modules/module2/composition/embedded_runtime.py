@@ -146,6 +146,20 @@ async def clear_cache(*, scope: str, tenant_id: str = "") -> dict[str, Any]:
     )
 
 
+async def trigger_graph_sync(
+    *,
+    request: Any = None,
+    payload: dict[str, Any] | None = None,
+    background_tasks: Any | None = None,
+) -> dict[str, Any]:
+    _remember_primary_loop(asyncio.get_running_loop())
+    return await _module2_http_runtime_bundle.extraction_request_runtime.trigger_graph_sync(
+        request=request,
+        payload=dict(payload or {}),
+        background_tasks=background_tasks,
+    )
+
+
 def build_health_payload() -> dict[str, Any]:
     payload = _module2_main_entry_bundle.module2_app_callback_bundle.build_health_payload()
     return dict(payload) if isinstance(payload, dict) else {}
@@ -163,4 +177,5 @@ __all__ = [
     "embedded_lifespan",
     "get_assistant1_runtime",
     "get_job_status",
+    "trigger_graph_sync",
 ]

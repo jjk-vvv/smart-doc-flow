@@ -1,5 +1,5 @@
 import React from 'react';
-import { Eye, FileText, UploadCloud, X } from 'lucide-react';
+import { X } from 'lucide-react';
 
 type MobileWorkbenchFile = {
   id: string;
@@ -22,16 +22,12 @@ type MobileUtilityDrawerProps = {
   files: MobileWorkbenchFile[];
   conversations: MobileConversationItem[];
   selectedFileId: string | null;
-  canOpenReport: boolean;
   emptyStateClassName: string;
   primaryButtonClassName: string;
   secondaryButtonClassName: string;
   renderFileIcon: (file: MobileWorkbenchFile) => React.ReactNode;
   formatFileSize: (bytes: number) => string;
   onClose: () => void;
-  onUpload: () => void;
-  onOpenPreview: () => void;
-  onOpenReport: () => void;
   onSelectFile: (fileId: string) => void;
   onSelectConversation: (conversationId: string) => void;
 };
@@ -43,16 +39,12 @@ export const MobileUtilityDrawer: React.FC<MobileUtilityDrawerProps> = ({
   files,
   conversations,
   selectedFileId,
-  canOpenReport,
   emptyStateClassName,
   primaryButtonClassName,
   secondaryButtonClassName,
   renderFileIcon,
   formatFileSize,
   onClose,
-  onUpload,
-  onOpenPreview,
-  onOpenReport,
   onSelectFile,
   onSelectConversation,
 }) => {
@@ -82,43 +74,7 @@ export const MobileUtilityDrawer: React.FC<MobileUtilityDrawerProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-3 gap-2.5">
-          <button
-            type="button"
-            onClick={onUpload}
-            className="col-span-1 flex flex-col items-center justify-center gap-1.5 rounded-[16px] bg-white px-2 py-3 shadow-[0_2px_12px_rgba(0,0,0,0.03)] ring-1 ring-slate-100 active:scale-95 transition-all dark:bg-slate-800/60 dark:ring-white/[0.05]"
-          >
-            <div className="flex h-9 w-9 items-center justify-center rounded-[12px] bg-[#EAF5FD] text-sky-500 dark:bg-sky-500/20 dark:text-sky-300">
-              <UploadCloud size={20} strokeWidth={1.5} />
-            </div>
-            <span className="text-[12px] font-semibold text-slate-700 dark:text-slate-200">上传文件</span>
-          </button>
-          
-          <button
-            type="button"
-            onClick={onOpenPreview}
-            className="col-span-1 flex flex-col items-center justify-center gap-1.5 rounded-[16px] bg-white px-2 py-3 shadow-[0_2px_12px_rgba(0,0,0,0.03)] ring-1 ring-slate-100 active:scale-95 transition-all dark:bg-slate-800/60 dark:ring-white/[0.05]"
-          >
-            <div className="flex h-9 w-9 items-center justify-center rounded-[12px] bg-slate-50 text-slate-500 dark:bg-slate-700/50 dark:text-slate-400">
-              <Eye size={20} strokeWidth={1.5} />
-            </div>
-            <span className="text-[12px] font-semibold text-slate-700 dark:text-slate-200">预览</span>
-          </button>
-          
-          <button
-            type="button"
-            onClick={onOpenReport}
-            disabled={!canOpenReport}
-            className="col-span-1 flex flex-col items-center justify-center gap-1.5 rounded-[16px] bg-white px-2 py-3 shadow-[0_2px_12px_rgba(0,0,0,0.03)] ring-1 ring-slate-100 transition-all disabled:cursor-not-allowed disabled:opacity-40 enabled:active:scale-95 dark:bg-slate-800/60 dark:ring-white/[0.05]"
-          >
-            <div className="flex h-9 w-9 items-center justify-center rounded-[12px] bg-slate-50 text-slate-500 dark:bg-slate-700/50 dark:text-slate-400">
-              <FileText size={20} strokeWidth={1.5} />
-            </div>
-            <span className="text-[12px] font-semibold text-slate-700 dark:text-slate-200">报告</span>
-          </button>
-        </div>
-
-        <div className="mt-6 space-y-5 overflow-y-auto pb-safe max-h-[52vh]">
+        <div className="mt-2 space-y-5 overflow-y-auto pb-safe max-h-[70vh]">
           <div>
             <div className="mb-3 flex items-center justify-between">
               <p className="text-[15px] font-bold text-slate-800 dark:text-slate-100">文件列表</p>

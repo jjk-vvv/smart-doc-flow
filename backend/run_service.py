@@ -32,25 +32,25 @@ def _resolve_python(service: str) -> Path:
     if service == "module4":
         candidates.extend(
             [
-                _venv_python(REPO_ROOT / ".venv-module4-py311"),
                 _venv_python(REPO_ROOT / ".venv"),
+                _venv_python(REPO_ROOT / ".venv-module4-py311"),
             ]
         )
     elif service == "module3":
         candidates.extend(
             [
+                _venv_python(REPO_ROOT / ".venv"),
                 _venv_python(REPO_ROOT / ".venv-module3-py311"),
                 _venv_python(MODULE3_MODULE_ROOT / ".venv"),
                 _venv_python(REPO_ROOT / ".venv-module2-py311"),
-                _venv_python(REPO_ROOT / ".venv"),
             ]
         )
     else:
         candidates.extend(
             [
+                _venv_python(REPO_ROOT / ".venv"),
                 _venv_python(REPO_ROOT / ".venv-module2-py311"),
                 _venv_python(MODULE2_MODULE_ROOT / ".venv"),
-                _venv_python(REPO_ROOT / ".venv"),
             ]
         )
 

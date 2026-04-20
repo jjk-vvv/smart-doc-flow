@@ -47,6 +47,7 @@ def test_module4_sync_config_runtime_uses_expected_defaults() -> None:
     assert runtime.retries() == 2
     assert runtime.backoff_sec() == 1.5
     assert runtime.shutdown_drain_sec() == 8.0
+    assert runtime.initial_dispatch_delay_sec() == 0.25
     assert runtime.tenant_guard_mode() == "authenticated_required"
     assert runtime.default_tenant() == "default"
 
@@ -172,3 +173,40 @@ def test_module4_sync_config_runtime_allows_explicit_tenant_for_embedded_interna
     runtime = _build_runtime({"MODULE2_MODULE4_TENANT_GUARD_MODE": "authenticated_required"})
 
     assert runtime.tenant(None, explicit="tenant-from-internal-auth") == "tenant-from-internal-auth"
+
+
+def test_module4_sync_config_runtime_uses_safer_default_initial_delay_for_unified_self_call() -> None:
+    runtime = _build_runtime(
+        {
+            "MODULE2_MODULE4_BASE_URL": "http://127.0.0.1:3001",
+            "GATEWAY_HOST": "0.0.0.0",
+            "GATEWAY_PORT": "3001",
+        }
+    )
+
+    assert runtime.initial_dispatch_delay_sec() == 1.5
+
+
+def test_module4_sync_config_runtime_keeps_fast_default_for_separate_target() -> None:
+    runtime = _build_runtime(
+        {
+            "MODULE2_MODULE4_BASE_URL": "http://127.0.0.1:8100",
+            "GATEWAY_HOST": "0.0.0.0",
+            "GATEWAY_PORT": "3001",
+        }
+    )
+
+    assert runtime.initial_dispatch_delay_sec() == 0.25
+
+
+def test_module4_sync_config_runtime_explicit_initial_delay_override_wins() -> None:
+    runtime = _build_runtime(
+        {
+            "MODULE2_MODULE4_BASE_URL": "http://127.0.0.1:3001",
+            "GATEWAY_HOST": "0.0.0.0",
+            "GATEWAY_PORT": "3001",
+            "MODULE2_MODULE4_SYNC_INITIAL_DISPATCH_DELAY_SEC": "0.6",
+        }
+    )
+
+    assert runtime.initial_dispatch_delay_sec() == 0.6

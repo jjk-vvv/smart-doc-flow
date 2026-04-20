@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, RefreshCw, Save } from "lucide-react";
+import { Loader2, RefreshCw, Save, ArrowLeft } from "lucide-react";
 import {
   parseModule3ExcelJson,
   saveModule3RunOutput,
   type Module3ExcelSheet,
 } from "../../lib/module3Api";
+import { cn } from "../../lib/utils";
 
 type ExcelPreviewDocument = {
   id: string;
@@ -14,6 +15,7 @@ type ExcelPreviewDocument = {
 type Module3ExcelPreviewProps = {
   document: ExcelPreviewDocument;
   fallbackContent: string;
+  onBack?: () => void;
 };
 
 type LuckysheetCell = {
@@ -38,9 +40,6 @@ declare global {
     __luckysheetLoaderPromise?: Promise<void>;
   }
 }
-
-const cn = (...values: Array<string | false | null | undefined>) =>
-  values.filter(Boolean).join(" ");
 
 const MIN_DISPLAY_ROWS = 36;
 const MIN_DISPLAY_COLUMNS = 8;
@@ -211,6 +210,7 @@ const toSavePayload = (sheets: LuckysheetSheet[]) =>
 export const Module3ExcelPreview: React.FC<Module3ExcelPreviewProps> = ({
   document,
   fallbackContent,
+  onBack,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const containerIdRef = useRef(
@@ -338,37 +338,52 @@ export const Module3ExcelPreview: React.FC<Module3ExcelPreviewProps> = ({
 
   return (
     <div className="relative flex h-full min-h-full w-full min-w-0 flex-col overflow-hidden bg-white">
-      <div className="flex items-center justify-between gap-3 bg-slate-50 px-4 py-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-slate-900">
-            {workbookTitle}
+      <div className="relative z-10 flex items-center justify-between gap-3 border-b border-slate-100 bg-white/80 px-4 pb-3 pt-[max(12px,env(safe-area-inset-top))] backdrop-blur-md shadow-sm">
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="group relative flex h-9 items-center justify-center gap-1.5 overflow-hidden rounded-full bg-slate-50 px-3.5 text-[14px] font-bold text-slate-700 shadow-[0_2px_8px_rgba(15,23,42,0.04)] ring-1 ring-slate-900/5 transition-all active:scale-95"
+          >
+            <div className="absolute inset-0 bg-slate-900/0 transition-colors group-hover:bg-slate-900/5 group-active:bg-slate-900/10" />
+            <ArrowLeft size={16} className="relative z-10" />
+            <span className="relative z-10">返回</span>
+          </button>
+        ) : (
+          <div className="h-9 min-w-[76px] shrink-0" aria-hidden="true" />
+        )}
+        <div className="min-w-0 flex-1 text-center">
+          <p className="truncate text-[16px] font-bold text-slate-900">
+            表格预览
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 min-w-[76px]">
           <button
             type="button"
             onClick={() => void loadWorkbook()}
             disabled={showLoadingMask}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+            className="group relative flex h-8 items-center justify-center gap-1.5 overflow-hidden rounded-full bg-slate-50 px-3 text-[13px] font-bold text-slate-600 shadow-[0_2px_8px_rgba(15,23,42,0.04)] ring-1 ring-slate-900/5 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
           >
+            <div className="absolute inset-0 bg-slate-900/0 transition-colors group-hover:bg-slate-900/5 group-active:bg-slate-900/10" />
             <RefreshCw
-              size={14}
-              className={showLoadingMask ? "animate-spin" : ""}
+              size={13}
+              className={cn("relative z-10", showLoadingMask && "animate-spin")}
             />
-            刷新
+            <span className="relative z-10">刷新</span>
           </button>
           <button
             type="button"
             onClick={() => void handleSave()}
             disabled={showLoadingMask || isSaving || !hasRenderableSheet}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="group relative flex h-8 items-center justify-center gap-1.5 overflow-hidden rounded-full bg-emerald-50 px-3 text-[13px] font-bold text-emerald-600 shadow-[0_2px_8px_rgba(15,23,42,0.04)] ring-1 ring-slate-900/5 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
           >
+            <div className="absolute inset-0 bg-emerald-500/0 transition-colors group-hover:bg-emerald-500/5 group-active:bg-emerald-500/10" />
             {isSaving ? (
-              <Loader2 size={14} className="animate-spin" />
+              <Loader2 size={13} className="relative z-10 animate-spin" />
             ) : (
-              <Save size={14} />
+              <Save size={13} className="relative z-10" />
             )}
-            保存
+            <span className="relative z-10">保存</span>
           </button>
         </div>
       </div>

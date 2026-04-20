@@ -483,167 +483,121 @@ export const MobileDocumentPreviewCard: React.FC<MobileDocumentPreviewCardProps>
   }
 
   return (
-    <section className="flex flex-1 flex-col">
-      {/* 隐藏冗余的“文件预览”大标题和文件名，因为最外层的 Modal Header 已经展示过了 */}
-      <div className="flex flex-1 flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_24px_rgba(15,23,42,0.04)] ring-1 ring-slate-200/50 dark:bg-slate-800/60 dark:ring-slate-700/60 dark:shadow-none">
-        <div className="border-b border-slate-100/80 px-3 py-2.5 dark:border-slate-700/60">
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-semibold text-slate-800 dark:text-slate-100">{activeDoc?.file_name || previewCanvasTitle}</p>
-              </div>
+    <section className="flex flex-1 flex-col h-full w-full bg-white dark:bg-slate-950 -mx-2">
+      <div className="relative flex flex-1 overflow-hidden bg-white dark:bg-slate-950">
+        {(sourceLoading || (previewKind === 'text' && textLoading)) && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/55 backdrop-blur-sm dark:bg-slate-950/55">
+            <div className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-[13px] text-slate-700 shadow-lg dark:bg-slate-800 dark:text-slate-200">
+              <Loader2 size={15} className="animate-spin" />
+              {sourceLoading ? '正在恢复源文件预览…' : '正在加载文本预览…'}
+            </div>
+          </div>
+        )}
 
-              {previewKind === 'pdf' && pdfRenderUrl && (
-                <div className="flex shrink-0 items-center gap-2">
-                  <div className="flex items-center gap-0.5 rounded-full bg-slate-100/80 px-1.5 py-1 dark:bg-slate-900/60">
-                    <button
-                      type="button"
-                      onClick={() => jumpToPdfPage(currentPdfPage - 1)}
-                      disabled={currentPdfPage <= 1}
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-full text-slate-500 transition enabled:hover:bg-white enabled:hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300 dark:text-slate-400 dark:enabled:hover:bg-white/10 dark:enabled:hover:text-white dark:disabled:text-slate-600"
-                      title="上一页"
-                    >
-                      <ChevronLeft size={13} />
-                    </button>
-                    <span className="min-w-[36px] text-center text-[10px] font-semibold text-slate-600 dark:text-slate-300">
-                      {`${currentPdfPage} / ${Math.max(pdfPageCount, 1)}`}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => jumpToPdfPage(currentPdfPage + 1)}
-                      disabled={currentPdfPage >= Math.max(pdfPageCount, 1)}
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-full text-slate-500 transition enabled:hover:bg-white enabled:hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300 dark:text-slate-400 dark:enabled:hover:bg-white/10 dark:enabled:hover:text-white dark:disabled:text-slate-600"
-                      title="下一页"
-                    >
-                      <ChevronRight size={13} />
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPdfViewMode((prev) =>
-                        prev === 'fit-width' ? 'fit-page' : prev === 'fit-page' ? 'actual' : 'fit-width',
-                      );
-                      setScale(1);
-                    }}
-                    className="rounded-full bg-slate-100/80 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
-                  >
-                    {pdfViewMode === 'fit-width'
-                      ? '适宽'
-                      : pdfViewMode === 'fit-page'
-                        ? '整页'
-                        : '原始'}
-                  </button>
-                </div>
+        {previewKind === 'pdf' && pdfRenderUrl ? (
+          <PdfJsViewer
+            key={`${previewIdentity}:${pdfRenderUrl}`}
+            src={pdfRenderUrl}
+            scale={scale}
+            rotation={0}
+            viewMode={pdfViewMode}
+            borderless={true}
+            scrollRequest={pdfScrollRequest}
+            onPageCount={setPdfPageCount}
+            onVisiblePageChange={setPdfVisiblePage}
+          />
+        ) : previewKind === 'spreadsheet' && sourceFile ? (
+          <div className="absolute inset-0 min-h-0 overflow-hidden">
+            <LuckysheetPreview
+              file={sourceFile}
+              className="h-full min-h-0 rounded-none border-0 bg-white dark:bg-slate-950"
+            />
+          </div>
+        ) : previewKind === 'text' ? (
+          <div className="absolute inset-0 overflow-auto px-2 py-3 sm:px-3">
+            <div className="min-h-full rounded-[24px] border border-sky-100/90 bg-white/96 px-4 py-4 shadow-[0_20px_48px_rgba(148,163,184,0.14)] ring-1 ring-white/70 dark:border-sky-100/75 dark:bg-white/95 dark:ring-white/80">
+              {textError ? (
+                <p className="rounded-[16px] bg-rose-50 px-4 py-3 text-[13px] leading-6 text-rose-600">
+                  {textError}
+                </p>
+              ) : (
+                <pre className="whitespace-pre-wrap break-words font-sans text-[14px] font-medium leading-[1.92] tracking-[0.01em] text-slate-800 sm:text-[15px]">
+                  {textPreview || '当前暂未读取到文本内容。'}
+                </pre>
               )}
             </div>
-
-            {previewKind === 'spreadsheet' && workbookMetrics.length > 0 && (
-              <div className="grid grid-cols-2 gap-2 mt-1">
-                {workbookMetrics.map((item) => (
-                  <div
-                    key={item.label}
-                    className="rounded-[12px] bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-100 dark:bg-slate-900/55 dark:ring-slate-700/60"
-                  >
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400">{item.label}</p>
-                    <p className="mt-0.5 text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.value}</p>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
-        </div>
-        <div className="relative flex flex-1 min-h-[460px] overflow-hidden bg-[#F5F9FA] dark:bg-slate-900/50">
-          {/* 全息光斑背景装饰 */}
-          <div className="pointer-events-none absolute -left-12 top-1/4 h-[200px] w-[200px] rounded-full bg-cyan-400/20 blur-[60px] dark:bg-cyan-500/15" />
-          <div className="pointer-events-none absolute -right-12 bottom-1/4 h-[200px] w-[200px] rounded-full bg-blue-400/20 blur-[60px] dark:bg-blue-500/15" />
-
-          {(sourceLoading || (previewKind === 'text' && textLoading)) && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/55 backdrop-blur-sm dark:bg-slate-950/55">
-              <div className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-[13px] text-slate-700 shadow-lg dark:bg-slate-800 dark:text-slate-200">
-                <Loader2 size={15} className="animate-spin" />
-                {sourceLoading ? '正在恢复源文件预览…' : '正在加载文本预览…'}
-              </div>
-            </div>
-          )}
-
-          {previewKind === 'pdf' && pdfRenderUrl ? (
-            <PdfJsViewer
-              key={`${previewIdentity}:${pdfRenderUrl}`}
-              src={pdfRenderUrl}
-              scale={scale}
-              rotation={0}
-              viewMode={pdfViewMode}
-              scrollRequest={pdfScrollRequest}
-              onPageCount={setPdfPageCount}
-              onVisiblePageChange={setPdfVisiblePage}
+        ) : previewKind === 'image' && imageRenderUrl ? (
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <img
+              src={imageRenderUrl}
+              alt={activeDoc.file_name}
+              className="max-h-full max-w-full rounded-[18px] border border-white/70 object-contain shadow-[0_18px_46px_rgba(15,23,42,0.18)] dark:border-white/10"
             />
-          ) : previewKind === 'spreadsheet' && sourceFile ? (
-            <div className="absolute inset-0 min-h-0 overflow-hidden">
-              <LuckysheetPreview
-                file={sourceFile}
-                className="h-full min-h-0 rounded-none border-0 bg-white dark:bg-slate-950"
-              />
+          </div>
+        ) : previewKind === 'spreadsheet' ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-6">
+            <div className="flex w-full max-w-[280px] flex-col items-center justify-center rounded-[24px] bg-white p-8 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 dark:bg-slate-800/80 dark:shadow-[0_8px_30px_rgba(0,0,0,0.1)] dark:ring-white/[0.05]">
+              <div className="mb-5 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] bg-[#E8F8F5] text-emerald-500 shadow-[0_8px_24px_rgba(16,185,129,0.15)] ring-1 ring-white/50 dark:bg-emerald-500/20 dark:text-emerald-300 dark:shadow-[0_8px_24px_rgba(16,185,129,0.08)] dark:ring-white/10">
+                <FileSpreadsheet size={28} strokeWidth={1.5} />
+              </div>
+              <p className="text-[16px] font-bold tracking-tight text-slate-800 dark:text-slate-100">当前还未恢复到完整表格画布</p>
+              <p className="mt-2.5 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
+                当前还没有恢复到可直接渲染的表格源文件。源文件可用后，这里会直接展示完整工作表。
+              </p>
             </div>
-          ) : previewKind === 'text' ? (
-            <div className="absolute inset-0 overflow-auto px-2 py-3 sm:px-3">
-              <div className="min-h-full rounded-[24px] border border-sky-100/90 bg-white/96 px-4 py-4 shadow-[0_20px_48px_rgba(148,163,184,0.14)] ring-1 ring-white/70 dark:border-sky-100/75 dark:bg-white/95 dark:ring-white/80">
-                {textError ? (
-                  <p className="rounded-[16px] bg-rose-50 px-4 py-3 text-[13px] leading-6 text-rose-600">
-                    {textError}
-                  </p>
-                ) : (
-                  <pre className="whitespace-pre-wrap break-words font-sans text-[14px] font-medium leading-[1.92] tracking-[0.01em] text-slate-800 sm:text-[15px]">
-                    {textPreview || '当前暂未读取到文本内容。'}
-                  </pre>
+          </div>
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-6">
+            <div className="flex w-full max-w-[280px] flex-col items-center justify-center rounded-[24px] bg-white p-8 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 dark:bg-slate-800/80 dark:shadow-[0_8px_30px_rgba(0,0,0,0.1)] dark:ring-white/[0.05]">
+              <div
+                className={cn(
+                  'mb-5 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] shadow-[0_8px_24px_rgba(14,165,233,0.15)] ring-1 ring-white/50 dark:shadow-[0_8px_24px_rgba(14,165,233,0.08)] dark:ring-white/10',
+                  previewKind === 'image'
+                    ? 'bg-amber-50 text-amber-500 dark:bg-amber-500/20 dark:text-amber-300 shadow-[0_8px_24px_rgba(245,158,11,0.15)]'
+                    : previewKind === 'unsupported'
+                      ? 'bg-slate-50 text-slate-500 dark:bg-slate-700 dark:text-slate-400 shadow-[0_8px_24px_rgba(100,116,139,0.15)]'
+                      : 'bg-[#EAF5FD] text-sky-500 dark:bg-sky-500/20 dark:text-sky-300',
                 )}
+              >
+                {previewKind === 'image' ? <FileImage size={28} strokeWidth={1.5} /> : <FileText size={28} strokeWidth={1.5} />}
               </div>
+              <p className="text-[16px] font-bold tracking-tight text-slate-800 dark:text-slate-100">
+                {fallbackTitle}
+              </p>
+              <p className="mt-2.5 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
+                {fallbackDescription}
+              </p>
             </div>
-          ) : previewKind === 'image' && imageRenderUrl ? (
-            <div className="absolute inset-0 flex items-center justify-center p-4">
-              <img
-                src={imageRenderUrl}
-                alt={activeDoc.file_name}
-                className="max-h-full max-w-full rounded-[18px] border border-white/70 object-contain shadow-[0_18px_46px_rgba(15,23,42,0.18)] dark:border-white/10"
-              />
-            </div>
-          ) : previewKind === 'spreadsheet' ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center p-6">
-              <div className="flex w-full max-w-[280px] flex-col items-center justify-center rounded-[24px] bg-white p-8 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 dark:bg-slate-800/80 dark:shadow-[0_8px_30px_rgba(0,0,0,0.1)] dark:ring-white/[0.05]">
-                <div className="mb-5 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] bg-[#E8F8F5] text-emerald-500 shadow-[0_8px_24px_rgba(16,185,129,0.15)] ring-1 ring-white/50 dark:bg-emerald-500/20 dark:text-emerald-300 dark:shadow-[0_8px_24px_rgba(16,185,129,0.08)] dark:ring-white/10">
-                  <FileSpreadsheet size={28} strokeWidth={1.5} />
-                </div>
-                <p className="text-[16px] font-bold tracking-tight text-slate-800 dark:text-slate-100">当前还未恢复到完整表格画布</p>
-                <p className="mt-2.5 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-                  当前还没有恢复到可直接渲染的表格源文件。源文件可用后，这里会直接展示完整工作表。
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="absolute inset-0 flex flex-col items-center justify-center p-6">
-              <div className="flex w-full max-w-[280px] flex-col items-center justify-center rounded-[24px] bg-white p-8 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 dark:bg-slate-800/80 dark:shadow-[0_8px_30px_rgba(0,0,0,0.1)] dark:ring-white/[0.05]">
-                <div
-                  className={cn(
-                    'mb-5 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] shadow-[0_8px_24px_rgba(14,165,233,0.15)] ring-1 ring-white/50 dark:shadow-[0_8px_24px_rgba(14,165,233,0.08)] dark:ring-white/10',
-                    previewKind === 'image'
-                      ? 'bg-amber-50 text-amber-500 dark:bg-amber-500/20 dark:text-amber-300 shadow-[0_8px_24px_rgba(245,158,11,0.15)]'
-                      : previewKind === 'unsupported'
-                        ? 'bg-slate-50 text-slate-500 dark:bg-slate-700 dark:text-slate-400 shadow-[0_8px_24px_rgba(100,116,139,0.15)]'
-                        : 'bg-[#EAF5FD] text-sky-500 dark:bg-sky-500/20 dark:text-sky-300',
-                  )}
-                >
-                  {previewKind === 'image' ? <FileImage size={28} strokeWidth={1.5} /> : <FileText size={28} strokeWidth={1.5} />}
-                </div>
-                <p className="text-[16px] font-bold tracking-tight text-slate-800 dark:text-slate-100">
-                  {fallbackTitle}
-                </p>
-                <p className="mt-2.5 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-                  {fallbackDescription}
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
+
+        {/* 悬浮翻页胶囊 (Bottom Floating Controls) - 极致瘦身版 */}
+        {previewKind === 'pdf' && pdfRenderUrl && (
+          <div className="absolute bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-0.5 rounded-full bg-white/70 px-1 py-1 shadow-[0_4px_16px_rgba(0,0,0,0.06)] ring-1 ring-slate-900/5 backdrop-blur-xl dark:bg-slate-800/60 dark:ring-white/10 dark:shadow-[0_4px_16px_rgba(0,0,0,0.3)]">
+            <button
+              type="button"
+              onClick={() => jumpToPdfPage(currentPdfPage - 1)}
+              disabled={currentPdfPage <= 1}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-500 transition enabled:hover:bg-white/80 enabled:hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-400 dark:enabled:hover:bg-slate-700/80 dark:enabled:hover:text-slate-100"
+              title="上一页"
+            >
+              <ChevronLeft size={14} strokeWidth={2.5} />
+            </button>
+            <span className="min-w-[44px] text-center text-[11px] font-bold tracking-wide text-slate-700 dark:text-slate-200">
+              {`${currentPdfPage} / ${Math.max(pdfPageCount, 1)}`}
+            </span>
+            <button
+              type="button"
+              onClick={() => jumpToPdfPage(currentPdfPage + 1)}
+              disabled={currentPdfPage >= Math.max(pdfPageCount, 1)}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-500 transition enabled:hover:bg-white/80 enabled:hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-400 dark:enabled:hover:bg-slate-700/80 dark:enabled:hover:text-slate-100"
+              title="下一页"
+            >
+              <ChevronRight size={14} strokeWidth={2.5} />
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );

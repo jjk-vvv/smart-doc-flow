@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from app.core.config import Settings
+from app.core.deps import get_settings
+from app.modules.module4.api.endpoints.gateway import router as gateway_router
 from app.services.gateway_service import (
     build_gateway_health,
     build_gateway_info,
@@ -76,8 +82,73 @@ def test_gateway_health_includes_local_module4_payload(monkeypatch, tmp_path: Pa
     assert payload["upstreams"]["module4"]["payload"]["service"] == "module4"
 
 
+def test_gateway_health_treats_status_ok_payload_as_healthy(monkeypatch, tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+
+    class _FakeAuthService:
+        async def health_payload(self) -> dict[str, object]:
+            return {"ok": True, "service": "auth"}
+
+    async def _fake_module4_health_payload(probe: str = "basic") -> dict[str, object]:
+        assert probe == "basic"
+        return {"status": "ok", "db_connected": True, "service": "module4"}
+
+    monkeypatch.setattr(
+        "app.services.gateway_service.get_auth_service",
+        lambda: _FakeAuthService(),
+    )
+    monkeypatch.setattr(
+        "app.modules.module2.services.api.extraction_service.get_extraction_service",
+        lambda: SimpleNamespace(health_payload=lambda _settings: {"ok": True, "service": "module2"}),
+    )
+    monkeypatch.setattr(
+        "app.modules.module4.composition.build_health_payload",
+        _fake_module4_health_payload,
+    )
+
+    payload = asyncio.run(build_gateway_health(settings))
+
+    assert payload["ok"] is True
+    assert payload["upstreams"]["module4"]["ok"] is True
+
+
+def test_gateway_health_route_serializes_datetime_payload(monkeypatch, tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    app = FastAPI()
+    app.include_router(gateway_router)
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    async def _fake_gateway_health(_settings_obj: Settings) -> dict[str, object]:
+        return {
+            "ok": True,
+            "upstreams": {
+                "module4": {
+                    "ok": True,
+                    "payload": {
+                        "last_success_at": datetime(2026, 4, 20, 1, 7, 36, tzinfo=timezone.utc),
+                    },
+                }
+            },
+            "frontend_static": {"ok": True},
+        }
+
+    monkeypatch.setattr(
+        "app.modules.module4.api.endpoints.gateway.service.build_gateway_health",
+        _fake_gateway_health,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/gateway/health")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["upstreams"]["module4"]["payload"]["last_success_at"] == "2026-04-20T01:07:36+00:00"
+
+
 def test_proxy_module4_request_targets_unified_gateway_base_url(monkeypatch, tmp_path: Path) -> None:
     settings = _settings(tmp_path)
+    monkeypatch.delenv("MODULE4_INTERNAL_TOKEN", raising=False)
     request = SimpleNamespace(
         headers={},
         query_params={},

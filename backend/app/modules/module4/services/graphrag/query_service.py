@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Dict, Iterable, Literal, Optio
 
 from .prompts import PromptRegistry
 from .query_adapter import load_artifact_graph_snapshot
+from .runtime_selection import choose_graphrag_python_bin
+from ..public_case_registry import resolve_graph_file_access
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -24,9 +26,12 @@ GraphRAGQueryMode = Literal["local", "global", "drift", "basic"]
 @dataclass(frozen=True)
 class GraphRAGResolvedRuntime:
     graph_file: Dict[str, Any]
+    response_graph_file: Dict[str, Any]
     graph_version: Dict[str, Any]
     workspace_dir: Path
     artifacts_dir: Path
+    storage_tenant_id: str
+    requested_file_hash: str
 
 
 class GraphRAGQueryServiceError(RuntimeError):
@@ -246,27 +251,37 @@ def _backend_root_dir() -> Path:
 
 
 def _resolve_query_python_bin() -> str:
-    configured = str(
-        os.getenv("MODULE4_GRAPHRAG_QUERY_PYTHON_BIN")
-        or os.getenv("MODULE4_GRAPHRAG_PYTHON_BIN")
-        or ""
-    ).strip()
-    generic_commands = {"python", "python3", "py"}
-    if configured and configured.lower() not in generic_commands:
-        return configured
+    return choose_graphrag_python_bin(
+        configured_python_bin=str(os.getenv("MODULE4_GRAPHRAG_PYTHON_BIN", "") or "").strip(),
+        configured_query_python_bin=str(os.getenv("MODULE4_GRAPHRAG_QUERY_PYTHON_BIN", "") or "").strip(),
+    )
 
-    runtime_root = _runtime_root_dir()
-    candidates = [
-        runtime_root / ".venv-module4-py311" / "Scripts" / "python.exe",
-        runtime_root / ".venv-module4-py311" / "bin" / "python",
-    ]
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return str(candidate)
 
-    if configured:
-        return configured
-    return sys.executable
+def _same_python_runtime(candidate: str, current: str | None = None) -> bool:
+    candidate_value = str(candidate or "").strip()
+    current_value = str(current or sys.executable or "").strip()
+    if not candidate_value or not current_value:
+        return False
+
+    try:
+        return Path(candidate_value).resolve() == Path(current_value).resolve()
+    except Exception:
+        return candidate_value == current_value
+
+
+def _should_use_query_subprocess(*, runtime: GraphRAGResolvedRuntime) -> bool:
+    execution_mode = str(os.getenv("MODULE4_GRAPHRAG_QUERY_EXECUTION_MODE", "") or "").strip().lower()
+    if execution_mode in {"subprocess", "process", "isolated"}:
+        return True
+    if execution_mode in {"inprocess", "inline"}:
+        return False
+
+    requested_file_hash = str(runtime.requested_file_hash or "").strip()
+    if not requested_file_hash.startswith("public_case::"):
+        return False
+
+    query_python_bin = _resolve_query_python_bin()
+    return bool(query_python_bin) and not _same_python_runtime(query_python_bin)
 
 
 async def _run_query_with_timeout(
@@ -370,24 +385,298 @@ def _ensure_dir(path_value: Any, *, label: str) -> Path:
     return target
 
 
-def _resolve_workspace_dir(graph_file: Dict[str, Any], graph_version: Dict[str, Any]) -> Path:
+def _module4_workspaces_roots() -> list[Path]:
+    candidates: list[Path] = []
+    try:
+        from .settings import GraphRAGRuntimeSettings
+
+        candidates.append(GraphRAGRuntimeSettings.from_env().workspaces_root.resolve())
+    except Exception:
+        pass
+
+    candidates.extend(
+        [
+            (_backend_root_dir() / "app" / "modules" / "module4" / "workspaces").resolve(),
+            (_runtime_root_dir() / "rt4").resolve(),
+        ]
+    )
+
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        roots.append(resolved)
+    return roots
+
+
+def _rewrite_legacy_module4_workspace_paths(path_value: Any) -> list[Path]:
+    raw_value = str(path_value or "").strip()
+    if not raw_value:
+        return []
+
+    normalized = raw_value.replace("\\", "/")
+    marker = "backend/module4/workspaces/"
+    marker_index = normalized.lower().find(marker)
+    if marker_index < 0:
+        return []
+
+    suffix = normalized[marker_index + len(marker) :].strip("/")
+    targets: list[Path] = []
+    for root in _module4_workspaces_roots():
+        target = root
+        if suffix:
+            target = (target / Path(*suffix.split("/"))).resolve()
+        if target not in targets:
+            targets.append(target)
+    return targets
+
+
+def _candidate_paths(path_value: Any) -> list[Path]:
+    raw_value = str(path_value or "").strip()
+    if not raw_value:
+        return []
+
+    candidates: list[Path] = [Path(raw_value).expanduser().resolve()]
+    for rewritten in _rewrite_legacy_module4_workspace_paths(raw_value):
+        if rewritten not in candidates:
+            candidates.append(rewritten)
+    return candidates
+
+
+def _first_existing_dir(path_values: Iterable[Any]) -> Path | None:
+    seen: set[Path] = set()
+    for value in path_values:
+        for candidate in _candidate_paths(value):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.exists() and candidate.is_dir():
+                return candidate
+    return None
+
+
+def _first_existing_file(path_values: Iterable[Any]) -> Path | None:
+    seen: set[Path] = set()
+    for value in path_values:
+        for candidate in _candidate_paths(value):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.exists() and candidate.is_file():
+                return candidate
+    return None
+
+
+def _load_manifest_payload(manifest_path: Path | None) -> Dict[str, Any]:
+    if manifest_path is None or not manifest_path.exists() or not manifest_path.is_file():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _looks_like_artifacts_dir(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+
+    legacy_markers = (
+        "create_final_documents.parquet",
+        "create_final_text_units.parquet",
+        "create_final_entities.parquet",
+        "create_final_relationships.parquet",
+    )
+    v3_markers = (
+        "documents.parquet",
+        "text_units.parquet",
+        "entities.parquet",
+        "relationships.parquet",
+    )
+    partial_markers = (
+        "create_base_text_units.parquet",
+        "create_base_extracted_entities.parquet",
+        "create_summarized_entities.parquet",
+    )
+    return any((path / name).exists() for name in (*legacy_markers, *v3_markers, *partial_markers))
+
+
+def _resolve_output_layout(output_root: Path) -> tuple[Path | None, Path | None, Path | None]:
+    try:
+        candidates = [path for path in output_root.iterdir() if path.is_dir()]
+    except FileNotFoundError:
+        return None, None, None
+
+    candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    for candidate in candidates:
+        artifacts_dir = candidate / "artifacts"
+        reports_dir = candidate / "reports"
+        if _looks_like_artifacts_dir(artifacts_dir):
+            return candidate, artifacts_dir, reports_dir if reports_dir.exists() else None
+        if _looks_like_artifacts_dir(candidate):
+            if candidate.name.lower() == "artifacts":
+                parent = candidate.parent
+                parent_reports = parent / "reports"
+                return parent, candidate, parent_reports if parent_reports.exists() else None
+            return candidate, candidate, reports_dir if reports_dir.exists() else None
+
+    root_artifacts_dir = output_root / "artifacts"
+    root_reports_dir = output_root / "reports"
+    if _looks_like_artifacts_dir(root_artifacts_dir):
+        return output_root, root_artifacts_dir, root_reports_dir if root_reports_dir.exists() else None
+    if _looks_like_artifacts_dir(output_root):
+        return output_root, output_root, root_reports_dir if root_reports_dir.exists() else None
+    return None, None, None
+
+
+def _manifest_contains_file_hash(manifest_payload: Dict[str, Any], file_hash: str) -> bool:
+    normalized_file_hash = str(file_hash or "").strip()
+    if not normalized_file_hash:
+        return False
+
+    files = manifest_payload.get("files")
+    if not isinstance(files, list):
+        return False
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("file_hash") or "").strip() == normalized_file_hash:
+            return True
+    return False
+
+
+def _iter_workspace_manifest_paths(workspaces_root: Path) -> Iterable[Path]:
+    skip_dir_names = {
+        "__pycache__",
+        ".git",
+        "output",
+        "cache",
+        "input",
+        "artifacts",
+        "reports",
+        "lancedb",
+    }
+
+    def _on_walk_error(_: OSError) -> None:
+        return None
+
+    for current_root, dir_names, file_names in os.walk(workspaces_root, topdown=True, onerror=_on_walk_error):
+        dir_names[:] = [
+            name
+            for name in dir_names
+            if name.lower() not in skip_dir_names and not name.lower().endswith(".lance")
+        ]
+        if "workspace_manifest.json" not in file_names:
+            continue
+        try:
+            yield (Path(current_root) / "workspace_manifest.json").resolve()
+        except Exception:
+            continue
+
+
+def _locate_workspace_by_file_hash(file_hash: str) -> tuple[Path, Path] | None:
+    normalized_file_hash = str(file_hash or "").strip()
+    if not normalized_file_hash:
+        return None
+
+    matches: list[tuple[float, Path, Path]] = []
+    seen_manifests: set[Path] = set()
+    for workspaces_root in _module4_workspaces_roots():
+        if not workspaces_root.exists() or not workspaces_root.is_dir():
+            continue
+        for manifest_path in _iter_workspace_manifest_paths(workspaces_root):
+            if manifest_path in seen_manifests:
+                continue
+            seen_manifests.add(manifest_path)
+
+            manifest_payload = _load_manifest_payload(manifest_path)
+            if not _manifest_contains_file_hash(manifest_payload, normalized_file_hash):
+                continue
+
+            workspace_dir = _first_existing_dir(
+                [
+                    manifest_payload.get("workspace_dir"),
+                    str(manifest_path.parent),
+                ]
+            )
+            if workspace_dir is None or not (workspace_dir / "settings.yaml").exists():
+                continue
+
+            output_dir = _first_existing_dir([manifest_payload.get("latest_output_dir")])
+            artifacts_dir: Path | None = None
+            if output_dir is not None:
+                candidate_artifacts_dir = output_dir / "artifacts"
+                if _looks_like_artifacts_dir(candidate_artifacts_dir):
+                    artifacts_dir = candidate_artifacts_dir
+                elif _looks_like_artifacts_dir(output_dir):
+                    artifacts_dir = output_dir
+
+            if artifacts_dir is None:
+                _, recovered_artifacts_dir, _ = _resolve_output_layout(workspace_dir / "output")
+                artifacts_dir = recovered_artifacts_dir
+            if artifacts_dir is None:
+                continue
+
+            try:
+                score = manifest_path.stat().st_mtime
+            except Exception:
+                score = 0.0
+            matches.append((score, workspace_dir.resolve(), artifacts_dir.resolve()))
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda item: item[0], reverse=True)
+    _, workspace_dir, artifacts_dir = matches[0]
+    return workspace_dir, artifacts_dir
+
+
+def _resolve_workspace_dir(
+    graph_file: Dict[str, Any],
+    graph_version: Dict[str, Any],
+    *,
+    manifest_path: Path | None = None,
+    manifest_payload: Dict[str, Any] | None = None,
+    artifacts_dir: Path | None = None,
+    output_dir: Path | None = None,
+    reports_dir: Path | None = None,
+) -> Path:
     metadata = _as_dict(graph_file.get("metadata"))
     candidates: list[Path] = []
 
     workspace_dir_value = str(metadata.get("workspace_dir") or "").strip()
     if workspace_dir_value:
-        candidates.append(Path(workspace_dir_value))
+        candidates.extend(_candidate_paths(workspace_dir_value))
 
-    manifest_path_value = str(graph_version.get("manifest_path") or "").strip()
-    if manifest_path_value:
-        candidates.append(Path(manifest_path_value).resolve().parent)
+    manifest_data = manifest_payload or {}
+    manifest_workspace_dir = str(manifest_data.get("workspace_dir") or "").strip()
+    if manifest_workspace_dir:
+        candidates.extend(_candidate_paths(manifest_workspace_dir))
+
+    if manifest_path is None:
+        manifest_path = _first_existing_file(
+            [
+                graph_version.get("manifest_path"),
+                metadata.get("manifest_path"),
+            ]
+        )
+    if manifest_path is not None:
+        candidates.append(manifest_path.resolve().parent)
+
+    resolved_dirs = [path for path in (artifacts_dir, output_dir, reports_dir) if path is not None]
+    for current in resolved_dirs:
+        resolved = current.resolve()
+        candidates.extend([resolved, *list(resolved.parents[:4])])
 
     for key in ("output_dir", "artifacts_dir", "reports_dir"):
-        raw = str(graph_version.get(key) or "").strip()
+        raw = graph_version.get(key) or metadata.get(key)
         if not raw:
             continue
-        current = Path(raw).resolve()
-        candidates.extend([current, *list(current.parents[:4])])
+        for candidate in _candidate_paths(raw):
+            candidates.extend([candidate, *list(candidate.parents[:4])])
 
     seen: set[Path] = set()
     for candidate in candidates:
@@ -402,6 +691,117 @@ def _resolve_workspace_dir(graph_file: Dict[str, Any], graph_version: Dict[str, 
         "Unable to resolve the GraphRAG workspace for the active graph version.",
     )
 
+def _resolve_runtime_paths(
+    graph_file: Dict[str, Any],
+    graph_version: Dict[str, Any],
+    *,
+    public_case_source_file_hash: str | None = None,
+) -> tuple[Path, Path]:
+    metadata = _as_dict(graph_file.get("metadata"))
+
+    manifest_path = _first_existing_file(
+        [
+            graph_version.get("manifest_path"),
+            metadata.get("manifest_path"),
+        ]
+    )
+    manifest_payload = _load_manifest_payload(manifest_path)
+
+    output_dir = _first_existing_dir(
+        [
+            graph_version.get("output_dir"),
+            metadata.get("output_dir"),
+            manifest_payload.get("latest_output_dir"),
+        ]
+    )
+    reports_dir = _first_existing_dir(
+        [
+            graph_version.get("reports_dir"),
+            metadata.get("reports_dir"),
+        ]
+    )
+    artifacts_dir = _first_existing_dir(
+        [
+            graph_version.get("artifacts_dir"),
+            metadata.get("artifacts_dir"),
+        ]
+    )
+
+    if artifacts_dir is None:
+        derived_artifacts_dir = _first_existing_dir(
+            [
+                str(Path(str(graph_version.get("output_dir") or "").strip()) / "artifacts")
+                if str(graph_version.get("output_dir") or "").strip()
+                else None,
+                str(Path(str(metadata.get("output_dir") or "").strip()) / "artifacts")
+                if str(metadata.get("output_dir") or "").strip()
+                else None,
+                str(Path(str(manifest_payload.get("latest_output_dir") or "").strip()) / "artifacts")
+                if str(manifest_payload.get("latest_output_dir") or "").strip()
+                else None,
+            ]
+        )
+        if derived_artifacts_dir is not None:
+            artifacts_dir = derived_artifacts_dir
+
+    workspace_dir: Path | None
+    try:
+        workspace_dir = _resolve_workspace_dir(
+            graph_file,
+            graph_version,
+            manifest_path=manifest_path,
+            manifest_payload=manifest_payload,
+            artifacts_dir=artifacts_dir,
+            output_dir=output_dir,
+            reports_dir=reports_dir,
+        )
+    except GraphRAGQueryServiceError:
+        workspace_dir = None
+
+    if public_case_source_file_hash and (artifacts_dir is None or workspace_dir is None):
+        located = _locate_workspace_by_file_hash(public_case_source_file_hash)
+        if located is not None:
+            recovered_workspace_dir, recovered_artifacts_dir = located
+            if workspace_dir is None:
+                workspace_dir = recovered_workspace_dir
+            if artifacts_dir is None:
+                artifacts_dir = recovered_artifacts_dir
+            if output_dir is None:
+                output_dir = (
+                    recovered_artifacts_dir.parent
+                    if recovered_artifacts_dir.name.lower() == "artifacts"
+                    else recovered_artifacts_dir
+                )
+
+    if output_dir is None and artifacts_dir is not None:
+        output_dir = artifacts_dir.parent if artifacts_dir.name.lower() == "artifacts" else artifacts_dir
+
+    if workspace_dir is not None and output_dir is None:
+        output_dir, recovered_artifacts_dir, recovered_reports_dir = _resolve_output_layout(workspace_dir / "output")
+        if recovered_artifacts_dir is not None and artifacts_dir is None:
+            artifacts_dir = recovered_artifacts_dir
+        if recovered_reports_dir is not None and reports_dir is None:
+            reports_dir = recovered_reports_dir
+
+    if artifacts_dir is None and output_dir is not None:
+        derived = output_dir / "artifacts"
+        if _looks_like_artifacts_dir(derived):
+            artifacts_dir = derived
+        elif _looks_like_artifacts_dir(output_dir):
+            artifacts_dir = output_dir
+
+    if workspace_dir is None:
+        raise GraphRAGQueryServiceError(
+            "Unable to resolve the GraphRAG workspace for the active graph version.",
+        )
+
+    if artifacts_dir is None or not artifacts_dir.exists() or not artifacts_dir.is_dir():
+        raise GraphRAGQueryServiceError(
+            f"GraphRAG artifacts directory does not exist: {Path(str(graph_version.get('artifacts_dir') or '').strip()).resolve()}"
+        )
+
+    return workspace_dir, artifacts_dir
+
 
 async def _resolve_runtime(
     *,
@@ -409,9 +809,14 @@ async def _resolve_runtime(
     tenant_id: str,
     file_hash: str,
 ) -> GraphRAGResolvedRuntime:
-    graph_file = await storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash)
-    if not graph_file:
+    access = await resolve_graph_file_access(
+        storage=storage,
+        tenant_id=tenant_id,
+        file_hash=file_hash,
+    )
+    if not access:
         raise GraphRAGQueryServiceError("Graph file not found.", status_code=404)
+    graph_file = access.graph_file
 
     active_version_id = str(graph_file.get("active_version_id") or "").strip()
     if not active_version_id:
@@ -420,19 +825,25 @@ async def _resolve_runtime(
         )
 
     graph_version = await storage.get_graph_version(
-        tenant_id=tenant_id,
+        tenant_id=access.storage_tenant_id,
         graph_version_id=active_version_id,
     )
     if not graph_version:
         raise GraphRAGQueryServiceError("The active GraphRAG version record could not be found.")
 
-    artifacts_dir = _ensure_dir(graph_version.get("artifacts_dir"), label="GraphRAG artifacts directory")
-    workspace_dir = _resolve_workspace_dir(graph_file, graph_version)
+    workspace_dir, artifacts_dir = _resolve_runtime_paths(
+        graph_file,
+        graph_version,
+        public_case_source_file_hash=access.storage_file_hash if access.public_case else None,
+    )
     return GraphRAGResolvedRuntime(
         graph_file=graph_file,
+        response_graph_file=access.response_graph_file,
         graph_version=graph_version,
         workspace_dir=workspace_dir,
         artifacts_dir=artifacts_dir,
+        storage_tenant_id=access.storage_tenant_id,
+        requested_file_hash=access.requested_file_hash,
     )
 
 
@@ -1156,9 +1567,12 @@ def _subprocess_query_entry(raw_payload: str) -> Dict[str, Any]:
     artifacts_dir = Path(str(payload.get("artifacts_dir") or "").strip()).resolve()
     runtime = GraphRAGResolvedRuntime(
         graph_file={},
+        response_graph_file={},
         graph_version={},
         workspace_dir=workspace_dir,
         artifacts_dir=artifacts_dir,
+        storage_tenant_id="",
+        requested_file_hash="",
     )
     mode_value = str(payload.get("mode") or "local").strip().lower()
     if mode_value not in {"local", "global", "drift", "basic"}:
@@ -1313,10 +1727,7 @@ async def search_graph(
     response_type_value = str(response_type or "").strip() or "multiple paragraphs"
     community_level_value = max(0, int(community_level or 0)) if community_level is not None else None
     query_runtime_payload: Dict[str, Any]
-    try:
-        import graphrag.api as graphrag_api
-        from graphrag.utils.api import reformat_context_data
-    except ModuleNotFoundError:
+    if _should_use_query_subprocess(runtime=runtime):
         query_runtime_payload = await _execute_query_runtime_via_subprocess(
             runtime=runtime,
             mode_value=mode_value,  # type: ignore[arg-type]
@@ -1327,17 +1738,31 @@ async def search_graph(
             verbose=verbose,
         )
     else:
-        query_runtime_payload = await _execute_query_runtime(
-            runtime=runtime,
-            mode_value=mode_value,  # type: ignore[arg-type]
-            query_text=query_text,
-            response_type_value=response_type_value,
-            community_level_value=community_level_value,
-            dynamic_community_selection=bool(dynamic_community_selection),
-            verbose=verbose,
-            graphrag_api=graphrag_api,
-            reformat_context_data=reformat_context_data,
-        )
+        try:
+            import graphrag.api as graphrag_api
+            from graphrag.utils.api import reformat_context_data
+        except ModuleNotFoundError:
+            query_runtime_payload = await _execute_query_runtime_via_subprocess(
+                runtime=runtime,
+                mode_value=mode_value,  # type: ignore[arg-type]
+                query_text=query_text,
+                response_type_value=response_type_value,
+                community_level_value=community_level_value,
+                dynamic_community_selection=bool(dynamic_community_selection),
+                verbose=verbose,
+            )
+        else:
+            query_runtime_payload = await _execute_query_runtime(
+                runtime=runtime,
+                mode_value=mode_value,  # type: ignore[arg-type]
+                query_text=query_text,
+                response_type_value=response_type_value,
+                community_level_value=community_level_value,
+                dynamic_community_selection=bool(dynamic_community_selection),
+                verbose=verbose,
+                graphrag_api=graphrag_api,
+                reformat_context_data=reformat_context_data,
+            )
 
     normalized_context_raw = query_runtime_payload.get("context_data")
     normalized_context = normalized_context_raw if isinstance(normalized_context_raw, dict) else {
@@ -1361,7 +1786,7 @@ async def search_graph(
         candidates=linked_node_candidates,
         graph_file=runtime.graph_file,
         storage=storage,
-        tenant_id=tenant_id,
+        tenant_id=runtime.storage_tenant_id,
     )
 
     return {
@@ -1371,10 +1796,16 @@ async def search_graph(
         "response_type": response_type_value,
         "community_level": community_level_value,
         "dynamic_community_selection": bool(dynamic_community_selection),
-        "file_hash": str(runtime.graph_file.get("file_hash") or file_hash),
-        "graph_file_id": str(runtime.graph_file.get("graph_file_id") or "") or None,
+        "file_hash": str(runtime.requested_file_hash or file_hash),
+        "graph_file_id": str(runtime.response_graph_file.get("graph_file_id") or runtime.graph_file.get("graph_file_id") or "")
+        or None,
         "active_version_id": str(runtime.graph_version.get("graph_version_id") or "") or None,
-        "workspace_id": str(runtime.graph_file.get("workspace_id") or runtime.graph_version.get("workspace_id") or "")
+        "workspace_id": str(
+            runtime.response_graph_file.get("workspace_id")
+            or runtime.graph_file.get("workspace_id")
+            or runtime.graph_version.get("workspace_id")
+            or ""
+        )
         or None,
         "context_data": normalized_context,
         "linked_node_ids": linked_node_ids,

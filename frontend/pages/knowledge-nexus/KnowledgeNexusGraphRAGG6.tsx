@@ -111,6 +111,23 @@ const LABEL_MODE_OPTIONS: Array<{ key: GraphLabelMode; label: string; descriptio
   },
 ];
 
+const DETAIL_PANEL_CARD_SOFT_CLASS =
+  'rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900';
+const DETAIL_PANEL_CARD_BASE_CLASS =
+  'rounded-md border border-slate-200 bg-white p-2.5 dark:border-slate-700 dark:bg-slate-950/40';
+const DETAIL_PANEL_LABEL_CLASS = 'text-[10px] font-medium text-slate-500 dark:text-slate-400';
+const DETAIL_PANEL_VALUE_CLASS = 'mt-1 text-[11px] font-medium text-slate-700 dark:text-slate-200';
+const DETAIL_PANEL_SECTION_TITLE_CLASS =
+  'text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400';
+const DETAIL_PANEL_ACTION_BASE_CLASS =
+  'inline-flex h-7 items-center rounded-md border px-2.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60';
+const DETAIL_PANEL_ACTION_NEUTRAL_CLASS =
+  `${DETAIL_PANEL_ACTION_BASE_CLASS} border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200`;
+const DETAIL_PANEL_ACTION_VIOLET_CLASS =
+  `${DETAIL_PANEL_ACTION_BASE_CLASS} border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-700 dark:bg-violet-950/30 dark:text-violet-300`;
+const DETAIL_PANEL_ACTION_SKY_CLASS =
+  `${DETAIL_PANEL_ACTION_BASE_CLASS} border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-950/30 dark:text-sky-300`;
+
 const cleanText = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -120,6 +137,15 @@ const asNumber = (value: unknown, fallback = 0): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+
+const publicCaseMetaOf = (item: Module4GraphFileItem) => asRecord(asRecord(item.metadata).public_case);
+
+const isPublicCaseFile = (item: Module4GraphFileItem) =>
+  cleanText(asRecord(item.metadata).visibility).toLowerCase() === 'public_case';
+
+const publicCaseSortOrderOf = (item: Module4GraphFileItem) => asNumber(publicCaseMetaOf(item).sort_order, 1000);
+
+const publicCaseCaseIdOf = (item: Module4GraphFileItem) => cleanText(publicCaseMetaOf(item).case_id || item.file_hash);
 
 type LinkedNodeResolutionDiagnostics = {
   candidateCount: number;
@@ -308,7 +334,8 @@ const mergeGraphSnapshots = (base: Module4GraphResponse, patch: Module4GraphResp
   };
 };
 
-const displayFileName = (item: Module4GraphFileItem) => String(item.file_name || item.file_hash || '未命名文件').trim();
+const displayFileName = (item: Module4GraphFileItem) =>
+  cleanText(publicCaseMetaOf(item).display_name || item.file_name || item.file_hash || '未命名文件');
 
 const isReadyFile = (item: Module4GraphFileItem) => String(item.status || '').toLowerCase() === 'ready';
 
@@ -362,6 +389,15 @@ const fileQualityRank = (item: Module4GraphFileItem) => {
 
 const sortGraphFiles = (items: Module4GraphFileItem[]) =>
   [...items].sort((left, right) => {
+    const visibilityDelta = Number(isPublicCaseFile(left)) - Number(isPublicCaseFile(right));
+    if (visibilityDelta !== 0) return visibilityDelta;
+
+    if (isPublicCaseFile(left) && isPublicCaseFile(right)) {
+      const sortOrderDelta = publicCaseSortOrderOf(left) - publicCaseSortOrderOf(right);
+      if (sortOrderDelta !== 0) return sortOrderDelta;
+      return displayFileName(left).localeCompare(displayFileName(right), 'zh-CN');
+    }
+
     const rankDelta = fileQualityRank(right) - fileQualityRank(left);
     if (rankDelta !== 0) return rankDelta;
 
@@ -378,14 +414,16 @@ const sortGraphFiles = (items: Module4GraphFileItem[]) =>
 const dedupePreferredGraphFiles = (items: Module4GraphFileItem[]) => {
   const deduped = new Map<string, Module4GraphFileItem>();
   sortGraphFiles(items).forEach((item) => {
-    const key = cleanText(item.file_name || item.file_hash || '').toLowerCase() || item.file_hash;
+    const key = graphFileDedupeKey(item);
     if (!deduped.has(key)) deduped.set(key, item);
   });
   return [...deduped.values()];
 };
 
 const graphFileDedupeKey = (item: Module4GraphFileItem) =>
-  cleanText(item.file_name || item.file_hash || '').toLowerCase() || cleanText(item.file_hash);
+  isPublicCaseFile(item)
+    ? `public:${publicCaseCaseIdOf(item)}`
+    : `private:${cleanText(item.file_name || item.file_hash || '').toLowerCase() || cleanText(item.file_hash)}`;
 
 type HiddenGraphFileReason = {
   item: Module4GraphFileItem;
@@ -579,6 +617,14 @@ export const KnowledgeNexus: React.FC = () => {
           ? graphRAGFiles
           : dedupePreferredGraphFiles(graphFiles.filter(isGraphRenderableFile)),
     [finalGraphRAGFiles, graphFiles, graphRAGFiles]
+  );
+  const visiblePrivateFiles = useMemo(
+    () => visibleFiles.filter((item) => !isPublicCaseFile(item)),
+    [visibleFiles]
+  );
+  const visiblePublicCaseFiles = useMemo(
+    () => visibleFiles.filter(isPublicCaseFile),
+    [visibleFiles]
   );
   const hiddenGraphFileReasons = useMemo<HiddenGraphFileReason[]>(() => {
     const visibleIdSet = new Set(visibleFiles.map((item) => item.graph_file_id));
@@ -1110,8 +1156,10 @@ export const KnowledgeNexus: React.FC = () => {
         : readyGraphRAGFiles.length
           ? readyGraphRAGFiles
           : dedupePreferredGraphFiles(files.filter(isGraphRenderableFile));
+      const privateReadyFiles = readyFiles.filter((item) => !isPublicCaseFile(item));
+      const publicReadyFiles = readyFiles.filter(isPublicCaseFile);
       const activeFileHash = getActiveExtractionFileHash();
-      const fallbackHash = readyFiles[0]?.file_hash || '';
+      const fallbackHash = privateReadyFiles[0]?.file_hash || publicReadyFiles[0]?.file_hash || '';
       const currentFileHash = selectedFileHashRef.current;
       const preferredHash =
         (currentFileHash && readyFiles.some((item) => item.file_hash === currentFileHash) && currentFileHash) ||
@@ -1388,6 +1436,11 @@ export const KnowledgeNexus: React.FC = () => {
                     <>
                       <img src={getFileIcon(selectedFile.file_name)} alt="icon" className="h-3.5 w-3.5 shrink-0 object-contain" />
                       <span className="truncate">{displayFileName(selectedFile)}</span>
+                      {isPublicCaseFile(selectedFile) ? (
+                        <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                          案例
+                        </span>
+                      ) : null}
                     </>
                   ) : (
                     <>
@@ -1420,7 +1473,12 @@ export const KnowledgeNexus: React.FC = () => {
                     <Network size={14} className="shrink-0 text-slate-500 dark:text-slate-400" />
                     <span className="truncate">租户总图</span>
                   </button>
-                  {visibleFiles.map((item) => (
+                  {visiblePrivateFiles.length > 0 ? (
+                    <div className="px-3 pt-2 text-[10px] font-semibold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                      我的图谱
+                    </div>
+                  ) : null}
+                  {visiblePrivateFiles.map((item) => (
                     <button
                       key={item.graph_file_id}
                       type="button"
@@ -1433,6 +1491,29 @@ export const KnowledgeNexus: React.FC = () => {
                     >
                       <img src={getFileIcon(item.file_name)} alt="icon" className="h-3.5 w-3.5 shrink-0 object-contain" />
                       <span className="truncate">{displayFileName(item)}</span>
+                    </button>
+                  ))}
+                  {visiblePublicCaseFiles.length > 0 ? (
+                    <div className="px-3 pt-2 text-[10px] font-semibold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                      案例图谱
+                    </div>
+                  ) : null}
+                  {visiblePublicCaseFiles.map((item) => (
+                    <button
+                      key={item.graph_file_id}
+                      type="button"
+                      onClick={() => handleFileSelect(item.file_hash)}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors ${
+                        selectedFileHash === item.file_hash
+                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                          : 'text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      <img src={getFileIcon(item.file_name)} alt="icon" className="h-3.5 w-3.5 shrink-0 object-contain" />
+                      <span className="truncate">{displayFileName(item)}</span>
+                      <span className="ml-auto rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                        只读
+                      </span>
                     </button>
                   ))}
 
@@ -1770,193 +1851,220 @@ export const KnowledgeNexus: React.FC = () => {
 
         {/* 右侧详情面板 */}
         {(selectedNode || selectedEdge) && (
-          <aside className="w-80 shrink-0 overflow-y-auto border-l border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">当前选中</h2>
-              <div className="flex items-center gap-2">
-                {renderMode !== 'overview' && (
-                  <button
-                    type="button"
-                    onClick={switchToOverview}
-                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                  >
-                    返回总览
-                  </button>
-                )}
-              </div>
+          <aside className="flex w-80 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white/95 backdrop-blur-md dark:border-white/5 dark:bg-slate-950/95">
+            <div className="flex h-11 shrink-0 items-center justify-between px-4 pt-2">
+              <h2 className={DETAIL_PANEL_SECTION_TITLE_CLASS}>当前选中</h2>
+              {renderMode !== 'overview' && (
+                <button
+                  type="button"
+                  onClick={switchToOverview}
+                  className={DETAIL_PANEL_ACTION_NEUTRAL_CLASS}
+                >
+                  返回总览
+                </button>
+              )}
             </div>
 
-            {selectedNode ? (
-              <div className="mt-4 space-y-3 text-xs">
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/50">
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400">节点名称</div>
-                  <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">{selectedNode.label}</div>
-                  {selectedNodePreview && (
-                    <div className="mt-2 whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-slate-300">
-                      {selectedNodePreview}
+            <div className="px-4 pb-4">
+              {selectedNode ? (
+                <div className="space-y-3 text-xs">
+                  <div className={DETAIL_PANEL_CARD_SOFT_CLASS}>
+                    <div className={DETAIL_PANEL_LABEL_CLASS}>节点名称</div>
+                    <div className="mt-1 text-[12px] font-semibold leading-5 text-slate-900 dark:text-slate-100">
+                      {selectedNode.label}
                     </div>
-                  )}
-                </div>
+                    {selectedNodePreview && (
+                      <div className="mt-2 whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-slate-300">
+                        {selectedNodePreview}
+                      </div>
+                    )}
+                  </div>
 
-                <div className="flex flex-wrap gap-2">
-                  {selectedNode.kind === 'community' && (
-                    <button
-                      type="button"
-                      onClick={() => void expandNodeNeighborhood(selectedNode.id, 2)}
-                      className="rounded border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-100 dark:border-violet-700 dark:bg-violet-950/30 dark:text-violet-300"
-                    >
-                      进入社区聚焦
-                    </button>
-                  )}
-                  {selectedNode.kind === 'entity' && (
-                    <button
-                      type="button"
-                      onClick={() => void expandNodeNeighborhood(selectedNode.id, 2)}
-                      className="rounded border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-950/30 dark:text-sky-300"
-                    >
-                      进入实体钻取
-                    </button>
-                  )}
-                  {selectedNode.communityId && selectedNode.kind !== 'community' && (
-                    <button
-                      type="button"
-                      onClick={() => void expandNodeNeighborhood(String(selectedNode.communityId), 2)}
-                      className="rounded border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                    >
-                      查看所属社区
-                    </button>
-                  )}
-                </div>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedNode.kind === 'community' && (
+                      <button
+                        type="button"
+                        onClick={() => void expandNodeNeighborhood(selectedNode.id, 2)}
+                        className={DETAIL_PANEL_ACTION_VIOLET_CLASS}
+                      >
+                        进入社区聚焦
+                      </button>
+                    )}
+                    {selectedNode.kind === 'entity' && (
+                      <button
+                        type="button"
+                        onClick={() => void expandNodeNeighborhood(selectedNode.id, 2)}
+                        className={DETAIL_PANEL_ACTION_SKY_CLASS}
+                      >
+                        进入实体钻取
+                      </button>
+                    )}
+                    {selectedNode.communityId && selectedNode.kind !== 'community' && (
+                      <button
+                        type="button"
+                        onClick={() => void expandNodeNeighborhood(String(selectedNode.communityId), 2)}
+                        className={DETAIL_PANEL_ACTION_NEUTRAL_CLASS}
+                      >
+                        查看所属社区
+                      </button>
+                    )}
+                  </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                    <div className="text-[10px] text-slate-500">类型</div>
-                    <div className="mt-1 font-medium text-slate-700 dark:text-slate-200">
-                      {formatTypeName(selectedNodeMeta?.node_type_label || selectedNodeMeta?.node_type_key || selectedNode.kind)}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                      <div className={DETAIL_PANEL_LABEL_CLASS}>类型</div>
+                      <div className={DETAIL_PANEL_VALUE_CLASS}>
+                        {formatTypeName(selectedNodeMeta?.node_type_label || selectedNodeMeta?.node_type_key || selectedNode.kind)}
+                      </div>
+                    </div>
+                    <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                      <div className={DETAIL_PANEL_LABEL_CLASS}>角色</div>
+                      <div className={DETAIL_PANEL_VALUE_CLASS}>{formatTypeName(selectedNode.role)}</div>
+                    </div>
+                    <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                      <div className={DETAIL_PANEL_LABEL_CLASS}>连接度</div>
+                      <div className={DETAIL_PANEL_VALUE_CLASS}>{selectedNode.degree}</div>
+                    </div>
+                    <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                      <div className={DETAIL_PANEL_LABEL_CLASS}>所属簇</div>
+                      <div className={DETAIL_PANEL_VALUE_CLASS}>{selectedClusterLabel}</div>
                     </div>
                   </div>
-                  <div className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                    <div className="text-[10px] text-slate-500">角色</div>
-                    <div className="mt-1 font-medium text-slate-700 dark:text-slate-200">{formatTypeName(selectedNode.role)}</div>
-                  </div>
-                    <div className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                      <div className="text-[10px] text-slate-500">连接度</div>
-                      <div className="mt-1 font-medium text-slate-700 dark:text-slate-200">{selectedNode.degree}</div>
-                    </div>
-                  <div className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                    <div className="text-[10px] text-slate-500">所属簇</div>
-                    <div className="mt-1 font-medium text-slate-700 dark:text-slate-200">{selectedClusterLabel}</div>
-                  </div>
-                </div>
 
-                <div className="rounded border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-700 dark:bg-slate-900/50">
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400">节点证据</div>
-                  {nodeDetailLoading ? (
-                    <div className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">正在加载证据...</div>
-                  ) : nodeDetailError ? (
-                    <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-300">{nodeDetailError}</div>
-                  ) : nodeDetailEvidence.length > 0 ? (
-                    <div className="mt-1.5 max-h-40 space-y-1.5 overflow-auto pr-1">
-                      {nodeDetailEvidence.slice(0, 6).map((evidence) => (
-                        <div
-                          key={evidence.evidence_id}
-                          className="rounded border border-slate-200 bg-white px-2 py-1.5 text-[10px] leading-4 text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-                          title={cleanText(evidence.snippet)}
+                  <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                    <div className={DETAIL_PANEL_LABEL_CLASS}>节点证据</div>
+                    {nodeDetailLoading ? (
+                      <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">正在加载证据...</div>
+                    ) : nodeDetailError ? (
+                      <div className="mt-2 text-[11px] text-amber-600 dark:text-amber-300">{nodeDetailError}</div>
+                    ) : nodeDetailEvidence.length > 0 ? (
+                      <div className="mt-2 max-h-48 space-y-1.5 overflow-auto pr-1">
+                        {nodeDetailEvidence.slice(0, 6).map((evidence) => (
+                          <div
+                            key={evidence.evidence_id}
+                            className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2 text-[10px] leading-5 text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                            title={cleanText(evidence.snippet)}
                           >
                             {cleanText(evidence.snippet) || '（空证据片段）'}
                           </div>
-                      ))}
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">暂无可用证据</div>
+                    )}
+                    {nodeDetailEdgeEvidenceCount > 0 && (
+                      <div className="mt-2 text-[10px] text-slate-500 dark:text-slate-400">
+                        关联边证据条目 {nodeDetailEdgeEvidenceCount}
+                      </div>
+                    )}
+                  </div>
+
+                  {renderMode === 'community-focus' && selectedCommunity && (
+                    <div className="rounded-md border border-violet-200 bg-violet-50/70 p-3 dark:border-violet-800/70 dark:bg-violet-950/30">
+                      <div className="text-[10px] font-medium text-violet-700 dark:text-violet-300">社区聚焦</div>
+                      <div className="mt-1 text-[11px] leading-5 text-slate-700 dark:text-slate-200">
+                        成员数量：{selectedCommunity.entityCount} | 层级：{selectedCommunity.level}
+                      </div>
                     </div>
-                  ) : (
-                    <div className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">暂无可用证据</div>
                   )}
-                  {nodeDetailEdgeEvidenceCount > 0 && (
-                    <div className="mt-2 text-[10px] text-slate-500 dark:text-slate-400">
-                      关联边证据条目 {nodeDetailEdgeEvidenceCount}
+                  {renderMode === 'entity-drilldown' && (
+                    <div className="rounded-md border border-sky-200 bg-sky-50/70 p-3 dark:border-sky-800/70 dark:bg-sky-950/30">
+                      <div className="text-[10px] font-medium text-sky-700 dark:text-sky-300">实体钻取</div>
+                      <div className="mt-1 text-[11px] leading-5 text-slate-700 dark:text-slate-200">
+                        证据节点：{evidenceNodeCount}
+                      </div>
                     </div>
                   )}
                 </div>
-
-                {renderMode === 'community-focus' && selectedCommunity && (
-                  <div className="mt-2 rounded border border-violet-200 bg-violet-50/70 p-3 dark:border-violet-800/70 dark:bg-violet-950/30">
-                    <div className="text-[10px] text-violet-700 dark:text-violet-300">社区聚焦</div>
-                    <div className="mt-1 text-[11px] text-slate-700 dark:text-slate-200">
-                      成员数量：{selectedCommunity.entityCount} | 层级：{selectedCommunity.level}
+              ) : selectedEdge ? (
+                <div className="space-y-3 text-xs">
+                  <div className={DETAIL_PANEL_CARD_SOFT_CLASS}>
+                    <div className={DETAIL_PANEL_LABEL_CLASS}>关系标签</div>
+                    <div className="mt-1 text-[12px] font-semibold leading-5 text-slate-900 dark:text-slate-100">
+                      {selectedEdge.label}
                     </div>
                   </div>
-                )}
-                {renderMode === 'entity-drilldown' && (
-                  <div className="mt-2 rounded border border-sky-200 bg-sky-50/70 p-3 dark:border-sky-800/70 dark:bg-sky-950/30">
-                    <div className="text-[10px] text-sky-700 dark:text-sky-300">实体钻取</div>
-                    <div className="mt-1 text-[11px] text-slate-700 dark:text-slate-200">证据节点：{evidenceNodeCount}</div>
-                  </div>
-                )}
-              </div>
-            ) : selectedEdge ? (
-              <div className="mt-4 space-y-3 text-xs">
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/50">
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400">关系标签</div>
-                  <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">{selectedEdge.label}</div>
-                </div>
 
-                {Boolean((selectedEdge.meta || {}).aggregated) && renderMode === 'overview' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void expandNodeNeighborhood(selectedEdge.source, 2);
-                      if (selectedEdge.target !== selectedEdge.source) {
-                        void expandNodeNeighborhood(selectedEdge.target, 2);
-                      }
-                    }}
-                    className="rounded border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-100 dark:border-violet-700 dark:bg-violet-950/30 dark:text-violet-300"
-                  >
-                    进入关联社区聚焦
-                  </button>
-                )}
+                  {Boolean((selectedEdge.meta || {}).aggregated) && renderMode === 'overview' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void expandNodeNeighborhood(selectedEdge.source, 2);
+                        if (selectedEdge.target !== selectedEdge.source) {
+                          void expandNodeNeighborhood(selectedEdge.target, 2);
+                        }
+                      }}
+                      className={DETAIL_PANEL_ACTION_VIOLET_CLASS}
+                    >
+                      进入关联社区聚焦
+                    </button>
+                  )}
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                    <div className="text-[10px] text-slate-500">关系类型</div>
-                    <div className="mt-1 font-medium text-slate-700 dark:text-slate-200">{formatTypeName(selectedEdge.kind)}</div>
-                  </div>
-                  <div className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                    <div className="text-[10px] text-slate-500">权重</div>
-                    <div className="mt-1 font-medium text-slate-700 dark:text-slate-200">{selectedEdge.weight.toFixed(2)}</div>
-                  </div>
-                  <div className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                    <div className="text-[10px] text-slate-500">置信度</div>
-                    <div className="mt-1 font-medium text-slate-700 dark:text-slate-200">{selectedEdge.strength.toFixed(2)}</div>
-                  </div>
-                  <div className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/50">
-                    <div className="text-[10px] text-slate-500">聚合关系</div>
-                    <div className="mt-1 font-medium text-slate-700 dark:text-slate-200">
-                      {Boolean((selectedEdge.meta || {}).aggregated) ? '是' : '否'}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                      <div className={DETAIL_PANEL_LABEL_CLASS}>关系类型</div>
+                      <div className={DETAIL_PANEL_VALUE_CLASS}>{formatTypeName(selectedEdge.kind)}</div>
+                    </div>
+                    <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                      <div className={DETAIL_PANEL_LABEL_CLASS}>权重</div>
+                      <div className={DETAIL_PANEL_VALUE_CLASS}>{selectedEdge.weight.toFixed(2)}</div>
+                    </div>
+                    <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                      <div className={DETAIL_PANEL_LABEL_CLASS}>置信度</div>
+                      <div className={DETAIL_PANEL_VALUE_CLASS}>{selectedEdge.strength.toFixed(2)}</div>
+                    </div>
+                    <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                      <div className={DETAIL_PANEL_LABEL_CLASS}>聚合关系</div>
+                      <div className={DETAIL_PANEL_VALUE_CLASS}>
+                        {Boolean((selectedEdge.meta || {}).aggregated) ? '是' : '否'}
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="rounded border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-700 dark:bg-slate-900/50">
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400">边证据条目</div>
-                  <div className="mt-1 text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                    {selectedEdgeEvidenceCount > 0 ? selectedEdgeEvidenceCount : '暂无'}
+
+                  <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                    <div className={DETAIL_PANEL_LABEL_CLASS}>边证据条目</div>
+                    <div className={DETAIL_PANEL_VALUE_CLASS}>{selectedEdgeEvidenceCount > 0 ? selectedEdgeEvidenceCount : '暂无'}</div>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-6 text-center text-[11px] text-slate-500 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-400">
-                点击画布节点或关系进行高亮。
-                <br />如需进入聚焦/钻取模式，请在选中节点后点击操作按钮。
-              </div>
-            )}
+              ) : (
+                <div className={`${DETAIL_PANEL_CARD_SOFT_CLASS} py-6 text-center text-[11px] text-slate-500 dark:text-slate-400`}>
+                  点击画布节点或关系进行高亮。
+                  <br />如需进入聚焦/钻取模式，请在选中节点后点击操作按钮。
+                </div>
+              )}
+            </div>
 
-            <div className="mt-6 border-t border-slate-100 pt-4 dark:border-slate-800">
-              <h3 className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">渲染统计</h3>
-              <div className="mt-2 grid grid-cols-2 gap-y-2 text-[10px] text-slate-600 dark:text-slate-400">
-                <div>原始节点: {renderModel.stats.rawNodeCount}</div>
-                <div>原始边: {renderModel.stats.rawEdgeCount}</div>
-                <div>可见节点: {renderModel.stats.renderedNodeCount}</div>
-                <div>可见边: {renderModel.stats.renderedEdgeCount}</div>
-                <div>当前模式: {modeText}</div>
-                <div>证据节点: {evidenceNodeCount}</div>
+            <div className="mx-4 my-2 h-px bg-slate-200/60 dark:bg-slate-800/60" />
+
+            <div className="flex h-11 shrink-0 items-center px-4 pt-2">
+              <h3 className={DETAIL_PANEL_SECTION_TITLE_CLASS}>渲染统计</h3>
+            </div>
+            <div className="px-4 pb-4">
+              <div className="grid grid-cols-2 gap-2 text-[10px]">
+                <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                  <div className={DETAIL_PANEL_LABEL_CLASS}>原始节点</div>
+                  <div className={DETAIL_PANEL_VALUE_CLASS}>{renderModel.stats.rawNodeCount}</div>
+                </div>
+                <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                  <div className={DETAIL_PANEL_LABEL_CLASS}>原始边</div>
+                  <div className={DETAIL_PANEL_VALUE_CLASS}>{renderModel.stats.rawEdgeCount}</div>
+                </div>
+                <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                  <div className={DETAIL_PANEL_LABEL_CLASS}>可见节点</div>
+                  <div className={DETAIL_PANEL_VALUE_CLASS}>{renderModel.stats.renderedNodeCount}</div>
+                </div>
+                <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                  <div className={DETAIL_PANEL_LABEL_CLASS}>可见边</div>
+                  <div className={DETAIL_PANEL_VALUE_CLASS}>{renderModel.stats.renderedEdgeCount}</div>
+                </div>
+                <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                  <div className={DETAIL_PANEL_LABEL_CLASS}>当前模式</div>
+                  <div className={DETAIL_PANEL_VALUE_CLASS}>{modeText}</div>
+                </div>
+                <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
+                  <div className={DETAIL_PANEL_LABEL_CLASS}>证据节点</div>
+                  <div className={DETAIL_PANEL_VALUE_CLASS}>{evidenceNodeCount}</div>
+                </div>
               </div>
             </div>
           </aside>

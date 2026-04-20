@@ -20,8 +20,6 @@ type MobilePreviewPageProps = {
   body: React.ReactNode;
   secondaryButtonClassName: string;
   secondaryActiveButtonClassName: string;
-  primaryButtonClassName: string;
-  onDownload: () => void;
   onSwitchMode: (mode: 'current' | 'original' | 'compare') => void;
   onPdfPageInputChange: (value: string) => void;
   onPdfPageInputCommit: () => void;
@@ -46,8 +44,6 @@ export const MobilePreviewPage: React.FC<MobilePreviewPageProps> = ({
   body,
   secondaryButtonClassName,
   secondaryActiveButtonClassName,
-  primaryButtonClassName,
-  onDownload,
   onSwitchMode,
   onPdfPageInputChange,
   onPdfPageInputCommit,
@@ -57,19 +53,28 @@ export const MobilePreviewPage: React.FC<MobilePreviewPageProps> = ({
   onRotate,
   onResetView,
 }) => {
-  const shouldShowModeSwitcher = Boolean(currentFile) && mode !== 'original';
+  const shouldShowModeSwitcher = Boolean(currentFile) && (canPreviewOriginal || canComparePreview);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="absolute inset-0 flex flex-col">
       {currentFile ? (
-      <div className="mt-3 shrink-0 space-y-2.5">
+      <div className="relative z-10 shrink-0 space-y-1 border-b border-slate-100/50 bg-white/95 pb-1.5 pt-1.5 shadow-sm backdrop-blur-xl dark:border-slate-800/50 dark:bg-slate-950/95">
         {shouldShowModeSwitcher ? (
-          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <div className="flex items-center gap-1.5 overflow-x-auto px-3 pb-1">
+            <button
+              type="button"
+              onClick={() => onSwitchMode('current')}
+              className={`shrink-0 rounded-full px-3 py-1 text-[13px] font-medium ${
+                mode === 'current' ? secondaryActiveButtonClassName : secondaryButtonClassName
+              }`}
+            >
+              {currentFile?.sourceFileId ? '修改文件' : '当前文件'}
+            </button>
             {canPreviewOriginal ? (
               <button
                 type="button"
                 onClick={() => onSwitchMode('original')}
-                className={`shrink-0 rounded-2xl px-3 py-1.5 text-sm font-medium ${
+                className={`shrink-0 rounded-full px-3 py-1 text-[13px] font-medium ${
                   mode === 'original' ? secondaryActiveButtonClassName : secondaryButtonClassName
                 }`}
               >
@@ -80,7 +85,7 @@ export const MobilePreviewPage: React.FC<MobilePreviewPageProps> = ({
               <button
                 type="button"
                 onClick={() => onSwitchMode('compare')}
-                className={`shrink-0 rounded-2xl px-3 py-1.5 text-sm font-medium ${
+                className={`shrink-0 rounded-full px-3 py-1 text-[13px] font-medium ${
                   mode === 'compare' ? secondaryActiveButtonClassName : secondaryButtonClassName
                 }`}
               >
@@ -90,21 +95,21 @@ export const MobilePreviewPage: React.FC<MobilePreviewPageProps> = ({
           </div>
         ) : null}
 
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        <div className="flex items-center gap-1.5 overflow-x-auto px-3 pb-0.5 hide-scrollbar">
           {isPreviewPdf && (
             <>
               <button
                 type="button"
                 onClick={() => onNavigatePdfPage(pdfPage - 1)}
                 disabled={pdfPage <= 1}
-                className={`shrink-0 rounded-xl p-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
                 title="上一页"
                 aria-label="上一页"
               >
-                <ChevronLeft size={16} />
+                <ChevronLeft size={16} strokeWidth={2} />
               </button>
-              <div className="flex shrink-0 items-center gap-2 rounded-xl border border-[#deebff] bg-white/88 px-2.5 py-1.5 shadow-[0_8px_18px_-18px_rgba(42,100,246,0.18)] dark:border-slate-700 dark:bg-slate-900/88 dark:shadow-none">
-                <span className="text-xs font-medium text-[#6c8197] dark:text-slate-400">第</span>
+              <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-slate-200/60 bg-white/90 px-3 shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:border-slate-700/80 dark:bg-slate-900/80">
+                <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">第</span>
                 <input
                   type="number"
                   min={1}
@@ -118,9 +123,9 @@ export const MobilePreviewPage: React.FC<MobilePreviewPageProps> = ({
                       onPdfPageInputCommit();
                     }
                   }}
-                  className="w-14 rounded-lg border border-[#d6e4fb] bg-white px-2 py-1 text-center text-xs font-semibold text-[#36516f] outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className="w-10 bg-transparent text-center text-[13px] font-bold text-slate-700 outline-none dark:text-slate-200"
                 />
-                <span className="text-xs font-medium text-[#6c8197] dark:text-slate-400">
+                <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">
                   页{maxPdfPage ? ` / ${maxPdfPage}` : ''}
                 </span>
               </div>
@@ -128,52 +133,53 @@ export const MobilePreviewPage: React.FC<MobilePreviewPageProps> = ({
                 type="button"
                 onClick={() => onNavigatePdfPage(pdfPage + 1)}
                 disabled={Boolean(maxPdfPage && pdfPage >= maxPdfPage)}
-                className={`shrink-0 rounded-xl p-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
                 title="下一页"
                 aria-label="下一页"
               >
-                <ChevronRight size={16} />
+                <ChevronRight size={16} strokeWidth={2} />
               </button>
+              <div className="h-4 w-px bg-slate-200 mx-1 dark:bg-slate-700"></div>
             </>
           )}
           <button
             type="button"
             onClick={onZoomOut}
             disabled={!canTransformPreview}
-            className={`shrink-0 rounded-xl p-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
             title="缩小"
             aria-label="缩小"
           >
-            <ZoomOut size={16} />
+            <ZoomOut size={14} strokeWidth={2} />
           </button>
-          <span className="min-w-[4.25rem] shrink-0 text-center text-xs font-semibold text-[#6c8197] dark:text-slate-400">
+          <span className="min-w-[3rem] shrink-0 text-center text-[12px] font-semibold text-slate-600 dark:text-slate-400">
             {Math.round(scale * 100)}%
           </span>
           <button
             type="button"
             onClick={onZoomIn}
             disabled={!canTransformPreview}
-            className={`shrink-0 rounded-xl p-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
             title="放大"
             aria-label="放大"
           >
-            <ZoomIn size={16} />
+            <ZoomIn size={14} strokeWidth={2} />
           </button>
           <button
             type="button"
             onClick={onRotate}
             disabled={!canTransformPreview}
-            className={`shrink-0 rounded-xl p-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
             title="旋转"
             aria-label="旋转"
           >
-            <RotateCw size={16} />
+            <RotateCw size={14} strokeWidth={2} />
           </button>
           <button
             type="button"
             onClick={onResetView}
             disabled={!canTransformPreview && !isPreviewPdf}
-            className={`shrink-0 rounded-xl px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
+            className={`shrink-0 rounded-full px-3 py-1 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${secondaryButtonClassName}`}
             title="重置视图"
           >
             重置
@@ -182,7 +188,7 @@ export const MobilePreviewPage: React.FC<MobilePreviewPageProps> = ({
       </div>
     ) : null}
 
-    <div className="min-h-0 flex-1 overflow-hidden px-1.5 py-2">
+    <div className="relative min-h-0 flex-1 w-full bg-white dark:bg-slate-950">
       {body}
     </div>
     </div>

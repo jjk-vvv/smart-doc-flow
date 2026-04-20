@@ -1794,6 +1794,22 @@ const jobStatusLabel = (value?: Module4JobResponse['status'] | string | null) =>
   return labelsZh[normalized] || prettifyToken(String(value ?? ''));
 };
 
+const jobStageLabel = (value?: string | null) => {
+  const normalized = String(value || '').toLowerCase();
+  const labelsZh: Record<string, string> = {
+    processing_documents: '\u6587\u6863\u5904\u7406\u4e2d',
+    rebuilding: '\u56fe\u8c31\u91cd\u5efa\u4e2d',
+    indexing: '\u7d22\u5f15\u6784\u5efa\u4e2d',
+    importing_graph: '\u56fe\u8c31\u5165\u5e93\u4e2d',
+    validating_runtime: '\u8fd0\u884c\u65f6\u6821\u9a8c\u4e2d',
+    normalizing: '\u5185\u5bb9\u89c4\u6574\u4e2d',
+    ready: '\u5c31\u7eea',
+    success: '\u6210\u529f',
+    failed: '\u5931\u8d25',
+  };
+  return labelsZh[normalized] || prettifyToken(String(value ?? ''));
+};
+
 const ruleScopeLabel = (rule: Module4RuleItem) => {
   const expr = asRecord(rule.expr);
   const scope = firstText(expr.scope, expr.target_scope, expr.applies_to, expr.node_type, expr.edge_type);
@@ -3617,6 +3633,7 @@ export const KnowledgeNexus: React.FC = () => {
   const [alerts, setAlerts] = useState<Module4AlertItem[]>([]);
   const [healthz, setHealthz] = useState<Module4HealthzResponse | null>(null);
   const [currentJob, setCurrentJob] = useState<Module4JobResponse | null>(null);
+  const [displayJobProgress, setDisplayJobProgress] = useState(0);
   const [rules, setRules] = useState<Module4RuleItem[]>([]);
   const [selectedRuleId, setSelectedRuleId] = useState('');
   const [togglingRuleId, setTogglingRuleId] = useState('');
@@ -3906,6 +3923,26 @@ export const KnowledgeNexus: React.FC = () => {
   const utilityNodeCountLabel = String(filteredGraph.nodes.length) + ' ' + UI_TEXT.nodeCountMetric;
   const utilityAlertCountLabel = String(openAlertCount) + ' ' + UI_TEXT.alertCountMetric;
   const utilityDockToggleLabel = isUtilityDockOpen ? UI_TEXT.collapseUtilityDock : UI_TEXT.expandUtilityDock;
+  const currentJobStatus = String(currentJob?.status || '').toLowerCase();
+  const currentJobActive = currentJobStatus === 'running' || currentJobStatus === 'queued';
+  const currentJobResult = asRecord(currentJob?.result);
+  const currentGraphFileMeta = asRecord(currentGraphFile?.metadata);
+  const currentJobStageRaw = normalizeText(
+    firstText(
+      currentJobResult.stage,
+      currentJobResult.failure_stage,
+      currentGraphFileMeta.stage,
+      currentGraphFileMeta.current_stage
+    )
+  );
+  const currentJobStageText = currentJobStageRaw ? jobStageLabel(currentJobStageRaw) : '';
+  const progressBarFillTone =
+    currentJobStatus === 'success'
+      ? 'bg-emerald-500'
+      : currentJobStatus === 'failed' || currentJobStatus === 'cancelled'
+        ? 'bg-rose-500'
+        : 'bg-blue-500';
+  const roundedJobProgress = Math.round(displayJobProgress);
   const selectedRule = useMemo(
     () => sortedRules.find((item) => item.rule_id === selectedRuleId) || null,
     [selectedRuleId, sortedRules]
@@ -4438,27 +4475,64 @@ export const KnowledgeNexus: React.FC = () => {
     }
 
     let cancelled = false;
+    let timer: number | null = null;
+
+    const shouldFastPoll = (job?: Module4JobResponse | null) => {
+      const status = String(job?.status || '').toLowerCase();
+      return status === 'running' || status === 'queued';
+    };
+
+    const scheduleNextPoll = (delayMs: number) => {
+      if (cancelled) return;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+      timer = window.setTimeout(() => {
+        void loadJob();
+      }, delayMs);
+    };
+
     const loadJob = async () => {
       try {
-        const job = await fetchModule4JobStatus(jobId);
+        const job = await fetchModule4JobStatus(jobId, { statusOnly: true });
         if (cancelled) return;
         setCurrentJob(job);
+        if (shouldFastPoll(job)) {
+          scheduleNextPoll(1200);
+        }
       } catch {
         if (cancelled) return;
         setCurrentJob(null);
+        scheduleNextPoll(5000);
       }
     };
 
     void loadJob();
-    const timer = window.setInterval(() => {
-      void loadJob();
-    }, 5000);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
   }, [currentGraphFile?.current_job_id]);
+
+  useEffect(() => {
+    setDisplayJobProgress(0);
+  }, [currentGraphFile?.current_job_id]);
+
+  useEffect(() => {
+    if (!currentJob) return;
+    const status = String(currentJob.status || '').toLowerCase();
+    const rawProgress = Number(currentJob.progress);
+    const safeProgress = Number.isFinite(rawProgress) ? Math.min(100, Math.max(0, rawProgress)) : 0;
+
+    setDisplayJobProgress((prev) => {
+      if (status === 'success') return 100;
+      if (status === 'failed' || status === 'cancelled') return safeProgress;
+      return Math.max(prev, safeProgress);
+    });
+  }, [currentJob]);
 
   useEffect(() => {
     if (!currentGraphFile || !graphFileHasUsableVersion(currentGraphFile) || !currentFileHash) {
@@ -5105,6 +5179,42 @@ export const KnowledgeNexus: React.FC = () => {
                   <RefreshCw size={18} className={cn(loading && 'animate-spin')} />
                 </button>
               </div>
+
+              {currentJob ? (
+                <div className="pointer-events-auto px-6 pt-2">
+                  <div className="rounded-2xl border border-slate-200/80 bg-white/92 px-4 py-3 shadow-[0_12px_26px_-18px_rgba(15,23,42,0.55)] backdrop-blur-md">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold tracking-[0.12em] text-slate-500">
+                          \u56fe\u8c31\u6784\u5efa\u8fdb\u5ea6
+                        </span>
+                        <span className={cn('rounded-full border px-2.5 py-1 text-[11px] font-medium', jobTone(currentJob))}>
+                          {jobStatusLabel(currentJob.status)}
+                        </span>
+                        {currentJobStageText ? (
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                            {'\u9636\u6bb5\uff1a' + currentJobStageText}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="text-sm font-semibold tabular-nums text-slate-700">
+                        {String(roundedJobProgress) + '%'}
+                      </div>
+                    </div>
+                    <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className={cn('h-full rounded-full transition-[width] duration-500 ease-out', progressBarFillTone)}
+                        style={{ width: `${roundedJobProgress}%` }}
+                      />
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      {currentJobActive
+                        ? '\u6b63\u5728\u5b9e\u65f6\u66f4\u65b0\u6784\u5efa\u8fdb\u5ea6\u2026'
+                        : '\u4efb\u52a1\u5df2\u8fdb\u5165\u7a33\u5b9a\u72b6\u6001\u3002'}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               <div className="pointer-events-auto px-6 pb-4 pt-2">
                 <div className="rounded-2xl border border-slate-200/80 bg-white/92 p-4 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.45)] backdrop-blur-md">

@@ -48,7 +48,15 @@ class Module2ExecutionFacade:
         tenant_id: str = "",
         request_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        del settings, request_headers
+        if self._use_upstream_job_control():
+            return await self.upstream_runtime.create_job(
+                settings,
+                files_payload=files_payload,
+                schema_form=schema_form,
+                tenant_id=tenant_id,
+                request_headers=request_headers or {},
+            )
+
         return await create_local_job(
             files_payload=files_payload,
             schema_form=schema_form,
@@ -62,7 +70,13 @@ class Module2ExecutionFacade:
         job_id: str,
         include_documents: bool = False,
     ) -> dict[str, Any]:
-        del settings
+        if self._use_upstream_job_control():
+            return self.upstream_runtime.get_job_status(
+                settings,
+                job_id=job_id,
+                include_documents=include_documents,
+            )
+
         return get_local_job_status(
             job_id=job_id,
             include_documents=include_documents,
@@ -76,7 +90,14 @@ class Module2ExecutionFacade:
         file_hash: str,
         file_name: str = "",
     ) -> dict[str, Any]:
-        del settings
+        if self._use_upstream_job_control():
+            return self.upstream_runtime.cancel_job_file(
+                settings,
+                job_id=job_id,
+                file_hash=file_hash,
+                file_name=file_name,
+            )
+
         return cancel_local_job_file(
             job_id=job_id,
             file_hash=file_hash,
@@ -230,6 +251,9 @@ class Module2ExecutionFacade:
     @staticmethod
     def _worker_script_path(settings: Settings):
         return Module2WorkerRuntime.worker_script_path(settings)
+
+    def _use_upstream_job_control(self) -> bool:
+        return str(self.extraction_settings.module2_execution_mode or "").strip().lower() == "upstream"
 
 
 @lru_cache(maxsize=1)

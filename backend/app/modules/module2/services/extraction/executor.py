@@ -79,29 +79,6 @@ class ExtractionJobExecutionService:
                 await self._persist_snapshot(job_id, True)
                 if not completion_state:
                     return
-                try:
-                    await self._module4_sync_callback_bundle.enqueue_document_sync_for_seed(
-                        source="module2",
-                        tenant_id=tenant_id,
-                        documents=[doc],
-                        seed=f"extract_job_doc:{job_id}:{schema_digest}:{file_index}:{file_hash}",
-                        mode="per_file",
-                    )
-                except Exception as sync_exc:
-                    self._logger.warning(
-                        "module2 failed to enqueue module4 document sync job=%s file=%s hash=%s: %s: %s",
-                        job_id,
-                        file_name,
-                        file_hash,
-                        type(sync_exc).__name__,
-                        sync_exc,
-                    )
-                    recorded = await self._extraction_job_runtime.append_job_error(
-                        job_id,
-                        f"{file_name}: module4_sync_enqueue_failed: {type(sync_exc).__name__}: {sync_exc}",
-                    )
-                    if recorded:
-                        await self._persist_snapshot(job_id, True)
             except Exception as exc:
                 updated = await self._extraction_job_runtime.fail_file(
                     job_id=job_id,
@@ -169,27 +146,5 @@ class ExtractionJobExecutionService:
 
         final_documents = await self._extraction_job_runtime.finalize_job(job_id)
         await self._persist_snapshot(job_id, True)
-        if final_documents:
-            try:
-                await self._module4_sync_callback_bundle.enqueue_document_sync_for_seed(
-                    source="module2",
-                    tenant_id=tenant_id,
-                    documents=final_documents,
-                    seed=f"extract_job_final:{job_id}:{schema_digest}",
-                    mode="final_batch",
-                )
-            except Exception as sync_exc:
-                self._logger.warning(
-                    "module2 failed to enqueue final module4 document sync job=%s: %s: %s",
-                    job_id,
-                    type(sync_exc).__name__,
-                    sync_exc,
-                )
-                recorded = await self._extraction_job_runtime.append_job_error(
-                    job_id,
-                    f"module4_sync_enqueue_failed: {type(sync_exc).__name__}: {sync_exc}",
-                )
-                if recorded:
-                    await self._persist_snapshot(job_id, True)
 
 __all__ = ["ExtractionJobExecutionService"]

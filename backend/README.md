@@ -20,7 +20,7 @@ Current backend topology:
 - `backend/app/modules/module4/`
   - specialized graph/runtime upstream
   - standard runtime is mounted directly inside the unified FastAPI app
-  - preferred Python runtime is now the repo-root `.venv-module4-py311`
+  - preferred Python runtime is now the repo-root `.venv`
   - legacy standalone `backend/module4` layout has been removed from the project layout
 
 Recommended runtime entrypoints:
@@ -124,7 +124,7 @@ Runtime env loading is now scope-aware:
 - module2 loads `backend/.env` plus `backend/app/modules/module2/.env`
 - module3 loads `backend/.env` plus `backend/app/modules/module3/.env`
 - module4 loads `backend/.env` plus `backend/app/modules/module4/.env`
-- module4 startup now resolves directly to the repo-root `.venv-module4-py311`
+- module4 startup now resolves directly to the repo-root `.venv`
 
 Data/storage direction:
 

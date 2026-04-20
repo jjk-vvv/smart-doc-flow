@@ -23,7 +23,7 @@ const frontendAppPort = managedBackendEnv.FRONTEND_APP_PORT || process.env.FRONT
 
 const backendPythonExec = resolvePythonExec({
   overrideExec: process.env.GATEWAY_PYTHON || process.env.PYTHON,
-  preferredVenvDirs: [path.join(rootDir, '.venv-module2-py311'), path.join(rootDir, '.venv')],
+  preferredVenvDirs: [path.join(rootDir, '.venv'), path.join(rootDir, '.venv-module2-py311')],
 });
 
 const services = [

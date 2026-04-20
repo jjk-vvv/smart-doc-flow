@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # App image: build frontend + install Python deps on top of prebuilt base image.
 
 ARG BASE_IMAGE=smart-doc-flow-runtime-base:bookworm

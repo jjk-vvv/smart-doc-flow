@@ -75,6 +75,15 @@ def build_gateway_info(settings: Settings) -> dict[str, Any]:
     }
 
 
+def _payload_ok(payload: dict[str, Any]) -> bool:
+    if "ok" in payload:
+        return bool(payload.get("ok"))
+    normalized_status = str(payload.get("status") or "").strip().lower()
+    if normalized_status in {"ok", "healthy", "ready"}:
+        return True
+    return False
+
+
 async def build_gateway_health(settings: Settings) -> dict[str, Any]:
     health_probe_timeout_sec = float(settings.gateway_health_probe_timeout_sec)
 
@@ -96,7 +105,7 @@ async def build_gateway_health(settings: Settings) -> dict[str, Any]:
                 "error": "Unknown local target",
             }
         return {
-            "ok": bool(payload.get("ok", False)),
+            "ok": _payload_ok(payload),
             "mode": "local",
             "health_path": target.health_path,
             "payload": payload,

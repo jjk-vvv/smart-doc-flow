@@ -15,6 +15,10 @@ from ..graphrag.query_adapter import (
     filter_artifact_graph,
     load_artifact_graph_snapshot,
 )
+from ..public_case_registry import (
+    list_resolved_public_case_graph_accesses,
+    resolve_graph_file_access,
+)
 
 from ...schemas import (
     AlertActionResponse,
@@ -800,6 +804,7 @@ async def load_evidence_for_node(
     tenant_id: str,
     node_row: Dict[str, Any],
     limit: int = 10,
+    asset_owner_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     seen: set[str] = set()
@@ -819,7 +824,7 @@ async def load_evidence_for_node(
                 normalize_evidence_row(
                     helpers=helpers,
                     row=row,
-                    tenant_id=tenant_id,
+                    tenant_id=asset_owner_id or tenant_id,
                     asset_cache=asset_cache,
                 )
                 for row in rows
@@ -890,6 +895,7 @@ async def load_artifact_edge_evidence_for_edges(
     edge_rows: List[Dict[str, Any]],
     limit_per_edge: int = 4,
     edge_cap: int = 8,
+    asset_owner_id: Optional[str] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     items: Dict[str, List[Dict[str, Any]]] = {}
     asset_cache: Dict[str, str] = {}
@@ -915,7 +921,7 @@ async def load_artifact_edge_evidence_for_edges(
                     normalize_evidence_row(
                         helpers=helpers,
                         row=row,
-                        tenant_id=tenant_id,
+                        tenant_id=asset_owner_id or tenant_id,
                         asset_cache=asset_cache,
                     )
                     for row in rows
@@ -1187,8 +1193,20 @@ async def list_graph_files_response(
         status=status,
         limit=limit,
     )
+    public_case_rows = [
+        access.response_graph_file
+        for access in await list_resolved_public_case_graph_accesses(
+            storage=storage,
+            asset_owner_id=tenant_id,
+            status=status,
+        )
+        if _is_graph_render_eligible_file_name(access.response_graph_file.get("file_name"))
+    ]
     return GraphFileListResponse(
-        items=[GraphFileItem(**normalize_graph_file_row(helpers=helpers, row=row)) for row in filtered_rows]
+        items=[
+            GraphFileItem(**normalize_graph_file_row(helpers=helpers, row=row))
+            for row in [*filtered_rows, *public_case_rows]
+        ]
     )
 
 
@@ -1199,9 +1217,14 @@ async def graph_file_detail_response(
     tenant_id: str,
     file_hash: str,
 ) -> GraphFileDetailResponse:
-    row = await storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash)
-    if not row:
+    access = await resolve_graph_file_access(
+        storage=storage,
+        tenant_id=tenant_id,
+        file_hash=file_hash,
+    )
+    if not access:
         raise HTTPException(status_code=404, detail="Graph file not found")
+    row = access.response_graph_file
     if not _is_graph_render_eligible_file_name(row.get("file_name")):
         raise HTTPException(status_code=404, detail="Graph file not found")
     return GraphFileDetailResponse(item=GraphFileItem(**normalize_graph_file_row(helpers=helpers, row=row)))
@@ -1302,9 +1325,14 @@ async def graph_file_view_response(
     limit_nodes: int,
     limit_edges: int,
 ) -> GraphResponse:
-    graph_file = await storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash)
-    if not graph_file:
+    access = await resolve_graph_file_access(
+        storage=storage,
+        tenant_id=tenant_id,
+        file_hash=file_hash,
+    )
+    if not access:
         raise HTTPException(status_code=404, detail="Graph file not found")
+    graph_file = access.graph_file
     if not _is_graph_render_eligible_file_name(graph_file.get("file_name")):
         raise HTTPException(status_code=404, detail="Graph file not found")
     artifact_graph = _artifact_graph_for_graph_file(graph_file)
@@ -1324,7 +1352,7 @@ async def graph_file_view_response(
         db_nodes, db_edges, has_db_graph = await _db_graph_rows_for_graph_file(
             storage=storage,
             graph_file=graph_file,
-            tenant_id=tenant_id,
+            tenant_id=access.storage_tenant_id,
             node_types=node_types,
             relation_types=relation_types,
             limit_nodes=limit_nodes,
@@ -1339,7 +1367,7 @@ async def graph_file_view_response(
     node_rows = _augment_graph_node_rows_with_file_assets(
         helpers=helpers,
         node_rows=node_rows,
-        tenant_id=tenant_id,
+        tenant_id=access.asset_owner_id,
     )
     return GraphResponse(
         nodes=[GraphNode(**row) for row in node_rows],
@@ -1361,9 +1389,14 @@ async def graph_file_neighborhood_response(
     relation_types: Sequence[str],
     limit: int,
 ) -> GraphResponse:
-    graph_file = await storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash)
-    if not graph_file:
+    access = await resolve_graph_file_access(
+        storage=storage,
+        tenant_id=tenant_id,
+        file_hash=file_hash,
+    )
+    if not access:
         raise HTTPException(status_code=404, detail="Graph file not found")
+    graph_file = access.graph_file
     if not _is_graph_render_eligible_file_name(graph_file.get("file_name")):
         raise HTTPException(status_code=404, detail="Graph file not found")
     artifact_graph = _artifact_graph_for_graph_file(graph_file)
@@ -1371,7 +1404,7 @@ async def graph_file_neighborhood_response(
         artifact_graph = await _db_graph_snapshot_for_graph_file(
             storage=storage,
             graph_file=graph_file,
-            tenant_id=tenant_id,
+            tenant_id=access.storage_tenant_id,
             relation_types=relation_types,
             limit_nodes=max(limit * 8, 4000),
             limit_edges=max(limit * 16, 12000),
@@ -1392,7 +1425,7 @@ async def graph_file_neighborhood_response(
     node_rows = _augment_graph_node_rows_with_file_assets(
         helpers=helpers,
         node_rows=node_rows,
-        tenant_id=tenant_id,
+        tenant_id=access.asset_owner_id,
     )
     return GraphResponse(
         nodes=[GraphNode(**row) for row in node_rows],
@@ -1414,9 +1447,14 @@ async def graph_file_node_detail_response(
     relation_types: Sequence[str],
     limit: int,
 ) -> GraphNodeDetailResponse:
-    graph_file = await storage.get_graph_file(tenant_id=tenant_id, file_hash=file_hash)
-    if not graph_file:
+    access = await resolve_graph_file_access(
+        storage=storage,
+        tenant_id=tenant_id,
+        file_hash=file_hash,
+    )
+    if not access:
         raise HTTPException(status_code=404, detail="Graph file not found")
+    graph_file = access.graph_file
     if not _is_graph_render_eligible_file_name(graph_file.get("file_name")):
         raise HTTPException(status_code=404, detail="Graph file not found")
     artifact_graph = _artifact_graph_for_graph_file(graph_file)
@@ -1424,7 +1462,7 @@ async def graph_file_node_detail_response(
         artifact_graph = await _db_graph_snapshot_for_graph_file(
             storage=storage,
             graph_file=graph_file,
-            tenant_id=tenant_id,
+            tenant_id=access.storage_tenant_id,
             relation_types=relation_types,
             limit_nodes=max(limit * 8, 4000),
             limit_edges=max(limit * 16, 12000),
@@ -1445,7 +1483,7 @@ async def graph_file_node_detail_response(
     node_rows = _augment_graph_node_rows_with_file_assets(
         helpers=helpers,
         node_rows=node_rows,
-        tenant_id=tenant_id,
+        tenant_id=access.asset_owner_id,
     )
     node_items = [GraphNode(**row) for row in node_rows]
     target_node_row = next((row for row in nodes_raw if str(row.get("node_id") or "") == node_id), {})
@@ -1457,17 +1495,19 @@ async def graph_file_node_detail_response(
     evidence_rows = await load_evidence_for_node(
         storage=storage,
         helpers=helpers,
-        tenant_id=tenant_id,
+        tenant_id=access.storage_tenant_id,
         node_row=target_node_row,
         limit=12,
+        asset_owner_id=access.asset_owner_id,
     ) if target_node_row else []
     edge_evidence_rows = await load_artifact_edge_evidence_for_edges(
         storage=storage,
         helpers=helpers,
-        tenant_id=tenant_id,
+        tenant_id=access.storage_tenant_id,
         edge_rows=subject_edge_rows,
         limit_per_edge=4,
         edge_cap=10,
+        asset_owner_id=access.asset_owner_id,
     )
     return GraphNodeDetailResponse(
         node=next((item for item in node_items if item.node_id == node_id), None),
@@ -1478,7 +1518,7 @@ async def graph_file_node_detail_response(
             source=artifact_graph.source,
             workspace_id=artifact_graph.workspace_id or str(graph_file.get("workspace_id") or "") or None,
         ),
-        file=GraphFileItem(**normalize_graph_file_row(helpers=helpers, row=graph_file)),
+        file=GraphFileItem(**normalize_graph_file_row(helpers=helpers, row=access.response_graph_file)),
         evidence=[EvidenceItem(**row) for row in evidence_rows],
         edge_evidence={edge_id: [EvidenceItem(**item) for item in items] for edge_id, items in edge_evidence_rows.items()},
     )

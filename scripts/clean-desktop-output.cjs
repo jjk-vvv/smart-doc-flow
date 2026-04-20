@@ -19,7 +19,7 @@ const sourceCacheRoots = [
   'frontend',
 ];
 const extraCacheDirs = ['.pytest_cache'];
-const ignoredWalkDirNames = new Set(['node_modules', '.git', '.venv-module2-py311']);
+const ignoredWalkDirNames = new Set(['node_modules', '.git', '.venv', '.venv-module2-py311', '.venv-module3-py311', '.venv-module4-py311']);
 const cacheDirNames = new Set(['__pycache__']);
 const cacheFileExts = new Set(['.pyc', '.pyo']);
 

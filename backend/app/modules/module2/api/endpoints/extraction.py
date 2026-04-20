@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 
 from app.core.auth_deps import AuthenticatedUser, require_authenticated_user
 from app.core.config import Settings
 from app.core.deps import get_settings
 from app.modules.module2.schemas.extraction import (
-    Assistant1ChatStreamRequest,
     BatchExtractionResponse,
     CacheClearResponse,
     CancelExtractionJobFileRequest,
@@ -72,6 +71,7 @@ def build_router() -> APIRouter:
         request: Request,
         job_id: str,
         include_documents: bool = False,
+        status_only: bool = False,
         settings: Settings = Depends(get_settings),
         extraction_service: ExtractionService = Depends(get_extraction_service),
         current_user: AuthenticatedUser = Depends(require_authenticated_user),
@@ -83,6 +83,7 @@ def build_router() -> APIRouter:
             request,
             job_id,
             include_documents=include_documents,
+            status_only=status_only,
         )
 
     @extract_router.post("/jobs/{job_id}/cancel-file", response_model=CancelExtractionJobFileResponse)
@@ -116,6 +117,26 @@ def build_router() -> APIRouter:
     ):
         request.state.authenticated_user = current_user
         return await extraction_service.extract_batch(settings, request, files, schema_form, tenant_id)
+
+    @extract_router.post("/graph-sync")
+    async def extract_graph_sync(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        payload: dict[str, object] = Body(default_factory=dict),
+        settings: Settings = Depends(get_settings),
+        extraction_service: ExtractionService = Depends(get_extraction_service),
+        current_user: AuthenticatedUser = Depends(require_authenticated_user),
+    ):
+        request.state.authenticated_user = current_user
+        trigger_graph_sync_params = inspect.signature(extraction_service.trigger_graph_sync).parameters
+        if "background_tasks" in trigger_graph_sync_params:
+            return await extraction_service.trigger_graph_sync(
+                settings,
+                request,
+                dict(payload or {}),
+                background_tasks=background_tasks,
+            )
+        return await extraction_service.trigger_graph_sync(settings, request, dict(payload or {}))
 
     @extract_router.post("/preview/office/start")
     async def extract_office_preview_start(
@@ -157,47 +178,6 @@ def build_router() -> APIRouter:
     ):
         request.state.authenticated_user = current_user
         return extraction_service.trace_locate(payload, settings=settings, request=request)
-
-    @extract_router.post("/assistant1/chat/stream")
-    async def extract_assistant1_chat_stream(
-        request: Request,
-        payload: Assistant1ChatStreamRequest,
-        settings: Settings = Depends(get_settings),
-        extraction_service: ExtractionService = Depends(get_extraction_service),
-        current_user: AuthenticatedUser = Depends(require_authenticated_user),
-    ):
-        extra_context = dict(payload.extra_context or {})
-        extra_context.setdefault(
-            "authenticated_user",
-            {
-                "id": current_user.user_id,
-                "name": current_user.name,
-                "email": current_user.email,
-                "tenant_id": current_user.tenant_id,
-            },
-        )
-        request.state.authenticated_user = current_user
-        return extraction_service.build_assistant1_stream(
-            settings,
-            request,
-            payload.model_copy(update={"extra_context": extra_context}),
-        )
-
-    @extract_router.get("/assistant1/sessions/{session_id}")
-    async def extract_assistant1_session(
-        session_id: str,
-        request: Request,
-        limit: int = Query(default=40, ge=1, le=200),
-        settings: Settings = Depends(get_settings),
-        extraction_service: ExtractionService = Depends(get_extraction_service),
-        _current_user: AuthenticatedUser = Depends(require_authenticated_user),
-    ):
-        return extraction_service.get_assistant1_session(
-            settings,
-            request,
-            session_id,
-            limit=limit,
-        )
 
     @extract_router.post("/cache/clear", response_model=CacheClearResponse)
     async def extract_cache_clear(

@@ -661,6 +661,7 @@ class Module4AppRuntime:
         batch_id: str,
         graph_file_id: Optional[str],
         doc: Dict[str, Any],
+        stage_reporter: Callable[..., Awaitable[None]] | None = None,
     ) -> Dict[str, int]:
         return await self._process_document_fn(
             storage=self._storage_getter(),
@@ -669,6 +670,7 @@ class Module4AppRuntime:
             batch_id=batch_id,
             graph_file_id=graph_file_id,
             doc=doc,
+            stage_reporter=stage_reporter,
         )
 
     def schedule_ingest_job(self, job_id: str, batch_id: str, payload: IngestRequest) -> None:

@@ -417,6 +417,72 @@ const guessMimeTypeFromName = (name: string): string => {
   }
 };
 
+const TEXT_LIKE_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'csv', 'json']);
+
+const getPreferredExtensionForMime = (mimeType: string, fileName: string): string => {
+  const normalizedMime = String(mimeType || '').toLowerCase().trim();
+  const currentExt = fileExt(fileName);
+
+  if (!normalizedMime || normalizedMime === 'application/octet-stream') {
+    return currentExt;
+  }
+
+  if (normalizedMime.includes('pdf')) return 'pdf';
+  if (normalizedMime.includes('wordprocessingml.document')) return 'docx';
+  if (normalizedMime === 'application/msword') return 'doc';
+  if (normalizedMime.includes('spreadsheetml.sheet')) return 'xlsx';
+  if (normalizedMime === 'application/vnd.ms-excel') return currentExt === 'xls' ? 'xls' : 'xlsx';
+  if (normalizedMime.includes('markdown')) return currentExt === 'markdown' ? 'markdown' : 'md';
+  if (normalizedMime === 'text/csv') return 'csv';
+  if (normalizedMime === 'application/json' || normalizedMime.endsWith('+json')) return 'json';
+  if (normalizedMime.startsWith('text/')) {
+    return TEXT_LIKE_EXTENSIONS.has(currentExt) ? currentExt : 'txt';
+  }
+  if (normalizedMime === 'image/jpeg') return currentExt === 'jpeg' ? 'jpeg' : 'jpg';
+  if (normalizedMime === 'image/png') return 'png';
+  if (normalizedMime === 'image/gif') return 'gif';
+  if (normalizedMime === 'image/bmp') return 'bmp';
+  if (normalizedMime === 'image/webp') return 'webp';
+  if (normalizedMime === 'image/svg+xml') return 'svg';
+
+  return currentExt;
+};
+
+const replaceFileExtension = (fileName: string, nextExtension: string): string => {
+  const normalizedName = String(fileName || '').trim();
+  if (!normalizedName) return nextExtension ? `upload.${nextExtension}` : 'upload';
+  const baseName = normalizedName.replace(/\.[^./\\]+$/, '');
+  return nextExtension ? `${baseName}.${nextExtension}` : baseName;
+};
+
+const ensureFileNameMatchesMime = (fileName: string, mimeType: string): string => {
+  const normalizedName = String(fileName || '').trim();
+  const nextExtension = getPreferredExtensionForMime(mimeType, normalizedName);
+  if (!nextExtension) return normalizedName || 'upload';
+  if (fileExt(normalizedName) === nextExtension) return normalizedName || `upload.${nextExtension}`;
+  return replaceFileExtension(normalizedName || 'upload', nextExtension);
+};
+
+const cloneFileWithNameAndType = (sourceFile: File, fileName: string, mimeType: string): File => {
+  const normalizedMime = String(mimeType || sourceFile.type || 'application/octet-stream').trim();
+  const normalizedName = String(fileName || sourceFile.name || 'upload').trim() || 'upload';
+  const nextLastModified = Number.isFinite(sourceFile.lastModified) ? sourceFile.lastModified : Date.now();
+
+  try {
+    return new File([sourceFile], normalizedName, {
+      type: normalizedMime,
+      lastModified: nextLastModified,
+    });
+  } catch {
+    const fallback = sourceFile.slice(0, sourceFile.size, normalizedMime) as File;
+    Object.defineProperties(fallback, {
+      name: { value: normalizedName, writable: false },
+      lastModified: { value: nextLastModified, writable: false },
+    });
+    return fallback;
+  }
+};
+
 const normalizeReportSegment = (value: string): string => (
   String(value || '').replace(/\s+/g, ' ').trim()
 );
@@ -498,6 +564,24 @@ const resolveFileMimeType = (rawMime: string | undefined, fileName: string): str
   }
 
   return guessMimeTypeFromName(fileName);
+};
+
+const buildModule1UploadFile = (fileInfo: FileInfo, sourceFile: File): File => {
+  const desiredName = getCapabilityFileName(fileInfo) || sourceFile.name || fileInfo.name || 'upload';
+  const normalizedMime = resolveFileMimeType(sourceFile.type || fileInfo.type, desiredName);
+  const normalizedName = ensureFileNameMatchesMime(desiredName, normalizedMime);
+
+  if (normalizedName === sourceFile.name && normalizedMime === (sourceFile.type || normalizedMime)) {
+    return sourceFile;
+  }
+
+  console.warn('模块一上传前已自动修正文件名或 MIME，以避免文件内容与扩展名不匹配', {
+    fromName: sourceFile.name,
+    toName: normalizedName,
+    fromType: sourceFile.type,
+    toType: normalizedMime,
+  });
+  return cloneFileWithNameAndType(sourceFile, normalizedName, normalizedMime);
 };
 
 const parseApiErrorMessage = async (response: Response): Promise<string> => {
@@ -2017,7 +2101,8 @@ export const DocProcessingWorkbench: React.FC = () => {
   ): Promise<void> => {
     try {
       // 获取要修改的文件
-      const fileToModify = targetFile.originalFile || targetFile.file;
+      const rawTargetFile = targetFile.originalFile || targetFile.file;
+      const fileToModify = rawTargetFile ? buildModule1UploadFile(targetFile, rawTargetFile) : null;
       if (!fileToModify) {
         throw new Error('找不到要修改的文件');
       }
@@ -2061,8 +2146,15 @@ export const DocProcessingWorkbench: React.FC = () => {
       console.log('修改信息:', { modificationApplied, modificationCount });
       
       const sourceFileName = fileToModify.name || targetFile.originalFile?.name || targetFile.name;
-      const fileName = prefixModifiedFileName(sourceFileName);
-      const logicalFileType = resolveFileMimeType(modifiedBlob.type, sourceFileName);
+      const responseFileName = parseContentDispositionFilename(response.headers.get('Content-Disposition'));
+      const responseContentType = String(response.headers.get('Content-Type') || modifiedBlob.type || '')
+        .split(';')[0]
+        .trim();
+      const fileName = ensureFileNameMatchesMime(
+        responseFileName || prefixModifiedFileName(sourceFileName),
+        responseContentType || modifiedBlob.type || sourceFileName,
+      );
+      const logicalFileType = resolveFileMimeType(responseContentType || modifiedBlob.type, fileName);
       
       // 创建File对象
       let modifiedFile;
@@ -2081,7 +2173,7 @@ export const DocProcessingWorkbench: React.FC = () => {
       let modifiedPreviewUrl = URL.createObjectURL(modifiedBlob);
       let modifiedPreviewType = logicalFileType;
       let modifiedPreviewBlob: Blob | undefined = logicalFileType.includes('pdf') ? modifiedBlob : undefined;
-      const modifiedExt = '.' + sourceFileName.split('.').pop()?.toLowerCase();
+      const modifiedExt = `.${fileExt(fileName)}`;
       let conversionStatus: FileInfo['conversionStatus'] = 'idle';
       let convertedPdfBlob: Blob | undefined;
       let convertedPdfFileName = '';
@@ -2313,19 +2405,26 @@ export const DocProcessingWorkbench: React.FC = () => {
   
       // 构建 FormData
       const formData = new FormData();
-      if (orderedRequestFiles.length > 0) {
-        orderedRequestFiles.forEach((fileInfo, index) => {
-          const fileToUse = fileInfo.originalFile || fileInfo.file;
-          if (!fileToUse) return;
+      const preparedRequestEntries = orderedRequestFiles
+        .map((fileInfo) => {
+          const rawUploadFile = fileInfo.originalFile || fileInfo.file;
+          if (!rawUploadFile) return null;
+          return {
+            fileInfo,
+            uploadFile: buildModule1UploadFile(fileInfo, rawUploadFile),
+          };
+        })
+        .filter((entry): entry is { fileInfo: FileInfo; uploadFile: File } => Boolean(entry));
 
-          const fieldName = index === 0 ? 'file' : 'files';
-          formData.append(fieldName, fileToUse, getCapabilityFileName(fileInfo));
-        });
-      }
+      preparedRequestEntries.forEach((entry, index) => {
+        const fieldName = index === 0 ? 'file' : 'files';
+        formData.append(fieldName, entry.uploadFile, entry.uploadFile.name);
+      });
       formData.append('instruction', instruction);
       formData.append('conversation_context', conversationContext);
       if (targetFileInfo) {
-        formData.append('selected_file_name', getCapabilityFileName(targetFileInfo));
+        const selectedUploadEntry = preparedRequestEntries.find((entry) => entry.fileInfo.id === targetFileInfo?.id);
+        formData.append('selected_file_name', selectedUploadEntry?.uploadFile.name || getCapabilityFileName(targetFileInfo));
       }
   
       // 报告预览仅在存在文件且指令为分析意图时开启
@@ -3280,8 +3379,9 @@ export const DocProcessingWorkbench: React.FC = () => {
       const ext = fileExt(file.name);
 
       if (sourceFile && SAVEABLE_REPORT_EXTENSIONS.has(ext)) {
+        const normalizedUploadFile = buildModule1UploadFile(file, sourceFile);
         const formData = new FormData();
-        formData.append('file', sourceFile, sourceFile.name || file.name);
+        formData.append('file', normalizedUploadFile, normalizedUploadFile.name || file.name);
         formData.append('content', reportText);
 
         const response = await fetch(buildModule1ApiUrl('/save-edited-document'), {

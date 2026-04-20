@@ -4440,7 +4440,7 @@ export const KnowledgeNexus: React.FC = () => {
     let cancelled = false;
     const loadJob = async () => {
       try {
-        const job = await fetchModule4JobStatus(jobId);
+        const job = await fetchModule4JobStatus(jobId, { statusOnly: true });
         if (cancelled) return;
         setCurrentJob(job);
       } catch {
