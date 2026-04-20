@@ -85,3 +85,35 @@ def test_module2_main_schema_timeout_bundle_scales_timeout_for_complex_word_file
     assert meta["applied"] is True
     assert meta["reason"] == "word_complexity_scale"
     assert meta["resolved_timeout_sec"] == round(timeout_sec, 3)
+
+
+def test_module2_main_schema_timeout_bundle_applies_hard_cap_when_configured_max_is_too_large() -> None:
+    env = {
+        "MODULE2_WORD_DYNAMIC_EXTRACT_TRIGGER_SCORE": "8.0",
+        "MODULE2_WORD_DYNAMIC_EXTRACT_TIMEOUT_MAX_SEC": "1200",
+        "MODULE2_WORD_DYNAMIC_EXTRACT_TIMEOUT_HARD_CAP_SEC": "240",
+        "MODULE2_WORD_DYNAMIC_EXTRACT_BONUS_PER_SCORE": "12.0",
+    }
+    bundle = main_schema_timeout_bundle_module.build_module2_main_schema_timeout_bundle(
+        getenv=lambda key, default="": env.get(key, default),
+        is_word_file=lambda file_name: str(file_name).lower().endswith(".docx"),
+        schema_context_clean_text=lambda value: " ".join(str(value or "").split()),
+        count_table_cells=lambda tables: sum(len(table.get("cells", [])) for table in tables if isinstance(table, dict)),
+        count_figure_dataframe_cells=lambda figures: sum(
+            int(figure.get("dataframe_cells", 0)) for figure in figures if isinstance(figure, dict)
+        ),
+    )
+
+    timeout_sec, meta = bundle.resolve_dynamic_extract_timeout_sec(
+        file_name="complex.docx",
+        extract_timeout_sec=180.0,
+        markdown=("very long complex text " * 3000).strip(),
+        schema_fields={f"field_{index}": "string" for index in range(24)},
+        table_blocks=[{"cells": list(range(500))} for _ in range(4)],
+        figure_blocks=[{"dataframe_cells": 320} for _ in range(4)],
+    )
+
+    assert timeout_sec == 240.0
+    assert meta["hard_cap_applied"] is True
+    assert meta["effective_max_timeout_sec"] == 240.0
+    assert meta["configured_max_timeout_sec"] == 1200.0

@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -24,6 +25,9 @@ ExtractionResultFactory = Callable[[Dict[str, Any]], Any]
 DocumentResponseFactory = Callable[..., Any]
 BatchResponseFactory = Callable[..., Any]
 
+GRAPH_SYNC_ELIGIBLE_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
+GRAPH_SYNC_EXCLUDED_SUFFIXES = {".xlsx", ".xls"}
+
 
 class ExtractionRequestService:
     """Application service for extraction HTTP request orchestration."""
@@ -40,6 +44,7 @@ class ExtractionRequestService:
         module4_tenant: Module4TenantFn,
         extraction_job_runtime: Any,
         module4_sync_callback_bundle: Any,
+        document_validate: Callable[[Any], Any],
         extraction_result_factory: ExtractionResultFactory,
         document_response_factory: DocumentResponseFactory,
         batch_response_factory: BatchResponseFactory,
@@ -54,10 +59,99 @@ class ExtractionRequestService:
         self._module4_tenant = module4_tenant
         self._extraction_job_runtime = extraction_job_runtime
         self._module4_sync_callback_bundle = module4_sync_callback_bundle
+        self._document_validate = document_validate
         self._extraction_result_factory = extraction_result_factory
         self._document_response_factory = document_response_factory
         self._batch_response_factory = batch_response_factory
         self._logger = logger
+
+    @staticmethod
+    def _document_identity(document: Any) -> tuple[str, str]:
+        if document is None:
+            return "", ""
+        if isinstance(document, dict):
+            return (
+                str(document.get("file_name") or "").strip(),
+                str(document.get("file_hash") or "").strip(),
+            )
+        return (
+            str(getattr(document, "file_name", "") or "").strip(),
+            str(getattr(document, "file_hash", "") or "").strip(),
+        )
+
+    @staticmethod
+    def _normalize_graph_sync_job_id(job_id: str) -> str:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id:
+            return ""
+        if not re.fullmatch(r"extract_job_[A-Za-z0-9]+", normalized_job_id):
+            raise HTTPException(status_code=400, detail="Invalid extraction job id")
+        return normalized_job_id
+
+    @staticmethod
+    def _graph_sync_suffix(file_name: str) -> str:
+        return str(Path(str(file_name or "").strip()).suffix or "").strip().lower()
+
+    @classmethod
+    def _ensure_graph_sync_supported(cls, file_name: str) -> None:
+        suffix = cls._graph_sync_suffix(file_name)
+        if suffix in GRAPH_SYNC_EXCLUDED_SUFFIXES:
+            raise HTTPException(status_code=400, detail="Excel 文件不支持知识图谱构建")
+        if suffix not in GRAPH_SYNC_ELIGIBLE_SUFFIXES:
+            raise HTTPException(status_code=400, detail="当前文件类型暂不支持知识图谱构建")
+
+    def _runtime_spec_tenant_id(self, job_id: str) -> str:
+        runtime_specs = getattr(self._extraction_job_runtime, "runtime_specs", None)
+        if not isinstance(runtime_specs, dict):
+            return ""
+        runtime_spec = runtime_specs.get(str(job_id or "").strip())
+        if not isinstance(runtime_spec, dict):
+            return ""
+        return str(runtime_spec.get("tenant_id") or "").strip()
+
+    async def _resolve_graph_sync_document(
+        self,
+        *,
+        job_id: str,
+        file_name: str,
+        file_hash: str,
+        document_payload: Any,
+        tenant_id: str,
+    ) -> Any:
+        normalized_job_id = self._normalize_graph_sync_job_id(job_id)
+        normalized_name = str(file_name or "").strip()
+        normalized_hash = str(file_hash or "").strip()
+        if normalized_job_id:
+            job = await self._extraction_job_runtime.find_job(normalized_job_id)
+            if job:
+                job_tenant_id = self._runtime_spec_tenant_id(normalized_job_id)
+                if job_tenant_id and tenant_id and job_tenant_id != tenant_id:
+                    raise HTTPException(status_code=403, detail="Extraction job tenant mismatch")
+                for item in getattr(job, "documents", []) or []:
+                    item_name, item_hash = self._document_identity(item)
+                    if normalized_hash and item_hash != normalized_hash:
+                        continue
+                    if normalized_name and item_name and item_name != normalized_name:
+                        continue
+                    return item
+            elif document_payload is None:
+                raise HTTPException(status_code=404, detail="Extraction job not found")
+
+        if document_payload is None:
+            raise HTTPException(status_code=404, detail="Extraction document not found")
+        if not isinstance(document_payload, dict):
+            raise HTTPException(status_code=400, detail="document must be an object")
+        try:
+            validated_document = self._document_validate(document_payload)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid extraction document payload: {exc}") from exc
+
+        validated_name, validated_hash = self._document_identity(validated_document)
+        if normalized_name and validated_name and validated_name != normalized_name:
+            raise HTTPException(status_code=400, detail="document file_name mismatch")
+        if normalized_hash and validated_hash and validated_hash != normalized_hash:
+            raise HTTPException(status_code=400, detail="document file_hash mismatch")
+        return validated_document
 
     async def read_upload_file_bytes(self, file: Any) -> Tuple[str, bytes]:
         file_name = getattr(file, "filename", None) or "unknown"
@@ -217,6 +311,95 @@ class ExtractionRequestService:
         await self._extraction_job_runtime.persist_snapshot(normalized_job_id, True)
         return cancel_result
 
+    async def trigger_graph_sync(
+        self,
+        *,
+        request: Optional[Request],
+        payload: Dict[str, Any] | None = None,
+        background_tasks: Any | None = None,
+    ) -> Dict[str, Any]:
+        normalized_payload = payload if isinstance(payload, dict) else {}
+        file_name = str(normalized_payload.get("file_name") or "").strip()
+        file_hash = str(normalized_payload.get("file_hash") or "").strip()
+        job_id = str(normalized_payload.get("job_id") or "").strip()
+        document_payload = normalized_payload.get("document")
+
+        if not file_name and isinstance(document_payload, dict):
+            file_name = str(document_payload.get("file_name") or "").strip()
+        if not file_hash and isinstance(document_payload, dict):
+            file_hash = str(document_payload.get("file_hash") or "").strip()
+        if not file_name and not file_hash and document_payload is None:
+            raise HTTPException(status_code=400, detail="file_name or file_hash is required")
+
+        if file_name:
+            self._ensure_graph_sync_supported(file_name)
+        resolved_tenant = self._module4_tenant(request, "")
+        document = await self._resolve_graph_sync_document(
+            job_id=job_id,
+            file_name=file_name,
+            file_hash=file_hash,
+            document_payload=document_payload,
+            tenant_id=resolved_tenant,
+        )
+        resolved_file_name, resolved_file_hash = self._document_identity(document)
+        if not (resolved_file_name or file_name):
+            raise HTTPException(status_code=400, detail="document file_name is required for graph sync")
+        self._ensure_graph_sync_supported(resolved_file_name or file_name)
+        manual_sync_seed = (
+            f"manual_graph_sync:{resolved_file_hash or resolved_file_name or file_name}:"
+            f"{uuid.uuid4().hex}"
+        )
+
+        source_batch_key = ""
+        if hasattr(self._module4_sync_callback_bundle, "source_batch_key"):
+            try:
+                source_batch_key = str(
+                    self._module4_sync_callback_bundle.source_batch_key(
+                        source="module2",
+                        tenant_id=resolved_tenant,
+                        documents=[document],
+                        seed=manual_sync_seed,
+                    )
+                    or ""
+                ).strip()
+            except Exception:
+                source_batch_key = ""
+
+        if background_tasks is not None and hasattr(self._module4_sync_callback_bundle, "prepare_document_sync_for_seed"):
+            prepared_row = await self._module4_sync_callback_bundle.prepare_document_sync_for_seed(
+                source="module2",
+                tenant_id=resolved_tenant,
+                documents=[document],
+                seed=manual_sync_seed,
+                mode="default",
+            )
+            prepared_outbox_id = str((prepared_row or {}).get("outbox_id") or "").strip()
+            if prepared_outbox_id and hasattr(self._module4_sync_callback_bundle, "deliver_prepared_outbox"):
+                background_tasks.add_task(
+                    self._module4_sync_callback_bundle.deliver_prepared_outbox,
+                    prepared_outbox_id,
+                )
+            enqueued = bool(prepared_row)
+        else:
+            enqueued = await self._module4_sync_callback_bundle.enqueue_document_sync_for_seed(
+                source="module2",
+                tenant_id=resolved_tenant,
+                documents=[document],
+                seed=manual_sync_seed,
+                mode="default",
+            )
+        if not enqueued:
+            raise HTTPException(status_code=503, detail="知识图谱同步当前未启用")
+
+        return {
+            "ok": True,
+            "enqueued": True,
+            "file_name": resolved_file_name or file_name,
+            "file_hash": resolved_file_hash or file_hash,
+            "source_batch_key": source_batch_key,
+            "message": "已提交知识图谱构建请求，请前往模块四查看进度。",
+        }
+
     async def extract_batch(
         self,
         *,
@@ -256,14 +439,6 @@ class ExtractionRequestService:
                 results.append(self.error_doc_response(getattr(file, "filename", None) or "unknown", item))
             else:
                 results.append(item)
-
-        await self._module4_sync_callback_bundle.enqueue_document_sync_for_seed(
-            source="module2",
-            tenant_id=resolved_tenant,
-            documents=results,
-            seed=f"extract_batch:{schema_digest}",
-            mode="default",
-        )
 
         return self._batch_response_factory(documents=results)
 

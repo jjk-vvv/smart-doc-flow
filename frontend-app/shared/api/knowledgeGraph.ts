@@ -354,10 +354,11 @@ const module4Fetch = async (path: string, init: RequestInit = {}) => {
 
 export const fetchModule4JobStatus = async (
   jobId: string,
-  params?: { tenantId?: string }
+  params?: { tenantId?: string; statusOnly?: boolean }
 ): Promise<Module4JobResponse> => {
   const query = new URLSearchParams();
   if (params?.tenantId) query.set('tenant_id', params.tenantId);
+  if (params?.statusOnly) query.set('status_only', 'true');
   const suffix = query.toString() ? `?${query.toString()}` : '';
   const res = await module4Fetch(`/module4/jobs/${encodeURIComponent(jobId)}${suffix}`);
   await ensureOk(res);

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bot,
@@ -106,6 +106,15 @@ type WordToPdfConversionResult =
       ok: false;
       errorMessage: string;
     };
+
+type OfficePreviewJobPayload = {
+  ok?: boolean;
+  job_id?: string;
+  status?: string;
+  artifact_url?: string;
+  error?: string;
+  message?: string;
+};
 
 const MODULE1_QUICK_PROMPTS = [
   '请先总结这份文档的核心内容，再给出可执行建议',
@@ -250,6 +259,26 @@ const buildItemFromFile = (file: File, folderId: string | null): HomeWorkbenchIt
 const getFolderChildren = (folders: HomeWorkbenchFolder[], parentId: string | null) =>
   folders.filter((folder) => folder.parentId === parentId);
 
+const collectDescendantFolderIds = (
+  folders: HomeWorkbenchFolder[],
+  folderId: string
+): string[] => {
+  const descendantIds: string[] = [];
+  const queue = [folderId];
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    if (!currentId) continue;
+    const children = getFolderChildren(folders, currentId);
+    children.forEach((child) => {
+      descendantIds.push(child.id);
+      queue.push(child.id);
+    });
+  }
+
+  return descendantIds;
+};
+
 const getItemAvailabilityLabel = (
   item: HomeWorkbenchItem,
   options?: { persistenceReady?: boolean }
@@ -298,48 +327,133 @@ const readInitialModule3Requirements = (): string => {
   }
 };
 
-const convertWordToPdf = async (file: File): Promise<WordToPdfConversionResult> => {
+const OFFICE_PREVIEW_POLL_INTERVAL_MS = 1200;
+const OFFICE_PREVIEW_MAX_WAIT_MS = 180000;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const parseOfficePreviewPayload = async (response: Response): Promise<OfficePreviewJobPayload> => {
+  const raw = await response.text();
+  if (!raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as OfficePreviewJobPayload;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const getOfficePreviewErrorMessage = (payload: OfficePreviewJobPayload, fallback: string): string => {
+  const message = String(payload.error || payload.message || '').trim();
+  return message || fallback;
+};
+
+const startWordPreviewJob = async (file: File): Promise<OfficePreviewJobPayload> => {
   const formData = new FormData();
   formData.append('file', file, file.name || 'document.docx');
 
-  try {
-    const response = await fetch(buildModule1ApiUrl('/convert/docx-to-pdf'), {
-      method: 'POST',
-      body: formData,
+  const response = await fetch(buildModule1ApiUrl('/convert/office/start'), {
+    method: 'POST',
+    body: formData,
+    credentials: 'include',
+  });
+
+  const payload = await parseOfficePreviewPayload(response);
+  if (!response.ok) {
+    throw new Error(`Word 转 PDF 失败：${getOfficePreviewErrorMessage(payload, await parseApiErrorMessage(response))}`);
+  }
+
+  const jobId = String(payload.job_id || '').trim();
+  if (!jobId) {
+    throw new Error('Word 预览任务创建失败：后端未返回 job_id。');
+  }
+  return payload;
+};
+
+const fetchWordPreviewJobStatus = async (jobId: string): Promise<OfficePreviewJobPayload> => {
+  const response = await fetch(
+    buildModule1ApiUrl(`/convert/office/status/${encodeURIComponent(jobId)}`),
+    {
+      method: 'GET',
       credentials: 'include',
-    });
+    }
+  );
 
-    if (!response.ok) {
-      const errorMessage = await parseApiErrorMessage(response);
-      return {
-        ok: false,
-        errorMessage: `Word 转 PDF 失败：${errorMessage}`,
-      };
+  const payload = await parseOfficePreviewPayload(response);
+  if (!response.ok) {
+    throw new Error(`Word 转 PDF 失败：${getOfficePreviewErrorMessage(payload, await parseApiErrorMessage(response))}`);
+  }
+  return payload;
+};
+
+const fetchWordPreviewArtifact = async (jobId: string): Promise<Blob> => {
+  const response = await fetch(
+    buildModule1ApiUrl(`/convert/office/artifact/${encodeURIComponent(jobId)}`),
+    {
+      method: 'GET',
+      credentials: 'include',
+    }
+  );
+
+  if (!response.ok) {
+    const errorMessage = await parseApiErrorMessage(response);
+    throw new Error(`Word 转 PDF 失败：${errorMessage}`);
+  }
+
+  const contentType = response.headers.get('content-type');
+  if (!contentType?.includes('application/pdf')) {
+    throw new Error(`返回内容不是 PDF：${contentType || 'unknown'}`);
+  }
+
+  const pdfBlob = await response.blob();
+  if (pdfBlob.size === 0) {
+    throw new Error('返回的 PDF 内容为空。');
+  }
+
+  const looksLikePdf = await isLikelyPdfBlob(pdfBlob);
+  if (!looksLikePdf) {
+    throw new Error('返回内容不是有效 PDF。');
+  }
+
+  return pdfBlob;
+};
+
+const convertWordToPdf = async (file: File): Promise<WordToPdfConversionResult> => {
+  try {
+    const startedPayload = await startWordPreviewJob(file);
+    const jobId = String(startedPayload.job_id || '').trim();
+    let statusPayload = startedPayload;
+    const deadline = Date.now() + OFFICE_PREVIEW_MAX_WAIT_MS;
+
+    while (Date.now() <= deadline) {
+      const status = String(statusPayload.status || '').trim().toLowerCase();
+
+      if (status === 'completed') {
+        const pdfBlob = await fetchWordPreviewArtifact(jobId);
+        return { ok: true, pdfBlob };
+      }
+
+      if (status === 'failed') {
+        return {
+          ok: false,
+          errorMessage: `Word 转 PDF 失败：${getOfficePreviewErrorMessage(statusPayload, '预览转换失败。')}`,
+        };
+      }
+
+      await sleep(OFFICE_PREVIEW_POLL_INTERVAL_MS);
+      statusPayload = await fetchWordPreviewJobStatus(jobId);
     }
 
-    const contentType = response.headers.get('content-type');
-    if (!contentType?.includes('application/pdf')) {
-      return {
-        ok: false,
-        errorMessage: `返回内容不是 PDF：${contentType || 'unknown'}`,
-      };
-    }
-
-    const pdfBlob = await response.blob();
-    if (pdfBlob.size === 0) {
-      return { ok: false, errorMessage: '返回的 PDF 内容为空。' };
-    }
-
-    const looksLikePdf = await isLikelyPdfBlob(pdfBlob);
-    if (!looksLikePdf) {
-      return { ok: false, errorMessage: '返回内容不是有效 PDF。' };
-    }
-
-    return { ok: true, pdfBlob };
+    return { ok: false, errorMessage: 'Word 转 PDF 失败：预览转换超时。' };
   } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : 'Word 转 PDF 失败。';
+    const normalizedMessage = /Failed to fetch|NetworkError|Load failed/i.test(rawMessage)
+      ? 'Word 转 PDF 失败：后端服务不可用或请求被代理中断。'
+      : rawMessage;
     return {
       ok: false,
-      errorMessage: error instanceof Error ? error.message : 'Word 转 PDF 失败。',
+      errorMessage: normalizedMessage,
     };
   }
 };
@@ -497,6 +611,53 @@ const FileRow: React.FC<{
   </div>
 );
 
+const SidebarFolderFileList: React.FC<{
+  items: HomeWorkbenchItem[];
+  depth: number;
+  selectedItemId: string | null;
+  onOpen: (itemId: string) => void;
+}> = ({
+  items,
+  depth,
+  selectedItemId,
+  onOpen,
+}) => {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="space-y-1">
+      {items.map((item) => {
+        const isSelected = selectedItemId === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onOpen(item.id)}
+            title={item.name}
+            className={cn(
+              'flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left transition-colors',
+              isSelected
+                ? 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-white/[0.03] dark:hover:text-slate-200'
+            )}
+            style={{ paddingLeft: `${20 + depth * 18}px` }}
+          >
+            <span className="flex shrink-0 items-center justify-center">
+              {getItemIcon(item, 'h-4 w-4 opacity-85')}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
+              {item.name}
+            </span>
+            <span className="shrink-0 text-[11px] text-slate-400 dark:text-slate-500">
+              {formatRelativeTime(item.updatedAt)}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
   const [session, setSession] = useState<HomeWorkbenchSession>(() => readHomeWorkbenchSession());
   const [searchValue, setSearchValue] = useState('');
@@ -524,6 +685,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
   const module3TemplateInputRef = useRef<HTMLInputElement>(null);
   const module3SourceInputRef = useRef<HTMLInputElement>(null);
   const objectUrlMapRef = useRef<Map<string, string>>(new Map());
+  const activePreviewConversionIdsRef = useRef<Set<string>>(new Set());
   const [binaryStoreReady, setBinaryStoreReady] = useState(() => isHomeWorkbenchPersistenceReady());
   const [binaryStoreRevision, setBinaryStoreRevision] = useState(0);
   const [filterType, setFilterType] = useState<string | null>(null);
@@ -533,6 +695,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
   const [uploadTargetFolderId, setUploadTargetFolderId] = useState<string | null>(null);
   const [uploadNewFolderDraft, setUploadNewFolderDraft] = useState('');
   const [isCreatingFolderInUpload, setIsCreatingFolderInUpload] = useState(false);
+  const [expandedFolderIds, setExpandedFolderIds] = useState<string[]>([]);
 
   useEffect(() => {
     writeHomeWorkbenchSession(session);
@@ -573,6 +736,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
     };
   }, []);
 
+  useEffect(() => {
+    const validFolderIds = new Set(session.folders.map((folder) => folder.id));
+    setExpandedFolderIds((current) => current.filter((folderId) => validFolderIds.has(folderId)));
+  }, [session.folders]);
+
+  useEffect(() => {
+    if (session.activeView.kind !== 'folder') return;
+    const activeFolderViewId = session.activeView.folderId;
+    setExpandedFolderIds((current) => (
+      current.includes(activeFolderViewId)
+        ? current
+        : [...current, activeFolderViewId]
+    ));
+  }, [session.activeView]);
+
   const pushToast = useCallback((tone: ToastState['tone'], text: string) => {
     setToast({ tone, text });
   }, []);
@@ -595,9 +773,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
   const activeFolderId = session.activeView.kind === 'folder'
     ? session.activeView.folderId
     : HOME_WORKBENCH_ROOT_FOLDER_ID;
+  const normalizedSearchValue = searchValue.trim().toLowerCase();
+  const expandedFolderIdSet = useMemo(() => new Set(expandedFolderIds), [expandedFolderIds]);
 
   const visibleItems = useMemo(() => {
-    const query = searchValue.trim().toLowerCase();
     const baseItems = session.items.filter((item) => {
       if (session.activeView.kind === 'recycle') return item.trashed;
       if (item.trashed) return false;
@@ -606,8 +785,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
       return true;
     });
 
-    let filtered = query
-      ? baseItems.filter((item) => item.name.toLowerCase().includes(query))
+    let filtered = normalizedSearchValue
+      ? baseItems.filter((item) => item.name.toLowerCase().includes(normalizedSearchValue))
       : baseItems;
 
     if (filterType) {
@@ -622,7 +801,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
     }
 
     return [...filtered].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  }, [searchValue, session.activeView, session.items, filterType]);
+  }, [normalizedSearchValue, session.activeView, session.items, filterType]);
+
+  const folderItemsByFolderId = useMemo(() => {
+    const grouped = new Map<string, HomeWorkbenchItem[]>();
+    const eligibleItems = session.items
+      .filter((item) => !item.trashed)
+      .filter((item) => (
+        normalizedSearchValue
+          ? item.name.toLowerCase().includes(normalizedSearchValue)
+          : true
+      ))
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+
+    eligibleItems.forEach((item) => {
+      const key = item.folderId ?? HOME_WORKBENCH_ROOT_FOLDER_ID;
+      const currentItems = grouped.get(key);
+      if (currentItems) {
+        currentItems.push(item);
+        return;
+      }
+      grouped.set(key, [item]);
+    });
+
+    return grouped;
+  }, [normalizedSearchValue, session.items]);
 
   const getOrCreateObjectUrl = useCallback((cacheKey: string, blob: Blob): string => {
     const existing = objectUrlMapRef.current.get(cacheKey);
@@ -642,6 +845,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
       items: current.items.map((item) => (item.id === itemId ? updater(item) : item)),
     }));
   }, [updateSession]);
+
+  const ensureFolderExpanded = useCallback((folderId: string) => {
+    setExpandedFolderIds((current) => (
+      current.includes(folderId) ? current : [...current, folderId]
+    ));
+  }, []);
+
+  const toggleFolderExpanded = useCallback((folderId: string) => {
+    setExpandedFolderIds((current) => (
+      current.includes(folderId)
+        ? current.filter((id) => id !== folderId)
+        : [...current, folderId]
+    ));
+  }, []);
+
+  const activateFolder = useCallback((folderId: string) => {
+    ensureFolderExpanded(folderId);
+    updateSession((current) => ({ ...current, activeView: { kind: 'folder', folderId } }));
+  }, [ensureFolderExpanded, updateSession]);
 
   const appendFilesToWorkbench = useCallback((files: File[], options?: {
     folderId?: string | null;
@@ -835,6 +1057,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
     setPdfViewMode('fit-width');
   }, [updateSession]);
 
+  const handleRetryPreviewConversion = useCallback(() => {
+    if (!previewItem || !isWordFile(previewItem)) return;
+    updateItem(previewItem.id, (item) => ({
+      ...item,
+      status: 'ready',
+      convertedPdfReady: Boolean(getHomeWorkbenchConvertedPdf(item.id)),
+      errorMessage: null,
+      updatedAt: new Date().toISOString(),
+    }));
+  }, [previewItem, updateItem]);
+
   useEffect(() => {
     if (!previewItem || !isTextFile(previewItem)) return;
     if (previewTextMap[previewItem.id]) return;
@@ -861,32 +1094,45 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
     if (getHomeWorkbenchConvertedPdf(targetItemId)) return;
     const file = getHomeWorkbenchFile(targetItemId);
     if (!file) return;
-    if (previewItem.status === 'converting') return;
-    updateItem(targetItemId, (item) => ({
-      ...item,
-      status: 'converting',
-      errorMessage: null,
-    }));
+    const activePreviewConversions = activePreviewConversionIdsRef.current;
+    if (previewItem.status === 'error') return;
+    if (previewItem.status === 'converting' && activePreviewConversions.has(targetItemId)) return;
 
-    void convertWordToPdf(file).then((result) => {
-      if (result.ok) {
-        registerHomeWorkbenchConvertedPdf(targetItemId, result.pdfBlob);
-        updateItem(targetItemId, (item) => ({
-          ...item,
-          status: 'converted',
-          convertedPdfReady: true,
-          updatedAt: new Date().toISOString(),
-          errorMessage: null,
-        }));
-        return;
-      }
+    activePreviewConversions.add(targetItemId);
+    if (previewItem.status !== 'converting') {
       updateItem(targetItemId, (item) => ({
         ...item,
-        status: 'error',
-        errorMessage: 'Word 转 PDF 失败，可尝试重新上传文件。',
+        status: 'converting',
+        convertedPdfReady: false,
+        updatedAt: new Date().toISOString(),
+        errorMessage: null,
       }));
-    });
+    }
 
+    void convertWordToPdf(file)
+      .then((result) => {
+        if (result.ok) {
+          registerHomeWorkbenchConvertedPdf(targetItemId, result.pdfBlob);
+          updateItem(targetItemId, (item) => ({
+            ...item,
+            status: 'converted',
+            convertedPdfReady: true,
+            updatedAt: new Date().toISOString(),
+            errorMessage: null,
+          }));
+          return;
+        }
+        updateItem(targetItemId, (item) => ({
+          ...item,
+          status: 'error',
+          convertedPdfReady: false,
+          updatedAt: new Date().toISOString(),
+          errorMessage: result.errorMessage || 'Word 转 PDF 失败，请稍后重试。',
+        }));
+      })
+      .finally(() => {
+        activePreviewConversionIdsRef.current.delete(targetItemId);
+      });
   }, [previewItem, updateItem]);
 
   const previewSource = useMemo(() => {
@@ -1079,10 +1325,121 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
     },
   }), [handleItemDropToTarget]);
 
-  const currentFolderChildren = useMemo(
-    () => getFolderChildren(session.folders, HOME_WORKBENCH_ROOT_FOLDER_ID).filter((folder) => folder.id !== HOME_WORKBENCH_ROOT_FOLDER_ID),
-    [session.folders]
+  const contextFolder = useMemo(
+    () => (contextMenu ? session.folders.find((folder) => folder.id === contextMenu.folderId) ?? null : null),
+    [contextMenu, session.folders]
   );
+
+  const renderFolderNode = (folder: HomeWorkbenchFolder, depth = 0): React.ReactNode => {
+    const isEditing = editingFolderId === folder.id;
+    const isActive = session.activeView.kind === 'folder' && session.activeView.folderId === folder.id;
+    const isExpanded = expandedFolderIdSet.has(folder.id);
+    const directFiles = folderItemsByFolderId.get(folder.id) ?? [];
+    const childFolders = getFolderChildren(session.folders, folder.id);
+
+    return (
+      <div key={folder.id} className="space-y-1">
+        <div
+          className={cn(
+            'group rounded-md transition-colors',
+            isActive ? 'bg-slate-100/60 dark:bg-white/[0.05]' : 'hover:bg-slate-100 dark:hover:bg-white/[0.05]'
+          )}
+          style={{ marginLeft: `${depth * 14}px` }}
+        >
+          {isEditing ? (
+            <div className="rounded border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] p-2 shadow-sm">
+              <input
+                value={folderRenameDraft}
+                onChange={(event) => setFolderRenameDraft(event.target.value)}
+                className="w-full rounded bg-slate-50 dark:bg-black/20 px-2 py-1 text-[13px] outline-none dark:text-slate-200"
+              />
+              <div className="mt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingFolderId(null);
+                    setFolderRenameDraft('');
+                  }}
+                  className="rounded px-2 py-1 text-[12px] font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.05]"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRenameFolder(folder.id)}
+                  className="rounded bg-blue-600 px-2 py-1 text-[12px] font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                >
+                  保存
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-1.5 px-2 py-1.5"
+              onDoubleClick={() => {
+                setEditingFolderId(folder.id);
+                setFolderRenameDraft(folder.name);
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setContextMenu({ x: event.clientX, y: event.clientY, folderId: folder.id });
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => toggleFolderExpanded(folder.id)}
+                className="rounded p-0.5 text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/[0.05] dark:hover:text-slate-300"
+                aria-label={isExpanded ? `收起${folder.name}` : `展开${folder.name}`}
+              >
+                {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+              </button>
+              <button
+                type="button"
+                onClick={() => activateFolder(folder.id)}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              >
+                <FolderOpen
+                  size={16}
+                  className={isActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500 group-hover:text-slate-500 dark:group-hover:text-slate-400'}
+                />
+                <span className={cn(
+                  'min-w-0 flex-1 truncate text-[13px] font-medium',
+                  isActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-700 dark:text-slate-300'
+                )}>
+                  {folder.name}
+                </span>
+                {directFiles.length > 0 ? (
+                  <span className="shrink-0 text-[11px] font-medium text-slate-400 dark:text-slate-500">
+                    {directFiles.length}
+                  </span>
+                ) : null}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {isExpanded ? (
+          <div className="space-y-1">
+            <SidebarFolderFileList
+              items={directFiles}
+              depth={depth + 1}
+              selectedItemId={session.selectedItemId}
+              onOpen={openPreview}
+            />
+            {childFolders.map((childFolder) => renderFolderNode(childFolder, depth + 1))}
+            {directFiles.length === 0 && childFolders.length === 0 ? (
+              <div
+                className="rounded-md px-2 py-1 text-[12px] text-slate-400 dark:text-slate-500"
+                style={{ marginLeft: `${(depth + 1) * 14 + 24}px` }}
+              >
+                当前文件夹暂无文件
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   const previewMode = resolvePreviewMode(previewItem);
   const previewHasLiveSource = previewItem
@@ -1289,130 +1646,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
                 ) : null}
 
                 <div className="space-y-1">
-                  {rootFolder ? (
-                    <div className="group rounded-md px-2 py-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-white/[0.05]">
-                      {editingFolderId === rootFolder.id ? (
-                        <div className="rounded border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] p-2 shadow-sm">
-                          <input
-                            value={folderRenameDraft}
-                            onChange={(event) => setFolderRenameDraft(event.target.value)}
-                            className="w-full rounded bg-slate-50 dark:bg-black/20 px-2 py-1 text-[13px] outline-none dark:text-slate-200"
-                          />
-                          <div className="mt-2 flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingFolderId(null);
-                                setFolderRenameDraft('');
-                              }}
-                              className="rounded px-2 py-1 text-[12px] font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.05]"
-                            >
-                              取消
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRenameFolder(rootFolder.id)}
-                              className="rounded bg-blue-600 px-2 py-1 text-[12px] font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
-                            >
-                              保存
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                          <div
-                            className="flex items-center justify-between gap-3 w-full"
-                            onDoubleClick={() => {
-                              setEditingFolderId(rootFolder.id);
-                              setFolderRenameDraft(rootFolder.name);
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              setContextMenu({ x: e.clientX, y: e.clientY, folderId: rootFolder.id });
-                            }}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => updateSession((current) => ({ ...current, activeView: { kind: 'folder', folderId: rootFolder.id } }))}
-                              className={cn(
-                                'flex min-w-0 items-center gap-2 text-[13px] font-medium w-full',
-                                session.activeView.kind === 'folder' && session.activeView.folderId === rootFolder.id
-                                  ? 'text-blue-600 dark:text-blue-400'
-                                  : 'text-slate-700 dark:text-slate-300'
-                              )}
-                            >
-                              <FolderOpen size={16} className={session.activeView.kind === 'folder' && session.activeView.folderId === rootFolder.id ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500 group-hover:text-slate-500 dark:group-hover:text-slate-400'} />
-                              <span className="truncate">{rootFolder.name}</span>
-                            </button>
-                          </div>
-                      )}
-                    </div>
-                  ) : null}
-
-                  {currentFolderChildren.map((folder) => {
-                    const isEditing = editingFolderId === folder.id;
-                    const isActive = session.activeView.kind === 'folder' && session.activeView.folderId === folder.id;
-                    return (
-                      <div
-                        key={folder.id}
-                        className={cn(
-                          'group rounded-md px-2 py-1.5 transition-colors',
-                          isActive ? 'bg-slate-100/60 dark:bg-white/[0.05]' : 'hover:bg-slate-100 dark:hover:bg-white/[0.05]'
-                        )}
-                      >
-                        {isEditing ? (
-                          <div className="rounded border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] p-2 shadow-sm">
-                            <input
-                              value={folderRenameDraft}
-                              onChange={(event) => setFolderRenameDraft(event.target.value)}
-                              className="w-full rounded bg-slate-50 dark:bg-black/20 px-2 py-1 text-[13px] outline-none dark:text-slate-200"
-                            />
-                            <div className="mt-2 flex items-center justify-end gap-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingFolderId(null);
-                                  setFolderRenameDraft('');
-                                }}
-                                className="rounded px-2 py-1 text-[12px] font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.05]"
-                              >
-                                取消
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleRenameFolder(folder.id)}
-                                className="rounded bg-blue-600 px-2 py-1 text-[12px] font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
-                              >
-                                保存
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            className="flex items-center justify-between gap-3 w-full"
-                            onDoubleClick={() => {
-                              setEditingFolderId(folder.id);
-                              setFolderRenameDraft(folder.name);
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              setContextMenu({ x: e.clientX, y: e.clientY, folderId: folder.id });
-                            }}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => updateSession((current) => ({ ...current, activeView: { kind: 'folder', folderId: folder.id } }))}
-                              className="flex min-w-0 items-center gap-2 text-left w-full"
-                            >
-                              {isActive ? <ChevronDown size={15} className="text-blue-600 dark:text-blue-400" /> : <ChevronRight size={15} className="text-slate-400 dark:text-slate-500 group-hover:text-slate-500 dark:group-hover:text-slate-400" />}
-                              <span className={cn('truncate text-[13px] font-medium', isActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-700 dark:text-slate-300')}>
-                                {folder.name}
-                              </span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {rootFolder ? renderFolderNode(rootFolder) : null}
                 </div>
               </div>
             </aside>
@@ -1710,29 +1944,46 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
                 type="button"
                 onClick={() => {
                   setEditingFolderId(contextMenu.folderId);
-                  setFolderRenameDraft(session.folders.find((f) => f.id === contextMenu.folderId)?.name || '');
+                  setFolderRenameDraft(contextFolder?.name || '');
                   setContextMenu(null);
                 }}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-[13px] text-slate-700 hover:bg-slate-100"
               >
                 <PencilLine size={14} />
-                重命名              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const folder = session.folders.find((f) => f.id === contextMenu.folderId);
-                  if (folder && folder.parentId) {
+                重命名
+              </button>
+              {contextFolder?.parentId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const removedFolderIds = new Set([
+                      contextMenu.folderId,
+                      ...collectDescendantFolderIds(session.folders, contextMenu.folderId),
+                    ]);
+                    const nextUpdatedAt = new Date().toISOString();
+
                     updateSession((current) => ({
                       ...current,
-                      folders: current.folders.filter((f) => f.id !== contextMenu.folderId),
+                      folders: current.folders.filter((folder) => !removedFolderIds.has(folder.id)),
+                      items: current.items.map((item) => (
+                        item.folderId && removedFolderIds.has(item.folderId)
+                          ? { ...item, folderId: HOME_WORKBENCH_ROOT_FOLDER_ID, updatedAt: nextUpdatedAt }
+                          : item
+                      )),
+                      activeView: current.activeView.kind === 'folder' && removedFolderIds.has(current.activeView.folderId)
+                        ? { kind: 'folder', folderId: HOME_WORKBENCH_ROOT_FOLDER_ID }
+                        : current.activeView,
                     }));
-                  }
-                  setContextMenu(null);
-                }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-[13px] text-red-600 hover:bg-red-50"
-              >
-                <Trash2 size={14} />
-                鍒犻櫎鏂囦欢澶?              </button>
+                    setExpandedFolderIds((current) => current.filter((folderId) => !removedFolderIds.has(folderId)));
+                    setContextMenu(null);
+                    pushToast('good', '文件夹已删除，内部文件已归入“我的文件”。');
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-[13px] text-red-600 hover:bg-red-50"
+                >
+                  <Trash2 size={14} />
+                  删除文件夹
+                </button>
+              ) : null}
             </motion.div>
           </div>
         ) : null}
@@ -1887,6 +2138,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
                         <div className="mt-2 max-w-lg text-sm leading-7 text-[#6b7d92] dark:text-slate-400">
                           {previewItem.errorMessage || 'Word 转 PDF 失败，请稍后重试。'}
                         </div>
+                        <button
+                          type="button"
+                          onClick={handleRetryPreviewConversion}
+                          className="mt-5 inline-flex items-center rounded-md border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                        >
+                          重新尝试
+                        </button>
                       </div>
                     ) : previewSource ? (
                       <div className="h-full w-full overflow-hidden bg-white dark:bg-[#0B1120]">

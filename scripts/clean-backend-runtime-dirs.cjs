@@ -20,6 +20,7 @@ const pycacheRoots = [
 const pycacheExcludedDirNames = new Set([
   '.venv',
   '.venv-module2-py311',
+  '.venv-module3-py311',
   '.venv-module4-py311',
   'node_modules',
   '.git',

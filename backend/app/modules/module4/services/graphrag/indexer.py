@@ -17,6 +17,11 @@ from typing import Any, Dict, List, Optional
 from ..query.neo4j import Neo4jSettings
 from .settings import GraphRAGRuntimeSettings
 from .prompts import PromptRegistry
+from .runtime_selection import (
+    choose_graphrag_python_bin,
+    probe_graphrag_python_runtime,
+    resolve_graphrag_config_style,
+)
 
 
 def _module4_root() -> Path:
@@ -30,26 +35,11 @@ def _repo_root() -> Path:
     return _module4_root().parents[3]
 
 
-def _repo_venv_python() -> Path:
-    root = _repo_root()
-    if os.name == "nt":
-        return root / ".venv-module4-py311" / "Scripts" / "python.exe"
-    return root / ".venv-module4-py311" / "bin" / "python"
-
-
 def _resolve_python_bin() -> str:
-    configured = str(os.getenv("MODULE4_GRAPHRAG_PYTHON_BIN", "") or "").strip()
-    generic_commands = {"python", "python3", "py"}
-    if configured and configured.lower() not in generic_commands:
-        return configured
-
-    repo_venv = _repo_venv_python()
-    if repo_venv.exists():
-        return str(repo_venv)
-
-    if configured:
-        return configured
-    return sys.executable
+    return choose_graphrag_python_bin(
+        configured_python_bin=str(os.getenv("MODULE4_GRAPHRAG_PYTHON_BIN", "") or "").strip(),
+        configured_query_python_bin=str(os.getenv("MODULE4_GRAPHRAG_QUERY_PYTHON_BIN", "") or "").strip(),
+    )
 
 
 def _workspace_env_file(path: Path) -> Dict[str, str]:
@@ -112,41 +102,36 @@ def _retry_skip_community_reports_enabled(workspace_env: Dict[str, str]) -> bool
     return _truthy(workspace_env.get("GRAPHRAG_RETRY_SKIP_COMMUNITY_REPORTS"), default=False)
 
 
-def _runtime_style(workspace_env: Dict[str, str]) -> str:
-    return str(workspace_env.get("GRAPHRAG_CONFIG_STYLE") or "v3").strip().lower() or "v3"
-
-
-def _graphrag_cli_bin(python_bin: str) -> str | None:
-    candidate = Path(str(python_bin)).resolve()
-    if candidate.exists():
-        if os.name == "nt":
-            exe = candidate.parent / "graphrag.exe"
-            if exe.exists():
-                return str(exe)
-        else:
-            exe = candidate.parent / "graphrag"
-            if exe.exists():
-                return str(exe)
-    resolved = shutil.which("graphrag")
-    return resolved
+def _runtime_style(workspace_env: Dict[str, str], *, python_bin: str) -> str:
+    return resolve_graphrag_config_style(
+        str(workspace_env.get("GRAPHRAG_CONFIG_STYLE") or "").strip().lower() or "auto",
+        python_bin=python_bin,
+    )
 
 
 def _build_index_command(*, python_bin: str, workspace_dir: Path, workspace_env: Dict[str, str]) -> List[str]:
-    style = _runtime_style(workspace_env)
-    use_cli = style != "legacy"
-    if use_cli:
-        graphrag_cli = _graphrag_cli_bin(python_bin)
-        if graphrag_cli:
-            command = [graphrag_cli, "index", "--root", str(workspace_dir)]
-        else:
-            command = [
-                python_bin,
-                "-c",
-                "from graphrag.cli.main import app; app()",
-                "index",
-                "--root",
-                str(workspace_dir),
-            ]
+    style = _runtime_style(workspace_env, python_bin=python_bin)
+    runtime = probe_graphrag_python_runtime(python_bin)
+    if style == "v3" and runtime.has_cli_main:
+        command = [
+            python_bin,
+            "-c",
+            "from graphrag.cli.main import app; app()",
+            "index",
+            "--root",
+            str(workspace_dir),
+        ]
+    elif style == "legacy" and runtime.has_legacy_index_module:
+        command = [python_bin, "-m", "graphrag.index", "--root", str(workspace_dir)]
+    elif runtime.has_cli_main:
+        command = [
+            python_bin,
+            "-c",
+            "from graphrag.cli.main import app; app()",
+            "index",
+            "--root",
+            str(workspace_dir),
+        ]
     else:
         command = [python_bin, "-m", "graphrag.index", "--root", str(workspace_dir)]
     indexing_method = str(workspace_env.get("GRAPHRAG_INDEXING_METHOD") or "").strip().lower()
@@ -156,9 +141,10 @@ def _build_index_command(*, python_bin: str, workspace_dir: Path, workspace_env:
 
 
 def _append_no_cache_flag(command: List[str]) -> List[str]:
-    if "--no-cache" in command:
+    if "--no-cache" in command or "--nocache" in command:
         return command
-    return [*command, "--no-cache"]
+    uses_legacy_index = any(part == "graphrag.index" for part in command)
+    return [*command, "--nocache" if uses_legacy_index else "--no-cache"]
 
 
 def _looks_like_artifacts_dir(path: Path) -> bool:
@@ -237,6 +223,24 @@ def _rewrite_workflows(settings_text: str, workflows: List[str]) -> str:
             lines[index] = replacement
             return "\n".join(lines) + ("\n" if settings_text.endswith("\n") else "")
     return f"{replacement}\n{settings_text}"
+
+
+def _rewrite_extract_graph_max_gleanings(settings_text: str, max_gleanings: int) -> str:
+    replacement = f"  max_gleanings: {max(1, int(max_gleanings))}"
+    lines = settings_text.splitlines()
+    in_extract_graph = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("extract_graph:"):
+            in_extract_graph = True
+            continue
+        if in_extract_graph:
+            if line and not line.startswith(" "):
+                break
+            if stripped.startswith("max_gleanings:"):
+                lines[index] = replacement
+                return "\n".join(lines) + ("\n" if settings_text.endswith("\n") else "")
+    return settings_text
 
 
 def _default_v3_workflows(indexing_method: str) -> List[str]:
@@ -753,7 +757,23 @@ def _detect_retryable_process_failure(log_path: Path) -> str | None:
     if rate_limited_signature:
         return "provider_rate_limited"
 
+    no_entities_signature = (
+        "no entities detected during extraction" in lower
+        or "graph extraction failed. no entities detected during extraction" in lower
+    )
+    if no_entities_signature:
+        return "no_entities_detected"
+
     return None
+
+
+def _resolve_no_entity_retry_max_gleanings() -> int:
+    raw = str(os.getenv("MODULE4_GRAPHRAG_NO_ENTITY_RETRY_MAX_GLEANINGS", "3") or "").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 3
+    return max(2, min(6, value))
 
 
 def _resolve_workspace_subdir(workspace_dir: Path, raw_value: str, fallback: str) -> Path | None:
@@ -1172,7 +1192,7 @@ class GraphRAGIndexer:
         env.update(workspace_env)
         env = _augment_source_checkout_env(env, workspace_env)
         execution_mode = _execution_mode(workspace_env)
-        style = _runtime_style(workspace_env)
+        style = _runtime_style(workspace_env, python_bin=self.python_bin)
         allow_retry_skip_community_reports = _retry_skip_community_reports_enabled(workspace_env)
         community_retry_workflow = "create_final_community_reports" if style == "legacy" else "create_community_reports"
         process_retry_max_attempts_raw = str(
@@ -1312,6 +1332,7 @@ class GraphRAGIndexer:
                 reason_labels = {
                     "cache_missing_summarize_descriptions": "cache file miss under summarize_descriptions",
                     "provider_rate_limited": "provider rate limited (429)",
+                    "no_entities_detected": "no entities detected during extract_graph",
                 }
                 for attempt in range(1, process_retry_max_attempts + 1):
                     retry_reason = _detect_retryable_process_failure(log_path)
@@ -1321,11 +1342,25 @@ class GraphRAGIndexer:
                     reset_cache = retry_reason == "cache_missing_summarize_descriptions"
                     reset_output = True
                     no_cache_switched = False
+                    extract_graph_gleanings_boosted = False
                     if reset_cache and style != "legacy":
                         next_command = _append_no_cache_flag(command)
                         if next_command != command:
                             command = next_command
                             no_cache_switched = True
+                    if retry_reason == "no_entities_detected":
+                        try:
+                            original_settings = settings_path.read_text(encoding="utf-8")
+                        except FileNotFoundError:
+                            original_settings = ""
+                        if original_settings:
+                            updated_settings = _rewrite_extract_graph_max_gleanings(
+                                original_settings,
+                                _resolve_no_entity_retry_max_gleanings(),
+                            )
+                            if updated_settings != original_settings:
+                                settings_path.write_text(updated_settings, encoding="utf-8")
+                                extract_graph_gleanings_boosted = True
                     touched_dirs = _reset_workspace_runtime_dirs(
                         workspace_dir=workspace_dir,
                         workspace_env=workspace_env,
@@ -1347,6 +1382,10 @@ class GraphRAGIndexer:
                         if no_cache_switched:
                             log_file.write(
                                 "# module4 retry: switched command to --no-cache due to cache file miss\n"
+                            )
+                        if extract_graph_gleanings_boosted:
+                            log_file.write(
+                                "# module4 retry: increased extract_graph.max_gleanings to recover from empty entity extraction\n"
                             )
                         if backoff_sec > 0:
                             log_file.write(

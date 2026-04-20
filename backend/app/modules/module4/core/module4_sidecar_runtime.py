@@ -423,10 +423,10 @@ class Module4SidecarManager:
             return configured
 
         candidates = [
-            settings.runtime_root_dir / ".venv-module4-py311" / "Scripts" / "python.exe",
-            settings.runtime_root_dir / ".venv-module4-py311" / "bin" / "python",
             settings.runtime_root_dir / ".venv" / "Scripts" / "python.exe",
             settings.runtime_root_dir / ".venv" / "bin" / "python",
+            settings.runtime_root_dir / ".venv-module4-py311" / "Scripts" / "python.exe",
+            settings.runtime_root_dir / ".venv-module4-py311" / "bin" / "python",
         ]
         for candidate in candidates:
             if candidate.exists() and candidate.is_file():

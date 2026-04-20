@@ -20,6 +20,7 @@
     "dev:module2": "python backend/run_service.py module2 --reload",
     "dev:module3": "python backend/run_service.py module3 --reload",
     "dev:module4": "python backend/run_service.py module4 --reload",
+    "setup:backend:venv": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap-unified-backend-venv.ps1",
     "build": "npm run build:frontend",
     "build:frontend": "npm --prefix frontend run build",
     "build:frontend:app": "npm --prefix frontend-app run build",

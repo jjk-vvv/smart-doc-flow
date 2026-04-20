@@ -96,7 +96,7 @@ def build_module2_main_document_io_bundle(
                     ),
                 ),
                 timeout=timeout_sec,
-            ),
+            )
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
                 f"word_to_pdf_wait_for_timeout:{round(float(timeout_sec), 3)}s:{file_name}"

@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from ..query.neo4j import Neo4jSettings
 from .settings import GraphRAGRuntimeSettings
 from .prompts import PromptRegistry
+from .runtime_selection import resolve_graphrag_config_style
 
 
 def _now_utc_iso() -> str:
@@ -41,7 +42,7 @@ def render_settings_yaml(
     runtime: GraphRAGRuntimeSettings,
     prompt_targets: Dict[str, Path],
 ) -> str:
-    style = str(runtime.config_style or "v3").strip().lower()
+    style = resolve_graphrag_config_style(str(runtime.config_style or "").strip().lower() or "auto")
     if style == "legacy":
         return _render_settings_yaml_legacy(runtime, prompt_targets)
     return _render_settings_yaml_v3(runtime, prompt_targets)

@@ -12,8 +12,8 @@ const backendDir = path.join(rootDir, 'backend');
 const gatewayPythonExec = resolvePythonExec({
   overrideExec: process.env.GATEWAY_PYTHON,
   preferredVenvDirs: [
-    path.join(rootDir, '.venv-module2-py311'),
     path.join(rootDir, '.venv'),
+    path.join(rootDir, '.venv-module2-py311'),
   ],
 });
 

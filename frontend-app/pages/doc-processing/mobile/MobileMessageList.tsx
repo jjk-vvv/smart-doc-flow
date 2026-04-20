@@ -16,7 +16,7 @@ type MobileMessage = {
 type FollowUpItem = {
   label: string;
   prompt: string;
-  icon: React.ComponentType<{ size?: number }>;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
 };
 
 type MobileMessageListProps = {
@@ -221,15 +221,19 @@ export const MobileMessageList: React.FC<MobileMessageListProps> = ({
               >
                 <div className="whitespace-pre-wrap text-[14px] leading-7">
                   {isStreamingMessage || isAnimatingAssistantMessage ? (
-                    <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-[#d7e5fd] bg-[#f7faff] px-2.5 py-1 text-[11px] font-medium text-[#245eb6] dark:border-slate-700 dark:bg-slate-800 dark:text-sky-200">
-                      <span className="h-1.5 w-1.5 rounded-full bg-[#2a64f6] animate-pulse" />
-                      {isStreamingMessage ? '正在实时输出' : '正在逐字输出'}
+                    <div className="mb-2.5 flex items-center gap-1.5">
+                      <div className="inline-flex items-center gap-1.5 rounded-md bg-cyan-50 px-2 py-0.5 text-[11px] font-bold text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-400">
+                        <span className="h-1.5 w-1.5 rounded-full bg-cyan-500 animate-pulse" />
+                        {isStreamingMessage ? '正在实时输出' : '正在逐字输出'}
+                      </div>
                     </div>
                   ) : null}
                   {isReportMessage && !isStreamingMessage && !isAnimatingAssistantMessage ? (
-                    <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-[#d7e5fd] bg-[#f7faff] px-2.5 py-1 text-[11px] font-medium text-[#245eb6] dark:border-slate-700 dark:bg-slate-800 dark:text-sky-200">
-                      <span className="h-1.5 w-1.5 rounded-full bg-[#2a64f6]" />
-                      分析报告
+                    <div className="mb-2.5 flex items-center gap-1.5">
+                      <div className="inline-flex items-center gap-1.5 rounded-md bg-slate-100/80 px-2 py-0.5 text-[11px] font-bold text-slate-600 dark:bg-slate-800/60 dark:text-slate-400">
+                        <span className="h-1.5 w-1.5 rounded-full bg-slate-400 dark:bg-slate-500" />
+                        分析报告
+                      </div>
                     </div>
                   ) : null}
                   {displayedContent}
@@ -238,19 +242,25 @@ export const MobileMessageList: React.FC<MobileMessageListProps> = ({
                   ) : null}
                 </div>
                 {isReportMessage && reportFiles.length > 0 ? (
-                  <div className="mt-3 flex flex-wrap gap-2">
+                  <div className="mt-3 flex flex-col gap-2">
                     {reportFiles.map((file) => (
                       <button
                         key={`${message.id}-${file.id}`}
                         type="button"
                         onClick={() => onOpenReportFile(file.id)}
-                        className="inline-flex max-w-full items-center gap-2 rounded-full border border-[#dbe7fb] bg-[#fbfdff] px-3 py-1.5 text-left text-[12px] font-medium text-[#35516d] transition-all hover:-translate-y-0.5 hover:border-[#d4e3fb] hover:bg-[#f9fbff] dark:border-slate-800/80 dark:bg-slate-900/78 dark:text-slate-200 dark:hover:border-slate-700 dark:hover:bg-slate-900/82"
+                        className="flex w-full items-center justify-between rounded-[16px] border border-slate-200/60 bg-white p-3 text-left transition-all hover:bg-slate-50 active:scale-[0.98] dark:border-white/[0.05] dark:bg-slate-800/60 dark:hover:bg-slate-800/80"
                       >
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[#e4ecf8] bg-[#fbfdff] dark:border-slate-700 dark:bg-slate-900/72">
-                          {renderFileIcon(file)}
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100/80 dark:bg-slate-900/50">
+                            {renderFileIcon(file)}
+                          </div>
+                          <span className="truncate text-[14px] font-medium text-slate-700 dark:text-slate-200">
+                            {file.name}
+                          </span>
+                        </div>
+                        <span className="shrink-0 pl-3 text-[13px] font-medium text-cyan-600 dark:text-cyan-400">
+                          查看报告
                         </span>
-                        <span className="max-w-[9.5rem] truncate">{file.name}</span>
-                        <span className="text-[#245eb6] dark:text-sky-200">查看完整报告</span>
                       </button>
                     ))}
                   </div>
@@ -261,23 +271,23 @@ export const MobileMessageList: React.FC<MobileMessageListProps> = ({
         })}
 
         {showFollowUpSuggestions ? (
-          <div className="rounded-[22px] border border-[#e7effc] bg-white/92 p-3 shadow-[0_12px_28px_-24px_rgba(42,100,246,0.12)] dark:border-slate-800 dark:bg-slate-950/72 dark:shadow-[0_16px_32px_-24px_rgba(2,6,23,0.84)]">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#5d7390] dark:text-slate-400">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#eef5ff] text-[#1d4ed8] dark:bg-slate-800 dark:text-sky-300">AI</span>
+          <div className="pt-2">
+            <div className="mb-3 flex items-center justify-between gap-2 px-1">
+              <div className="flex items-center gap-2 text-[12px] font-bold text-slate-800 dark:text-slate-200">
+                <span className="flex h-5 w-5 items-center justify-center rounded-md bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400 text-[10px]">AI</span>
                 猜你想做
               </div>
               {showBatchSwitcher ? (
                 <button
                   type="button"
                   onClick={onRotateSuggestions}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-[#dbe8fd] bg-white px-2.5 py-1 text-[11px] font-medium text-[#35516d] transition-colors hover:border-[#c8dcff] hover:bg-[#f7faff] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-600 dark:hover:bg-slate-800"
+                  className="text-[12px] font-medium text-slate-500 transition-colors hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
                 >
                   换一批
                 </button>
               ) : null}
             </div>
-            <div className="custom-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1">
+            <div className="custom-scrollbar -mx-1 flex gap-2.5 overflow-x-auto px-1 pb-1">
               {followUpItems.map((item) => {
                 const Icon = item.icon;
                 return (
@@ -286,9 +296,9 @@ export const MobileMessageList: React.FC<MobileMessageListProps> = ({
                     type="button"
                     onClick={() => onPickSuggestion(item.prompt)}
                     disabled={disabled}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#dbe8fd] bg-white px-3 py-1.5 text-xs font-medium text-[#35516d] transition-all hover:-translate-y-0.5 hover:border-[#c8dcff] hover:bg-[#f7faff] hover:text-[#234a79] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-600 dark:hover:bg-slate-800 dark:hover:text-sky-200 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex shrink-0 items-center gap-2 rounded-[14px] border border-slate-200/60 bg-white px-3.5 py-2.5 text-[13px] font-medium text-slate-700 shadow-sm transition-all active:scale-[0.98] dark:border-white/[0.05] dark:bg-slate-800/60 dark:text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Icon size={13} />
+                    <Icon size={14} className="text-slate-400 dark:text-slate-500" />
                     {item.label}
                   </button>
                 );

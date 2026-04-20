@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+from types import SimpleNamespace
+
+from fastapi import HTTPException
 
 from app.core.config import Settings
 from app.modules.module2.core import module2_shadow_runtime as shadow_runtime
@@ -74,3 +78,83 @@ def test_upsert_shadow_payload_skips_duplicate_snapshot_save(monkeypatch, tmp_pa
     assert shadow_runtime._upsert_shadow_payload(settings, dict(payload)) is True  # type: ignore[attr-defined]
 
     assert saved_job_ids == ["extract_job_demo123"]
+
+
+def test_shadow_status_returns_snapshot_when_live_lookup_404_for_nonterminal_job(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    payload = {
+        "job_id": "extract_job_demo404",
+        "status": "running",
+        "terminal": False,
+        "updated_at": time.time(),
+        "files": [{"file_name": "demo.docx", "status": "running"}],
+        "errors": [],
+    }
+
+    with shadow_runtime.extraction_shadow_lock:
+        shadow_runtime.extraction_shadow_jobs.clear()
+        shadow_runtime.extraction_shadow_pollers.clear()
+        shadow_runtime.extraction_shadow_live_backoff_until.clear()
+
+    assert shadow_runtime._upsert_shadow_payload(settings, payload) is True  # type: ignore[attr-defined]
+
+    result = shadow_runtime.get_shadow_extraction_job_status(
+        settings,
+        "extract_job_demo404",
+        execution_facade_factory=lambda: SimpleNamespace(
+            get_job_status=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                HTTPException(status_code=404, detail="Extraction job not found")
+            )
+        ),
+        include_documents=False,
+    )
+
+    assert result["job_id"] == "extract_job_demo404"
+    assert result["status"] == "running"
+    assert result["terminal"] is False
+
+
+def test_shadow_status_returns_snapshot_when_live_lookup_times_out(monkeypatch, tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    payload = {
+        "job_id": "extract_job_demo_timeout",
+        "status": "running",
+        "terminal": False,
+        "updated_at": time.time(),
+        "files": [{"file_name": "demo.docx", "status": "running"}],
+        "errors": [],
+    }
+
+    with shadow_runtime.extraction_shadow_lock:
+        shadow_runtime.extraction_shadow_jobs.clear()
+        shadow_runtime.extraction_shadow_pollers.clear()
+        shadow_runtime.extraction_shadow_live_backoff_until.clear()
+
+    monkeypatch.setattr(shadow_runtime, "_shadow_live_status_timeout_sec", lambda: 0.05)
+    monkeypatch.setattr(shadow_runtime, "_shadow_live_status_backoff_sec", lambda: 1.0)
+    assert shadow_runtime._upsert_shadow_payload(settings, payload) is True  # type: ignore[attr-defined]
+
+    def _slow_get_job_status(*_args, **_kwargs):
+        time.sleep(0.2)
+        return {
+            "job_id": "extract_job_demo_timeout",
+            "status": "completed",
+            "terminal": True,
+            "updated_at": time.time(),
+            "errors": [],
+            "documents": [],
+        }
+
+    started = time.time()
+    result = shadow_runtime.get_shadow_extraction_job_status(
+        settings,
+        "extract_job_demo_timeout",
+        execution_facade_factory=lambda: SimpleNamespace(get_job_status=_slow_get_job_status),
+        include_documents=False,
+    )
+    elapsed = time.time() - started
+
+    assert result["job_id"] == "extract_job_demo_timeout"
+    assert result["status"] == "running"
+    assert elapsed < 0.15
+    assert shadow_runtime._shadow_live_probe_in_backoff("extract_job_demo_timeout") is True  # type: ignore[attr-defined]

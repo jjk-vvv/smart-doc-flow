@@ -10,13 +10,12 @@ const {
   rootDir,
 } = require('./python-service-utils.cjs');
 
-const module2Dir = path.join(rootDir, 'backend', 'module2');
+const module2Dir = path.join(rootDir, 'backend');
 const module2PythonExec = resolvePythonExec({
   overrideExec: process.env.MODULE2_PYTHON,
   preferredVenvDirs: [
-    path.join(rootDir, '.venv-module2-py311'),
-    path.join(module2Dir, '.venv'),
     path.join(rootDir, '.venv'),
+    path.join(rootDir, '.venv-module2-py311'),
   ],
 });
 

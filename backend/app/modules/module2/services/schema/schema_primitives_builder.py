@@ -217,10 +217,19 @@ def build_module2_main_schema_timeout_bundle(
             + min(figure_dataframe_cells / 48.0, 16.0)
         )
         trigger_score = max(8.0, float(getenv("MODULE2_WORD_DYNAMIC_EXTRACT_TRIGGER_SCORE", "10.0")))
-        max_timeout_sec = max(
+        configured_max_timeout_sec = max(
             base_timeout,
             float(getenv("MODULE2_WORD_DYNAMIC_EXTRACT_TIMEOUT_MAX_SEC", "420")),
         )
+        hard_cap_raw = float(getenv("MODULE2_WORD_DYNAMIC_EXTRACT_TIMEOUT_HARD_CAP_SEC", "300"))
+        hard_cap_enabled = hard_cap_raw > 0.0
+        hard_cap_timeout_sec = max(base_timeout, hard_cap_raw) if hard_cap_enabled else 0.0
+        max_timeout_sec = (
+            max(base_timeout, min(configured_max_timeout_sec, hard_cap_timeout_sec))
+            if hard_cap_enabled
+            else configured_max_timeout_sec
+        )
+        hard_cap_applied = bool(hard_cap_enabled and max_timeout_sec + 1e-6 < configured_max_timeout_sec)
         bonus_per_score = max(2.0, float(getenv("MODULE2_WORD_DYNAMIC_EXTRACT_BONUS_PER_SCORE", "6.0")))
 
         if complexity_score < trigger_score:
@@ -245,6 +254,10 @@ def build_module2_main_schema_timeout_bundle(
             "complexity_score": round(complexity_score, 3),
             "resolved_timeout_sec": round(resolved_timeout, 3),
             "base_timeout_sec": round(base_timeout, 3),
+            "configured_max_timeout_sec": round(configured_max_timeout_sec, 3),
+            "effective_max_timeout_sec": round(max_timeout_sec, 3),
+            "hard_cap_timeout_sec": (round(hard_cap_timeout_sec, 3) if hard_cap_enabled else None),
+            "hard_cap_applied": hard_cap_applied,
             "text_len": text_len,
             "field_count": field_count,
             "table_count": len(table_blocks),

@@ -51,6 +51,9 @@ class _FakeModule4SyncConfigRuntime:
     def payload_mode(self) -> str:
         return self._payload_mode
 
+    def initial_dispatch_delay_sec(self) -> float:
+        return 0.0
+
 
 class _FakeModule4SyncOutboxRuntime:
     def __init__(self) -> None:

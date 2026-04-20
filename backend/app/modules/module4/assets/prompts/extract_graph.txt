@@ -7,6 +7,12 @@ Given a text document that is potentially relevant to this activity and a list o
 - entity_type: One of the following types: [{entity_types}]
 - entity_description: Comprehensive description of the entity's attributes and activities
 Format each entity as ("entity"<|><entity_name><|><entity_type><|><entity_description>)
+
+Important extraction rules:
+- For Chinese statistical reports, government bulletins, annual summaries, tables, charts, and figure captions, treat obvious regions, organizations, projects, policies, facilities, events, agreements, materials, people, and indicators as valid entities when they are explicitly named in the source text.
+- Indicator entities can include named metrics such as GDP, industrial added value, fiscal revenue, retail sales, energy output, population counts, growth rates, and similar statistical indicators when they appear as concrete named items in the text or tables.
+- Geographic entities can include countries, provinces, cities, districts, development zones, parks, ports, stations, and other clearly named places or administrative areas.
+- Do not return an empty extraction when the text clearly contains named entities in prose, headings, table headers, row labels, or chart captions. Read structured content carefully before deciding that no entities exist.
  
 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
 For each pair of related entities, extract the following information:

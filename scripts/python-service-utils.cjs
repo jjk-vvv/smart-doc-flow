@@ -35,7 +35,7 @@ const resolveDataRootDir = ({ baseEnv = process.env, runtimeRoot = rootDir } = {
   if (overrideDataDir) {
     return path.resolve(overrideDataDir);
   }
-  return path.resolve(runtimeRoot);
+  return path.resolve(runtimeRoot, 'runtime-data');
 };
 
 const venvPythonPath = (venvDir) =>
@@ -175,10 +175,10 @@ const MANAGED_ENV_SCOPE_SPECS = {
     relPath: path.join('backend', '.env'),
   },
   module2: {
-    relPath: path.join('backend', 'module2', '.env'),
+    relPath: path.join('backend', 'app', 'modules', 'module2', '.env'),
   },
   module4: {
-    relPath: path.join('backend', 'module4', '.env'),
+    relPath: path.join('backend', 'app', 'modules', 'module4', '.env'),
   },
   module3: {
     relPath: path.join('backend', 'app', 'modules', 'module3', '.env'),
@@ -230,7 +230,10 @@ const assignManagedDataPath = (env, key, value, { force } = {}) => {
     env[key] = value;
     return;
   }
-  ensureEnvValue(env, key, value);
+  const existingValue = trim(env[key]);
+  if (!existingValue || !path.isAbsolute(existingValue)) {
+    env[key] = value;
+  }
 };
 
 const buildManagedRuntimeEnv = ({ baseEnv = process.env, scopes = DEFAULT_MANAGED_ENV_SCOPES } = {}) => {
@@ -259,13 +262,13 @@ const buildManagedRuntimeEnv = ({ baseEnv = process.env, scopes = DEFAULT_MANAGE
   env.SMART_DOC_FLOW_CONFIG_ROOT = configRoot;
   env.SMART_DOC_FLOW_DATA_ROOT = dataRoot;
   env.SMART_DOC_FLOW_GATEWAY_ENV_FILE = path.join(configRoot, 'backend', '.env');
-  env.MODULE2_ENV_FILE = path.join(configRoot, 'backend', 'module2', '.env');
+  env.MODULE2_ENV_FILE = path.join(configRoot, 'backend', 'app', 'modules', 'module2', '.env');
   env.MODULE3_ENV_FILE = path.join(configRoot, 'backend', 'app', 'modules', 'module3', '.env');
-  env.SMART_DOC_FLOW_MODULE4_ENV_FILE = path.join(configRoot, 'backend', 'module4', '.env');
+  env.SMART_DOC_FLOW_MODULE4_ENV_FILE = path.join(configRoot, 'backend', 'app', 'modules', 'module4', '.env');
 
   const forceManagedDataPaths = path.resolve(dataRoot) !== path.resolve(runtimeRoot);
 
-  ensureEnvValue(env, 'GATEWAY_FRONTEND_DIST_DIR', path.join(runtimeRoot, 'frontend', 'dist'));
+  assignManagedDataPath(env, 'GATEWAY_FRONTEND_DIST_DIR', path.join(runtimeRoot, 'frontend', 'dist'));
   assignManagedDataPath(env, 'AUTH_USERS_FILE', path.join(dataRoot, 'auth', 'users.json'), {
     force: forceManagedDataPaths,
   });
@@ -297,6 +300,8 @@ const buildManagedRuntimeEnv = ({ baseEnv = process.env, scopes = DEFAULT_MANAGE
   const bundledMineruRuntimeModelsDir = path.join(
     runtimeRoot,
     'backend',
+    'app',
+    'modules',
     'module2',
     '.cache',
     'mineru_runtime_models',
@@ -315,10 +320,10 @@ const buildManagedRuntimeEnv = ({ baseEnv = process.env, scopes = DEFAULT_MANAGE
     path.join(dataRoot, 'module4', 'workspaces'),
     { force: forceManagedDataPaths },
   );
-  ensureEnvValue(
+  assignManagedDataPath(
     env,
     'MODULE4_GRAPHRAG_PROMPTS_ROOT',
-    path.join(runtimeRoot, 'backend', 'module4', 'assets', 'prompts'),
+    path.join(runtimeRoot, 'backend', 'app', 'modules', 'module4', 'assets', 'prompts'),
   );
 
   return env;

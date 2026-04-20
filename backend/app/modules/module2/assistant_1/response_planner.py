@@ -8,6 +8,7 @@ from .intent_router import (
     collect_intent_signals,
     contains_any,
     is_broad_document_question,
+    is_action_preview_request,
     is_strict_minimal_request,
     looks_like_fact_lookup,
     prefers_active_document_grounding,
@@ -76,6 +77,19 @@ class Assistant1ResponsePlanner:
                 low_tokens=260,
                 medium_tokens=900,
                 high_tokens=1300,
+            )
+
+        if signals.action_preview or is_action_preview_request(signals.question):
+            tool_names = ["inspect_database_schema", "draft_sql_from_nl"]
+            if self._document_available_for_tool(signals):
+                tool_names.append("search_knowledge_base")
+            return self._plan_tool_call(
+                intent="sql_request",
+                signals=signals,
+                tool_names=tuple(dict.fromkeys(tool_names)),
+                low_tokens=850,
+                medium_tokens=1150,
+                high_tokens=1450,
             )
 
         if signals.schema_design:

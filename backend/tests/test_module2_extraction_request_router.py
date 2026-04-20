@@ -33,6 +33,7 @@ class _FakeExtractionRequestRuntime:
     def __init__(self) -> None:
         self.create_job_calls: list[dict[str, object]] = []
         self.get_job_status_calls: list[dict[str, object]] = []
+        self.graph_sync_calls: list[dict[str, object]] = []
         self.extract_batch_calls: list[dict[str, object]] = []
 
     async def create_job(self, *, request, files, schema_form: str, tenant_id: str = "") -> dict:
@@ -78,6 +79,27 @@ class _FakeExtractionRequestRuntime:
                     "diagnostics": {},
                 }
             ]
+        }
+
+    async def trigger_graph_sync(
+        self,
+        *,
+        request,
+        payload: dict[str, object] | None = None,
+        background_tasks=None,
+    ) -> dict[str, object]:
+        normalized_payload = dict(payload or {})
+        call = {
+            "path": str(request.url.path),
+            "payload": normalized_payload,
+            "has_background_tasks": background_tasks is not None,
+        }
+        self.graph_sync_calls.append(call)
+        return {
+            "ok": True,
+            "enqueued": True,
+            "file_name": str(normalized_payload.get("file_name") or ""),
+            "file_hash": str(normalized_payload.get("file_hash") or ""),
         }
 
 
@@ -127,6 +149,40 @@ def test_extraction_request_router_delegates_jobs_status() -> None:
         {
             "job_id": "extract_job_1",
             "include_documents": True,
+        }
+    ]
+
+
+def test_extraction_request_router_delegates_graph_sync() -> None:
+    runtime = _FakeExtractionRequestRuntime()
+    app = _build_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/extract/graph-sync",
+            json={
+                "job_id": "extract_job_1",
+                "file_name": "demo.pdf",
+                "file_hash": "hash-demo",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "enqueued": True,
+        "file_name": "demo.pdf",
+        "file_hash": "hash-demo",
+    }
+    assert runtime.graph_sync_calls == [
+        {
+            "path": "/extract/graph-sync",
+            "payload": {
+                "job_id": "extract_job_1",
+                "file_name": "demo.pdf",
+                "file_hash": "hash-demo",
+            },
+            "has_background_tasks": True,
         }
     ]
 

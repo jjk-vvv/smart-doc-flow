@@ -16,6 +16,7 @@ from app.core.auth_tenant import TenantResolution, resolve_authenticated_tenant
 from app.modules.module2.composition.embedded_runtime import (
     build_health_payload as build_embedded_module2_health_payload,
     get_assistant1_runtime as get_embedded_assistant1_runtime,
+    trigger_graph_sync as trigger_embedded_graph_sync,
 )
 from app.modules.file_assets.service import (
     build_file_asset_urls,
@@ -37,6 +38,7 @@ from app.modules.module2.core.module2_shadow_runtime import (
     cancel_shadow_extraction_job_file,
     clear_shadow_extraction_runtime_state,
     get_shadow_extraction_job_status,
+    get_shadow_extraction_job_status_snapshot,
     start_shadow_extraction_job,
 )
 from app.modules.module2.schemas.extraction import (
@@ -55,6 +57,84 @@ from app.modules.module2.core.summary_runtime import (
 
 
 class ExtractionService:
+    @staticmethod
+    def _select_graph_sync_document_payload(
+        payload: dict[str, Any] | None,
+        *,
+        file_name: str = "",
+        file_hash: str = "",
+    ) -> dict[str, Any] | None:
+        documents = payload.get("documents") if isinstance(payload, dict) and isinstance(payload.get("documents"), list) else []
+        normalized_name = str(file_name or "").strip().lower()
+        normalized_hash = str(file_hash or "").strip()
+        fallback_document: dict[str, Any] | None = None
+
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("file_name") or "").strip()
+            item_hash = str(item.get("file_hash") or "").strip()
+            item_name_lower = item_name.lower()
+
+            if normalized_hash and item_hash == normalized_hash:
+                if not normalized_name or not item_name or item_name_lower == normalized_name:
+                    return dict(item)
+                if fallback_document is None:
+                    fallback_document = dict(item)
+                continue
+
+            if not normalized_hash and normalized_name and item_name_lower == normalized_name:
+                return dict(item)
+
+        return fallback_document
+
+    @staticmethod
+    def _compact_job_status_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        def _to_int(value: Any, *, minimum: int = 0) -> int:
+            try:
+                return max(minimum, int(value))
+            except (TypeError, ValueError):
+                return minimum
+
+        def _to_ratio(value: Any) -> float:
+            try:
+                return max(0.0, min(1.0, float(value)))
+            except (TypeError, ValueError):
+                return 0.0
+
+        progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
+        errors_raw = payload.get("errors")
+        errors = [str(item or "").strip() for item in (errors_raw or []) if str(item or "").strip()]
+        active_stages_raw = progress.get("active_stages")
+        active_stages: dict[str, int] = {}
+        if isinstance(active_stages_raw, dict):
+            for stage, raw_count in active_stages_raw.items():
+                normalized_count = _to_int(raw_count, minimum=0)
+                if normalized_count <= 0:
+                    continue
+                active_stages[str(stage or "").strip() or "unknown"] = normalized_count
+
+        return {
+            "ok": bool(payload.get("ok", True)),
+            "job_id": str(payload.get("job_id") or "").strip(),
+            "status": str(payload.get("status") or "").strip() or "queued",
+            "terminal": bool(payload.get("terminal")),
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "progress": {
+                "total_files": _to_int(progress.get("total_files"), minimum=0),
+                "completed_files": _to_int(progress.get("completed_files"), minimum=0),
+                "failed_files": _to_int(progress.get("failed_files"), minimum=0),
+                "current_file_index": _to_int(progress.get("current_file_index"), minimum=0),
+                "current_file_name": str(progress.get("current_file_name") or "").strip(),
+                "current_stage": str(progress.get("current_stage") or "").strip() or "queued",
+                "progress_ratio": _to_ratio(progress.get("progress_ratio")),
+                "queued_files": _to_int(progress.get("queued_files"), minimum=0),
+                "active_stages": active_stages,
+            },
+            "errors": errors,
+        }
+
     @staticmethod
     def _repo_root_dir() -> Path:
         try:
@@ -581,16 +661,39 @@ class ExtractionService:
         job_id: str,
         *,
         include_documents: bool = False,
+        status_only: bool = False,
         tenant_id: str = "",
     ) -> dict[str, Any]:
         tenant_resolution, _ = self._resolve_module2_tenant_context(settings, request, tenant_id)
-        payload = get_shadow_extraction_job_status(
-            settings,
-            job_id,
-            execution_facade_factory=get_module2_execution_facade,
-            include_documents=include_documents,
-            expected_tenant_id=(tenant_resolution.tenant_id if tenant_resolution is not None else tenant_id),
-        )
+        expected_tenant_id = tenant_resolution.tenant_id if tenant_resolution is not None else tenant_id
+        if status_only:
+            try:
+                payload = get_shadow_extraction_job_status_snapshot(
+                    settings,
+                    job_id,
+                    include_documents=False,
+                    expected_tenant_id=expected_tenant_id,
+                )
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                payload = get_shadow_extraction_job_status(
+                    settings,
+                    job_id,
+                    execution_facade_factory=get_module2_execution_facade,
+                    include_documents=False,
+                    expected_tenant_id=expected_tenant_id,
+                )
+        else:
+            payload = get_shadow_extraction_job_status(
+                settings,
+                job_id,
+                execution_facade_factory=get_module2_execution_facade,
+                include_documents=include_documents,
+                expected_tenant_id=expected_tenant_id,
+            )
+        if status_only:
+            return self._compact_job_status_payload(payload)
         owner_id = self._resolve_file_asset_owner_id(
             request,
             tenant_resolution,
@@ -804,6 +907,72 @@ class ExtractionService:
             media_type=media_type,
             filename=str(record.get("filename") or file_path.name),
             content_disposition_type="inline",
+        )
+
+    async def trigger_graph_sync(
+        self,
+        settings: Settings,
+        request: Request,
+        payload: dict[str, Any] | None = None,
+        background_tasks: Any | None = None,
+    ) -> dict[str, Any]:
+        normalized_payload = dict(payload or {})
+        job_id = str(normalized_payload.get("job_id") or "").strip()
+        file_name = str(normalized_payload.get("file_name") or "").strip()
+        file_hash = str(normalized_payload.get("file_hash") or "").strip()
+        document_payload = normalized_payload.get("document")
+
+        if document_payload is None and job_id:
+            tenant_resolution, _ = self._resolve_module2_tenant_context(settings, request, "")
+            expected_tenant_id = tenant_resolution.tenant_id if tenant_resolution is not None else ""
+            try:
+                status_payload = await asyncio.to_thread(
+                    get_shadow_extraction_job_status_snapshot,
+                    settings,
+                    job_id,
+                    include_documents=True,
+                    expected_tenant_id=expected_tenant_id,
+                )
+            except HTTPException:
+                status_payload = None
+            except Exception:
+                status_payload = None
+
+            recovered_document = self._select_graph_sync_document_payload(
+                status_payload,
+                file_name=file_name,
+                file_hash=file_hash,
+            )
+            if recovered_document is None:
+                try:
+                    live_status_payload = await asyncio.to_thread(
+                        self.get_job_status,
+                        settings,
+                        request,
+                        job_id,
+                        include_documents=True,
+                        status_only=False,
+                    )
+                except HTTPException:
+                    live_status_payload = None
+                except Exception:
+                    live_status_payload = None
+                recovered_document = self._select_graph_sync_document_payload(
+                    live_status_payload,
+                    file_name=file_name,
+                    file_hash=file_hash,
+                )
+            if recovered_document is not None:
+                normalized_payload["document"] = recovered_document
+                if not file_name:
+                    normalized_payload["file_name"] = str(recovered_document.get("file_name") or "").strip()
+                if not file_hash:
+                    normalized_payload["file_hash"] = str(recovered_document.get("file_hash") or "").strip()
+
+        return await trigger_embedded_graph_sync(
+            request=request,
+            payload=normalized_payload,
+            background_tasks=background_tasks,
         )
 
     def summarize(self, payload: SummarizeRequest) -> SummarizeResponse:

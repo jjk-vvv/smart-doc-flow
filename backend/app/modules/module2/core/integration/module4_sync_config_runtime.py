@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
@@ -11,6 +12,8 @@ EnvGetter = Callable[[str, str], str]
 
 class Module4SyncConfigRuntime:
     """Resolve module4 sync configuration, tenant selection, and retry policy."""
+
+    _LOCAL_HOSTS = {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
 
     def __init__(self, *, env_get: EnvGetter | None = None) -> None:
         self._env_get = env_get or os.getenv
@@ -95,6 +98,71 @@ class Module4SyncConfigRuntime:
         return self._float_value(
             self._env_get("MODULE2_MODULE4_SHUTDOWN_DRAIN_SEC", "8"),
             default=8.0,
+            minimum=0.0,
+        )
+
+    @classmethod
+    def _normalized_host(cls, raw: str) -> str:
+        return str(raw or "").strip().lower()
+
+    @classmethod
+    def _is_local_host(cls, raw: str) -> bool:
+        return cls._normalized_host(raw) in cls._LOCAL_HOSTS
+
+    @staticmethod
+    def _parsed_port(parsed) -> int | None:
+        try:
+            return int(parsed.port) if parsed.port is not None else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _default_port_for_scheme(scheme: str) -> int | None:
+        normalized = str(scheme or "").strip().lower()
+        if normalized == "https":
+            return 443
+        if normalized == "http":
+            return 80
+        return None
+
+    def _gateway_port(self) -> int | None:
+        raw = str(self._env_get("GATEWAY_PORT", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except Exception:
+            return None
+
+    def _same_process_module4_target(self) -> bool:
+        parsed = urlparse(self.base_url())
+        base_host = self._normalized_host(parsed.hostname or "")
+        if not base_host:
+            return False
+        base_port = self._parsed_port(parsed) or self._default_port_for_scheme(parsed.scheme)
+        gateway_port = self._gateway_port()
+        if base_port is None or gateway_port is None or base_port != gateway_port:
+            return False
+
+        gateway_host = self._normalized_host(self._env_get("GATEWAY_HOST", "") or "")
+        if not gateway_host:
+            return False
+        if base_host == gateway_host:
+            return True
+        return self._is_local_host(base_host) and self._is_local_host(gateway_host)
+
+    def initial_dispatch_delay_sec(self) -> float:
+        explicit_raw = str(self._env_get("MODULE2_MODULE4_SYNC_INITIAL_DISPATCH_DELAY_SEC", "") or "").strip()
+        if explicit_raw:
+            return self._float_value(
+                explicit_raw,
+                default=0.25,
+                minimum=0.0,
+            )
+        default_delay = 1.5 if self._same_process_module4_target() else 0.25
+        return self._float_value(
+            "",
+            default=default_delay,
             minimum=0.0,
         )
 

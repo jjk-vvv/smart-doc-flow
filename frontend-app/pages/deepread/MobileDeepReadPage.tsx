@@ -186,8 +186,12 @@ const isTableLikeFigureTrace = (hit: TraceHit): boolean => {
   const locator = getHitLocator(hit);
   const figureType = String(locator.figure_type || '').trim().toLowerCase();
   if (figureType === 'table' || figureType === 'spreadsheet') return true;
+  const contentModes = Array.isArray(locator.content_modes)
+    ? locator.content_modes.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : [];
   const payload = pickBestDataframe(locator.dataframe, locator.table_preview, locator.dataframe_json);
-  return payload.headers.length > 0 || payload.rows.length > 0;
+  const hasDataframe = payload.headers.length > 0 || payload.rows.length > 0;
+  return hasDataframe && !contentModes.includes('visual') && !contentModes.includes('topology');
 };
 
 const getTraceKind = (hit: TraceHit): TraceKind => {
@@ -1349,28 +1353,128 @@ export const MobileDeepReadPage: React.FC = () => {
               {tableItems.length === 0 ? (
                 <div className="py-14 text-center text-[13px] text-slate-500 dark:text-slate-400">暂无表格产物</div>
               ) : (
-                tableItems.map((item) => (
-                  <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
-                    <div className="p-3.5">
-                      <div className="mb-2 flex items-start justify-between gap-3">
-                        <div className="flex-1">
-                          <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '表格'}</p>
-                          <p className="mt-0.5 text-[12px] text-slate-500 dark:text-slate-400">{item.dataframe.rowCount} 行 / {item.dataframe.colCount} 列</p>
+                tableItems.map((item) => {
+                  const expanded = expandedTableKeys.includes(item.key);
+                  const previewRows = expanded ? item.dataframe.rows : item.dataframe.rows.slice(0, 8);
+                  const hasDataframe = item.dataframe.headers.length > 0 || item.dataframe.rows.length > 0;
+                  return (
+                    <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                      <div className="p-3.5">
+                        <div className="mb-2 flex items-start justify-between gap-3">
+                          <div className="flex-1">
+                            <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '表格'}</p>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[12px] text-slate-500 dark:text-slate-400">
+                              <span>{item.dataframe.rowCount} 行 / {item.dataframe.colCount} 列</span>
+                              {item.page > 0 && (
+                                <span className="inline-flex items-center rounded-md border border-slate-200/60 bg-slate-100/80 px-2 py-0.5 text-[11px] font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                                  第 {item.page} 页
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {item.tableDownloadUrl && (
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadRemote(item.tableDownloadUrl, `${baseName}-${item.title || 'table'}.csv`)}
+                              className="inline-flex h-7 items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-3 text-[12px] font-semibold text-emerald-600 transition active:scale-95 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400"
+                            >
+                              <Download size={12} />
+                              下载
+                            </button>
+                          )}
                         </div>
-                        {item.tableDownloadUrl && (
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadRemote(item.tableDownloadUrl, `${baseName}-${item.title || 'table'}.csv`)}
-                            className="inline-flex h-7 items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-3 text-[12px] font-semibold text-emerald-600 transition active:scale-95 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400"
-                          >
-                            <Download size={12} />
-                            下载
-                          </button>
+
+                        {item.summary && (
+                          <p className="mb-2 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
+                            {item.summary}
+                          </p>
+                        )}
+
+                        <div className="mb-2 flex flex-wrap gap-2">
+                          {!item.tableDownloadUrl && (
+                            <button
+                              type="button"
+                              onClick={() => downloadDataframeAsCsv(item.dataframe, `${baseName}-${item.title || 'table'}.csv`)}
+                              disabled={!hasDataframe}
+                              className="inline-flex h-7 items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-3 text-[12px] font-semibold text-emerald-600 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400"
+                            >
+                              <Download size={12} />
+                              下载CSV
+                            </button>
+                          )}
+                          {item.artifactUrl && (
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadRemote(item.artifactUrl, `${baseName}-${item.title || 'table'}-screenshot.png`)}
+                              className="inline-flex h-7 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 text-[12px] font-semibold text-slate-600 transition active:scale-95 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-300"
+                            >
+                              <ImageIcon size={12} />
+                              图像
+                            </button>
+                          )}
+                        </div>
+
+                        {hasDataframe && (
+                          <div className="overflow-hidden rounded-[12px] border border-slate-200/70 bg-slate-50/50 dark:border-slate-700/60 dark:bg-slate-900/30">
+                            <div className="overflow-x-auto">
+                              <table className="min-w-full text-[12px]">
+                                {item.dataframe.headers.length > 0 && (
+                                  <thead>
+                                    <tr className="bg-slate-100/60 dark:bg-slate-800/60">
+                                      {item.dataframe.headers.map((header, idx) => (
+                                        <th
+                                          key={`${item.key}-header-${idx}`}
+                                          className="whitespace-nowrap border-b border-slate-200/60 px-3 py-2 text-left font-semibold text-slate-700 dark:border-slate-700/60 dark:text-slate-200"
+                                        >
+                                          {header || `列 ${idx + 1}`}
+                                        </th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                )}
+                                <tbody>
+                                  {previewRows.map((row, rowIdx) => (
+                                    <tr
+                                      key={`${item.key}-row-${rowIdx}`}
+                                      className="border-b border-slate-100/60 last:border-0 dark:border-slate-800/60"
+                                    >
+                                      {row.map((cell, cellIdx) => (
+                                        <td
+                                          key={`${item.key}-cell-${rowIdx}-${cellIdx}`}
+                                          className="whitespace-nowrap px-3 py-2 text-slate-600 dark:text-slate-300"
+                                        >
+                                          {cell}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            <div className="flex items-center justify-between border-t border-slate-200/60 bg-slate-100/40 px-3 py-2 text-[11px] text-slate-500 dark:border-slate-700/60 dark:bg-slate-800/40 dark:text-slate-400">
+                              <span>DataFrame: {item.dataframe.rowCount} x {item.dataframe.colCount}</span>
+                              {item.dataframe.rows.length > 8 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedTableKeys((prev) =>
+                                      prev.includes(item.key)
+                                        ? prev.filter((key) => key !== item.key)
+                                        : [...prev, item.key],
+                                    )
+                                  }
+                                  className="font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                                >
+                                  {expanded ? '收起' : '展开'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         )}
                       </div>
-                    </div>
-                  </article>
-                ))
+                    </article>
+                  );
+                })
               )}
             </div>
           )}
@@ -1403,9 +1507,46 @@ export const MobileDeepReadPage: React.FC = () => {
                 imageItems.map((item) => (
                   <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
                     <div className="p-3.5">
-                      <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '图片'}</p>
-                      {item.caption && <p className="mt-1.5 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">{item.caption}</p>}
+                      <div className="mb-2 flex items-start justify-between gap-2">
+                        <div className="flex-1">
+                          <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '图片'}</p>
+                          {item.page > 0 && (
+                            <span className="mt-1 inline-flex items-center rounded-md border border-slate-200/60 bg-slate-100/80 px-2 py-0.5 text-[11px] font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                              第 {item.page} 页
+                            </span>
+                          )}
+                        </div>
+                        {item.artifactUrl && (
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadRemote(item.artifactUrl, `${baseName}-${item.title || 'image'}.png`)}
+                            className="inline-flex h-7 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 text-[12px] font-semibold text-slate-600 transition active:scale-95 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-300"
+                          >
+                            <Download size={12} />
+                            下载
+                          </button>
+                        )}
+                      </div>
+                      {item.caption && (
+                        <p className="mb-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
+                          {item.caption}
+                        </p>
+                      )}
                     </div>
+                    {item.artifactUrl ? (
+                      <div className="border-t border-slate-100 bg-slate-50/50 px-3.5 py-3 dark:border-slate-700/50 dark:bg-slate-900/30">
+                        <img
+                          src={item.artifactUrl}
+                          alt={item.title || 'image-artifact'}
+                          className="mx-auto max-h-[260px] w-full rounded-[10px] border border-slate-200/70 object-contain dark:border-slate-700/70"
+                          loading="lazy"
+                        />
+                      </div>
+                    ) : (
+                      <div className="border-t border-slate-100 bg-slate-50/50 px-3.5 py-8 text-center text-[12px] text-slate-500 dark:border-slate-700/50 dark:bg-slate-900/30 dark:text-slate-400">
+                        无可预览图像
+                      </div>
+                    )}
                   </article>
                 ))
               )}
@@ -1791,7 +1932,7 @@ export const MobileDeepReadPage: React.FC = () => {
       variants={containerVariants}
       initial="hidden"
       animate="show"
-      className="-mb-28 flex min-h-[calc(100dvh-4.5rem)] flex-col bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] font-sans dark:from-slate-900 dark:via-slate-900 dark:to-slate-950"
+      className="flex h-[100dvh] flex-col bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] font-sans overflow-hidden dark:from-slate-900 dark:via-slate-900 dark:to-slate-950"
     >
       {/* Impeccable 级悬浮搜索背景 (全宽毛玻璃，无生硬边缘，无尴尬留白) */}
       <motion.div
@@ -1799,7 +1940,7 @@ export const MobileDeepReadPage: React.FC = () => {
         className="pointer-events-none fixed inset-x-0 top-0 z-[58] border-b border-slate-200/40 bg-[#fbfcfd]/90 pb-3 pt-[max(12px,env(safe-area-inset-top))] shadow-[0_2px_12px_rgba(0,0,0,0.03)] backdrop-blur-xl dark:border-white/5 dark:bg-[#0B1120]/95 dark:shadow-none"
         style={{ opacity: stickySearchLayerOpacity }}
       >
-        <div className="h-[40px]" /> {/* 占位撑开高度与搜索框一致 */}
+        <div className="h-[46px]" /> {/* 占位撑开高度与搜索框一致 */}
       </motion.div>
 
       {/* 悬浮搜索框主体 (完全融入毛玻璃背景，放弃生硬的大白块包裹) */}
@@ -1816,8 +1957,8 @@ export const MobileDeepReadPage: React.FC = () => {
           }}
           className="mx-auto w-full"
         >
-          <div className="flex h-[40px] w-full items-center gap-2.5 rounded-full bg-slate-100/60 px-4 ring-1 ring-slate-200/60 transition-all focus-within:bg-white focus-within:shadow-sm focus-within:ring-slate-300 dark:bg-white/[0.04] dark:ring-white/[0.05] dark:focus-within:bg-[#1A1D24] dark:focus-within:ring-white/10">
-            <Search className="text-slate-400 dark:text-slate-500" size={16} />
+          <div className="flex h-[46px] w-full items-center gap-3 rounded-full bg-slate-100/60 px-5 ring-1 ring-slate-200/60 transition-all focus-within:bg-white focus-within:shadow-sm focus-within:ring-slate-300 dark:bg-white/[0.04] dark:ring-white/[0.05] dark:focus-within:bg-[#1A1D24] dark:focus-within:ring-white/10">
+            <Search className="text-slate-400 dark:text-slate-500" size={18} />
             <input
               ref={stickySearchInputRef}
               type="text"
@@ -1826,13 +1967,13 @@ export const MobileDeepReadPage: React.FC = () => {
               value={searchQuery}
               disabled={!stickySearchEnabled}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-[14px] font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:cursor-default dark:text-slate-200 dark:placeholder:text-slate-500"
+              className="min-w-0 flex-1 bg-transparent text-[15px] font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:cursor-default dark:text-slate-200 dark:placeholder:text-slate-500"
             />
           </div>
         </motion.div>
       </div>
 
-      <div className="px-4 pt-[max(0rem,env(safe-area-inset-top))]">
+      <div className="px-4 pt-[max(0rem,env(safe-area-inset-top))] flex-1 flex flex-col min-h-0">
         {/* 顶部独立导航区 (分离式设计：主标题与副标题) */}
         {/* 整体上移：将 pt-6 减小为 pt-3，使得页面内容整体向上提升约 12px */}
         <motion.div variants={itemVariants} className="relative z-40 flex items-start justify-between px-3 pt-2 overflow-visible pointer-events-auto">
@@ -1897,8 +2038,8 @@ export const MobileDeepReadPage: React.FC = () => {
             filter: `blur(${heroSearchBlur.toFixed(2)}px)`,
           }}
         >
-          <div className="flex h-[38px] w-full items-center gap-2.5 rounded-full bg-white/96 px-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)] ring-1 ring-white/50 dark:bg-slate-800 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)] dark:ring-slate-700/50">
-            <Search className="text-slate-400" size={16} />
+          <div className="flex h-[46px] w-full items-center gap-3 rounded-full bg-white/96 px-5 shadow-[0_8px_24px_rgba(0,0,0,0.04)] ring-1 ring-white/50 dark:bg-slate-800 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)] dark:ring-slate-700/50">
+            <Search className="text-slate-400" size={18} />
             <input
               ref={heroSearchInputRef}
               type="text"
@@ -1907,7 +2048,7 @@ export const MobileDeepReadPage: React.FC = () => {
               value={searchQuery}
               disabled={heroSearchDisabled}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="flex-1 bg-transparent text-[14px] text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:cursor-default dark:text-slate-200"
+              className="flex-1 bg-transparent text-[15px] text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:cursor-default dark:text-slate-200"
             />
           </div>
         </motion.div>
@@ -2072,13 +2213,13 @@ export const MobileDeepReadPage: React.FC = () => {
           </motion.div>
         )}
 
-        <motion.section variants={cardVariants} className="mt-4 relative z-20">
-          <div className="-mx-4 rounded-t-[32px] bg-white pb-[calc(env(safe-area-inset-bottom)+120px)] pt-6 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] dark:bg-slate-900/95 dark:shadow-[0_-4px_24px_rgba(0,0,0,0.2)]">
-            <div className="mb-4 flex items-center justify-between px-6">
+        <motion.section variants={cardVariants} className="relative z-20 flex-1 flex flex-col min-h-0">
+          <div className="-mx-4 rounded-t-[32px] bg-white pt-6 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] dark:bg-slate-900/95 dark:shadow-[0_-4px_24px_rgba(0,0,0,0.2)] flex-1 flex flex-col min-h-0">
+            <div className="mb-4 flex items-center justify-between px-6 shrink-0">
               <h3 className="text-[16px] font-bold text-slate-800 dark:text-slate-100">解析文档列表</h3>
             </div>
             
-          <div className="relative z-10 px-6">
+            <div className="relative z-10 px-6 flex-1 overflow-y-auto pb-[calc(env(safe-area-inset-bottom)+70px)]">
               {filteredDocuments.length === 0 ? (
                 <div className="mt-2 flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200/60 bg-slate-50/50 py-14 text-center dark:border-slate-700/60 dark:bg-slate-800/20">
                   <div className="mb-4 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] bg-white shadow-[0_8px_30px_rgba(6,182,212,0.15)] ring-1 ring-slate-100 dark:bg-slate-800 dark:shadow-[0_8px_30px_rgba(6,182,212,0.08)] dark:ring-slate-700">
@@ -2225,16 +2366,6 @@ export const MobileDeepReadPage: React.FC = () => {
                   </article>
                 );
               })}
-                
-                {/* 列表底部“到底了”状态指示器：填充留白并提升设计完成度 */}
-                <div className="mt-4 flex flex-col items-center justify-center pb-8 opacity-60">
-                  <div className="flex w-full max-w-[120px] items-center justify-center gap-2">
-                    <div className="h-px flex-1 bg-gradient-to-r from-transparent to-slate-300 dark:to-slate-600" />
-                    <span className="text-[11px] text-slate-400 dark:text-slate-500">到底了</span>
-                    <div className="h-px flex-1 bg-gradient-to-l from-transparent to-slate-300 dark:to-slate-600" />
-                  </div>
-                  <p className="mt-1.5 text-[10px] text-slate-300 dark:text-slate-600">已加载全部 {filteredDocuments.length} 个文档</p>
-                </div>
               </div>
             )}
           </div>
@@ -2265,7 +2396,7 @@ export const MobileDeepReadPage: React.FC = () => {
       </div>
 
       {previewOpen && previewDoc && (
-        <div className="fixed inset-0 z-[72] bg-[#f4fbfd] dark:bg-slate-950">
+        <div className="fixed inset-0 z-[72] bg-white dark:bg-slate-950 overflow-hidden">
           <div className="flex h-14 items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pt-[max(0px,env(safe-area-inset-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
             <div className="flex-1 min-w-0 pr-4">
               <p className="text-[17px] font-bold text-slate-900 dark:text-slate-100">文件预览</p>
@@ -2295,7 +2426,7 @@ export const MobileDeepReadPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex h-[calc(100dvh-3.5rem)] flex-col overflow-y-auto px-2 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-2">
+          <div className="flex h-[calc(100dvh-3.5rem)] w-full flex-col overflow-hidden pb-[calc(env(safe-area-inset-bottom))]">
             <MobileDocumentPreviewCard
               activeDoc={previewDoc}
               preferredBase={apiBaseHint}

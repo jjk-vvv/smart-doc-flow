@@ -18,7 +18,7 @@ def build_health_response() -> dict[str, Any]:
             "office_pdf": True,
             "pypdf2": io_support.PyPDF2 is not None,
             "python_docx": io_support.docx is not None,
-            "zhipuai": agent.available,
+            "llm_client": agent.available,
         },
     }
 

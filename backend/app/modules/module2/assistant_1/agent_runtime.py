@@ -8,6 +8,7 @@ from .config import Assistant1Settings
 from .frontend_grounding import (
     build_frontend_snapshot_answer,
     cleanup_answer_text,
+    enforce_answer_with_frontend_contracts,
     frontend_context_block,
     ground_answer_with_frontend_context,
     normalize_frontend_context,
@@ -15,6 +16,7 @@ from .frontend_grounding import (
     trim_text,
 )
 from .ingest_pipeline import Assistant1IngestPipeline
+from .intent_router import is_action_preview_request
 from .prompt_blocks import build_assistant_instructions
 from .response_planner import Assistant1ResponsePlan, Assistant1ResponsePlanner
 from .responses_provider import Assistant1ResponsesProvider, ResponsesCompletionResult, ResponsesFunctionCall
@@ -221,7 +223,7 @@ class Assistant1AgentRuntime:
                 )
             else:
                 answer = "这次还没有得到稳定的最终答案。你可以换个问法，或者告诉我想优先确认哪一部分。"
-        answer = self._ground_answer_with_frontend_context(
+        answer = self._finalize_answer_text(
             user_message=question,
             answer=answer,
             extra_context=extra_context,
@@ -315,6 +317,43 @@ class Assistant1AgentRuntime:
             answer=answer,
             extra_context=extra_context,
             allow_snapshot_override=allow_snapshot_override,
+        )
+
+    @staticmethod
+    def _enforce_answer_with_frontend_contracts(
+        *,
+        user_message: str,
+        answer: str,
+        extra_context: Optional[Dict[str, Any]],
+        has_action_preview: bool = False,
+    ) -> str:
+        return enforce_answer_with_frontend_contracts(
+            user_message=user_message,
+            answer=answer,
+            extra_context=extra_context,
+            has_action_preview=has_action_preview,
+        )
+
+    def _finalize_answer_text(
+        self,
+        *,
+        user_message: str,
+        answer: str,
+        extra_context: Optional[Dict[str, Any]],
+        allow_snapshot_override: bool = True,
+        has_action_preview: bool = False,
+    ) -> str:
+        grounded = self._ground_answer_with_frontend_context(
+            user_message=user_message,
+            answer=answer,
+            extra_context=extra_context,
+            allow_snapshot_override=allow_snapshot_override,
+        )
+        return self._enforce_answer_with_frontend_contracts(
+            user_message=user_message,
+            answer=grounded,
+            extra_context=extra_context,
+            has_action_preview=has_action_preview,
         )
 
     @staticmethod
@@ -486,7 +525,7 @@ class Assistant1AgentRuntime:
         answer = str(synthesized.output_text or "").strip()
         if not answer:
             answer = "这次外部资料已经补充到了，但最终自然语言整理没有稳定产出。你可以让我继续整理，或者换一个更具体的问法。"
-        answer = self._ground_answer_with_frontend_context(
+        answer = self._finalize_answer_text(
             user_message=question,
             answer=answer,
             extra_context=extra_context,
@@ -631,7 +670,7 @@ class Assistant1AgentRuntime:
             )
             answer = self._render_sql_draft_answer(schema_snapshot=schema_snapshot, sql_result=sql_result)
 
-        answer = self._ground_answer_with_frontend_context(
+        answer = self._finalize_answer_text(
             user_message=question,
             answer=answer,
             extra_context=extra_context,
@@ -1168,6 +1207,8 @@ class Assistant1AgentRuntime:
     @staticmethod
     def _looks_like_write_request(question: str) -> bool:
         lowered = str(question or "").lower()
+        if is_action_preview_request(question):
+            return True
         if any(
             marker in lowered
             for marker in (
@@ -1215,7 +1256,7 @@ class Assistant1AgentRuntime:
             f"{response_plan.clarification_reason} "
             "告诉我时间点、记录范围或统计口径，我马上帮你定位。"
         )
-        answer = self._ground_answer_with_frontend_context(
+        answer = self._finalize_answer_text(
             user_message=question,
             answer=answer,
             extra_context=extra_context,

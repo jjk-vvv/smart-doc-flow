@@ -12,7 +12,6 @@ export type PlatformTabId =
   | 'deepread_extraction'
   | 'fusion'
   | 'nexus'
-  | 'guide'
   | 'mine';
 
 export type AssistantCardAction = {
@@ -47,7 +46,18 @@ export type AssistantPageConfig = {
 
 export type AssistantPageCatalog = Partial<Record<PlatformTabId, AssistantPageConfig>>;
 
-const usageQuestionKeywords = ['怎么', '如何', '开始', '上传', '页面', '模块', '区别', '下一步', '使用', '流程'];
+const usageQuestionKeywords = [
+  'how',
+  'start',
+  'upload',
+  'page',
+  'module',
+  'difference',
+  'next step',
+  'use',
+  'workflow',
+  'guide me',
+];
 
 const createAction = (
   label: string,
@@ -70,9 +80,13 @@ const createFallbackPageConfig = (
   label,
   cue,
   starter: {
-    title: `${label}使用建议`,
-    summary: '平台助手会优先使用后端返回的目录与引导数据；当引导数据尚未返回时，前端只保留最小可用壳层。',
-    steps: ['继续当前模块的标准操作。', '如果需要跨模块协同，可直接向助手提问下一步。'],
+    title: `${label} usage`,
+    summary:
+      'The platform assistant prefers server-provided page guidance and falls back to a local minimal helper when remote guidance is unavailable.',
+    steps: [
+      'Continue the standard flow in the current module.',
+      'Ask the assistant for the next step if you need cross-module coordination.',
+    ],
     primaryAction: createAction(primaryLabel, tab),
     secondaryAction,
   },
@@ -83,64 +97,57 @@ const createFallbackPageConfig = (
 const pageConfigs: Record<PlatformTabId, AssistantPageConfig> = {
   dashboard: createFallbackPageConfig(
     'dashboard',
-    '控制台',
-    '当前位于控制台，可先选择需要进入的业务模块。',
-    '继续当前页面',
-    createAction('查看平台指南', 'guide', 'secondary'),
+    'Dashboard',
+    'You are on the dashboard. Pick the module that matches the current task.',
+    'Stay on this page',
+    createAction('Back to dashboard', 'dashboard', 'secondary'),
   ),
   deepread: createFallbackPageConfig(
     'deepread',
-    '智能文档解析',
-    '当前位于智能文档解析入口。',
-    '继续当前页面',
-    createAction('查看平台指南', 'guide', 'secondary'),
+    'DeepRead',
+    'You are on the DeepRead entry page.',
+    'Stay on this page',
+    createAction('Back to dashboard', 'dashboard', 'secondary'),
   ),
   'doc-processing': createFallbackPageConfig(
     'doc-processing',
-    'AI文档处理',
-    '当前位于 AI 文档处理模块。',
-    '继续当前模块',
-    createAction('查看平台指南', 'guide', 'secondary'),
+    'Doc Processing',
+    'You are in the document processing module.',
+    'Continue here',
+    createAction('Back to dashboard', 'dashboard', 'secondary'),
   ),
   deepread_extraction: createFallbackPageConfig(
     'deepread_extraction',
-    'AI信息提取',
-    '当前位于 AI 信息提取模块。',
-    '继续当前模块',
-    createAction('查看平台指南', 'guide', 'secondary'),
+    'AI Extraction',
+    'You are in the AI extraction module.',
+    'Continue here',
+    createAction('Back to dashboard', 'dashboard', 'secondary'),
   ),
   fusion: createFallbackPageConfig(
     'fusion',
-    '融合',
-    '当前位于融合模块。',
-    '继续当前模块',
-    createAction('查看平台指南', 'guide', 'secondary'),
+    'Fusion',
+    'You are in the smart form filling module.',
+    'Continue here',
+    createAction('Back to dashboard', 'dashboard', 'secondary'),
   ),
   nexus: createFallbackPageConfig(
     'nexus',
-    '知识图谱',
-    '当前位于知识图谱模块。',
-    '继续当前模块',
-    createAction('查看平台指南', 'guide', 'secondary'),
-  ),
-  guide: createFallbackPageConfig(
-    'guide',
-    '指南',
-    '当前位于平台指南模块。',
-    '继续当前页面',
-    createAction('返回控制台', 'dashboard', 'secondary'),
+    'Knowledge Nexus',
+    'You are in the knowledge graph module.',
+    'Continue here',
+    createAction('Back to dashboard', 'dashboard', 'secondary'),
   ),
   mine: createFallbackPageConfig(
     'mine',
-    '我的',
-    '当前位于个人中心模块。',
-    '继续当前页面',
-    createAction('返回控制台', 'dashboard', 'secondary'),
+    'Profile',
+    'You are in the profile module.',
+    'Stay on this page',
+    createAction('Back to dashboard', 'dashboard', 'secondary'),
   ),
 };
 
 const normalizeQuestion = (question: string): string =>
-  question.replace(/\s+/g, '').replace(/[，。！？?]/g, '').toLowerCase();
+  question.replace(/\s+/g, '').replace(/[，。！？,.!?]/g, '').toLowerCase();
 
 const hasPageConfigTab = (value: string | null | undefined): value is PlatformTabId => {
   const raw = String(value || '').trim();
@@ -199,6 +206,7 @@ const normalizeRemotePrompt = (
   const id = String(prompt?.id || '').trim();
   const question = String(prompt?.question || '').trim();
   if (!id || !question) return null;
+
   return {
     id,
     question,
@@ -209,7 +217,7 @@ const normalizeRemotePrompt = (
       title: question,
       summary: '',
       steps: [],
-      primaryAction: createAction('继续当前页面', fallbackTab),
+      primaryAction: createAction('Stay on this page', fallbackTab),
     }),
   };
 };
@@ -257,10 +265,7 @@ export const buildAssistantPageCatalog = (
   return Object.keys(catalog).length > 0 ? catalog : null;
 };
 
-export const getPagePromptGroups = (
-  tab: PlatformTabId,
-  configOverride?: AssistantPageConfig | null,
-) => {
+export const getPagePromptGroups = (tab: PlatformTabId, configOverride?: AssistantPageConfig | null) => {
   const config = configOverride || getAssistantPageConfig(tab);
   const primaryPromptCount = Math.max(0, config.primaryPromptCount ?? 2);
   return {
@@ -271,7 +276,7 @@ export const getPagePromptGroups = (
 
 export const looksLikeUsageQuestion = (question: string): boolean => {
   const normalized = normalizeQuestion(question);
-  return usageQuestionKeywords.some((keyword) => normalized.includes(keyword));
+  return usageQuestionKeywords.some((keyword) => normalized.includes(normalizeQuestion(keyword)));
 };
 
 export const findGuidedPrompt = (
@@ -312,7 +317,7 @@ export const buildUsageFallbackCard = (
   const starter = config.starter;
   return {
     ...starter,
-    summary: `${starter.summary}${question ? ' 如果你愿意，我可以继续根据你的当前目标细化下一步。' : ''}`,
+    summary: `${starter.summary}${question ? ' The assistant can keep narrowing down the next step based on your current goal.' : ''}`,
   };
 };
 
@@ -321,10 +326,12 @@ export const guidedCardToText = (card: GuidedAnswerCard): string => {
     card.title,
     card.summary,
     ...card.steps.map((step, index) => `${index + 1}. ${step}`),
-    `建议动作: ${card.primaryAction.label}`,
+    `Recommended action: ${card.primaryAction.label}`,
   ];
+
   if (card.secondaryAction) {
-    lines.push(`可选动作: ${card.secondaryAction.label}`);
+    lines.push(`Optional action: ${card.secondaryAction.label}`);
   }
+
   return lines.join('\n');
 };

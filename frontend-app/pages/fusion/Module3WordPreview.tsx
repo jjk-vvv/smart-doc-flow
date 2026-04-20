@@ -8,6 +8,7 @@ import React, {
   type CSSProperties,
 } from "react";
 import {
+  ArrowLeft,
   ChevronDown,
   Loader2,
   PanelLeft,
@@ -48,6 +49,7 @@ type WordPreviewDocument = {
 type Module3WordPreviewProps = {
   document: WordPreviewDocument;
   fallbackContent: string;
+  onBack?: () => void;
 };
 
 type LocalWordCell = Module3WordCell & {
@@ -1064,6 +1066,7 @@ const StandardWordTable = ({
 export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
   document,
   fallbackContent,
+  onBack,
 }) => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [isLoadingEditor, setIsLoadingEditor] = useState(false);
@@ -1330,63 +1333,75 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
 
   return (
     <div className="relative flex h-full min-h-full w-full min-w-0 flex-col overflow-hidden bg-white dark:bg-slate-950">
-      <div className="flex items-center justify-between bg-slate-50 px-4 py-3 dark:bg-slate-900">
-        <div className="min-w-0 flex items-center gap-3">
+      <div className="relative z-10 flex items-center justify-between gap-3 border-b border-slate-100 bg-white/80 px-4 pb-3 pt-[max(12px,env(safe-area-inset-top))] backdrop-blur-md shadow-sm dark:border-white/5 dark:bg-slate-900/80">
+        {onBack ? (
           <button
             type="button"
-            onClick={() => setIsSectionSidebarOpen(true)}
-            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
-            aria-label="打开内容目录"
-            title="打开内容目录"
+            onClick={onBack}
+            className="group relative flex h-9 items-center justify-center gap-1.5 overflow-hidden rounded-full bg-slate-50 px-3.5 text-[14px] font-bold text-slate-700 shadow-[0_2px_8px_rgba(15,23,42,0.04)] ring-1 ring-slate-900/5 transition-all active:scale-95 dark:bg-white/5 dark:text-slate-300 dark:ring-white/10"
           >
-            <PanelLeft size={16} />
+            <div className="absolute inset-0 bg-slate-900/0 transition-colors group-hover:bg-slate-900/5 group-active:bg-slate-900/10 dark:group-hover:bg-white/5 dark:group-active:bg-white/10" />
+            <ArrowLeft size={16} className="relative z-10" />
+            <span className="relative z-10">返回</span>
           </button>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
-              {activeSection?.name ?? "未选择内容"}
-            </p>
-          </div>
+        ) : (
+          <div className="h-9 min-w-[76px] shrink-0" aria-hidden="true" />
+        )}
+        <div className="min-w-0 flex-1 text-center">
+          <p className="truncate text-[16px] font-bold text-slate-900 dark:text-slate-100">
+            文档预览
+          </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 min-w-[76px]">
           <button
             type="button"
             onClick={() => void loadStructuredWord()}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+            className="group relative flex h-8 items-center justify-center gap-1.5 overflow-hidden rounded-full bg-slate-50 px-3 text-[13px] font-bold text-slate-600 shadow-[0_2px_8px_rgba(15,23,42,0.04)] ring-1 ring-slate-900/5 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/5 dark:text-slate-300 dark:ring-white/10"
           >
-            <RefreshCw size={14} />
-            刷新
+            <div className="absolute inset-0 bg-slate-900/0 transition-colors group-hover:bg-slate-900/5 group-active:bg-slate-900/10 dark:group-hover:bg-white/5 dark:group-active:bg-white/10" />
+            <RefreshCw size={13} className="relative z-10" />
+            <span className="relative z-10">刷新</span>
           </button>
+          
           <button
             type="button"
             onClick={() => setIsEditMode((current) => !current)}
             className={cn(
-              "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+              "group relative flex h-8 items-center justify-center gap-1.5 overflow-hidden rounded-full px-3 text-[13px] font-bold shadow-[0_2px_8px_rgba(15,23,42,0.04)] ring-1 transition-all active:scale-95",
               isEditMode
-                ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
-                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300",
+                ? "bg-blue-50 text-blue-600 ring-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 dark:ring-blue-400/20"
+                : "bg-slate-50 text-slate-600 ring-slate-900/5 dark:bg-white/5 dark:text-slate-300 dark:ring-white/10",
             )}
           >
+            <div className={cn(
+              "absolute inset-0 transition-colors",
+              isEditMode 
+                ? "bg-blue-500/0 group-hover:bg-blue-500/5 group-active:bg-blue-500/10 dark:group-hover:bg-blue-400/5 dark:group-active:bg-blue-400/10" 
+                : "bg-slate-900/0 group-hover:bg-slate-900/5 group-active:bg-slate-900/10 dark:group-hover:bg-white/5 dark:group-active:bg-white/10"
+            )} />
             <span
               className={cn(
-                "h-2.5 w-2.5 rounded-full",
-                isEditMode ? "bg-blue-500" : "bg-slate-300 dark:bg-slate-600",
+                "relative z-10 h-2 w-2 rounded-full",
+                isEditMode ? "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]" : "bg-slate-300 dark:bg-slate-500",
               )}
             />
-            在线编辑
+            <span className="relative z-10">在线编辑</span>
           </button>
+
           {isEditMode ? (
             <button
               type="button"
               onClick={() => void handleSave()}
               disabled={isSaving || isLoadingEditor}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="group relative flex h-8 items-center justify-center gap-1.5 overflow-hidden rounded-full bg-emerald-50 px-3 text-[13px] font-bold text-emerald-600 shadow-[0_2px_8px_rgba(15,23,42,0.04)] ring-1 ring-emerald-500/20 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-400/20"
             >
+              <div className="absolute inset-0 bg-emerald-500/0 transition-colors group-hover:bg-emerald-500/5 group-active:bg-emerald-500/10 dark:group-hover:bg-emerald-400/5 dark:group-active:bg-emerald-400/10" />
               {isSaving ? (
-                <Loader2 size={16} className="animate-spin" />
+                <Loader2 size={13} className="relative z-10 animate-spin" />
               ) : (
-                <Save size={16} />
+                <Save size={13} className="relative z-10" />
               )}
-              保存
+              <span className="relative z-10">保存</span>
             </button>
           ) : null}
         </div>

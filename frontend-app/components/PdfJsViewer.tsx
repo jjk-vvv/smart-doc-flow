@@ -8,6 +8,7 @@ type PdfJsViewerProps = {
   scale: number;
   rotation: number;
   viewMode: PdfViewMode;
+  borderless?: boolean; // 新增: 是否启用无边框全屏模式
   scrollRequest?: {
     page: number;
     nonce: number;
@@ -21,6 +22,7 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
   scale,
   rotation,
   viewMode,
+  borderless = false,
   scrollRequest,
   onPageCount,
   onVisiblePageChange,
@@ -417,15 +419,15 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
   const hasMorePagesPending = loading && hasFirstPagePainted && renderedPageCount < pageCount;
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-slate-100/70 dark:bg-transparent">
+    <div className={`relative h-full w-full overflow-hidden ${borderless ? 'bg-white dark:bg-slate-950' : 'bg-slate-100/70 dark:bg-transparent'}`}>
       <div
         ref={scrollRef}
         onScroll={scheduleVisiblePageSync}
-        className="absolute inset-0 overflow-auto overscroll-contain px-2 py-2 sm:px-2.5 sm:py-2.5 custom-scrollbar"
+        className={`absolute inset-0 z-0 overflow-auto overscroll-contain custom-scrollbar px-0 py-0`}
       >
         <div
           ref={stackRef}
-          className="mx-auto flex min-h-full w-full flex-col items-center gap-2.5 pb-3 sm:gap-3 sm:pb-4"
+          className={`mx-auto flex min-h-full w-full flex-col items-center gap-0 pb-0 bg-white dark:bg-slate-950`}
         >
           {Array.from({ length: pageCount }, (_, index) => index + 1).map((pageNumber) => (
             <div
@@ -434,13 +436,17 @@ export const PdfJsViewer: React.FC<PdfJsViewerProps> = ({
                 pageWrapperRefs.current[pageNumber - 1] = node;
               }}
               data-page-number={pageNumber}
-              className="mx-auto w-fit max-w-full overflow-hidden rounded-[10px] border border-slate-200/90 bg-white shadow-[0_8px_20px_rgba(15,23,42,0.08)] dark:border-white/[0.05]/80 dark:bg-white/[0.02] dark:shadow-[0_10px_24px_rgba(2,6,23,0.26)]"
+              className={`mx-auto w-fit max-w-full overflow-hidden bg-white dark:bg-slate-950 ${
+                borderless
+                  ? 'rounded-none border-b border-slate-100/60 shadow-none dark:border-slate-800'
+                  : 'rounded-none border-none shadow-none dark:border-none'
+              }`}
             >
               <canvas
                 ref={(node) => {
                   pageCanvasRefs.current[pageNumber - 1] = node;
                 }}
-                className="mx-auto block h-auto max-w-full bg-white dark:bg-white/[0.02]"
+                className="mx-auto block h-auto max-w-full bg-white dark:bg-slate-950"
               />
             </div>
           ))}

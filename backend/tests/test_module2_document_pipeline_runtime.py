@@ -161,6 +161,7 @@ def _build_runtime(
     document_pipeline_parse_runtime=None,
     document_pipeline_schema_runtime=None,
     document_pipeline_graph_runtime=None,
+    direct_semantic_extract_runtime=None,
     use_dependency_bundles: bool = False,
 ):
     logger = _Logger()
@@ -252,6 +253,7 @@ def _build_runtime(
         "document_pipeline_parse_runtime": document_pipeline_parse_runtime,
         "document_pipeline_schema_runtime": document_pipeline_schema_runtime,
         "document_pipeline_graph_runtime": document_pipeline_graph_runtime,
+        "direct_semantic_extract_runtime": direct_semantic_extract_runtime,
         "perf_counter": _PerfCounter([100.0, 101.25]),
     }
     if use_dependency_bundles:
@@ -431,6 +433,72 @@ def test_document_pipeline_runtime_coordinates_mid_pipeline() -> None:
     assert schema_session_runtime.calls[0]["profile_hint"] == "mixed"
     assert extraction_graph_runtime.calls[0]["effective_schema_fields"] == {"amount": {"type": "number"}}
     assert len(logger.calls) == 3
+
+
+def test_document_pipeline_runtime_routes_txt_to_direct_semantic_extract() -> None:
+    direct_calls: list[dict[str, object]] = []
+
+    class _StubDirectSemanticRuntime:
+        @staticmethod
+        def supports(file_name: str) -> bool:
+            return file_name.lower().endswith(".txt")
+
+        async def execute(self, **kwargs):
+            direct_calls.append(dict(kwargs))
+            return SimpleNamespace(
+                marked_markdown="direct markdown",
+                bbox_map={"txt_ref": [1.0]},
+                table_blocks=[{"table_id": "semantic_t1", "source": "semantic"}],
+                naming_template="text_document",
+                schema_context_preview="direct preview",
+                allow_schema_llm=False,
+                effective_schema={"fields": {"地区生产总值": "number"}, "field_meta": {}},
+                schema_meta={
+                    "mode": "auto",
+                    "source": "direct_text_semantic",
+                    "route_kind": "direct_text_semantic",
+                    "field_count": 1,
+                    "fields": ["地区生产总值"],
+                    "raw_fields": ["地区生产总值"],
+                },
+                effective_schema_fields={"地区生产总值": "number"},
+                dynamic_extract_timeout_meta={"route_kind": "direct_text_semantic"},
+                file_size_mb=0.01,
+                final_state={
+                    "results": {"地区生产总值": {"value": 123.4, "confidence": 0.91, "source_ref_id": None, "bbox": []}},
+                    "errors": [],
+                    "soft_warnings": ["direct_text_semantic_used"],
+                },
+                extract_ms=89,
+                used_quick_fallback=False,
+            )
+
+    runtime, _, _, _, _, _, schema_session_runtime, extraction_graph_runtime = _build_runtime(
+        direct_semantic_extract_runtime=_StubDirectSemanticRuntime(),
+    )
+
+    outcome = asyncio.run(
+        runtime.execute(
+            file_name="demo.txt",
+            file_bytes=b"demo text",
+            file_hash="hash123",
+            requested_schema={},
+            max_retries=2,
+            initial_track="FastTrack",
+            started_at_sec=50.0,
+            emit_progress=lambda stage, ratio, message, extra=None: _record_progress([], stage, ratio, message, extra),
+        )
+    )
+
+    assert schema_session_runtime.calls == []
+    assert extraction_graph_runtime.calls == []
+    assert direct_calls[0]["file_name"] == "demo.txt"
+    assert direct_calls[0]["requested_schema"] == {}
+    assert outcome.marked_markdown == "direct markdown"
+    assert outcome.schema_meta["route_kind"] == "direct_text_semantic"
+    assert outcome.allow_schema_llm is False
+    assert outcome.final_state["results"]["地区生产总值"]["value"] == 123.4
+    assert outcome.extract_ms == 89
 
 
 def test_document_pipeline_runtime_raises_when_visual_chain_contract_fails() -> None:

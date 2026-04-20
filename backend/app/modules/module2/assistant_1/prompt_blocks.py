@@ -4,6 +4,12 @@ from typing import Any, Dict, Optional
 
 from .answer_contracts import build_answer_contract_block
 from .frontend_grounding import frontend_context_block, frontend_evidence_dossier_block
+from .intent_router import (
+    is_action_preview_request,
+    is_temporal_comparison_question,
+    looks_like_generic_deictic_lookup,
+    needs_provenance_question,
+)
 from .response_planner import Assistant1ResponsePlan
 
 
@@ -38,6 +44,7 @@ def turn_hint_block(
 ) -> str:
     del default_file_hash
     hints: list[str] = []
+    turn_requirements: list[str] = []
 
     if response_plan.must_clarify and response_plan.clarification_reason:
         hints.append(
@@ -45,6 +52,29 @@ def turn_hint_block(
             f"{response_plan.clarification_reason}"
             "先自然指出歧义点，再请用户补一个最关键的限定条件，不要直接挑一个值作答。"
         )
+
+    if needs_provenance_question(user_message):
+        turn_requirements.append(
+            "如果用户追问来源，就把当前证据依据交代清楚；证据不够时直接说明缺口。"
+        )
+
+    if is_temporal_comparison_question(user_message):
+        turn_requirements.append(
+            "如果在回答时间对比或变化，不要退化成单个字段值或单一年份标签。"
+        )
+
+    if is_action_preview_request(user_message):
+        turn_requirements.append(
+            "如果用户要的是预览稿或确认稿，就保持在预览/确认层，不要写成已经执行。"
+        )
+
+    if looks_like_generic_deictic_lookup(user_message):
+        turn_requirements.append(
+            "如果指代对象还没锁定，就先补一个最关键的限定条件，不要替用户猜。"
+        )
+
+    if turn_requirements:
+        hints.append("【本轮侧重点】" + "".join(turn_requirements))
 
     if "json" in str(user_message or "").lower():
         hints.append("【格式】如果用户明确指定了 JSON，就严格按 JSON 输出。")

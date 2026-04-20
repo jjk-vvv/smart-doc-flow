@@ -490,6 +490,79 @@ def is_field_lookup_question(question: str) -> bool:
     )
 
 
+def _matches_question_pattern(question: str, *, pattern: str, flags: int = 0) -> bool:
+    text = normalize_question(question)
+    if not text:
+        return False
+    return bool(re.search(pattern, text, flags))
+
+
+def needs_provenance_question(question: str) -> bool:
+    lowered = lower_question(question)
+    return _matches_question_pattern(
+        question,
+        pattern=(
+            r"(?:\u6765\u6e90|\u51fa\u5904|\u8bc1\u636e|\u4f9d\u636e|\u6eaf\u6e90)"
+            r"|(?:(?:\u6765\u81ea|\u6839\u636e).{0,10}(?:\u54ea\u91cc|\u4ec0\u4e48|\u54ea\u4e00\u7c7b))"
+            r"|(?:\u54ea(?:\u4e00)?\u9875)"
+            r"|(?:source|provenance|evidence|based on what|which page|where .{0,20} from)"
+        ),
+        flags=re.IGNORECASE,
+    ) or ("page" in lowered and "source" in lowered)
+
+
+def is_temporal_comparison_question(question: str) -> bool:
+    text = normalize_question(question)
+    lowered = text.lower()
+    has_compare = _matches_question_pattern(
+        text,
+        pattern=(
+            r"(?:\u5bf9\u6bd4|\u6bd4\u8f83|\u76f8\u6bd4|\u5dee\u5f02|\u53d8\u5316|\u8d8b\u52bf|\u540c\u6bd4|\u73af\u6bd4|\u6ce2\u52a8|\u5386\u5e74|\u8fd1\u51e0\u5e74|\u8fd9\u51e0\u5e74)"
+            r"|(?:compare|compared|comparison|difference|trend|change|year over year|quarter over quarter)"
+        ),
+        flags=re.IGNORECASE,
+    )
+    if not has_compare:
+        if re.search(r"(\u589e\u957f|\u4e0b\u964d|\u589e\u51cf).{0,8}(\u591a\u5c11|\u8d8b\u52bf|\u5e45\u5ea6|\u60c5\u51b5)", text):
+            has_compare = True
+        elif re.search(r"\b(?:increase|decrease|grew|declined)\b", lowered) and has_explicit_time_scope(text):
+            has_compare = True
+    if not has_compare:
+        return False
+    if has_explicit_time_scope(text):
+        return True
+    if len(re.findall(r"20\d{2}", text)) >= 2:
+        return True
+    return any(marker in text for marker in ("\u5e74\u5ea6", "\u5e74\u4efd", "\u5b63\u5ea6", "\u6708\u4efd"))
+
+
+def is_preview_only_request(question: str) -> bool:
+    return _matches_question_pattern(
+        question,
+        pattern=(
+            r"(?:\u9884\u89c8|preview|dry\s+run)"
+            r"|(?:(?:\u4e0d\u8981|\u522b|\u5148\u522b|\u5148\u4e0d\u8981|\u4e0d).{0,6}(?:\u6267\u884c|\u8fd0\u884c))"
+            r"|(?:do\s+not\s+execute|don't\s+execute|do\s+not\s+run|don't\s+run|without\s+executing)"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+
+def has_write_preview_intent(question: str) -> bool:
+    return _matches_question_pattern(
+        question,
+        pattern=(
+            r"(?:\u5f85\u5165\u5e93|\u5165\u5e93|\u5199\u5165|\u843d\u5e93|\u63d2\u5165|\u66f4\u65b0|\u5220\u9664|\u5efa\u8868|\u521b\u5efa\u8868|\u6570\u636e\u5e93)"
+            r"|(?:\bsql\b|insert|update|delete|create\s+table|alter\s+table|drop\s+table|database|persist)"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+
+def is_action_preview_request(question: str) -> bool:
+    return is_preview_only_request(question) and has_write_preview_intent(question)
+
+
 def is_entity_extraction_request(question: str) -> bool:
     text = normalize_question(question)
     lowered = text.lower()
@@ -762,6 +835,11 @@ class Assistant1IntentSignals:
     field_lookup: bool
     entity_extraction: bool
     ambiguous_record_lookup: bool
+    provenance_required: bool
+    temporal_comparison: bool
+    preview_only: bool
+    action_preview: bool
+    generic_deictic: bool
 
 
 def collect_intent_signals(question: str, *, has_default_file: bool) -> Assistant1IntentSignals:
@@ -784,4 +862,9 @@ def collect_intent_signals(question: str, *, has_default_file: bool) -> Assistan
         field_lookup=is_field_lookup_question(text),
         entity_extraction=is_entity_extraction_request(text),
         ambiguous_record_lookup=is_ambiguous_record_lookup(text, has_default_file),
+        provenance_required=needs_provenance_question(text),
+        temporal_comparison=is_temporal_comparison_question(text),
+        preview_only=is_preview_only_request(text),
+        action_preview=is_action_preview_request(text),
+        generic_deictic=looks_like_generic_deictic_lookup(text),
     )

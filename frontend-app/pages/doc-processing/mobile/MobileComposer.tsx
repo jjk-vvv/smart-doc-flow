@@ -1,5 +1,5 @@
-import React from 'react';
-import { Send, X, Plus, Mic } from 'lucide-react';
+import React, { useState } from 'react';
+import { CornerDownLeft, X, Plus } from 'lucide-react';
 
 type MobileComposerFile = {
   id: string;
@@ -43,96 +43,118 @@ export const MobileComposer: React.FC<MobileComposerProps> = ({
   onOpenUtilityDrawer,
   onStop,
   onSend,
-}) => (
-  <div className="shrink-0 bg-white px-3 py-3 dark:bg-slate-950">
-    <div className="flex flex-col rounded-[26px] bg-[#f4f4f5] dark:bg-[#212121]">
-      {files.length > 0 && (
-        <div className="custom-scrollbar overflow-x-auto px-4 pt-3">
-          <div className="flex min-w-max gap-2 pb-1">
-            {files.map((file) => (
-              <button
-                key={file.id}
-                type="button"
-                onClick={() => onSelectFile(file.id)}
-                className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${
-                  file.selected
-                    ? 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-500/20 dark:bg-cyan-500/10 dark:text-cyan-300 dark:ring-cyan-500/30'
-                    : 'bg-white text-slate-600 shadow-[0_2px_8px_rgba(0,0,0,0.04)] ring-1 ring-slate-200/60 dark:bg-slate-800 dark:text-slate-300 dark:ring-white/10'
-                }`}
-              >
-                {renderFileIcon(file)}
-                <span className="max-w-[140px] truncate">{file.name}</span>
-                <span
-                  className="ml-0.5 rounded-full p-0.5 transition-colors hover:bg-slate-200/50 dark:hover:bg-slate-700/50"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRemoveFile(file.id);
-                  }}
+}) => {
+  const [isFocused, setIsFocused] = useState(false);
+  
+  // 核心状态：是否有内容或者是否处于焦点状态
+  const isExpanded = isFocused || inputText.trim().length > 0 || files.length > 0;
+
+  return (
+    <div className="absolute bottom-0 left-0 right-0 z-50 px-4 pb-[calc(16px+env(safe-area-inset-bottom))] pt-8 bg-gradient-to-t from-white/95 via-white/80 to-transparent dark:from-[#0B1120]/95 dark:via-[#0B1120]/80 dark:to-transparent pointer-events-none">
+      <div 
+        className={`pointer-events-auto flex flex-col relative transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] bg-white dark:bg-slate-900 border border-slate-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] dark:border-white/10 dark:shadow-[0_8px_30px_rgba(0,0,0,0.3)] ${
+          isExpanded ? 'rounded-[20px] min-h-[90px]' : 'rounded-[24px] min-h-[48px]'
+        }`}
+      >
+        {files.length > 0 && (
+          <div className="custom-scrollbar overflow-x-auto px-2 pt-2.5 pb-1">
+            <div className="flex min-w-max gap-2 pb-0.5 pl-2">
+              {files.map((file) => (
+                <button
+                  key={file.id}
+                  type="button"
+                  onClick={() => onSelectFile(file.id)}
+                  className={`inline-flex items-center gap-1.5 rounded-[12px] px-2.5 py-1.5 text-[12px] font-medium transition-colors ${
+                    file.selected
+                      ? 'bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-blue-500/30'
+                      : 'bg-slate-50 text-slate-600 ring-1 ring-slate-200/60 dark:bg-slate-800/60 dark:text-slate-300 dark:ring-white/10'
+                  }`}
                 >
-                  <X size={12} strokeWidth={2.5} />
-                </span>
-              </button>
-            ))}
+                  <div className="flex items-center justify-center opacity-90 scale-90">
+                    {renderFileIcon(file)}
+                  </div>
+                  <span className="max-w-[120px] truncate leading-none pt-[1px]">{file.name}</span>
+                  <span
+                    className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-slate-200/80 text-slate-500 transition-colors hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRemoveFile(file.id);
+                    }}
+                  >
+                    <X size={10} strokeWidth={3} />
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
-      <div className="flex items-end gap-2 px-2 pb-2 pt-2 min-h-[52px]">
-        <div className="flex shrink-0 items-center pl-1">
-          <button
-            type="button"
-            onClick={onOpenUtilityDrawer}
-            className="flex h-[36px] w-[36px] items-center justify-center rounded-full text-slate-400 transition-all hover:bg-slate-200/60 active:scale-95 dark:text-slate-300 dark:hover:bg-slate-800/60"
-            title="更多操作"
-            aria-label="更多操作"
+        )}
+        
+        <div className="relative flex flex-1 w-full">
+          {/* 左侧绝对定位：+ 号 */}
+          <div 
+            className={`absolute z-10 transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] ${
+              isExpanded ? 'bottom-[6px] left-[6px]' : 'top-1/2 -translate-y-1/2 left-[6px]'
+            }`}
           >
-            <Plus size={26} strokeWidth={2} />
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={onUpload}
+              className="relative flex h-[36px] w-[36px] items-center justify-center rounded-full text-slate-500 transition-all active:scale-95 dark:text-slate-400"
+              title="上传文件"
+              aria-label="上传文件"
+            >
+              <Plus size={26} strokeWidth={2} />
+            </button>
+          </div>
 
-        <textarea
-          ref={textareaRef}
-          value={inputText}
-          onChange={(event) => onInputChange(event.target.value)}
-          onKeyPress={onKeyPress}
-          placeholder={placeholder}
-          className="min-h-[36px] max-h-[140px] w-full flex-1 resize-none bg-transparent px-2 pt-[10px] pb-[6px] text-[16px] leading-[20px] text-slate-900 outline-none placeholder:text-slate-500 dark:text-slate-100 dark:placeholder:text-[#9ca3af]"
-          rows={1}
-          disabled={disabled}
-        />
+          {/* 输入框主体 */}
+          <textarea
+            ref={textareaRef}
+            value={inputText}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            onChange={(event) => onInputChange(event.target.value)}
+            onKeyPress={onKeyPress}
+            placeholder={placeholder}
+            className={`w-full resize-none bg-transparent text-[16px] leading-[22px] text-slate-900 outline-none placeholder:text-slate-500 dark:text-slate-100 dark:placeholder:text-[#9ca3af] transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] ${
+              isExpanded 
+                ? 'min-h-[48px] max-h-[140px] px-3 pt-3 pb-[42px]' 
+                : 'h-[48px] px-[46px] py-[13px] whitespace-nowrap overflow-hidden text-ellipsis'
+            }`}
+            rows={1}
+            disabled={disabled}
+          />
 
-        <div className="flex shrink-0 items-center gap-1">
-          {disabled ? (
-            <button
-              type="button"
-              onClick={onStop}
-              className="flex h-[36px] w-[36px] items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-800 active:scale-95 dark:bg-white dark:text-slate-900"
-              title="停止生成"
-            >
-              <X size={20} strokeWidth={2.5} />
-            </button>
-          ) : inputText.trim() ? (
-            <button
-              type="button"
-              onClick={onSend}
-              className="flex h-[36px] w-[36px] items-center justify-center rounded-full bg-slate-900 text-white transition-all hover:bg-slate-800 active:scale-95 dark:bg-white dark:text-slate-900"
-              title="发送"
-              aria-label="发送"
-            >
-              <Send size={18} strokeWidth={2} className="-ml-0.5" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled
-              className="flex h-[36px] w-[36px] items-center justify-center rounded-full text-slate-400 transition-all dark:text-slate-300"
-              title="语音输入"
-              aria-label="语音输入"
-            >
-              <Mic size={22} strokeWidth={2} />
-            </button>
-          )}
+          {/* 右侧绝对定位：麦克风 / 发送按钮 */}
+          <div 
+            className={`absolute z-10 transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] ${
+              isExpanded ? 'bottom-[6px] right-[6px]' : 'top-1/2 -translate-y-1/2 right-[6px]'
+            }`}
+          >
+            {disabled ? (
+              <button
+                type="button"
+                onClick={onStop}
+                className="flex h-[36px] w-[36px] items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-800 active:scale-95 dark:bg-white dark:text-slate-900"
+                title="停止生成"
+              >
+                <X size={18} strokeWidth={2.5} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onSend}
+                disabled={!inputText.trim() && files.length === 0}
+                className="flex h-[36px] w-[36px] items-center justify-center rounded-full transition-all disabled:text-slate-400 enabled:bg-slate-900 enabled:text-white enabled:active:scale-95 dark:disabled:text-slate-500 dark:enabled:bg-white dark:enabled:text-slate-900"
+                title="发送"
+                aria-label="发送"
+              >
+                <CornerDownLeft size={18} strokeWidth={2} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
-  </div>
-);
+  );
+};

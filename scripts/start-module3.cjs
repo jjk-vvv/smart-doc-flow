@@ -13,10 +13,10 @@ const module3RunCwd = path.join(rootDir, 'backend');
 const module3PythonExec = resolvePythonExec({
   overrideExec: process.env.MODULE3_PYTHON,
   preferredVenvDirs: [
+    path.join(rootDir, '.venv'),
     path.join(rootDir, '.venv-module3-py311'),
     path.join(module3ConfigDir, '.venv'),
     path.join(rootDir, '.venv-module2-py311'),
-    path.join(rootDir, '.venv'),
   ],
 });
 

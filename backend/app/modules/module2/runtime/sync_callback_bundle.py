@@ -6,8 +6,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 
 
 ScheduleOutboxFn = Callable[[str], None]
-EnqueueDocumentSyncFn = Callable[..., Awaitable[None]]
+EnqueueDocumentSyncFn = Callable[..., Awaitable[Dict[str, Any] | None]]
 EnqueueDocumentSyncForSeedFn = Callable[..., Awaitable[bool]]
+PrepareDocumentSyncForSeedFn = Callable[..., Awaitable[Dict[str, Any] | None]]
+DeliverPreparedOutboxFn = Callable[[str], Awaitable[None]]
 ListOutboxRowsFn = Callable[..., Awaitable[List[Dict[str, Any]]]]
 GetOutboxRowFn = Callable[[str], Awaitable[Dict[str, Any] | None]]
 ListResponseFn = Callable[..., Dict[str, Any]]
@@ -23,6 +25,8 @@ class SyncCallbackBundle:
     source_batch_key: SourceBatchKeyFn
     enqueue_document_sync: EnqueueDocumentSyncFn
     enqueue_document_sync_for_seed: EnqueueDocumentSyncForSeedFn
+    prepare_document_sync_for_seed: PrepareDocumentSyncForSeedFn
+    deliver_prepared_outbox: DeliverPreparedOutboxFn
     list_outbox_rows: ListOutboxRowsFn
     get_outbox_row: GetOutboxRowFn
     build_list_response: ListResponseFn
@@ -45,10 +49,17 @@ def build_sync_callback_bundle(
         key = str(outbox_id or "").strip()
         if not key or not module4_sync_config_runtime.sync_enabled():
             return
+        initial_delay_sec = float(module4_sync_config_runtime.initial_dispatch_delay_sec() or 0.0)
+
+        async def _deliver() -> None:
+            if initial_delay_sec > 0:
+                await asyncio.sleep(initial_delay_sec)
+            await module4_sync_outbox_runtime.deliver_outbox(key)
+
         module4_sync_task_runtime.schedule_indexed(
             outbox_id=key,
             task_factory=lambda: asyncio.create_task(
-                module4_sync_outbox_runtime.deliver_outbox(key),
+                _deliver(),
             ),
         )
 
@@ -67,17 +78,19 @@ def build_sync_callback_bundle(
         tenant_id: str,
         documents: List[Any],
         source_batch_key: str,
-    ) -> None:
+        schedule_immediately: bool = True,
+    ) -> Dict[str, Any] | None:
         if not module4_sync_config_runtime.document_sync_enabled():
-            return
-        await module4_sync_outbox_runtime.enqueue_document_sync(
+            return None
+        row = await module4_sync_outbox_runtime.enqueue_document_sync(
             source=source,
             tenant_id=tenant_id,
             documents=documents,
             source_batch_key=source_batch_key,
             payload_mode=module4_sync_config_runtime.payload_mode(),
-            schedule_outbox=_schedule_outbox,
+            schedule_outbox=_schedule_outbox if schedule_immediately else (lambda _outbox_id: None),
         )
+        return dict(row) if isinstance(row, dict) else row
 
     async def _enqueue_document_sync_for_seed(
         *,
@@ -86,6 +99,7 @@ def build_sync_callback_bundle(
         documents: List[Any],
         seed: str,
         mode: DocumentSyncMode = "default",
+        schedule_immediately: bool = True,
     ) -> bool:
         if not module4_sync_config_runtime.document_sync_enabled():
             return False
@@ -94,7 +108,7 @@ def build_sync_callback_bundle(
             return False
         if normalized_mode == "final_batch" and not module4_sync_config_runtime.document_sync_final_batch_enabled():
             return False
-        await _enqueue_document_sync(
+        row = await _enqueue_document_sync(
             source=source,
             tenant_id=tenant_id,
             documents=documents,
@@ -104,8 +118,43 @@ def build_sync_callback_bundle(
                 documents=documents,
                 seed=seed,
             ),
+            schedule_immediately=schedule_immediately,
         )
-        return True
+        return row is not None
+
+    async def _prepare_document_sync_for_seed(
+        *,
+        source: str,
+        tenant_id: str,
+        documents: List[Any],
+        seed: str,
+        mode: DocumentSyncMode = "default",
+    ) -> Dict[str, Any] | None:
+        if not module4_sync_config_runtime.document_sync_enabled():
+            return None
+        normalized_mode = str(mode or "default").strip().lower() or "default"
+        if normalized_mode == "per_file" and not module4_sync_config_runtime.document_sync_per_file_enabled():
+            return None
+        if normalized_mode == "final_batch" and not module4_sync_config_runtime.document_sync_final_batch_enabled():
+            return None
+        return await _enqueue_document_sync(
+            source=source,
+            tenant_id=tenant_id,
+            documents=documents,
+            source_batch_key=_source_batch_key(
+                source=source,
+                tenant_id=tenant_id,
+                documents=documents,
+                seed=seed,
+            ),
+            schedule_immediately=False,
+        )
+
+    async def _deliver_prepared_outbox(outbox_id: str) -> None:
+        key = str(outbox_id or "").strip()
+        if not key or not module4_sync_config_runtime.sync_enabled():
+            return
+        await module4_sync_outbox_runtime.deliver_outbox(key)
 
     async def _list_outbox_rows(**kwargs) -> List[Dict[str, Any]]:
         return await outbox_repository.list_graph_sync_outbox(**kwargs)
@@ -130,6 +179,8 @@ def build_sync_callback_bundle(
         source_batch_key=_source_batch_key,
         enqueue_document_sync=_enqueue_document_sync,
         enqueue_document_sync_for_seed=_enqueue_document_sync_for_seed,
+        prepare_document_sync_for_seed=_prepare_document_sync_for_seed,
+        deliver_prepared_outbox=_deliver_prepared_outbox,
         list_outbox_rows=_list_outbox_rows,
         get_outbox_row=_get_outbox_row,
         build_list_response=_build_list_response,

@@ -1,4 +1,4 @@
-﻿import React, {
+import React, {
   useState,
   useEffect,
   useRef,
@@ -26,12 +26,12 @@ import {
   type Variants,
 } from "framer-motion";
 
-import guideLogo from "../../userguide_images/logo.png";
-import section1MainImage from "../../userguide_images/生成办公场景图片 (4).png";
-import sec2_1 from "../../userguide_images/sec2_1.png";
-import sec2_2 from "../../userguide_images/sec2_2.png";
-import sec2_3 from "../../userguide_images/sec2_3.png";
-import sec2_4 from "../../userguide_images/sec2_4.png";
+import guideLogo from "../../assets/app-logo.png";
+import section1MainImage from "../../assets/deepread-workbench.svg";
+import sec2_1 from "../../assets/sec2_1.png";
+import sec2_2 from "../../assets/sec2_2.png";
+import sec2_3 from "../../assets/sec2_3.png";
+import sec2_4 from "../../assets/sec2_4.png";
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -53,6 +53,7 @@ type GuideNavItem = {
 
 interface UserGuideProps {
   onBackToDashboard?: () => void;
+  onOpenLogin?: () => void;
 }
 
 const GuideSectiondemonstration: React.FC<{

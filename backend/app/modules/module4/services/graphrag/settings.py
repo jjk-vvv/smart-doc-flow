@@ -8,6 +8,7 @@ from typing import Dict, List
 from urllib.parse import urlparse, urlunparse
 
 from .prompts import PROMPT_KEY_TO_ENV
+from .runtime_selection import choose_graphrag_python_bin, resolve_graphrag_config_style
 
 
 def _resolve_path(module4_root: Path, raw_value: str, default_rel: str) -> Path:
@@ -74,7 +75,7 @@ class GraphRAGRuntimeSettings:
     cache_dir: str = "cache"
     storage_dir: str = "output/${timestamp}/artifacts"
     reporting_dir: str = "output/${timestamp}/reports"
-    config_style: str = "v3"
+    config_style: str = "auto"
     source_repo_root: str = ""
     use_source_checkout: bool = False
     entity_types: List[str] = field(
@@ -121,6 +122,18 @@ class GraphRAGRuntimeSettings:
         execution_mode = str(os.getenv("MODULE4_GRAPHRAG_EXECUTION_MODE", "") or "").strip().lower()
         if not execution_mode:
             execution_mode = "deterministic_local" if _running_under_pytest() else "graphrag"
+        configured_python_bin = str(os.getenv("MODULE4_GRAPHRAG_PYTHON_BIN", "") or "").strip()
+        configured_query_python_bin = str(os.getenv("MODULE4_GRAPHRAG_QUERY_PYTHON_BIN", "") or "").strip()
+        resolved_python_bin = choose_graphrag_python_bin(
+            configured_python_bin=configured_python_bin,
+            configured_query_python_bin=configured_query_python_bin,
+        )
+        resolved_config_style = resolve_graphrag_config_style(
+            str(os.getenv("MODULE4_GRAPHRAG_CONFIG_STYLE", "auto") or "auto").strip().lower() or "auto",
+            python_bin=resolved_python_bin,
+            configured_python_bin=configured_python_bin,
+            configured_query_python_bin=configured_query_python_bin,
+        )
         return cls(
             module4_root=root,
             workspaces_root=_resolve_path(
@@ -166,7 +179,7 @@ class GraphRAGRuntimeSettings:
                 or "output/${timestamp}/reports"
             ).strip()
             or "output/${timestamp}/reports",
-            config_style=str(os.getenv("MODULE4_GRAPHRAG_CONFIG_STYLE", "v3") or "v3").strip().lower() or "v3",
+            config_style=resolved_config_style,
             source_repo_root=str(os.getenv("MODULE4_GRAPHRAG_SOURCE_REPO_ROOT", "") or "").strip(),
             use_source_checkout=_env_bool(
                 "MODULE4_GRAPHRAG_USE_SOURCE_CHECKOUT",

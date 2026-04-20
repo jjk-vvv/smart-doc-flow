@@ -147,6 +147,44 @@ class _FailureStorage:
         self.failed.append((outbox_id, error_message))
 
 
+class _RetryStorage:
+    def __init__(self) -> None:
+        self.requeued: list[dict[str, object]] = []
+        self.failed: list[tuple[str, str]] = []
+        self._requeued_once = False
+
+    async def get_graph_sync_outbox(self, outbox_id: str):
+        if self._requeued_once:
+            return None
+        return {
+            "outbox_id": outbox_id,
+            "status": "pending",
+        }
+
+    async def claim_graph_sync_outbox(self, outbox_id: str):
+        return {
+            "outbox_id": outbox_id,
+            "endpoint": "/module4/ingest",
+            "tenant_id": "tenant-r",
+            "source": "module2",
+            "source_batch_key": "batch-r",
+            "file_hash": "file-r",
+            "payload_json": {"hang": True},
+            "attempt_count": 1,
+            "max_attempts": 2,
+        }
+
+    async def mark_graph_sync_outbox_delivered(self, **kwargs):
+        raise AssertionError("should not deliver hanging transport")
+
+    async def requeue_graph_sync_outbox(self, **kwargs):
+        self._requeued_once = True
+        self.requeued.append(dict(kwargs))
+
+    async def mark_graph_sync_outbox_failed(self, *, outbox_id: str, error_message: str):
+        self.failed.append((outbox_id, error_message))
+
+
 class _EnqueueStorage:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -244,6 +282,82 @@ def test_module4_sync_outbox_runtime_marks_permanent_failure() -> None:
     assert storage.requeued == 0
     assert storage.failed == [("outbox-2", "HTTPError 500: server down")]
     assert logger.warnings[-1][0] == "module2 -> module4 outbox permanently failed outbox=%s file=%s batch=%s attempt=%s/%s: %s"
+
+
+def test_module4_sync_outbox_runtime_requeues_when_transport_hangs_past_outer_timeout() -> None:
+    logger = _FakeLogger()
+    metrics = _FakeMetricsRuntime()
+    storage = _RetryStorage()
+    runtime = Module4SyncOutboxRuntime(
+        logger=logger,
+        outbox_repository=storage,
+        metrics_runtime=metrics,
+        base_url_factory=lambda: "https://module4.example",
+        headers_factory=lambda tenant_id: {"X-Tenant-Id": tenant_id},
+        timeout_factory=lambda: 0.01,
+        retries_factory=lambda: 1,
+        retryable_status=lambda status_code: status_code in {408, 429, 500, 502, 503, 504},
+        delay_factory=lambda attempt_index: 0.0,
+        utcnow_factory=lambda: datetime.now(timezone.utc),
+        default_tenant_factory=lambda: "default",
+        transport=lambda url, headers, data, timeout_sec: asyncio.Future(),
+        sleep_fn=lambda seconds: asyncio.sleep(0),
+    )
+
+    async def _run() -> None:
+        await runtime.deliver_outbox("outbox-retry")
+
+    asyncio.run(_run())
+
+    assert metrics.attempts == 1
+    assert metrics.successes == []
+    assert metrics.failures == []
+    assert len(storage.requeued) == 1
+    assert storage.failed == []
+    assert storage.requeued[0]["outbox_id"] == "outbox-retry"
+    assert "module4 sync transport exceeded" in str(storage.requeued[0]["error_message"])
+    assert logger.warnings[-1][0] == "module2 -> module4 outbox retry scheduled in %.1fs outbox=%s file=%s batch=%s attempt=%s/%s: %s"
+
+
+def test_module4_sync_outbox_runtime_uses_inprocess_transport_for_unified_self_call(monkeypatch) -> None:
+    logger = _FakeLogger()
+    metrics = _FakeMetricsRuntime()
+    storage = _SuccessStorage()
+    runtime = Module4SyncOutboxRuntime(
+        logger=logger,
+        outbox_repository=storage,
+        metrics_runtime=metrics,
+        base_url_factory=lambda: "http://127.0.0.1:3001",
+        headers_factory=lambda tenant_id: {"X-Tenant-Id": tenant_id},
+        timeout_factory=lambda: 12.0,
+        retries_factory=lambda: 1,
+        retryable_status=lambda status_code: status_code in {408, 429, 500, 502, 503, 504},
+        delay_factory=lambda attempt_index: 0.0,
+        utcnow_factory=lambda: datetime.now(timezone.utc),
+        default_tenant_factory=lambda: "default",
+        sleep_fn=lambda seconds: asyncio.sleep(0),
+    )
+
+    monkeypatch.setenv("GATEWAY_HOST", "0.0.0.0")
+    monkeypatch.setenv("GATEWAY_PORT", "3001")
+    monkeypatch.setattr(
+        runtime,
+        "_inprocess_transport",
+        lambda url, headers, data: asyncio.sleep(0, result=(200, '{"status":"ok"}')),
+    )
+
+    async def _run() -> tuple[int, str]:
+        return await runtime._default_transport(
+            "http://127.0.0.1:3001/module4/ingest",
+            {"X-Tenant-Id": "tenant-a"},
+            b"{}",
+            12.0,
+        )
+
+    status, body = asyncio.run(_run())
+
+    assert status == 200
+    assert body == '{"status":"ok"}'
 
 
 def test_module4_sync_outbox_runtime_serializes_row_and_payload_summary() -> None:

@@ -24,7 +24,7 @@ IMAGE_KEYWORDS = ("图片", "图表", "图", "柱状图", "饼图", "折线图",
 
 @lru_cache(maxsize=1)
 def _get_agent() -> LayoutExpertAgent:
-    return LayoutExpertAgent(get_settings().zhipu_api_key)
+    return LayoutExpertAgent(get_settings())
 
 
 def _build_local_chat_reply(
@@ -46,7 +46,7 @@ def _build_local_chat_reply(
     context_suffix = "\n\n我会继续沿着你当前这段对话往下回答，不会擅自重置上下文。" if conversation_context else ""
     return (
         "现在模块一已经支持无文件聊天入口了。"
-        "如果当前环境配置了 `ZHIPU_API_KEY`，这里会直接返回真实的 AI 回复；"
+        "如果当前环境已经配置了模块一可用的 LLM API Key，这里会直接返回真实的 AI 回复；"
         "如果还没配置，我会先给出本地兜底说明，帮助你继续往下走。"
         "\n\n你可以继续这样用："
         "\n1. 直接描述你想对文档做什么。"
@@ -76,7 +76,7 @@ def _build_local_document_reply(
             base_text = (
                 f"已收到文件 `{filename}`，但当前环境还没有可用的 AI 图片理解能力。"
                 "后端已经不会因为无文件或有文件聊天而启动失败了；"
-                "如果要得到图片内容分析，请配置 `ZHIPU_API_KEY` 后再试。"
+                "如果要得到图片内容分析，请先配置模块一可用的 LLM API Key 后再试。"
             )
             if extra_hint:
                 return f"{base_text}\n\n补充信息：{extra_hint}"
@@ -85,9 +85,9 @@ def _build_local_document_reply(
         if simple_content:
             preview = simple_content[:600]
             base_text = (
-                f"已收到文件 `{filename}`。当前环境未配置可用的智谱 AI，所以先返回本地提取到的内容片段供你确认：\n\n"
+                f"已收到文件 `{filename}`。当前环境未配置可用的模块一 LLM，所以先返回本地提取到的内容片段供你确认：\n\n"
                 f"{preview}\n\n"
-                "配置 `ZHIPU_API_KEY` 后，就可以继续获得真正的智能分析、总结和修改建议。"
+                "配置模块一可用的 LLM API Key 后，就可以继续获得真正的智能分析、总结和修改建议。"
             )
             if extra_hint:
                 return f"{base_text}\n\n补充信息：{extra_hint}"
@@ -96,7 +96,7 @@ def _build_local_document_reply(
         base_text = (
             f"已收到文件 `{filename}`，但当前没有提取到足够文本。"
             "后端现在已经支持有文件和无文件两种聊天入口，不会再因为这条链路导致服务起不来；"
-            "如果要继续做智能分析，请确认文件内容可提取，并配置 `ZHIPU_API_KEY`。"
+            "如果要继续做智能分析，请确认文件内容可提取，并配置模块一可用的 LLM API Key。"
         )
         if extra_hint:
             return f"{base_text}\n\n补充信息：{extra_hint}"
@@ -111,7 +111,7 @@ def _build_local_document_reply(
 
     base_text = (
         f"已收到本批次 {len(documents)} 份文件：{file_names}。"
-        "当前环境未配置可用的智谱 AI，所以先返回本地提取到的多文件内容片段供你确认。"
+        "当前环境未配置可用的模块一 LLM，所以先返回本地提取到的多文件内容片段供你确认。"
     )
     if preview_blocks:
         base_text = f"{base_text}\n\n" + "\n\n".join(preview_blocks)

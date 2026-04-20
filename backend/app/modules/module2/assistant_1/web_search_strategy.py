@@ -11,6 +11,15 @@ from .text_utils import normalize_text
 _SITE_TOKEN_RE = re.compile(r"(?:^|\s)site:([a-z0-9.-]+\.[a-z]{2,})(?=\s|$)", re.IGNORECASE)
 _ASCII_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]{2,}")
 _OFFICIAL_MARKERS = ("官方", "官网", "official")
+_HOMEPAGE_MARKERS = (
+    "官网",
+    "首页",
+    "主页",
+    "homepage",
+    "home page",
+    "official homepage",
+    "official site",
+)
 _BLOG_MARKERS = ("博客", "blog", "newsroom", "developer blog")
 _TITLE_MARKERS = ("标题", "title", "文章", "post", "article", "headline")
 _CURRENT_MARKERS = ("今天", "最新", "最近", "当前", "实时", "today", "latest", "recent", "current", "news")
@@ -45,6 +54,10 @@ _META_SPLIT_MARKERS = (
 )
 _GENERIC_TOKENS = {
     "official",
+    "homepage",
+    "home",
+    "main",
+    "website",
     "blog",
     "latest",
     "recent",
@@ -105,6 +118,33 @@ _GENERIC_PAGE_TITLES = {
     "newsroom",
     "research",
 }
+_GENERIC_SECTION_SEGMENTS = {
+    "blog",
+    "blogs",
+    "news",
+    "newsroom",
+    "research",
+    "release",
+    "releases",
+    "announcement",
+    "announcements",
+    "company-announcements",
+    "product-updates",
+    "developers",
+    "developer",
+    "docs",
+    "documentation",
+    "help",
+    "support",
+    "examples",
+    "guides",
+    "tutorials",
+    "quick-tutorials",
+    "articles",
+    "posts",
+    "index",
+    "home",
+}
 _GENERIC_CONTENT_LINES = {
     "search the blog",
     "suggested",
@@ -143,6 +183,7 @@ class WebSearchPreparedRequest:
     time_range: str
     days: int | None
     asks_official_source: bool
+    asks_homepage: bool
     asks_blog_source: bool
     asks_title: bool
     wants_current: bool
@@ -159,8 +200,11 @@ def prepare_web_search_request(arguments: Dict[str, Any], *, origin_question: st
     merged_text = " ".join(part for part in (origin, raw_query) if part).strip()
 
     asks_official_source = _contains_any(merged_text.lower(), _OFFICIAL_MARKERS)
+    asks_homepage = _contains_any(merged_text.lower(), _HOMEPAGE_MARKERS)
     asks_blog_source = _contains_any(merged_text.lower(), _BLOG_MARKERS)
     asks_title = _contains_any(merged_text.lower(), _TITLE_MARKERS)
+    if asks_title or asks_blog_source:
+        asks_homepage = False
     wants_current = (
         _contains_any(merged_text.lower(), _CURRENT_MARKERS)
         or bool(arguments.get("time_range"))
@@ -181,6 +225,7 @@ def prepare_web_search_request(arguments: Dict[str, Any], *, origin_question: st
         focus_text=focus_text,
         anchor_tokens=anchor_tokens,
         asks_official_source=asks_official_source,
+        asks_homepage=asks_homepage,
         asks_blog_source=asks_blog_source,
         asks_title=asks_title,
         wants_current=wants_current,
@@ -189,10 +234,14 @@ def prepare_web_search_request(arguments: Dict[str, Any], *, origin_question: st
     topic = normalize_text(arguments.get("topic")).lower() or "general"
     if topic not in {"general", "news"}:
         topic = "general"
+    if asks_title and wants_current:
+        topic = "news"
     if wants_current and not (asks_official_source or asks_blog_source) and topic == "general":
         topic = "news"
     if asks_official_source or asks_blog_source:
         topic = "general"
+    if asks_title and wants_current:
+        topic = "news"
 
     search_depth = normalize_text(arguments.get("search_depth")).lower() or "basic"
     if search_depth not in {"basic", "advanced"}:
@@ -211,7 +260,10 @@ def prepare_web_search_request(arguments: Dict[str, Any], *, origin_question: st
     if time_range not in {"day", "week", "month", "year"}:
         time_range = ""
     days = arguments.get("days") if isinstance(arguments.get("days"), int) else None
-    if asks_official_source or asks_blog_source or asks_title:
+    if asks_title and wants_current:
+        if not time_range and days is None:
+            time_range = "year"
+    elif asks_official_source or asks_blog_source or asks_title:
         time_range = ""
         days = None
 
@@ -224,6 +276,7 @@ def prepare_web_search_request(arguments: Dict[str, Any], *, origin_question: st
         time_range=time_range,
         days=days,
         asks_official_source=asks_official_source,
+        asks_homepage=asks_homepage,
         asks_blog_source=asks_blog_source,
         asks_title=asks_title,
         wants_current=wants_current,
@@ -252,7 +305,9 @@ def should_retry_web_search(result: Dict[str, Any], prepared: WebSearchPreparedR
         return True
     if _has_locale_path(preferred_result):
         return True
-    if prepared.asks_blog_source and not _is_blog_forward_result(preferred_result):
+    if prepared.asks_homepage and not _is_homepage_like_result(preferred_result, include_domains=prepared.include_domains):
+        return True
+    if prepared.asks_blog_source and not prepared.asks_title and not _is_blog_forward_result(preferred_result):
         return True
     if prepared.asks_title and not _derive_answer_title_from_result(preferred_result, prepared=prepared):
         return True
@@ -262,7 +317,32 @@ def should_retry_web_search(result: Dict[str, Any], prepared: WebSearchPreparedR
 def build_retry_request(prepared: WebSearchPreparedRequest) -> WebSearchPreparedRequest:
     retry_query = prepared.query
     if prepared.anchor_tokens:
-        if prepared.asks_blog_source or prepared.asks_title:
+        if prepared.asks_homepage:
+            retry_parts = [
+                " ".join(prepared.anchor_tokens),
+                "official",
+                "homepage",
+                "-docs",
+                "-help",
+                "-blog",
+                "-news",
+                "-newsroom",
+                "-developers",
+            ]
+            retry_query = normalize_text(" ".join(retry_parts))
+        elif prepared.asks_title and prepared.wants_current:
+            retry_parts: List[str] = []
+            root_domain = ""
+            if prepared.include_domains:
+                root_domain = _root_domain(prepared.include_domains[0])
+            if root_domain:
+                retry_parts.append(f"site:{root_domain}")
+            retry_parts.append(" ".join(prepared.anchor_tokens))
+            if prepared.asks_official_source:
+                retry_parts.append("official")
+            retry_parts.extend(["latest", "article", "title", "-community", "-forum", "-docs", "-help"])
+            retry_query = normalize_text(" ".join(retry_parts))
+        elif prepared.asks_blog_source or prepared.asks_title:
             retry_parts: List[str] = [" ".join(prepared.anchor_tokens)]
             if prepared.asks_official_source:
                 retry_parts.append("official")
@@ -276,13 +356,14 @@ def build_retry_request(prepared: WebSearchPreparedRequest) -> WebSearchPrepared
             retry_query = normalize_text(" ".join(retry_parts))
     return WebSearchPreparedRequest(
         query=retry_query,
-        topic="general",
+        topic="news" if (prepared.asks_title and prepared.wants_current) else "general",
         search_depth="advanced",
         max_results=max(5, prepared.max_results),
         include_domains=list(prepared.include_domains),
         time_range=prepared.time_range,
         days=prepared.days,
         asks_official_source=prepared.asks_official_source,
+        asks_homepage=prepared.asks_homepage,
         asks_blog_source=prepared.asks_blog_source,
         asks_title=prepared.asks_title,
         wants_current=prepared.wants_current,
@@ -318,7 +399,17 @@ def finalize_web_search_result(
         if preferred_url:
             payload["preferred_url"] = preferred_url
 
-    if derived_title:
+    if prepared.asks_homepage and isinstance(preferred_result, dict):
+        preferred_url = normalize_text(preferred_result.get("url"))
+        preferred_title = _clean_page_title(normalize_text(preferred_result.get("title")))
+        if preferred_title and not _looks_like_generic_page_title(preferred_title):
+            payload["preferred_title"] = preferred_title
+        if preferred_url:
+            payload["recommended_response"] = preferred_url
+            payload["answer"] = preferred_url
+        elif preferred_title:
+            payload["recommended_response"] = preferred_title
+    elif derived_title:
         payload["preferred_title"] = derived_title
         payload["recommended_response"] = derived_title
         if prepared.asks_title:
@@ -337,6 +428,7 @@ def finalize_web_search_result(
 
     payload["search_strategy"] = {
         "asks_official_source": prepared.asks_official_source,
+        "asks_homepage": prepared.asks_homepage,
         "asks_blog_source": prepared.asks_blog_source,
         "asks_title": prepared.asks_title,
         "wants_current": prepared.wants_current,
@@ -353,10 +445,21 @@ def _build_query_text(
     focus_text: str,
     anchor_tokens: List[str],
     asks_official_source: bool,
+    asks_homepage: bool,
     asks_blog_source: bool,
     asks_title: bool,
     wants_current: bool,
 ) -> str:
+    if anchor_tokens and asks_title and wants_current:
+        suffix_parts: List[str] = []
+        if asks_official_source:
+            suffix_parts.append("official")
+        elif asks_blog_source:
+            suffix_parts.append("blog")
+        suffix_parts.extend(["latest", "article", "title"])
+        return normalize_text(" ".join([" ".join(anchor_tokens), *suffix_parts]))
+    if anchor_tokens and asks_homepage:
+        return normalize_text(" ".join([" ".join(anchor_tokens), "official", "homepage"]))
     if anchor_tokens and asks_official_source:
         suffix_parts: List[str] = ["official"]
         if asks_blog_source:
@@ -430,16 +533,26 @@ def _rerank_results(results: List[Dict[str, Any]], *, prepared: WebSearchPrepare
             if preferred_domains and domain and not _domain_is_preferred(domain, prepared.include_domains):
                 official_bonus -= 0.4
 
+        if prepared.asks_homepage:
+            if _is_homepage_like_result(enriched, include_domains=prepared.include_domains):
+                official_bonus += 2.6
+            if _is_index_like_result(enriched):
+                official_bonus -= 1.2
+            if _looks_like_help_or_docs_result(domain, path):
+                official_bonus -= 1.8
+            if _looks_like_blog_result(enriched):
+                official_bonus -= 1.1
+
         if prepared.asks_title:
             derived_title = _derive_answer_title_from_result(enriched, prepared=prepared)
             if derived_title:
                 official_bonus += 0.9
             if _is_index_like_result(enriched):
-                official_bonus += 0.45
+                official_bonus -= 1.4
             if _is_article_like_result(enriched):
-                official_bonus += 0.55
+                official_bonus += 1.1
             if _has_locale_path(enriched):
-                official_bonus -= 0.9
+                official_bonus -= 1.8
             if title and not _looks_like_generic_page_title(_clean_page_title(title)):
                 official_bonus += 0.25
 
@@ -455,20 +568,17 @@ def _rerank_results(results: List[Dict[str, Any]], *, prepared: WebSearchPrepare
 def _select_preferred_result(results: List[Dict[str, Any]], *, prepared: WebSearchPreparedRequest) -> Dict[str, Any] | None:
     if not results:
         return None
+    if prepared.asks_homepage:
+        for exact_domain_only in (True, False):
+            for item in results:
+                if _has_locale_path(item):
+                    continue
+                if not _matches_domain_scope(item, prepared.include_domains, exact_domain_only=exact_domain_only):
+                    continue
+                if _is_homepage_like_result(item, include_domains=prepared.include_domains):
+                    return item
+        return None
     if prepared.asks_title:
-        if prepared.asks_blog_source:
-            for exact_domain_only in (True, False):
-                for allow_locale in (False, True):
-                    for predicate in (_is_blog_forward_result, _looks_like_blog_result):
-                        for item in results:
-                            if _has_locale_path(item) != allow_locale:
-                                continue
-                            if not _matches_domain_scope(item, prepared.include_domains, exact_domain_only=exact_domain_only):
-                                continue
-                            if not predicate(item):
-                                continue
-                            if _derive_answer_title_from_result(item, prepared=prepared):
-                                return item
         for exact_domain_only in (True, False):
             for allow_locale in (False, True):
                 for item in results:
@@ -476,8 +586,9 @@ def _select_preferred_result(results: List[Dict[str, Any]], *, prepared: WebSear
                         continue
                     if not _matches_domain_scope(item, prepared.include_domains, exact_domain_only=exact_domain_only):
                         continue
-                    if _derive_answer_title_from_result(item, prepared=prepared):
+                    if _is_preferred_title_result(item, prepared=prepared):
                         return item
+        return None
     if prepared.asks_blog_source:
         for exact_domain_only in (True, False):
             for allow_locale in (False, True):
@@ -647,9 +758,11 @@ def _is_index_like_result(item: Dict[str, Any]) -> bool:
         return True
     if any(marker in lowered_title for marker in ("developer blog", "recent news", "newsroom")):
         return True
-    if segments and segments[-1] in {"blog", "news", "newsroom", "research"}:
+    if segments and segments[-1] in _GENERIC_SECTION_SEGMENTS:
         return True
-    if len(segments) <= 2 and any(segment in {"blog", "news", "developers"} for segment in segments):
+    if len(segments) <= 1 and any(segment in {"blog", "news", "developers"} for segment in segments):
+        return True
+    if len(segments) == 2 and segments[0] in {"blog", "news", "developers"} and segments[1] in _GENERIC_SECTION_SEGMENTS:
         return True
     return False
 
@@ -658,10 +771,27 @@ def _is_article_like_result(item: Dict[str, Any]) -> bool:
     url = str(item.get("url") or "").strip()
     path = _path_from_url(url).strip("/")
     segments = [segment for segment in path.split("/") if segment]
+    domain = _domain_from_url(url)
+    normalized_path = _path_from_url(url)
+    title = normalize_text(item.get("title"))
+    if _has_locale_path(item):
+        return False
+    if _looks_like_help_or_docs_result(domain, normalized_path):
+        return False
+    if _looks_like_community_result(domain, normalized_path, title.lower()):
+        return False
     if len(segments) < 2:
         return False
     parent_segments = segments[:-1]
-    return any(segment in {"blog", "news", "newsroom", "research", "release", "releases", "announcement", "announcements"} for segment in parent_segments)
+    last_segment = segments[-1].lower()
+    if last_segment in _GENERIC_SECTION_SEGMENTS:
+        return False
+    if _looks_like_generic_page_title(title):
+        return False
+    return any(
+        segment in {"blog", "news", "newsroom", "research", "release", "releases", "announcement", "announcements", "index"}
+        for segment in parent_segments
+    )
 
 
 def _looks_like_blog_result(item: Dict[str, Any]) -> bool:
@@ -688,6 +818,34 @@ def _is_blog_forward_result(item: Dict[str, Any]) -> bool:
     if "blog" in path or "blog" in title:
         return True
     return "newsroom" in path or "newsroom" in title
+
+
+def _is_homepage_like_result(item: Dict[str, Any], *, include_domains: List[str]) -> bool:
+    url = str(item.get("url") or "").strip()
+    domain = _domain_from_url(url)
+    path = _path_from_url(url).strip("/")
+    if not domain:
+        return False
+    if include_domains and not _domain_is_preferred(domain, include_domains):
+        return False
+    if _has_locale_path(item):
+        return False
+    if not path:
+        return True
+    segments = [segment for segment in path.split("/") if segment]
+    if len(segments) != 1:
+        return False
+    return segments[0].lower() in {"home", "homepage", "index", "index.html"}
+
+
+def _is_preferred_title_result(item: Dict[str, Any], *, prepared: WebSearchPreparedRequest) -> bool:
+    if not _derive_answer_title_from_result(item, prepared=prepared):
+        return False
+    if _is_index_like_result(item):
+        return False
+    if not _is_article_like_result(item):
+        return False
+    return True
 
 
 def _looks_like_community_result(domain: str, path: str, title: str) -> bool:

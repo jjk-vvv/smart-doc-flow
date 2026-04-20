@@ -53,6 +53,7 @@ class FakeExtractionService:
     def __init__(self) -> None:
         self.batch_calls: list[dict[str, object]] = []
         self.cache_calls: list[str] = []
+        self.graph_sync_calls: list[dict[str, object]] = []
         self.preview_start_calls: list[dict[str, object]] = []
         self.preview_status_calls: list[str] = []
         self.assistant_calls: list[dict[str, object]] = []
@@ -93,6 +94,23 @@ class FakeExtractionService:
                     "diagnostics": {},
                 }
             ]
+        }
+
+    async def trigger_graph_sync(self, settings, request, payload: dict[str, object] | None = None) -> dict[str, object]:
+        self.graph_sync_calls.append(
+            {
+                "settings_port": settings.gateway_port,
+                "path": str(request.url.path),
+                "payload": dict(payload or {}),
+                "tenant_header": request.headers.get("x-authenticated-user-id"),
+            }
+        )
+        normalized_payload = dict(payload or {})
+        return {
+            "ok": True,
+            "enqueued": True,
+            "file_name": str(normalized_payload.get("file_name") or ""),
+            "file_hash": str(normalized_payload.get("file_hash") or ""),
         }
 
     async def clear_cache(self, settings, scope: str = "results") -> dict:
@@ -235,6 +253,45 @@ def test_extract_office_preview_routes_delegate_to_service(tmp_path: Path) -> No
     assert status_response.status_code == 200
     assert status_response.json()["status"] == "completed"
     assert fake_service.preview_status_calls == ["preview_job_1"]
+
+
+def test_extract_graph_sync_endpoint_delegates_to_service(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    app = _build_app(settings)
+    fake_service = FakeExtractionService()
+    app.dependency_overrides[get_extraction_service] = lambda: fake_service
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/extract/graph-sync",
+            json={
+                "job_id": "extract_job_demo123",
+                "file_name": "demo.txt",
+                "file_hash": "hash-demo-1",
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "enqueued": True,
+        "file_name": "demo.txt",
+        "file_hash": "hash-demo-1",
+    }
+    assert fake_service.graph_sync_calls == [
+        {
+            "settings_port": 3001,
+            "path": "/extract/graph-sync",
+            "payload": {
+                "job_id": "extract_job_demo123",
+                "file_name": "demo.txt",
+                "file_hash": "hash-demo-1",
+            },
+            "tenant_header": None,
+        }
+    ]
 
 
 def test_extract_artifact_legacy_path_route_is_rejected(tmp_path: Path, monkeypatch) -> None:

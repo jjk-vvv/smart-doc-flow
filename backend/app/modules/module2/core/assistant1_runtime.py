@@ -1749,7 +1749,6 @@ class Assistant1Facade:
         fallback_to_legacy = self.extraction_settings.assistant1_fallback_to_legacy
         legacy_payload = self._legacy_health_payload()
         native_payload = self.native_runtime.health_payload(settings)
-        upstream_payload = self.upstream_runtime.health_payload(settings)
 
         active_mode = requested_mode
         fallback_active = False
@@ -1757,6 +1756,25 @@ class Assistant1Facade:
             if bool(legacy_payload.get("ok")):
                 active_mode = "legacy"
                 fallback_active = True
+
+        upstream_payload: dict[str, Any]
+        if requested_mode == "upstream":
+            upstream_payload = self.upstream_runtime.health_payload(settings)
+        else:
+            upstream_payload = {
+                "ok": False,
+                "configured": bool(str(getattr(settings, "module2_upstream_url", "") or "").strip()),
+                "runtime_ready": False,
+                "model": "",
+                "base_url": str(getattr(settings, "module2_upstream_url", "") or "").strip(),
+                "endpoint_path": str(getattr(self.upstream_runtime, "assistant_path", "") or "").strip(),
+                "tavily_configured": False,
+                "transport": "module2_upstream",
+                "probe": {
+                    "skipped": True,
+                    "reason": "inactive_mode",
+                },
+            }
 
         if active_mode == "upstream":
             active_payload = upstream_payload

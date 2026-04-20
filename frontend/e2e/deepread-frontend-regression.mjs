@@ -414,7 +414,10 @@ async function readModule2Healthz() {
 
 async function readModule4Job(jobId) {
   if (!jobId) return null;
-  const suffix = module4Tenant ? `?tenant_id=${encodeURIComponent(module4Tenant)}` : "";
+  const query = new URLSearchParams();
+  if (module4Tenant) query.set("tenant_id", module4Tenant);
+  query.set("status_only", "true");
+  const suffix = query.toString() ? `?${query.toString()}` : "";
   return await fetchJson(`${module4ApiBase}/module4/jobs/${encodeURIComponent(jobId)}${suffix}`);
 }
 

@@ -11,7 +11,10 @@ class Module1Settings:
     max_file_mb: int
     max_file_bytes: int
     port: int
-    zhipu_api_key: str
+    llm_api_key: str
+    llm_base_url: str
+    llm_model: str
+    llm_vision_model: str
 
 
 @dataclass(frozen=True)
@@ -19,7 +22,7 @@ class RuntimeModules:
     office_pdf: bool
     pypdf2: bool
     python_docx: bool
-    zhipuai: bool
+    llm_client: bool
 
 
 @dataclass(frozen=True)

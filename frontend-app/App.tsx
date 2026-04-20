@@ -14,7 +14,6 @@ import { DeepReadWorkbench } from './pages/deepread/DeepReadWorkbench';
 import { DocProcessingWorkbench } from './pages/doc-processing/DocProcessingWorkbench';
 import { MobileDeepReadPage } from './pages/deepread/MobileDeepReadPage';
 import { FusionGrid } from './pages/fusion/FusionGrid';
-import { UserGuide } from './pages/guide/UserGuide';
 import { KnowledgeNexus } from './pages/knowledge-nexus/KnowledgeNexus';
 import { OnboardingFlow } from './pages/onboarding/OnboardingFlow';
 import { getCurrentUser, logoutAuth, type AuthUser } from './shared/api/auth';
@@ -25,7 +24,6 @@ type AppTab =
   | 'deepread_extraction'
   | 'fusion'
   | 'nexus'
-  | 'guide'
   | 'mine';
 
 type NormalizedTab = AppTab;
@@ -48,7 +46,6 @@ const normalizeTab = (value: string | null | undefined): NormalizedTab => {
     value === 'deepread_extraction' ||
     value === 'fusion' ||
     value === 'nexus' ||
-    value === 'guide' ||
     value === 'mine'
   ) {
     return value;
@@ -119,9 +116,9 @@ const MOBILE_BOTTOM_TABS: Array<{
   icon: React.ElementType;
 }> = [
   { id: 'dashboard', label: '首页', icon: Home },
-  { id: 'doc-processing', label: '处理', icon: BookOpen },
-  { id: 'deepread_extraction', label: '提取', icon: FileSearch },
-  { id: 'fusion', label: '融合', icon: Database },
+  { id: 'doc-processing', label: '文档处理', icon: BookOpen },
+  { id: 'deepread_extraction', label: 'AI提取', icon: FileSearch },
+  { id: 'fusion', label: '智能填表', icon: Database },
   { id: 'mine', label: '我的', icon: UserCircle2 },
 ];
 
@@ -309,10 +306,16 @@ export default function App() {
             <KnowledgeNexus />
           </div>
         );
-      case 'guide':
-        return <UserGuide onBackToDashboard={() => handleTabChange('dashboard')} />;
       case 'mine':
-        return <MobileProfilePage user={user} onNavigate={handleTabChange} onOpenAccountSecurity={() => setShowAccountSecurityModal(true)} onToggleTheme={toggleTheme} isDark={isDark} onLogout={handleLogout} />;
+        return (
+          <MobileProfilePage
+            user={user}
+            onOpenAccountSecurity={() => setShowAccountSecurityModal(true)}
+            onToggleTheme={toggleTheme}
+            isDark={isDark}
+            onLogout={handleLogout}
+          />
+        );
       default:
         return null;
     }
@@ -323,7 +326,7 @@ export default function App() {
       case 'dashboard':
         return <MobileDashboard user={user} onNavigate={handleTabChange} />;
       case 'doc-processing':
-        return <DocProcessingWorkbench />;
+        return <DocProcessingWorkbench onBack={() => handleTabChange('dashboard')} />;
       case 'deepread_extraction':
         if (!authBootstrapDone) {
           return (
@@ -361,10 +364,16 @@ export default function App() {
         return <FusionGrid />;
       case 'nexus':
         return <MobileDashboard user={user} onNavigate={handleTabChange} />;
-      case 'guide':
-        return <UserGuide onBackToDashboard={() => handleTabChange('dashboard')} />;
       case 'mine':
-        return <MobileProfilePage user={user} onNavigate={handleTabChange} onOpenAccountSecurity={() => setShowAccountSecurityModal(true)} onToggleTheme={toggleTheme} isDark={isDark} onLogout={handleLogout} />;
+        return (
+          <MobileProfilePage
+            user={user}
+            onOpenAccountSecurity={() => setShowAccountSecurityModal(true)}
+            onToggleTheme={toggleTheme}
+            isDark={isDark}
+            onLogout={handleLogout}
+          />
+        );
       default:
         return null;
     }
@@ -403,7 +412,7 @@ export default function App() {
       {isMobile ? (
         <div className="relative min-h-screen overflow-x-hidden">
           <div>{renderMobileContent()}</div>
-          {(
+          {activeTab !== 'doc-processing' && (
             <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-4px_24px_rgba(15,23,42,0.02)] backdrop-blur-2xl dark:border-white/[0.04] dark:bg-[#0B1120]/95 dark:shadow-none">
               <div className="mx-auto flex h-[56px] w-full max-w-md items-center justify-between px-2">
                 {MOBILE_BOTTOM_TABS.map((item) => {

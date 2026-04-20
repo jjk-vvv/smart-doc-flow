@@ -140,7 +140,8 @@ async def stream_workbench_operation(
                         prompt,
                         content_for_analysis,
                         context_messages,
-                        first_token_timeout_sec=interaction.ANALYSIS_FIRST_TOKEN_TIMEOUT_SEC,
+                        first_token_timeout_sec=settings.analysis_first_token_timeout_sec,
+                        hard_timeout_sec=settings.analysis_hard_timeout_sec,
                     ):
                         yield interaction._sse({"type": "chunk", "content": chunk})
                     yield interaction._stage_sse("completed")

@@ -13,7 +13,12 @@ from .response_planner import (
     is_strict_minimal_request,
     should_prefer_frontend_grounding,
 )
-from .intent_router import is_document_risk_review_question
+from .intent_router import (
+    is_action_preview_request,
+    is_document_risk_review_question,
+    is_temporal_comparison_question,
+    looks_like_generic_deictic_lookup,
+)
 from .text_utils import normalize_markdown_text
 
 
@@ -492,6 +497,14 @@ def should_short_circuit_with_frontend_snapshot(
         return False
     if looks_like_placeholder_answer(snapshot_answer):
         return False
+    if is_action_preview_request(question):
+        return False
+    if is_temporal_comparison_question(question):
+        return False
+    if looks_like_generic_deictic_lookup(question) and not _has_current_locked_object(extra_context):
+        return False
+    if is_field_provenance_question(question) and not _answer_has_provenance_clues(str(snapshot_answer or "")):
+        return False
     if is_conditional_row_lookup_question(question):
         lowered_snapshot = str(snapshot_answer or "").lower()
         if (
@@ -573,6 +586,304 @@ def extract_frontend_top_fields(raw_fields: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _has_current_locked_object(extra_context: Optional[Dict[str, Any]]) -> bool:
+    compact = normalize_frontend_context(extra_context)
+    if not compact:
+        return False
+    current_document = compact.get("current_document") if isinstance(compact.get("current_document"), dict) else {}
+    lock_candidates = [
+        current_document.get("current_locked_object"),
+        current_document.get("current_object_lock"),
+        compact.get("current_object_lock"),
+    ]
+    return any(isinstance(item, dict) and bool(item) for item in lock_candidates)
+
+
+def _answer_has_provenance_clues(answer: str) -> bool:
+    text = str(answer or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    markers = (
+        "来自",
+        "依据",
+        "证据",
+        "出处",
+        "来源",
+        "页",
+        "字段",
+        "source",
+        "provenance",
+        "evidence",
+        "page",
+    )
+    return any(marker in text for marker in markers) or any(marker in lowered for marker in markers)
+
+
+def _answer_requests_clarification(answer: str) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    markers = (
+        "请再告诉我",
+        "请告诉我",
+        "还不能确定",
+        "无法确定",
+        "需要你补充",
+        "需要先明确",
+        "which",
+        "clarify",
+        "please specify",
+    )
+    return any(marker in text for marker in markers) or "？" in text or "?" in text
+
+
+def _answer_mentions_preview_or_confirmation(answer: str) -> bool:
+    text = str(answer or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    markers = (
+        "预览",
+        "确认",
+        "执行前",
+        "执行这一步",
+        "preview",
+        "confirm",
+        "sql",
+        "```sql",
+    )
+    return any(marker in text for marker in markers) or any(marker in lowered for marker in markers)
+
+
+def _answer_has_limitation_signal(answer: str) -> bool:
+    text = str(answer or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    markers = (
+        "无法",
+        "不能",
+        "缺少",
+        "不足",
+        "不够",
+        "还不够",
+        "还缺",
+        "暂时",
+        "需要补",
+        "需要更多",
+        "missing",
+        "insufficient",
+        "not enough",
+        "need more",
+        "cannot",
+    )
+    return any(marker in text for marker in markers) or any(marker in lowered for marker in markers)
+
+
+def _answer_is_substantive_explanation(answer: str, matched_fields: List[Dict[str, Any]]) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    if _looks_like_plain_field_answer(text, matched_fields):
+        return False
+    if len(text) < 42:
+        return False
+    punctuation_count = sum(text.count(marker) for marker in ("，", "。", "；", "：", ",", ";", ":", "\n"))
+    if punctuation_count >= 1:
+        return True
+    return len(text.split()) >= 10
+
+
+def _answer_covers_temporal_comparison(question: str, answer: str) -> bool:
+    text = str(answer or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    if any(
+        marker in text
+        for marker in ("对比", "比较", "相比", "变化", "趋势", "同比", "环比", "增长", "下降", "无法比较", "不能比较")
+    ):
+        return True
+    if any(
+        marker in lowered
+        for marker in ("compare", "compared", "difference", "trend", "change", "cannot compare", "insufficient")
+    ):
+        return True
+    requested_years = sorted(set(re.findall(r"20\d{2}", str(question or ""))))
+    answer_years = sorted(set(re.findall(r"20\d{2}", text)))
+    if len(requested_years) >= 2 and len(answer_years) >= 2:
+        return True
+    if _answer_has_limitation_signal(text):
+        return True
+    if any(
+        marker in text
+        for marker in ("两个时间点", "两个年份", "多个时间点", "单点", "时点", "时间维度", "方向性判断", "精确结论")
+    ) and _answer_has_limitation_signal(text):
+        return True
+    if "不是" in text and any(marker in text for marker in ("单个字段值", "单一年份", "单点读数", "单点值")):
+        return True
+    return False
+
+
+def _looks_like_plain_field_answer(answer: str, matched_fields: List[Dict[str, Any]]) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return True
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", compact):
+        return True
+    for field in matched_fields[:3]:
+        candidate = re.sub(r"\s+", "", format_frontend_field_answer(field))
+        if candidate and compact == candidate:
+            return True
+    return False
+
+
+def _should_repair_provenance_answer(answer: str, matched_fields: List[Dict[str, Any]]) -> bool:
+    if _answer_has_provenance_clues(answer):
+        return False
+    if _looks_like_plain_field_answer(answer, matched_fields):
+        return True
+    return not _answer_is_substantive_explanation(answer, matched_fields)
+
+
+def _should_repair_temporal_answer(
+    *,
+    question: str,
+    answer: str,
+    matched_fields: List[Dict[str, Any]],
+) -> bool:
+    if _answer_covers_temporal_comparison(question, answer):
+        return False
+    if _looks_like_plain_field_answer(answer, matched_fields):
+        return True
+    requested_years = sorted(set(re.findall(r"20\d{2}", str(question or ""))))
+    answer_years = sorted(set(re.findall(r"20\d{2}", str(answer or ""))))
+    if len(requested_years) >= 2 and len(answer_years) >= 2:
+        return False
+    if _answer_is_substantive_explanation(answer, matched_fields):
+        return False
+    return True
+
+
+def build_frontend_deictic_clarification_answer() -> str:
+    return (
+        "我还不能确定你说的“这个值”具体指哪个字段或哪条记录。"
+        "请再告诉我是哪个字段、哪一页，或先点选具体对象，我再继续定位。"
+    )
+
+
+def build_frontend_temporal_comparison_guard_answer(
+    *,
+    question: str,
+    file_name: str,
+    summary: str,
+    top_fields: List[Dict[str, Any]],
+    table_column_headers: List[str],
+    figure_key_points: List[str],
+) -> str:
+    gap_answer = build_frontend_temporal_gap_answer(
+        question=question,
+        file_name=file_name,
+        summary=summary,
+        top_fields=top_fields,
+        table_column_headers=table_column_headers,
+        figure_key_points=figure_key_points,
+    )
+    if gap_answer:
+        return gap_answer
+    available_years, has_quarter = _collect_time_hints(
+        file_name=file_name,
+        summary=summary,
+        top_fields=top_fields,
+        table_column_headers=table_column_headers,
+        figure_key_points=figure_key_points,
+    )
+    if len(available_years) <= 1 and not has_quarter:
+        if available_years:
+            return (
+                f"当前快照里更像只锁定了 {available_years[0]} 年这一组信息，"
+                "还不足以直接回答你问的时间对比或变化趋势。"
+            )
+        return "当前快照里还没有足够的时间维度证据，所以我不能直接给出趋势或对比结论。"
+    return "这个问题需要基于多个时间点做比较，不能只用单个字段值直接作答。"
+
+
+def enforce_answer_with_frontend_contracts(
+    *,
+    user_message: str,
+    answer: str,
+    extra_context: Optional[Dict[str, Any]],
+    has_action_preview: bool = False,
+) -> str:
+    cleaned_answer = cleanup_answer_text(answer)
+    compact = normalize_frontend_context(extra_context)
+    if not compact:
+        return cleaned_answer
+    current_document = compact.get("current_document") if isinstance(compact.get("current_document"), dict) else {}
+    if not current_document:
+        return cleaned_answer
+
+    question = str(user_message or "").strip()
+    file_name = trim_text(current_document.get("file_name"), 200)
+    summary = trim_text(current_document.get("summary"), 800)
+    top_fields = extract_frontend_top_fields(current_document.get("top_fields"))
+    table_column_headers = (
+        [str(item).strip() for item in current_document.get("table_column_headers", [])[:8] if str(item or "").strip()]
+        if isinstance(current_document.get("table_column_headers"), list)
+        else []
+    )
+    figure_key_points = (
+        [str(item).strip() for item in current_document.get("figure_key_points", [])[:4] if str(item or "").strip()]
+        if isinstance(current_document.get("figure_key_points"), list)
+        else []
+    )
+    matched_fields = match_frontend_fields(question, top_fields)
+
+    if looks_like_generic_deictic_lookup(question) and not _has_current_locked_object(extra_context):
+        if _answer_requests_clarification(cleaned_answer):
+            return cleaned_answer
+        return build_frontend_deictic_clarification_answer()
+
+    if is_field_provenance_question(question):
+        if not _should_repair_provenance_answer(cleaned_answer, matched_fields):
+            return cleaned_answer
+        if matched_fields:
+            repaired = build_frontend_field_provenance_answer(
+                question=question,
+                matched_fields=matched_fields,
+                table_column_headers=table_column_headers,
+                figure_key_points=figure_key_points,
+            )
+            if repaired:
+                return repaired
+
+    if is_temporal_comparison_question(question):
+        if not _should_repair_temporal_answer(
+            question=question,
+            answer=cleaned_answer,
+            matched_fields=matched_fields,
+        ):
+            return cleaned_answer
+        return build_frontend_temporal_comparison_guard_answer(
+            question=question,
+            file_name=file_name,
+            summary=summary,
+            top_fields=top_fields,
+            table_column_headers=table_column_headers,
+            figure_key_points=figure_key_points,
+        )
+
+    if is_action_preview_request(question) and not has_action_preview:
+        if _answer_mentions_preview_or_confirmation(cleaned_answer):
+            return cleaned_answer
+        if _looks_like_plain_field_answer(cleaned_answer, matched_fields):
+            return "这一步更适合先生成待确认的动作预览，而不是直接把字段值当成最终结果。"
+
+    return cleaned_answer
+
+
 def frontend_field_match_score(question: str, field: Dict[str, Any]) -> int:
     normalized_question = re.sub(r"\s+", "", str(question or ""))
     label = re.sub(r"\s+", "", str(field.get("label") or ""))
@@ -622,8 +933,14 @@ def match_frontend_fields(question: str, fields: List[Dict[str, Any]], *, limit:
 
 def looks_like_exact_field_question(question: str) -> bool:
     text = str(question or "").strip()
-    markers = ("是什么", "是多少", "哪一年", "多少", "数值", "值", "标题", "文件名")
-    return any(marker in text for marker in markers)
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("what is", "how much", "which year", "title", "file name")):
+        return True
+    if any(marker in text for marker in ("是什么", "是啥", "是多少", "为多少", "哪一年", "多少", "数值", "标题", "文件名")):
+        return True
+    return bool(
+        re.search(r"(?:值|value)\s*(?:是|为)?\s*(?:什么|多少|what|how much)", text, flags=re.IGNORECASE)
+    )
 
 
 def is_conditional_row_lookup_question(question: str) -> bool:
@@ -1829,6 +2146,8 @@ def format_frontend_multi_field_answer(
     if (
         primary_field_normalized
         and looks_like_exact_field_question(question)
+        and not is_temporal_comparison_question(question)
+        and not is_action_preview_request(question)
         and not is_broad_document_question(question)
     ):
         if is_strict_minimal_request(question):
@@ -1959,7 +2278,13 @@ def build_frontend_snapshot_answer(*, user_message: str, extra_context: Optional
             top_fields=top_fields,
             matched_fields=matched_fields,
         )
-    if matched_field and looks_like_exact_field_question(question) and not conditional_row_lookup:
+    if (
+        matched_field
+        and looks_like_exact_field_question(question)
+        and not is_temporal_comparison_question(question)
+        and not is_action_preview_request(question)
+        and not conditional_row_lookup
+    ):
         if is_strict_minimal_request(question):
             return format_frontend_field_value(question, matched_field)
         return format_frontend_field_answer(matched_field)
@@ -1967,6 +2292,7 @@ def build_frontend_snapshot_answer(*, user_message: str, extra_context: Optional
     if matched_field and should_short_circuit_with_frontend_snapshot(
         user_message=question,
         snapshot_answer=matched_field.get("value", ""),
+        extra_context=extra_context,
     ):
         return format_frontend_field_value(question, matched_field)
 
@@ -2118,7 +2444,16 @@ def ground_answer_with_frontend_context(
     ):
         return snapshot_answer
     if not cleaned_answer or looks_like_placeholder_answer(cleaned_answer):
-        return snapshot_answer
+        if (
+            is_broad_document_question(user_message)
+            or is_summary_with_field_inventory_question(user_message)
+            or is_document_risk_review_question(user_message)
+            or is_card_field_selection_question(user_message)
+            or is_entity_extraction_question(user_message)
+            or is_field_provenance_question(user_message)
+        ):
+            return snapshot_answer
+        return cleaned_answer
     return cleaned_answer
 
 

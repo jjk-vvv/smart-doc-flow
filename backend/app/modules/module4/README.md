@@ -4,11 +4,11 @@ Global knowledge graph and risk intelligence service.
 
 ## Quick Start
 
-1. Create the preferred repo-root virtual environment and install dependencies:
+1. Create the preferred repo-root unified virtual environment and install dependencies:
 
 ```powershell
-python -m venv D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311
-D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311\Scripts\python.exe -m pip install -r backend/app/modules/module4/requirements.txt
+python -m venv D:\smart_doc_flow\smart-doc-flow\.venv
+D:\smart_doc_flow\smart-doc-flow\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
 ```
 
 Module 4 GraphRAG execution is aligned to the project `ragtest` baseline and now expects:
@@ -28,7 +28,7 @@ Module 4 now starts in strict database mode. If PostgreSQL is unavailable, start
 `MODULE4_DB_CONNECT_TIMEOUT_SEC` controls how quickly startup reports the connection failure.
 `MODULE4_ALERT_LOW_CONF_THRESHOLD` controls the built-in low-confidence rule threshold when default rules are seeded.
 Leave `MODULE4_GRAPHRAG_PYTHON_BIN=python` unless you deliberately need a custom runtime.
-When the value is generic, Module 4 now resolves to the repo-root `D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311`.
+When the value is generic, Module 4 now resolves to the repo-root `D:\smart_doc_flow\smart-doc-flow\.venv`.
 The historical `backend/module4/.venv` runtime has been removed from the project layout.
 Legacy refactor indexing mode has been physically removed; Module 4 now runs GraphRAG pipeline only.
 
@@ -69,12 +69,12 @@ Graph query runtime is now artifact-only (GraphRAG `create_final_*` outputs) wit
 npm run dev:module4
 ```
 
-`npm run dev:module4` now fixed-prefers `D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311` for the Module 4 runtime.
+`npm run dev:module4` now fixed-prefers `D:\smart_doc_flow\smart-doc-flow\.venv` for the Module 4 runtime.
 
 If you want to override the interpreter explicitly:
 
 ```powershell
-$env:MODULE4_PYTHON="D:\smart_doc_flow\smart-doc-flow\.venv-module4-py311\Scripts\python.exe"
+$env:MODULE4_PYTHON="D:\smart_doc_flow\smart-doc-flow\.venv\Scripts\python.exe"
 npm run dev:module4
 ```
 
@@ -156,6 +156,16 @@ Rules are stored in `module4.rules` and are applied during `ingest`.
 - In-flight ingest / rebuild jobs are re-queued on graceful shutdown so they can be recovered on the next startup when PostgreSQL is available.
 - `GET /module4/healthz` also reports GraphRAG runtime readiness. Use `probe=deep` when you want live OneAPI and Neo4j reachability checks.
 - Tenant-scoped APIs can resolve tenant from request body/query or the `X-Tenant-Id` header.
+
+## Public Case Graph Library
+
+Module 4 can expose a small set of public read-only case graphs to every authenticated user without weakening tenant isolation.
+
+- Registry file: `backend/app/modules/module4/resources/public_case_graphs.json`
+- Optional override: `MODULE4_PUBLIC_CASE_REGISTRY_PATH`
+- Each case entry points to an existing source graph by `source_tenant_id + source_file_hash`
+- Public case list items are exposed with synthetic IDs such as `public_case::<case_id>`
+- Graph rendering, node detail, and GraphRAG query reuse the source graph internally, but the public case remains read-only in the UI/API surface
 
 ## Non-PDF Alignment Eval
 
