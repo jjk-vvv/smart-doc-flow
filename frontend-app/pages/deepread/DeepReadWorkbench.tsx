@@ -1861,7 +1861,12 @@ type ExtractFetchFallbackOptions = {
 const getViteExtractBase = (): string => {
     try {
         const envObj = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-        return String(envObj?.VITE_MODULE2_API_BASE || envObj?.VITE_EXTRACT_API_BASE || '').trim();
+        return String(
+            envObj?.VITE_MODULE2_API_BASE
+            || envObj?.VITE_EXTRACT_API_BASE
+            || envObj?.VITE_BACKEND_ENTRY_URL
+            || '',
+        ).trim();
     } catch {
         return '';
     }

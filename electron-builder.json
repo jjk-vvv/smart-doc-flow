@@ -1,6 +1,6 @@
 {
   "appId": "com.smartdocflow.desktop",
-  "productName": "Smart Doc Flow",
+  "productName": "SmartDocFlow",
   "asar": true,
   "icon": "icon.png",
   "directories": {
@@ -36,6 +36,7 @@
         "!README.md",
         "!ai-assistant/**",
         "!auth/.env.example",
+        "!app/modules/**/.env.example",
         "!auth/package-lock.json",
         "!auth/README.md",
         "!auth/auth.runtime.log",
@@ -84,7 +85,7 @@
       "dir",
       "nsis"
     ],
-    "artifactName": "${productName}-${version}-${arch}.${ext}"
+    "artifactName": "SmartDocFlow.${ext}"
   },
   "nsis": {
     "oneClick": false,

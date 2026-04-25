@@ -17,6 +17,7 @@ const managedBackendEnabled = !['0', 'false', 'no', 'off'].includes(
   String(process.env.SMART_DOC_FLOW_ELECTRON_MANAGED_BACKEND || '1').trim().toLowerCase(),
 );
 const gatewayReadyScope = String(process.env.SMART_DOC_FLOW_ELECTRON_READY_SCOPE || 'all').trim() || 'all';
+const gatewayReadyUrl = `${gatewayUrl}/gateway/ready?scope=${encodeURIComponent(gatewayReadyScope)}`;
 const gatewayWaitTimeoutMs = Math.max(10_000, Number(process.env.SMART_DOC_FLOW_ELECTRON_WAIT_TIMEOUT_MS || 180_000));
 const gatewayWaitPollIntervalMs = Math.max(
   250,
@@ -27,6 +28,13 @@ const appSourceDir = app.getAppPath();
 const appRootDir = app.isPackaged ? process.resourcesPath : appSourceDir;
 const windowIconPath = path.join(appSourceDir, 'electron', 'icon.png');
 const packagedDataRoot = app.isPackaged ? path.join(app.getPath('userData'), 'runtime-data') : '';
+const defaultDownloadBehavior = String(process.env.SMART_DOC_FLOW_ELECTRON_DOWNLOAD_BEHAVIOR || 'managed')
+  .trim()
+  .toLowerCase();
+const sanitizedDownloadBehavior = ['managed', 'prompt'].includes(defaultDownloadBehavior)
+  ? defaultDownloadBehavior
+  : 'managed';
+const downloadDirOverride = String(process.env.SMART_DOC_FLOW_ELECTRON_DOWNLOAD_DIR || '').trim();
 const electronLogFile = (() => {
   const configured = String(process.env.SMART_DOC_FLOW_ELECTRON_LOG_FILE || '').trim();
   if (configured) {
@@ -42,6 +50,7 @@ const electronLogFile = (() => {
 let mainWindow = null;
 let backendProcess = null;
 let quitting = false;
+let installedDownloadSession = null;
 
 const writeElectronLog = (...parts) => {
   try {
@@ -167,6 +176,151 @@ const loadWindowHtml = async (window, message, detail = '') => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const ensureDirectory = (targetPath) => {
+  fs.mkdirSync(targetPath, { recursive: true });
+  return targetPath;
+};
+
+const sanitizeDownloadFilename = (candidate) => {
+  const raw = String(candidate || '').trim();
+  const fallback = 'download';
+  const normalized = (raw || fallback)
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .trim();
+  return normalized || fallback;
+};
+
+const splitExtension = (filename) => {
+  const ext = path.extname(filename);
+  if (!ext || ext === filename) {
+    return { name: filename, ext: '' };
+  }
+  return {
+    name: filename.slice(0, -ext.length) || filename,
+    ext,
+  };
+};
+
+const resolveDefaultDownloadRoot = () => {
+  if (downloadDirOverride) {
+    return path.resolve(downloadDirOverride);
+  }
+  const downloadsDir = app.getPath('downloads');
+  return path.join(downloadsDir, 'Smart Doc Flow');
+};
+
+const resolveUniqueDownloadPath = (rootDir, filename) => {
+  const safeFilename = sanitizeDownloadFilename(filename);
+  const { name, ext } = splitExtension(safeFilename);
+  let attempt = 0;
+  let candidatePath = path.join(rootDir, safeFilename);
+
+  while (fs.existsSync(candidatePath)) {
+    attempt += 1;
+    candidatePath = path.join(rootDir, `${name} (${attempt})${ext}`);
+  }
+
+  return candidatePath;
+};
+
+const selectManagedDownloadPath = (filename) => {
+  const rootDir = ensureDirectory(resolveDefaultDownloadRoot());
+  return resolveUniqueDownloadPath(rootDir, filename);
+};
+
+const buildDownloadDialogOptions = (filename) => {
+  const defaultPath = selectManagedDownloadPath(filename);
+  return {
+    title: 'Save Downloaded File',
+    defaultPath,
+    buttonLabel: 'Save',
+  };
+};
+
+const resolveDownloadSavePath = (filename, webContents) => {
+  if (sanitizedDownloadBehavior === 'prompt') {
+    const ownerWindow = BrowserWindow.fromWebContents(webContents) || mainWindow || undefined;
+    const selectedPath = dialog.showSaveDialogSync(ownerWindow, buildDownloadDialogOptions(filename));
+    return selectedPath ? path.resolve(selectedPath) : '';
+  }
+  return selectManagedDownloadPath(filename);
+};
+
+const installDownloadController = (targetSession) => {
+  if (!targetSession || installedDownloadSession === targetSession) {
+    return;
+  }
+
+  installedDownloadSession = targetSession;
+  targetSession.on('will-download', (event, item, webContents) => {
+    const downloadUrl = item.getURL();
+    const downloadFilename = sanitizeDownloadFilename(item.getFilename());
+    let savePath = '';
+
+    try {
+      savePath = resolveDownloadSavePath(downloadFilename, webContents);
+      if (!savePath) {
+        event.preventDefault();
+        item.cancel();
+        writeElectronLog('downloadCancelledByUser', {
+          url: downloadUrl,
+          filename: downloadFilename,
+          behavior: sanitizedDownloadBehavior,
+        });
+        return;
+      }
+      ensureDirectory(path.dirname(savePath));
+      item.setSavePath(savePath);
+      writeElectronLog('downloadStarted', {
+        url: downloadUrl,
+        filename: downloadFilename,
+        savePath,
+        behavior: sanitizedDownloadBehavior,
+      });
+    } catch (error) {
+      writeElectronLog('downloadSetupFailed', {
+        url: downloadUrl,
+        filename: downloadFilename,
+        error: error instanceof Error ? error.stack || error.message : String(error),
+      });
+      return;
+    }
+
+    item.once('done', (_event, state) => {
+      if (state === 'completed') {
+        writeElectronLog('downloadCompleted', {
+          url: downloadUrl,
+          filename: downloadFilename,
+          savePath,
+          totalBytes: item.getTotalBytes(),
+        });
+        return;
+      }
+
+      writeElectronLog('downloadFailed', {
+        url: downloadUrl,
+        filename: downloadFilename,
+        savePath,
+        state,
+      });
+
+      if (!quitting) {
+        dialog.showErrorBox(
+          'Smart Doc Flow Download Failed',
+          `The download for "${downloadFilename}" did not finish (state: ${state}).`,
+        );
+      }
+    });
+  });
+
+  writeElectronLog('downloadControllerInstalled', {
+    behavior: sanitizedDownloadBehavior,
+    downloadRoot: sanitizedDownloadBehavior === 'managed' ? resolveDefaultDownloadRoot() : '(prompt)',
+  });
+};
+
 const waitForHttpOk = async (url, { timeoutMs, pollIntervalMs, validator } = {}) => {
   const startedAt = Date.now();
   const effectiveTimeoutMs = Math.max(2_000, Number(timeoutMs || gatewayWaitTimeoutMs));
@@ -191,6 +345,22 @@ const waitForHttpOk = async (url, { timeoutMs, pollIntervalMs, validator } = {})
   }
 
   throw new Error(`Timed out waiting for ${url}${lastError ? `: ${lastError}` : ''}`);
+};
+
+const isGatewayReady = async ({ timeoutMs = 3_000, pollIntervalMs = 300 } = {}) => {
+  try {
+    await waitForHttpOk(
+      gatewayReadyUrl,
+      {
+        timeoutMs,
+        pollIntervalMs,
+        validator: (payload) => Boolean(payload && payload.ok),
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 const spawnManagedBackend = () => {
@@ -223,11 +393,16 @@ const spawnManagedBackend = () => {
     windowsHide: true,
   });
 
-  backendProcess.on('exit', (code, signal) => {
+  backendProcess.on('exit', async (code, signal) => {
     const exitInfo = typeof code === 'number' ? `code ${code}` : `signal ${signal}`;
     writeElectronLog('managedBackendExit', { code, signal, exitInfo });
     backendProcess = null;
     if (quitting) {
+      return;
+    }
+    const gatewayStillReady = await isGatewayReady({ timeoutMs: 4_000, pollIntervalMs: 300 });
+    if (gatewayStillReady) {
+      writeElectronLog('managedBackendExitIgnoredGatewayStillReady', { code, signal, exitInfo, gatewayReadyUrl });
       return;
     }
     const detail = `本地后端已经退出：${exitInfo}\n\n请检查 FastAPI 启动配置、Module2 sidecar 和日志后再重试。`;
@@ -270,6 +445,7 @@ const createMainWindow = async () => {
       sandbox: false,
     },
   });
+  installDownloadController(mainWindow.webContents.session);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     writeElectronLog('openExternal', { url });
@@ -303,7 +479,12 @@ const createMainWindow = async () => {
 const bootRenderer = async () => {
   writeElectronLog('bootRendererStart', { managedBackendEnabled, gatewayUrl, rendererUrl, gatewayReadyScope });
   if (managedBackendEnabled) {
-    spawnManagedBackend();
+    const gatewayAlreadyReady = await isGatewayReady({ timeoutMs: 2_500, pollIntervalMs: 250 });
+    if (gatewayAlreadyReady) {
+      writeElectronLog('bootRendererReuseExistingGateway', { gatewayUrl, gatewayReadyUrl });
+    } else {
+      spawnManagedBackend();
+    }
   }
 
   await loadWindowHtml(
@@ -312,7 +493,7 @@ const bootRenderer = async () => {
     `正在等待网关就绪：${gatewayUrl}\n\n就绪范围：${gatewayReadyScope}`,
   );
   await waitForHttpOk(
-    `${gatewayUrl}/gateway/ready?scope=${encodeURIComponent(gatewayReadyScope)}`,
+    gatewayReadyUrl,
     {
       timeoutMs: gatewayWaitTimeoutMs,
       pollIntervalMs: gatewayWaitPollIntervalMs,
@@ -348,6 +529,8 @@ writeElectronLog('electronMainLoaded', {
   electronLogFile,
   windowIconPath,
   packagedDataRoot,
+  downloadBehavior: sanitizedDownloadBehavior,
+  downloadDirOverride: downloadDirOverride || '',
 });
 
 app.whenReady().then(async () => {

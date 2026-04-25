@@ -302,17 +302,6 @@ const getTaskOutputName = (task: {
 const getTaskName = (index: number, total: number): string =>
   `填充任务${total - index}`;
 
-const calculateRealDuration = (start: string, end?: string | null): string => {
-  if (!end) return "";
-  const startDate = new Date(start);
-  const endDate = new Date(end);
-  const diffInSeconds = Math.max(
-    1,
-    Math.round((endDate.getTime() - startDate.getTime()) / 1000),
-  );
-  return `${diffInSeconds}s`;
-};
-
 const getTaskStatusDot = (status: TaskStatus) => {
   switch (status) {
     case "done":
@@ -2752,20 +2741,11 @@ export const FusionGrid: React.FC = () => {
                               >
                                 {getStatusText(task.status)}
                               </span>
-                              {task.status === "done" && task.completedAt && (
-                                <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-1">
-                                  耗时{" "}
-                                  {calculateRealDuration(
-                                    task.createdAt,
-                                    task.completedAt,
-                                  )}
-                                </span>
-                              )}
                             </div>
                           </div>
 
                           {/* 右侧：操作按钮及时间 */}
-                          <div className="flex flex-col items-end gap-1 shrink-0">
+                          <div className="flex shrink-0 items-start">
                             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                               {task.status === "running" ? (
                                 <button
@@ -2837,9 +2817,6 @@ export const FusionGrid: React.FC = () => {
                               >
                                 <Trash2 size={14} />
                               </button>
-                            </div>
-                            <div className="text-[10px] text-slate-400 dark:text-slate-500">
-                              {task.createdAt}
                             </div>
                           </div>
                         </div>

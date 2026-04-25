@@ -75,6 +75,7 @@ type AuthHealthPayload = {
 
 const AUTH_HEALTH_PATH = '/api/auth/health';
 const AUTH_SESSION_HINT_KEY = 'smart_doc_flow.auth.session_hint';
+const AUTH_BACKEND_FALLBACKS_KEY = 'smart_doc_flow.backend_entry_fallbacks';
 
 let authApiBasePromise: Promise<string> | null = null;
 
@@ -96,7 +97,28 @@ const writeSessionHint = (value: boolean): void => {
   }
 };
 
+const parseBaseCandidates = (raw: string): string[] =>
+  String(raw || '')
+    .split(/[,\n;]/)
+    .map((item) => resolveApiBase(item))
+    .filter(Boolean);
+
+const readStoredBackendFallbacks = (): string[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    return parseBaseCandidates(window.localStorage.getItem(AUTH_BACKEND_FALLBACKS_KEY) || '');
+  } catch {
+    return [];
+  }
+};
+
 const buildAuthApiBaseCandidates = (): string[] => {
+  const buildMode = String(import.meta.env.MODE || '').trim().toLowerCase();
+  const isNativeMode = buildMode === 'native';
+  const explicitBase = resolveApiBase(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
+  const envFallbackBases = parseBaseCandidates(import.meta.env.VITE_BACKEND_ENTRY_URL_FALLBACKS || '');
+  const storedFallbackBases = readStoredBackendFallbacks();
+  const hasConfiguredBase = Boolean(explicitBase) || envFallbackBases.length > 0 || storedFallbackBases.length > 0;
   const candidates: string[] = [];
   const push = (value = '') => {
     const normalized = resolveApiBase(value);
@@ -105,24 +127,54 @@ const buildAuthApiBaseCandidates = (): string[] => {
     }
   };
 
-  push('');
-  push(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
+  if (explicitBase) {
+    push(explicitBase);
+  }
+  envFallbackBases.forEach((item) => push(item));
+  storedFallbackBases.forEach((item) => push(item));
+  // Native builds should not silently fall back to relative /api routes, because
+  // that can route to WebView local html instead of the gateway.
+  if (!isNativeMode || !hasConfiguredBase) {
+    push('');
+  }
+
+  if (candidates.length === 0) {
+    push('');
+  }
 
   return candidates;
 };
 
+const parseJsonResponse = async <T>(response: Response, path: string, url: string): Promise<T> => {
+  const raw = await response.text();
+  const payload = String(raw || '').trim();
+  if (!payload) {
+    throw new Error(`Empty response body from auth endpoint: ${path} (${url})`);
+  }
+
+  try {
+    return JSON.parse(payload) as T;
+  } catch {
+    const preview = payload.slice(0, 120).replace(/\s+/g, ' ');
+    throw new Error(
+      `Non-JSON response from auth endpoint: ${path} (${url}). Preview: ${preview}`,
+    );
+  }
+};
+
 const detectAuthApiBase = async (): Promise<string> => {
   const candidates = buildAuthApiBaseCandidates();
+  const explicitBase = resolveApiBase(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
   let firstReachableBase = '';
 
   for (const candidate of candidates) {
     try {
-      const { response } = await requestRaw(AUTH_HEALTH_PATH, { method: 'GET' }, candidate);
+      const { response, url } = await requestRaw(AUTH_HEALTH_PATH, { method: 'GET' }, candidate);
       if (!response.ok) {
         continue;
       }
 
-      const payload = (await response.json()) as AuthHealthPayload;
+      const payload = await parseJsonResponse<AuthHealthPayload>(response, AUTH_HEALTH_PATH, url);
       if (!firstReachableBase) {
         firstReachableBase = candidate;
       }
@@ -136,6 +188,9 @@ const detectAuthApiBase = async (): Promise<string> => {
     }
   }
 
+  if (explicitBase) {
+    return explicitBase;
+  }
   return firstReachableBase;
 };
 
@@ -148,9 +203,9 @@ const getAuthApiBase = async (): Promise<string> => {
 
 const requestAuthJson = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
   const preferredBase = await getAuthApiBase();
-  const { response } = await requestRaw(path, init, preferredBase);
+  const { response, url } = await requestRaw(path, init, preferredBase);
   await ensureOk(response);
-  return (await response.json()) as T;
+  return await parseJsonResponse<T>(response, path, url);
 };
 
 const requestCurrentUserAtBase = async (preferredBase = ''): Promise<AuthUserPayload | null> => {

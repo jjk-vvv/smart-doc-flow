@@ -93,6 +93,16 @@ frontend/.env.local
 apps/mobile-app/.expo/
 apps/mobile-app/dist/
 
+# Frontend Android local toolchain/cache (machine-specific)
+frontend-app/android-sdk/
+frontend-app/android/.gradle/
+frontend-app/android/.kotlin/
+frontend-app/android/build/
+frontend-app/android/local.properties
+frontend-app/android/capacitor-cordova-android-plugins/
+frontend-app/android/app/build/
+frontend-app/android/app/src/main/assets/public/
+
 # Exclude benchmark samples and local docs
 cts15-selected_ancillary_compounds-r-final-rev.pdf
 中华人民共和国2024年国民经济和社会发展统计公报.pdf
@@ -141,6 +151,9 @@ datasets/**/case_repo*/
 # Dataset policy: keep only curated PDF fixture for e2e; exclude fragmented PDF corpus
 datasets/PDF/**/*.pdf
 !datasets/PDF/Choppin, Gregory, et al. Radiochemistry and nuclear chemistry. Academic Press, 2013/Foreword to the 4th Edition.pdf
+
+# Knowledge graph demo policy: keep curated 3 public sample graphs manifest
+!backend/app/modules/module4/resources/public_case_graphs.json
 
 # Exclude specific documents
 数据库操作步骤优化方案.md

@@ -34,3 +34,10 @@ def resolve_frontend_dist_dir(runtime_root: Path | None = None) -> Path:
         return Path(raw_value).expanduser().resolve()
     return (runtime / "frontend" / "dist").resolve()
 
+
+def resolve_frontend_app_dist_dir(runtime_root: Path | None = None) -> Path:
+    runtime = runtime_root or resolve_runtime_root_dir()
+    raw_value = str(os.getenv("GATEWAY_FRONTEND_APP_DIST_DIR", "") or "").strip()
+    if raw_value:
+        return Path(raw_value).expanduser().resolve()
+    return (runtime / "frontend-app" / "dist").resolve()

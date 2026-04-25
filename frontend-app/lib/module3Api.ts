@@ -223,24 +223,108 @@ export type Module3ExcelSaveRequest = {
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
 
-const resolveModule3BaseUrl = (): string => {
-  const envBase =
-    typeof import.meta !== "undefined"
-      ? String(import.meta.env?.VITE_MODULE3_API_BASE ?? "").trim()
-      : "";
-  if (envBase) return trimTrailingSlash(envBase);
-  return "/module3";
+const parseBaseCandidates = (raw: string): string[] =>
+  String(raw || "")
+    .split(/[,\n;]/)
+    .map((item) => trimTrailingSlash(String(item || "").trim()))
+    .filter(Boolean);
+
+const readStoredBackendFallbacks = (): string[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    return parseBaseCandidates(
+      window.localStorage.getItem("smart_doc_flow.backend_entry_fallbacks") || "",
+    );
+  } catch {
+    return [];
+  }
 };
 
-const MODULE3_BASE_URL = resolveModule3BaseUrl();
+const resolveModule3BaseCandidates = (): string[] => {
+  const module3EnvBase =
+    typeof import.meta !== "undefined"
+      ? trimTrailingSlash(String(import.meta.env?.VITE_MODULE3_API_BASE ?? "").trim())
+      : "";
+  const backendEntry =
+    typeof import.meta !== "undefined"
+      ? trimTrailingSlash(String(import.meta.env?.VITE_BACKEND_ENTRY_URL ?? "").trim())
+      : "";
+  const envFallbacks =
+    typeof import.meta !== "undefined"
+      ? parseBaseCandidates(String(import.meta.env?.VITE_BACKEND_ENTRY_URL_FALLBACKS ?? ""))
+      : [];
+  const storedFallbacks = readStoredBackendFallbacks();
+  const buildMode =
+    typeof import.meta !== "undefined"
+      ? String(import.meta.env?.MODE ?? "").trim().toLowerCase()
+      : "";
+  const isNativeMode = buildMode === "native";
+  const hasConfiguredBase = Boolean(module3EnvBase || backendEntry || envFallbacks.length || storedFallbacks.length);
+  const candidates: string[] = [];
+  const push = (value: string) => {
+    const normalized = trimTrailingSlash(String(value || "").trim());
+    if (!normalized) return;
+    if (!candidates.includes(normalized)) {
+      candidates.push(normalized);
+    }
+  };
 
-const module3Url = (path: string): string => `${MODULE3_BASE_URL}${path}`;
+  if (module3EnvBase) {
+    push(module3EnvBase);
+  }
+  if (backendEntry) {
+    push(`${backendEntry}/module3`);
+  }
+  envFallbacks.forEach((base) => push(`${base}/module3`));
+  storedFallbacks.forEach((base) => push(`${base}/module3`));
+  if (!isNativeMode || !hasConfiguredBase) {
+    push("/module3");
+  }
+  if (candidates.length === 0) {
+    push("/module3");
+  }
+  return candidates;
+};
 
-const module3Fetch = (path: string, init: RequestInit = {}): Promise<Response> =>
-  fetch(module3Url(path), {
-    credentials: "include",
-    ...init,
-  });
+const module3Url = (path: string): string => `${resolveModule3BaseCandidates()[0]}${path}`;
+
+const shouldRetryByStatus = (status: number): boolean =>
+  status === 401 ||
+  status === 403 ||
+  status === 404 ||
+  status === 410 ||
+  status === 502 ||
+  status === 503 ||
+  status === 504;
+
+const module3Fetch = async (path: string, init: RequestInit = {}): Promise<Response> => {
+  const candidates = resolveModule3BaseCandidates();
+  let lastResponse: Response | null = null;
+  let lastError: unknown = null;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const isLast = index === candidates.length - 1;
+    const base = candidates[index];
+    try {
+      const response = await fetch(`${base}${path}`, {
+        credentials: "include",
+        ...init,
+      });
+      lastResponse = response;
+      if (response.ok || isLast || !shouldRetryByStatus(response.status)) {
+        return response;
+      }
+    } catch (error) {
+      lastError = error;
+      if (isLast) {
+        throw error;
+      }
+    }
+  }
+  if (lastResponse) {
+    return lastResponse;
+  }
+  throw lastError instanceof Error ? lastError : new Error("Failed to fetch module3 API");
+};
 
 const describeDetailItem = (value: unknown): string => {
   if (!value || typeof value !== "object") return "请求格式错误";

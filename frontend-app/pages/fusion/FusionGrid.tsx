@@ -46,6 +46,10 @@ import {
   type FusionGridTemplateRecord,
 } from "../../lib/fusionGridStore";
 import { getCurrentUser } from "../../shared/api/auth";
+import {
+  describeMobileDownloadResult,
+  downloadUrlToMobileDevice,
+} from "../../shared/mobileDownload";
 import { Module3ExcelPreview } from "./Module3ExcelPreview";
 import { Module3WordPreview } from "./Module3WordPreview";
 import excelIconUrl from "../../assets/xlsx.png";
@@ -847,6 +851,21 @@ export const FusionGrid: React.FC = () => {
     }
   };
 
+  const handleDownloadTask = async (task: FusionGridTaskRecord) => {
+    try {
+      setErrorMessage("");
+      const suggestedName = getTaskOutputName(task) || `run_${task.id}.bin`;
+      const result = await downloadUrlToMobileDevice({
+        url: module3RunDownloadUrl(task.id),
+        fileName: suggestedName,
+        moduleName: "module3",
+      });
+      setInfoMessage(describeMobileDownloadResult(result));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "下载失败");
+    }
+  };
+
   const stats = {
     total: tasks.length,
     done: tasks.filter((item) => item.status === "done").length,
@@ -1354,9 +1373,7 @@ export const FusionGrid: React.FC = () => {
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                window.location.assign(
-                                  module3RunDownloadUrl(task.id),
-                                );
+                                void handleDownloadTask(task);
                               }}
                               className="inline-flex h-[32px] items-center gap-1.5 rounded-full bg-emerald-50 px-3.5 text-xs font-bold text-emerald-600 transition-colors active:bg-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-400 dark:active:bg-emerald-500/20"
                               aria-label="下载结果"

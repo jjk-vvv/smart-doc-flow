@@ -23,6 +23,10 @@ import {
   subscribeRecentProcessingActivities,
   type RecentProcessingActivity,
 } from '../../shared/state/recentProcessingActivities';
+import WordIconImage from '../../assets/WORD.png';
+import ExcelIconImage from '../../assets/xlsx.png';
+import PdfIconImage from '../../assets/pdf.png';
+import TxtIconImage from '../../assets/txt.png';
 
 type MobileDashboardAction = 'deepread_extraction' | 'fusion' | 'doc-processing';
 
@@ -59,15 +63,15 @@ const averageConfidence = (documents: ExtractionDocument[]): number => {
 const getRecentActivityIconSrc = (activity: RecentProcessingActivity): string => {
   switch (activity.iconKind) {
     case 'word':
-      return '/assets/WORD.png';
+      return WordIconImage;
     case 'excel':
-      return '/assets/xlsx.png';
+      return ExcelIconImage;
     case 'pdf':
-      return '/assets/pdf.png';
+      return PdfIconImage;
     case 'text':
-      return '/assets/txt.png';
+      return TxtIconImage;
     default:
-      return '/assets/txt.png';
+      return TxtIconImage;
   }
 };
 

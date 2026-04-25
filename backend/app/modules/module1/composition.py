@@ -5,6 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.config import get_cors_config
 
+LOCALHOST_CORS_ORIGIN_REGEX = (
+    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|capacitor://localhost|ionic://localhost)$"
+)
+
 
 def build_router() -> APIRouter:
     from .api.router import router as module1_router
@@ -21,6 +25,7 @@ def build_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"] if cors_allow_all else cors_origins,
+        allow_origin_regex=None if cors_allow_all else LOCALHOST_CORS_ORIGIN_REGEX,
         allow_credentials=not cors_allow_all,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -173,6 +173,7 @@ const sourceUnifiedPythonPath = firstExistingPath(
 const sourceGraphPythonPath = firstExistingPath(
   path.join(sourceRootDir, '.venv', 'Scripts', 'python.exe'),
   path.join(sourceRootDir, '.venv-module4-py311', 'Scripts', 'python.exe'),
+  path.join(sourceRootDir, '.venv-module2-py311', 'Scripts', 'python.exe'),
 );
 
 const sourceChecks = [
@@ -208,6 +209,7 @@ const packagedChecks = exists(packagedOutputRoot)
       const packagedGraphPythonPath = firstExistingPath(
         path.join(packagedRuntimeRoot, '.venv', 'Scripts', 'python.exe'),
         path.join(packagedRuntimeRoot, '.venv-module4-py311', 'Scripts', 'python.exe'),
+        path.join(packagedRuntimeRoot, '.venv-module2-py311', 'Scripts', 'python.exe'),
       );
       const unexpectedBackendEntries = countMatchingEntries(packagedBackendRoot, {
         dirNames: ['__pycache__', '.runlogs', '.runtime', '.mcache', '.pytest_cache', 'tests', 'trace_rois'],

@@ -161,6 +161,7 @@ def load_managed_env_files(scopes: tuple[str, ...] | None = None) -> None:
     force_managed_data_paths = data_root.resolve() != runtime_root.resolve()
 
     _ensure_env_value("GATEWAY_FRONTEND_DIST_DIR", str((runtime_root / "frontend" / "dist").resolve()))
+    _ensure_env_value("GATEWAY_FRONTEND_APP_DIST_DIR", str((runtime_root / "frontend-app" / "dist").resolve()))
     _assign_env_value(
         "AUTH_USERS_FILE",
         str((data_root / "auth" / "users.json").resolve()),

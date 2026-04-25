@@ -5772,13 +5772,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const syncAssistantEvidence = (
         citations: AssistantCitation[],
         nextLock?: AssistantObjectLock | null,
+        options?: { interactive?: boolean },
     ) => {
         const normalizedCitations = Array.isArray(citations) ? citations : [];
+        const interactive = Boolean(options?.interactive);
         const effectiveLock = nextLock === undefined ? assistantCurrentLock : nextLock;
         if (nextLock !== undefined) {
             setAssistantCurrentLock(nextLock);
         }
-        if (!activeDoc) return;
+        if (!interactive || !activeDoc) return;
 
         const docHits = Array.isArray(activeDoc.trace_hits) ? activeDoc.trace_hits : [];
         const matched = new Map<string, TraceHit>();
@@ -5887,7 +5889,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         setAssistantSessionId,
         setAssistantCompanionCitations,
         setAssistantCompanionActionPreview,
-        setAssistantCompanionOpen,
         setAssistantRuntimeEvents,
     });
 
@@ -5896,7 +5897,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             <AssistantCitationList
                 citations={citations}
                 compact={compact}
-                onSelectCitation={(citation) => syncAssistantEvidence([citation])}
+                onSelectCitation={(citation) => {
+                    setAssistantCompanionOpen(true);
+                    syncAssistantEvidence([citation], undefined, { interactive: true });
+                }}
             />
         );
     };
@@ -5924,7 +5928,23 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         return <AssistantLockBanner lock={assistantCurrentLock} compact={compact} />;
     };
 
+    const assistantCompanionHasContent = (
+        assistantWarnings.length > 0
+        || assistantCompanionCitations.length > 0
+        || Boolean(assistantCompanionActionPreview)
+        || assistantRuntimeEvents.length > 0
+    );
+    const assistantCompanionSummary = [
+        assistantCompanionCitations.length > 0 ? `${assistantCompanionCitations.length} 条依据` : '',
+        assistantCompanionActionPreview ? '操作建议' : '',
+        assistantWarnings.length > 0 ? `${assistantWarnings.length} 条提示` : '',
+        assistantRuntimeEvents.length > 0 ? '本轮进展' : '',
+    ].filter(Boolean).join(' · ');
+
     const renderAssistantCompanionPanel = (compact = false) => {
+        if (!assistantCompanionOpen || !assistantCompanionHasContent) {
+            return null;
+        }
         return (
             <AssistantCompanionPanel
                 compact={compact}
@@ -6339,7 +6359,30 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                             </p>
                         </div>
                     </div>
-                    <button
+                    <div className="flex shrink-0 items-center gap-1.5">
+                        {assistantCompanionHasContent && (
+                            <button
+                                type="button"
+                                onClick={() => setAssistantCompanionOpen((prev) => !prev)}
+                                className={cn(
+                                    "inline-flex h-[26px] items-center gap-1 rounded-full border px-2.5 text-[11px] font-medium transition-all",
+                                    assistantCompanionOpen
+                                        ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-300"
+                                        : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:text-blue-600 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-slate-400 dark:hover:border-blue-500/30 dark:hover:text-blue-300"
+                                )}
+                                aria-label="查看辅助信息"
+                                title={assistantCompanionSummary || '查看辅助信息'}
+                            >
+                                <Layout size={12} />
+                                <span>辅助信息</span>
+                                {assistantCompanionCitations.length > 0 && (
+                                    <span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] leading-none text-current ring-1 ring-inset ring-current/10 dark:bg-white/[0.08]">
+                                        {assistantCompanionCitations.length}
+                                    </span>
+                                )}
+                            </button>
+                        )}
+                        <button
                         onClick={() => setShowAssistantHelp(true)}
                         className="inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md text-slate-400 transition-all hover:bg-slate-50 hover:text-blue-600 active:scale-95 dark:text-slate-500 dark:hover:bg-white/[0.08] dark:hover:text-blue-400"
                         aria-label="查看助手功能说明"
@@ -6347,6 +6390,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     >
                         <HelpCircle size={13} />
                     </button>
+                    </div>
                 </div>
             </div>
 

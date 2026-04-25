@@ -44,10 +44,27 @@ export const requestRaw = async (
   preferredBase = '',
 ): Promise<ApiFetchResult> => {
   const { usedBase, url } = buildApiUrl(path, preferredBase);
-  const response = await fetch(url, {
-    credentials: 'include',
-    ...init,
-  });
-  return { response, usedBase, url };
-};
+  try {
+    const response = await fetch(url, {
+      credentials: 'include',
+      ...init,
+    });
+    return { response, usedBase, url };
+  } catch (error) {
+    const runtimeProtocol =
+      typeof window !== 'undefined' ? String(window.location?.protocol || '').trim().toLowerCase() : '';
+    const targetIsHttp = /^http:\/\//i.test(String(url || '').trim());
+    const hints: string[] = [];
 
+    if (runtimeProtocol === 'https:' && targetIsHttp) {
+      hints.push('possible mixed-content block: https page requesting http api');
+    }
+    if (String(url || '').includes('localhost')) {
+      hints.push('check api base url / native env injection');
+    }
+
+    const reason = error instanceof Error ? error.message : String(error || 'unknown fetch error');
+    const hintText = hints.length > 0 ? ` (${hints.join('; ')})` : '';
+    throw new Error(`Failed to fetch ${url}: ${reason}${hintText}`);
+  }
+};

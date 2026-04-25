@@ -50,7 +50,11 @@ type UseAssistantStreamArgs = {
         messageId: string,
         updater: (current: AssistantDialogMessage) => AssistantDialogMessage
     ) => void;
-    syncAssistantEvidence: (citations: AssistantCitation[], nextLock?: AssistantObjectLock | null) => void;
+    syncAssistantEvidence: (
+        citations: AssistantCitation[],
+        nextLock?: AssistantObjectLock | null,
+        options?: { interactive?: boolean }
+    ) => void;
     setAssistantDialog: React.Dispatch<React.SetStateAction<AssistantDialogMessage[]>>;
     setAssistantQueryLoading: React.Dispatch<React.SetStateAction<boolean>>;
     setAssistantWarnings: React.Dispatch<React.SetStateAction<string[]>>;
@@ -60,7 +64,6 @@ type UseAssistantStreamArgs = {
     setAssistantSessionId: React.Dispatch<React.SetStateAction<string>>;
     setAssistantCompanionCitations: React.Dispatch<React.SetStateAction<AssistantCitation[]>>;
     setAssistantCompanionActionPreview: React.Dispatch<React.SetStateAction<AssistantActionPreview | null>>;
-    setAssistantCompanionOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setAssistantRuntimeEvents: React.Dispatch<React.SetStateAction<AssistantToolEvent[]>>;
 };
 
@@ -90,7 +93,6 @@ export const useAssistantStream = ({
     setAssistantSessionId,
     setAssistantCompanionCitations,
     setAssistantCompanionActionPreview,
-    setAssistantCompanionOpen,
     setAssistantRuntimeEvents,
 }: UseAssistantStreamArgs) => {
     const recoverAssistantTurnFromSession = async ({
@@ -276,9 +278,6 @@ export const useAssistantStream = ({
             setAssistantWarnings((prev) => (nextWarnings.length > 0 ? nextWarnings : prev));
             setAssistantCompanionCitations(citations);
             setAssistantCompanionActionPreview(actionPreview);
-            if (actionPreview) {
-                setAssistantCompanionOpen(true);
-            }
             updateAssistantDialogMessage(streamMessageId, (current) => ({
                 ...current,
                 content: mergeAssistantFinalAnswer(String(current.content || ''), nextAnswer),
@@ -292,7 +291,7 @@ export const useAssistantStream = ({
                     requires_followup: nextRequiresFollowup,
                 }),
             }));
-            syncAssistantEvidence(citations, nextLock);
+            syncAssistantEvidence(citations, nextLock, { interactive: false });
         };
 
         try {
@@ -405,7 +404,7 @@ export const useAssistantStream = ({
                     const nextLock = toAssistantObjectLock(payload.current_object_lock);
                     streamedCompanionCitations = citations;
                     setAssistantCompanionCitations(citations);
-                    syncAssistantEvidence(citations, nextLock);
+                    syncAssistantEvidence(citations, nextLock, { interactive: false });
                     return;
                 }
 
@@ -415,9 +414,6 @@ export const useAssistantStream = ({
                         : toAssistantActionPreview(payload);
                     streamedActionPreview = preview;
                     setAssistantCompanionActionPreview(preview);
-                    if (preview) {
-                        setAssistantCompanionOpen(true);
-                    }
                     return;
                 }
 
@@ -555,7 +551,6 @@ export const useAssistantStream = ({
                     setAssistantMessage(recoveredAnswer);
                     if (recoveredActionPreview) {
                         setAssistantCompanionActionPreview(recoveredActionPreview);
-                        setAssistantCompanionOpen(true);
                     }
                     updateAssistantDialogMessage(streamMessageId, (current) => ({
                         ...current,
@@ -570,7 +565,7 @@ export const useAssistantStream = ({
                             recovered_from_session: true,
                         }),
                     }));
-                    syncAssistantEvidence(streamedCompanionCitations, recoveredLock);
+                    syncAssistantEvidence(streamedCompanionCitations, recoveredLock, { interactive: false });
                     return;
                 }
 

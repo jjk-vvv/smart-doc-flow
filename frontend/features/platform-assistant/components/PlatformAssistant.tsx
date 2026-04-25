@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowRight, ArrowUp, Bot, Route, FileStack, RotateCcw, Sparkles, X } from 'lucide-react';
+import { ArrowRight, ArrowUp, Route, FileStack, RotateCcw, Sparkles, X } from 'lucide-react';
 
 import assistantOrb from '../../../assets/assistant-orb.mp4';
+import assistantOrbPoster from '../../../assets/assistant-orb-poster.png';
+import assistantOrbWebm from '../../../assets/assistant-orb.webm';
 import GuideImage from '../../../assets/使用说明插图.png';
 import QuestionImage from '../../../assets/问号插图.png';
 import ContextImage from '../../../assets/上下文插图.png';
@@ -328,7 +330,16 @@ export function PlatformAssistant({
         className={`pointer-events-auto fixed ${launcherOffsetClassName || DEFAULT_LAUNCHER_OFFSET} flex h-[66px] w-[66px] items-center justify-center overflow-hidden rounded-full border border-white/80 bg-white shadow-[0_12px_40px_rgba(34,211,238,0.2)] ring-1 ring-cyan-100 dark:border-white/20 dark:bg-slate-900 dark:shadow-[0_12px_40px_rgba(8,15,31,0.5)] dark:ring-cyan-400/20`}
         aria-label={isOpen ? '关闭平台助手' : '打开平台助手'}
       >
-        <video className="h-full w-full object-cover" autoPlay muted loop playsInline preload="auto">
+        <video
+          className="h-full w-full object-cover"
+          autoPlay
+          muted
+          loop
+          playsInline
+          preload="auto"
+          poster={assistantOrbPoster}
+        >
+          <source src={assistantOrbWebm} type="video/webm" />
           <source src={assistantOrb} type="video/mp4" />
         </video>
         <span className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.6),transparent_50%),linear-gradient(135deg,rgba(255,255,255,0.2),transparent)] dark:bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.3),transparent_50%),linear-gradient(135deg,rgba(255,255,255,0.05),transparent)]" />

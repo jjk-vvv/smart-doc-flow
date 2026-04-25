@@ -1,4 +1,4 @@
-import React, {
+﻿import React, {
   useState,
   useEffect,
   useRef,
@@ -27,14 +27,285 @@ import {
 } from "framer-motion";
 
 import guideLogo from "../../assets/app-logo.png";
-import section1MainImage from "../../assets/deepread-workbench.svg";
-import sec2_1 from "../../assets/sec2_1.png";
-import sec2_2 from "../../assets/sec2_2.png";
-import sec2_3 from "../../assets/sec2_3.png";
-import sec2_4 from "../../assets/sec2_4.png";
+import section1MainImage from "../../assets/首页.png";
+import video from "../../assets/宣传视频.mp4";
+import sec2_1 from "../../assets/痛点1.png";
+import sec2_2 from "../../assets/痛点2.png";
+import sec2_3 from "../../assets/痛点3.png";
+import sec2_4 from "../../assets/痛点4.png";
+import secfea_2Left from "../../assets/功能2左.png";
+import secfea_2Right from "../../assets/功能2右.png";
+import secfea_3 from "../../assets/功能3.png";
+import secfea_4 from "../../assets/功能4.png";
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const featureExcelFileName = "2025年国考职位表（节选）.xlsx";
+
+const featureSuggestionItems = [
+  { label: "指标总览", type: "overview" },
+  { label: "异常数据", type: "alert" },
+  { label: "汇总统计", type: "summary" },
+  { label: "趋势变化", type: "trend" },
+  { label: "关键字段", type: "field" },
+  { label: "结论表", type: "table" },
+] as const;
+
+const featureExtractionStats = [
+  { label: "字段", value: "17", className: "text-[#3866d6]" },
+  { label: "表格", value: "21", className: "text-[#17966b]" },
+  { label: "图片", value: "6", className: "text-[#c9852c]" },
+] as const;
+
+const featureExtractionFields = [
+  { label: "居民消费价格涨幅", value: "0.4", page: "页 2", confidence: "99%" },
+  { label: "绝对值", value: "56987.55", page: "页 5", confidence: "94%" },
+  { label: "比上年末增长", value: "10.8", page: "页 25", confidence: "94%" },
+  { label: "常住人口城镇化率", value: "87.3", page: "页 1", confidence: "90%" },
+  { label: "统计年份", value: "2024", page: "页 1", confidence: "98%" },
+  { label: "常住人口", value: "957.7", page: "页 1", confidence: "90%" },
+  {
+    label: "新增就业（城市）",
+    value: "21.94",
+    page: "页 1",
+    confidence: "90%",
+  },
+] as const;
+
+const featureExtractionTableRows = [
+  { name: "卷烟", unit: "万支", year: "347742", growth: "3.2" },
+  { name: "乙烯", unit: "吨", year: "1407390", growth: "3.9" },
+  { name: "化学纤维", unit: "吨", year: "119854", growth: "18.8" },
+  { name: "塑料制品", unit: "吨", year: "177453", growth: "5.1" },
+  { name: "水泥", unit: "吨", year: "3942301", growth: "-28.7" },
+  { name: "生铁", unit: "吨", year: "17732522", growth: "0.5" },
+] as const;
+
+const FeatureExcelFilePill: React.FC<{ tone?: "blue" | "light" }> = ({
+  tone = "light",
+}) => (
+  <div
+    className={cn(
+      "inline-flex max-w-full items-center gap-2 rounded-full px-3 py-1.5 text-sm font-semibold lg:text-base",
+      tone === "blue"
+        ? "bg-white/[0.13] text-white shadow-[0_10px_30px_rgba(24,58,150,0.18)]"
+        : "bg-[#f3f8ff] text-[#435a72]",
+    )}
+  >
+    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] bg-[#35c978] text-white shadow-[0_4px_12px_rgba(53,201,120,0.28)]">
+      <FileSpreadsheet className="h-3 w-3" />
+    </span>
+    <span className="truncate">{featureExcelFileName}</span>
+  </div>
+);
+
+const FeatureSuggestionIcon: React.FC<{
+  type: (typeof featureSuggestionItems)[number]["type"];
+}> = ({ type }) => {
+  if (type === "summary") {
+    return (
+      <span className="flex h-5 w-5 shrink-0 flex-col justify-center gap-0.5">
+        <span className="h-[2px] w-4 rounded-full bg-current" />
+        <span className="h-[2px] w-5 rounded-full bg-current" />
+        <span className="h-[2px] w-3 rounded-full bg-current" />
+      </span>
+    );
+  }
+
+  if (type === "trend") {
+    return (
+      <span className="relative h-5 w-5 shrink-0">
+        <span className="absolute bottom-1 left-0 h-[2px] w-3 rotate-[-35deg] rounded-full bg-current" />
+        <span className="absolute right-0 top-1 h-[2px] w-3 rotate-[35deg] rounded-full bg-current" />
+        <span className="absolute right-0 top-1 h-1.5 w-1.5 rounded-sm border-r-2 border-t-2 border-current" />
+      </span>
+    );
+  }
+
+  if (type === "field") {
+    return (
+      <span className="relative h-5 w-5 shrink-0 rounded-[5px] border-2 border-current">
+        <span className="absolute -right-1.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-white" />
+        <span className="absolute -left-1.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-white" />
+      </span>
+    );
+  }
+
+  if (type === "table") {
+    return <FileText className="h-5 w-5 shrink-0" />;
+  }
+
+  return (
+    <span className="relative h-5 w-5 shrink-0 rounded-full border-2 border-current">
+      <span
+        className={cn(
+          "absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 rounded-full bg-current",
+          type === "alert" ? "h-2.5 w-[2px]" : "h-3 w-3",
+        )}
+      />
+      {type === "alert" && (
+        <span className="absolute bottom-0.5 left-1/2 h-[2px] w-[2px] -translate-x-1/2 rounded-full bg-current" />
+      )}
+    </span>
+  );
+};
+
+const FeatureSuggestionButton: React.FC<{
+  item: (typeof featureSuggestionItems)[number];
+}> = ({ item }) => (
+  <button
+    type="button"
+    className="flex h-9 items-center justify-center gap-2 rounded-full border border-[#e2ebfa] bg-white/[0.82] px-3 text-sm font-semibold text-[#4a627a] shadow-[0_8px_18px_-16px_rgba(13,28,46,0.7)] transition-colors hover:border-[#bad6ff] hover:bg-[#f8fbff] lg:text-base"
+  >
+    <FeatureSuggestionIcon type={item.type} />
+    <span>{item.label}</span>
+  </button>
+);
+
+const FeatureBusinessConclusionMockup: React.FC = () => (
+  <div className="relative h-full w-full overflow-hidden rounded-[34px] border border-[#dde8fb] bg-[radial-gradient(circle_at_12%_10%,rgba(219,234,254,0.86),transparent_34%),linear-gradient(145deg,#ffffff_0%,#f8fbff_48%,#eef6ff_100%)] p-4 shadow-[0_26px_80px_-36px_rgba(37,99,235,0.5)] lg:p-5">
+    <div className="flex h-full flex-col justify-between gap-4">
+      <div className="ml-auto w-[86%] rounded-[28px] bg-[#2f61e8] px-5 py-4 text-white shadow-[0_24px_52px_-24px_rgba(47,97,232,0.82)] lg:px-6 lg:py-5">
+        <p className="text-[17px] font-semibold leading-[1.48] tracking-[0.03em] lg:text-[21px]">
+          基于《2025年国考职位表（节选）.xlsx》的数据
+          <br />
+          给我一个简明业务结论
+        </p>
+        <div className="mt-3 lg:mt-4">
+          <FeatureExcelFilePill tone="blue" />
+        </div>
+      </div>
+
+      <div className="w-[88%] rounded-[28px] border border-[#dfe8f7] bg-white/[0.96] px-4 py-4 shadow-[0_22px_56px_-34px_rgba(13,28,46,0.52)] lg:px-5 lg:py-5">
+        <p className="text-[17px] font-medium leading-[1.5] tracking-[0.01em] text-[#2e3c51] lg:text-[20px]">
+          我将基于《2025年国考职位表（节选）.xlsx》的
+          <br />
+          数据生成一个简明业务结论。
+        </p>
+        <div className="mt-3">
+          <FeatureExcelFilePill />
+        </div>
+
+        <div className="mt-4 rounded-[24px] border border-[#e2ebfa] bg-white/[0.86] p-3 shadow-[0_16px_36px_-32px_rgba(13,28,46,0.48)] lg:p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm font-bold tracking-[0.18em] text-[#52677f] lg:text-base">
+              <span className="text-[#2f61e8]">✦</span>
+              猜你想问
+            </div>
+            <button
+              type="button"
+              className="rounded-full border border-[#dce8fa] bg-white px-3 py-1 text-xs font-semibold text-[#49627a] shadow-[0_8px_18px_-16px_rgba(13,28,46,0.7)] lg:text-sm"
+            >
+              ↻ 换一批
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3">
+            {featureSuggestionItems.map((item) => (
+              <FeatureSuggestionButton key={item.label} item={item} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const FeatureExtractionFieldCard: React.FC<{
+  item: (typeof featureExtractionFields)[number];
+}> = ({ item }) => (
+  <div className="rounded-[16px] border border-[#e8edf5] bg-white px-4 py-3 shadow-[0_12px_30px_-26px_rgba(13,28,46,0.55)]">
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <div className="inline-flex max-w-full rounded-full bg-[#f4f7fb] px-3 py-1 text-xs font-semibold text-[#526477]">
+          <span className="truncate">{item.label}</span>
+        </div>
+        <div className="mt-2 text-lg font-medium leading-none text-[#1e293b]">
+          {item.value}
+        </div>
+      </div>
+
+      <div className="flex shrink-0 flex-col items-end gap-2">
+        <span className="rounded-[7px] border border-[#e2e8f0] bg-white px-2 py-1 text-xs font-semibold text-[#64748b]">
+          {item.page}
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-full border border-[#bdebd8] bg-[#ecfdf5] px-2 py-1 text-xs font-bold text-[#15956c]">
+          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full border border-current text-[9px] leading-none">
+            ✓
+          </span>
+          {item.confidence}
+        </span>
+      </div>
+    </div>
+  </div>
+);
+
+const FeatureExtractionSourceCard: React.FC = () => (
+  <div className="relative h-full w-full overflow-hidden rounded-2xl border border-[#dfe6ef] bg-white/[0.98] shadow-[0_22px_55px_-24px_rgba(13,28,46,0.4)] backdrop-blur">
+    <div className="grid h-9 grid-cols-[1.4fr_0.85fr_1fr_1fr] items-center border-b border-[#d8dee7] bg-[#f7f9fc] px-3 text-[11px] font-bold text-[#334155]">
+      <div>产品名称</div>
+      <div>计量单位</div>
+      <div>2024 年</div>
+      <div>比上年增长（%）</div>
+    </div>
+
+    <div className="divide-y divide-[#edf1f6]">
+      {featureExtractionTableRows.map((row) => (
+        <div
+          key={row.name}
+          className="grid h-[29px] grid-cols-[1.4fr_0.85fr_1fr_1fr] items-center px-3 text-[11px] text-[#334155]"
+        >
+          <div className="truncate font-medium">{row.name}</div>
+          <div className="truncate">{row.unit}</div>
+          <div className="truncate tabular-nums">{row.year}</div>
+          <div className="truncate tabular-nums">{row.growth}</div>
+        </div>
+      ))}
+    </div>
+
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-white to-white/0" />
+  </div>
+);
+
+const FeatureExtractionMockup: React.FC = () => (
+  <div className="h-full w-full overflow-hidden rounded-[24px] border border-[#dfe8f5] bg-[#fbfdff] shadow-[0_24px_70px_-34px_rgba(13,28,46,0.42)]">
+    <div className="flex h-11 items-center justify-between border-b border-[#e8eef7] bg-white px-4">
+      <div className="flex items-center gap-2 text-sm font-bold text-[#2d3b4d]">
+        <span className="relative h-4 w-4 rounded-full border border-[#9aaabe]">
+          <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#9aaabe]" />
+        </span>
+        原文定位
+      </div>
+
+      <div className="flex items-center gap-3">
+        {featureExtractionStats.map((item) => (
+          <span
+            key={item.label}
+            className={cn(
+              "rounded-full bg-[#f7f9fc] px-3 py-1 text-xs font-bold",
+              item.className,
+            )}
+          >
+            {item.label} {item.value}
+          </span>
+        ))}
+      </div>
+    </div>
+
+    <div className="h-[calc(100%-44px)] px-3 py-3">
+      <div className="mb-3 inline-flex rounded-[8px] bg-[#f3f6fb] px-3 py-1.5 text-sm font-bold text-[#526477]">
+        字段
+      </div>
+
+      <div className="grid h-[calc(100%-42px)] content-start gap-2.5 overflow-hidden">
+        {featureExtractionFields.map((item) => (
+          <FeatureExtractionFieldCard key={item.label} item={item} />
+        ))}
+      </div>
+    </div>
+  </div>
+);
 
 type GuideNavId =
   | "overview"
@@ -53,7 +324,6 @@ type GuideNavItem = {
 
 interface UserGuideProps {
   onBackToDashboard?: () => void;
-  onOpenLogin?: () => void;
 }
 
 const GuideSectiondemonstration: React.FC<{
@@ -70,8 +340,7 @@ const GuideSectiondemonstration: React.FC<{
     x: 180,
     y: 180,
   });
-  const demoVideoSrc =
-    "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+  const demoVideoSrc = video;
 
   const { scrollYProgress } = useScroll({
     target: sectionRef,
@@ -606,28 +875,14 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             className="relative w-full perspective-[2000px] flex items-center justify-center lg:justify-end"
           >
             <div className="relative z-10 h-[360px] w-full max-w-[640px] md:h-[430px]">
-              <div className="absolute left-1/2 top-1/2 z-10 h-[108%] w-[112%] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[24px] border border-white/80 bg-white shadow-[0_24px_70px_-20px_rgba(13,28,46,0.32)]">
-                <img
-                  src={section1MainImage}
-                  alt="智能文档平台"
-                  className="h-full w-full origin-top scale-[1.12] object-cover"
-                />
-              </div>
-
-              <div className="absolute -left-24 top-[54%] z-20 h-[48%] w-[34%] -translate-y-1/2 overflow-hidden rounded-2xl border border-white/90 bg-white shadow-[0_22px_55px_-24px_rgba(13,28,46,0.4)]">
-                <img
-                  src={sec2_3}
-                  alt="自动表格回填"
-                  className="h-full w-full object-cover"
-                />
-              </div>
-
-              <div className="absolute -right-24 top-[85%] z-20 h-[66%] w-[34%] -translate-y-1/2 overflow-hidden rounded-2xl border border-white/90 bg-white shadow-[0_22px_55px_-24px_rgba(13,28,46,0.4)]">
-                <img
-                  src={sec2_4}
-                  alt="知识图谱分析"
-                  className="h-full w-full object-cover"
-                />
+              <div className="absolute left-1/2 top-1/2 z-10 h-[108%] w-[112%] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[30px] border border-[#cfe8f7] bg-gradient-to-br from-white via-[#fbfdff] to-[#edf8ff] p-[5px] shadow-[0_18px_54px_-24px_rgba(37,99,235,0.42),0_0_0_1px_rgba(255,255,255,0.94)_inset,0_0_28px_rgba(186,230,253,0.5)]">
+                <div className="h-full w-full overflow-hidden rounded-[25px] border border-white/95 bg-white p-[3px] shadow-[0_0_0_1px_rgba(207,232,247,0.72)_inset,0_12px_36px_-24px_rgba(13,28,46,0.5)]">
+                  <img
+                    src={section1MainImage}
+                    alt="智能文档平台"
+                    className="h-full w-full origin-top rounded-[21px] bg-white object-contain"
+                  />
+                </div>
               </div>
             </div>
           </motion.div>
@@ -1039,7 +1294,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
     return (
       <div
         ref={ref}
-        className="w-full relative flex flex-col items-center py-16 lg:pb-40 lg:pt-30 gap-20 lg:gap-32 overflow-hidden z-30 bg-white"
+        className="relative z-30 flex w-full flex-col items-center gap-16 overflow-hidden bg-white px-0 py-16 lg:gap-24 lg:pb-36 lg:pt-24"
       >
         {/* Diffused Halo Background */}
         <div className="absolute inset-x-0 top-0 h-[30%] z-0 pointer-events-none">
@@ -1173,20 +1428,16 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
         </motion.h1>
 
         {/* Feature 1: Search */}
-        <div className="relative z-10 w-full max-w-[1440px] px-6 lg:px-16 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+        <div className="relative z-10 grid w-full max-w-[1480px] grid-cols-1 gap-10 px-6 lg:min-h-[620px] lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)] lg:items-center lg:gap-14 lg:px-16">
           {/* Image Left */}
           <motion.div
             initial="hidden"
             whileInView="visible"
             viewport={{ once: true }}
             variants={gatherLeftVariants}
-            className="order-1 lg:order-1 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
+            className="order-1 h-[500px] w-full lg:order-1 lg:h-[580px] lg:max-w-[760px] lg:self-start xl:max-w-[820px]"
           >
-            <img
-              src=""
-              className="w-full h-full object-cover"
-              alt="文档智能操作"
-            />
+            <FeatureBusinessConclusionMockup />
           </motion.div>
           {/* Text Right */}
           <motion.div
@@ -1194,14 +1445,14 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             whileInView="visible"
             viewport={{ once: true }}
             variants={gatherRightVariants}
-            className="order-2 lg:order-2 flex flex-col items-start space-y-6 pl-0 lg:pl-12"
+            className="order-2 flex flex-col items-start space-y-6 pl-0 lg:order-2 lg:max-w-[560px] lg:self-center lg:pl-4 lg:-translate-y-14 xl:pl-8 xl:-translate-y-[4.5rem]"
           >
             <div className="flex items-center gap-2 text-[#0058be] font-semibold tracking-[0.05em] uppercase text-sm font-['Inter',sans-serif]">
               <span className="w-8 h-[2px] bg-[#0058be]" />
               核心功能
             </div>
             <h2 className="text-4xl md:text-5xl font-bold text-[#0d1c2e] leading-tight font-['Inter',sans-serif] tracking-[-0.02em]">
-              智能文档解析
+              智能文档处理
             </h2>
             <p className="text-lg text-[#434655] leading-relaxed max-w-lg font-['Inter',sans-serif]">
               基于自然语言处理与文档结构理解技术，将用户对文档的编辑、排版、格式调整、内容提取等操作需求，通过自然语言指令进行解析与转化，自动执行相应操作。
@@ -1210,14 +1461,14 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
         </div>
 
         {/* Feature 2: Share */}
-        <div className="relative z-10 w-full max-w-[1440px] px-6 lg:px-16 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+        <div className="relative z-10 grid w-full max-w-[1480px] grid-cols-1 gap-10 px-6 lg:min-h-[640px] lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:items-center lg:gap-14 lg:px-16">
           {/* Text Left */}
           <motion.div
             initial="hidden"
             whileInView="visible"
             viewport={{ once: true }}
             variants={gatherLeftVariants}
-            className="order-2 lg:order-1 flex flex-col items-start space-y-6 pr-0 lg:pr-12"
+            className="order-2 flex flex-col items-start space-y-6 pr-0 lg:order-1 lg:max-w-[560px] lg:self-center lg:pr-6 lg:-translate-y-6 xl:pr-10"
           >
             <div className="flex items-center gap-2 text-[#0058be] font-semibold tracking-[0.05em] uppercase text-sm font-['Inter',sans-serif]">
               <span className="w-8 h-[2px] bg-[#0058be]" />
@@ -1236,9 +1487,31 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             whileInView="visible"
             viewport={{ once: true }}
             variants={gatherRightVariants}
-            className="order-1 lg:order-2 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
+            className="order-1 relative flex h-[440px] w-full items-center justify-center overflow-visible lg:order-2 lg:h-[580px] lg:translate-x-2 xl:translate-x-6"
           >
-            <img src="" className="w-full h-full object-cover" alt="模板回填" />
+            <div className="relative z-10 h-full w-full overflow-visible">
+              <div className="absolute inset-y-[5%] left-[10%] right-[2%] z-10 overflow-hidden rounded-[30px] border border-[#cfe8f7] bg-gradient-to-br from-white via-[#fbfdff] to-[#edf8ff] p-[5px] shadow-[0_18px_54px_-24px_rgba(37,99,235,0.42),0_0_0_1px_rgba(255,255,255,0.94)_inset,0_0_28px_rgba(186,230,253,0.5)]">
+                <div className="h-full w-full overflow-hidden rounded-[25px] border border-white/95 bg-white p-[3px] shadow-[0_0_0_1px_rgba(207,232,247,0.72)_inset,0_12px_36px_-24px_rgba(13,28,46,0.5)]">
+                  <FeatureExtractionMockup />
+                </div>
+              </div>
+
+              <div className="absolute left-[1%] top-[52%] z-20 h-[44%] w-[33%] -translate-y-1/2 overflow-hidden rounded-2xl bg-white shadow-[0_22px_55px_-24px_rgba(13,28,46,0.4)] lg:left-[-4%] lg:top-[56%] lg:h-[45%] lg:w-[32%]">
+                <img
+                  src={secfea_2Left}
+                  className="h-full w-full object-contain"
+                  alt="非结构化信息提取"
+                />
+              </div>
+
+              <div className="absolute right-[0%] top-[70%] z-20 h-[52%] w-[27%] -translate-y-1/2 overflow-hidden rounded-2xl bg-white shadow-[0_22px_55px_-24px_rgba(13,28,46,0.4)] lg:right-[-4%] lg:top-[72%] lg:h-[55%] lg:w-[26%]">
+                <img
+                  src={secfea_2Right}
+                  className="h-full w-full object-contain"
+                  alt="非结构化信息提取"
+                />
+              </div>
+            </div>
           </motion.div>
         </div>
 
@@ -1250,9 +1523,13 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             whileInView="visible"
             viewport={{ once: true }}
             variants={gatherLeftVariants}
-            className="order-1 lg:order-1 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
+            className="order-1 lg:order-1 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-[0_18px_54px_-24px_rgba(37,99,235,0.42),0_0_0_1px_rgba(255,255,255,0.94)_inset,0_0_28px_rgba(186,230,253,0.5)] border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff]"
           >
-            <img src="" className="w-full h-full object-cover" alt="知识图谱" />
+            <img
+              src={secfea_3}
+              className="w-full h-full object-contain rounded-2xl"
+              alt="知识图谱"
+            />
           </motion.div>
           {/* Text Right */}
           <motion.div
@@ -1302,11 +1579,11 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             whileInView="visible"
             viewport={{ once: true }}
             variants={gatherRightVariants}
-            className="order-1 lg:order-2 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-2xl border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff] p-6"
+            className="order-1 lg:order-2 h-[400px] lg:h-[500px] w-full rounded-2xl overflow-hidden shadow-[0_18px_54px_-24px_rgba(37,99,235,0.42),0_0_0_1px_rgba(255,255,255,0.94)_inset,0_0_28px_rgba(186,230,253,0.5)] border border-[#d1d1e9] flex items-center justify-center bg-[#eff4ff]"
           >
             <img
-              src=""
-              className="w-full h-full object-cover"
+              src={secfea_4}
+              className="w-full h-full object-contain rounded-2xl"
               alt="全局智能助手"
             />
           </motion.div>

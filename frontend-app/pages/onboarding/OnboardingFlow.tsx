@@ -6,7 +6,7 @@ import { cn } from '../../lib/utils';
 // @ts-ignore
 import splashBg from '../../assets/前导页.png';
 // @ts-ignore
-import appLogo from '../../../frontend/assets/app-logo.png';
+import appLogo from '../../assets/app-logo.png';
 
 export interface OnboardingFlowProps {
   onComplete: () => void;

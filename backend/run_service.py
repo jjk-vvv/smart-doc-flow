@@ -172,6 +172,7 @@ def _build_env(service: str) -> dict[str, str]:
         str((config_root / "backend" / "app" / "modules" / "module4" / ".env").resolve()),
     )
     env.setdefault("GATEWAY_FRONTEND_DIST_DIR", str((runtime_root / "frontend" / "dist").resolve()))
+    env.setdefault("GATEWAY_FRONTEND_APP_DIST_DIR", str((runtime_root / "frontend-app" / "dist").resolve()))
     env.setdefault("AUTH_USERS_FILE", str((data_root / "auth" / "users.json").resolve()))
     env.setdefault("MODULE2_ARTIFACT_ROOT_DIR", str((data_root / "module2" / "artifacts").resolve()))
     env.setdefault("MODULE2_MINERU_CACHE_DIR", str((data_root / "module2" / "cache" / "mineru").resolve()))

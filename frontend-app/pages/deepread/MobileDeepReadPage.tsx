@@ -27,6 +27,10 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { parseErrorMessage } from '../../shared/api/client';
+import {
+  describeMobileDownloadResult,
+  saveBlobToMobileDevice,
+} from '../../shared/mobileDownload';
 import { MobileAssistantDialog } from './mobile/MobileAssistantDialog';
 import { MobileDocumentPreviewCard } from './mobile/MobileDocumentPreviewCard';
 import TraceChartPreview from '../../components/trace/TraceChartPreview';
@@ -217,16 +221,14 @@ const toImageCaption = (hit: TraceHit): string => {
   return snippet || '暂无图片说明';
 };
 
-const triggerBlobDownload = (blob: Blob, filename: string) => {
-  const url = window.URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.URL.revokeObjectURL(url);
-};
+const triggerBlobDownload = async (blob: Blob, filename: string) => (
+  saveBlobToMobileDevice({
+    blob,
+    fileName: filename,
+    moduleName: 'module2',
+    mimeType: blob.type || 'application/octet-stream',
+  })
+);
 
 const toCsvRow = (cells: string[]): string =>
   cells.map((cell) => `"${String(cell || '').replace(/"/g, '""')}"`).join(',');
@@ -236,7 +238,10 @@ const downloadDataframeAsCsv = (payload: DataframePayload, filename: string) => 
   if (payload.headers.length > 0) lines.push(toCsvRow(payload.headers));
   payload.rows.forEach((row) => lines.push(toCsvRow(row)));
   const csv = `\uFEFF${lines.join('\n')}`;
-  triggerBlobDownload(new Blob([csv], { type: 'text/csv;charset=utf-8;' }), filename);
+  void triggerBlobDownload(
+    new Blob([csv], { type: 'text/csv;charset=utf-8;' }),
+    filename,
+  );
 };
 
 const toFileBaseName = (value: string): string => {
@@ -1227,7 +1232,8 @@ export const MobileDeepReadPage: React.FC = () => {
         throw new Error(await parseErrorMessage(response));
       }
       const blob = await response.blob();
-      triggerBlobDownload(blob, filename);
+      const result = await triggerBlobDownload(blob, filename);
+      setDownloadMessage(describeMobileDownloadResult(result));
     } catch (error) {
       setDownloadMessage(error instanceof Error ? error.message : '下载失败，请稍后重试');
     }

@@ -20,7 +20,11 @@ const warmModule2Enabled = !['0', 'false', 'no', 'off'].includes(
   String(process.env.DESKTOP_SMOKE_WARM_MODULE2 || '1').trim().toLowerCase(),
 );
 const packagedDir = path.resolve(outputDir, 'win-unpacked');
-const exePath = path.join(packagedDir, 'Smart Doc Flow.exe');
+const exeCandidates = [
+  path.join(packagedDir, 'SmartDocFlow.exe'),
+  path.join(packagedDir, 'Smart Doc Flow.exe'),
+];
+const exePath = exeCandidates.find((candidate) => fs.existsSync(candidate)) || exeCandidates[0];
 const backendScriptPath = path.join(packagedDir, 'resources', 'app-runtime', 'scripts', 'start-backend-fastapi.cjs');
 const smokeDataRoot = path.join(
   os.tmpdir(),

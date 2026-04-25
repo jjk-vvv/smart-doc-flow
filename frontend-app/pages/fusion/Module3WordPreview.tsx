@@ -1087,6 +1087,7 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
   } | null>(null);
   const loadedRunIdRef = useRef<string | null>(null);
   const currentEditingValueRef = useRef<PendingEditingValue | null>(null);
+  const sectionElementRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const activeSection = useMemo<LocalWordSection | null>(
     () =>
@@ -1098,6 +1099,7 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
 
   const hasDirtyChanges = Object.keys(dirtySections).length > 0;
   const hasStructureChanges = structureChanges.length > 0;
+  const hasMultipleSections = sections.length > 1;
 
   const loadStructuredWord = useCallback(async () => {
     setIsLoadingEditor(true);
@@ -1331,6 +1333,24 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
     return trimmed || "文件内容为空或无法预览。";
   }, [fallbackContent]);
 
+  const scrollToSection = useCallback((sectionId: string) => {
+    const target = sectionElementRefs.current[sectionId];
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const handleSelectSection = useCallback(
+    (sectionId: string) => {
+      setActiveSectionId(sectionId);
+      setIsSectionSidebarOpen(false);
+      if (isEditMode) return;
+      window.requestAnimationFrame(() => {
+        scrollToSection(sectionId);
+      });
+    },
+    [isEditMode, scrollToSection],
+  );
+
   return (
     <div className="relative flex h-full min-h-full w-full min-w-0 flex-col overflow-hidden bg-white dark:bg-slate-950">
       <div className="relative z-10 flex items-center justify-between gap-3 border-b border-slate-100 bg-white/80 px-4 pb-3 pt-[max(12px,env(safe-area-inset-top))] backdrop-blur-md shadow-sm dark:border-white/5 dark:bg-slate-900/80">
@@ -1353,6 +1373,18 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
           </p>
         </div>
         <div className="flex shrink-0 items-center justify-end gap-2 min-w-[76px]">
+          {hasMultipleSections ? (
+            <button
+              type="button"
+              onClick={() => setIsSectionSidebarOpen(true)}
+              className="group relative flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-slate-50 text-slate-600 shadow-[0_2px_8px_rgba(15,23,42,0.04)] ring-1 ring-slate-900/5 transition-all active:scale-95 dark:bg-white/5 dark:text-slate-300 dark:ring-white/10"
+              aria-label="Open sections"
+              title="Open sections"
+            >
+              <div className="absolute inset-0 bg-slate-900/0 transition-colors group-hover:bg-slate-900/5 group-active:bg-slate-900/10 dark:group-hover:bg-white/5 dark:group-active:bg-white/10" />
+              <PanelLeft size={13} className="relative z-10" />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => void loadStructuredWord()}
@@ -1426,12 +1458,22 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
           正在从后端加载Word 数据...
         </div>
       ) : loadError ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-sm text-red-600 dark:text-red-400">
-          {loadError}
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto p-4">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            {loadError}
+          </div>
+          <pre className="mt-4 whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-50 px-4 py-4 text-[13px] leading-6 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
+            {fallbackPreview}
+          </pre>
         </div>
       ) : sections.length === 0 ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-sm text-slate-500 dark:text-slate-400">
-          当前没有可编辑的内容。
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto p-4">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+            No structured sections were returned. Showing fallback preview.
+          </div>
+          <pre className="mt-4 whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-50 px-4 py-4 text-[13px] leading-6 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
+            {fallbackPreview}
+          </pre>
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1471,10 +1513,7 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
                 <button
                   key={section.id}
                   type="button"
-                  onClick={() => {
-                    setActiveSectionId(section.id);
-                    setIsSectionSidebarOpen(false);
-                  }}
+                  onClick={() => handleSelectSection(section.id)}
                   className={cn(
                     "w-full rounded-2xl border px-3 py-3 text-left transition-colors",
                     activeSection?.id === section.id
@@ -1508,69 +1547,67 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
           </aside>
 
           <main className="min-h-0 flex flex-1 flex-col overflow-auto bg-white p-4 dark:bg-slate-950">
-            {activeSection?.type === "text" ? (
-              <div className="flex min-h-full flex-col gap-4">
-                {(activeSection as Module3WordTextSection).paragraphs.map(
-                  (paragraph, paragraphIndex) => {
-                    const paragraphPresentation = mapWordStyleToPresentation(
-                      paragraph.style,
-                    );
+            {isEditMode ? (
+              activeSection?.type === "text" ? (
+                <div className="flex min-h-full flex-col gap-4">
+                  {(activeSection as Module3WordTextSection).paragraphs.map(
+                    (paragraph, paragraphIndex) => {
+                      const paragraphPresentation = mapWordStyleToPresentation(
+                        paragraph.style,
+                      );
 
-                    return (
-                      <div
-                        key={`${paragraph.index}-${paragraph.text}`}
-                        contentEditable={isEditMode}
-                        suppressContentEditableWarning={isEditMode}
-                        onInput={
-                          isEditMode
-                            ? (event) =>
-                                handleParagraphChange(
-                                  activeSection.id,
-                                  paragraphIndex,
-                                  event.currentTarget.innerText,
-                                )
-                            : undefined
-                        }
-                        onBlur={
-                          isEditMode
-                            ? (event) =>
-                                handleParagraphBlur(
-                                  activeSection.id,
-                                  paragraphIndex,
-                                  event.currentTarget.innerText,
-                                )
-                            : undefined
-                        }
-                        className={cn(
-                          "rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-800 outline-none transition-colors focus:border-blue-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
-                          !isEditMode &&
-                            "cursor-default focus:border-slate-200",
-                          paragraphPresentation.className,
-                        )}
-                        style={paragraphPresentation.style}
-                      >
-                        {paragraph.runs.map((run, runIndex) => {
-                          const runPresentation = mapWordStyleToPresentation(
-                            run.style,
-                          );
-                          return (
-                            <span
-                              key={`${paragraph.index}-${runIndex}`}
-                              className={runPresentation.className}
-                              style={runPresentation.style}
-                            >
-                              {run.text}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    );
-                  },
-                )}
-              </div>
-            ) : activeSection?.type === "table" ? (
-              <div className="flex min-h-full flex-col">
-                {isEditMode ? (
+                      return (
+                        <div
+                          key={`${paragraph.index}-${paragraph.text}`}
+                          contentEditable={isEditMode}
+                          suppressContentEditableWarning={isEditMode}
+                          onInput={
+                            isEditMode
+                              ? (event) =>
+                                  handleParagraphChange(
+                                    activeSection.id,
+                                    paragraphIndex,
+                                    event.currentTarget.innerText,
+                                  )
+                              : undefined
+                          }
+                          onBlur={
+                            isEditMode
+                              ? (event) =>
+                                  handleParagraphBlur(
+                                    activeSection.id,
+                                    paragraphIndex,
+                                    event.currentTarget.innerText,
+                                  )
+                              : undefined
+                          }
+                          className={cn(
+                            "rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-800 outline-none transition-colors focus:border-blue-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
+                            paragraphPresentation.className,
+                          )}
+                          style={paragraphPresentation.style}
+                        >
+                          {paragraph.runs.map((run, runIndex) => {
+                            const runPresentation = mapWordStyleToPresentation(
+                              run.style,
+                            );
+                            return (
+                              <span
+                                key={`${paragraph.index}-${runIndex}`}
+                                className={runPresentation.className}
+                                style={runPresentation.style}
+                              >
+                                {run.text}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      );
+                    },
+                  )}
+                </div>
+              ) : activeSection?.type === "table" ? (
+                <div className="flex min-h-full flex-col">
                   <StandardWordTable
                     section={activeSection}
                     isEditable
@@ -1609,14 +1646,75 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
                       handleTableCellBlur(activeSection.id, row, col, value)
                     }
                   />
-                ) : (
-                  <StandardWordTable
-                    section={activeSection}
-                    isEditable={false}
-                  />
-                )}
+                </div>
+              ) : null
+            ) : (
+              <div className="flex min-h-full flex-col gap-4">
+                {sections.map((section) => (
+                  <section
+                    key={section.id}
+                    ref={(node) => {
+                      sectionElementRefs.current[section.id] = node;
+                    }}
+                    className="scroll-mt-4 overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950"
+                  >
+                    <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/80 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                          {section.name}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                          {section.type === "text"
+                            ? `${section.paragraphs.length} paragraphs`
+                            : `${section.row_count} rows · ${section.column_count} cols`}
+                        </p>
+                      </div>
+                      <SectionBadge text={section.type === "text" ? "Text" : "Table"} />
+                    </div>
+
+                    {section.type === "text" ? (
+                      <div className="space-y-4 p-4">
+                        {section.paragraphs.map((paragraph) => {
+                          const paragraphPresentation = mapWordStyleToPresentation(
+                            paragraph.style,
+                          );
+
+                          return (
+                            <div
+                              key={`${section.id}-${paragraph.index}-${paragraph.text}`}
+                              className={cn(
+                                "rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
+                                paragraphPresentation.className,
+                              )}
+                              style={paragraphPresentation.style}
+                            >
+                              {paragraph.runs.map((run, runIndex) => {
+                                const runPresentation = mapWordStyleToPresentation(
+                                  run.style,
+                                );
+                                return (
+                                  <span
+                                    key={`${section.id}-${paragraph.index}-${runIndex}`}
+                                    className={runPresentation.className}
+                                    style={runPresentation.style}
+                                  >
+                                    {run.text}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="p-4">
+                        <StandardWordTable section={section} isEditable={false} />
+                      </div>
+                    )}
+                  </section>
+                ))}
               </div>
-            ) : null}
+            )}
           </main>
         </div>
       )}

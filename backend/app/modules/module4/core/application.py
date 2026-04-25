@@ -26,6 +26,10 @@ from .runtime import (
     tenant_from_request,
 )
 
+LOCALHOST_CORS_ORIGIN_REGEX = (
+    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|capacitor://localhost|ionic://localhost)$"
+)
+
 MODULE4_ROOT = Path(__file__).resolve().parents[1]
 load_module4_env(MODULE4_ROOT)
 logger = logging.getLogger("uvicorn.error")
@@ -158,6 +162,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"] if cors_allow_all else cors_origins_list,
+        allow_origin_regex=None if cors_allow_all else LOCALHOST_CORS_ORIGIN_REGEX,
         allow_credentials=not cors_allow_all,
         allow_methods=["*"],
         allow_headers=["*"],

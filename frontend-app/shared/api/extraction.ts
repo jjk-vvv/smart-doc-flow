@@ -15,6 +15,8 @@ export type ExtractionTraceHitLike = {
   locator?: Record<string, unknown> | null;
 };
 
+const BACKEND_FALLBACKS_KEY = 'smart_doc_flow.backend_entry_fallbacks';
+
 const normalizeExtractBase = (value = ''): string => {
   const normalized = resolveApiBase(value);
   if (!normalized) return '';
@@ -56,6 +58,12 @@ const getViteExtractBase = (): string => {
   }
 };
 
+const parseExtractBaseCandidates = (raw = ''): string[] =>
+  String(raw || '')
+    .split(/[,\n;]/)
+    .map((item) => normalizeExtractBase(item))
+    .filter(Boolean);
+
 const getLocalStorageExtractBase = (): string => {
   if (typeof window === 'undefined') return '';
   try {
@@ -65,8 +73,31 @@ const getLocalStorageExtractBase = (): string => {
   }
 };
 
+const getLocalStorageBackendFallbackBases = (): string[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    return parseExtractBaseCandidates(window.localStorage.getItem(BACKEND_FALLBACKS_KEY) || '');
+  } catch {
+    return [];
+  }
+};
+
+const isNativeBuildMode = (): boolean => {
+  try {
+    return String(import.meta.env.MODE || '').trim().toLowerCase() === 'native';
+  } catch {
+    return false;
+  }
+};
+
 const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
   const candidates: string[] = [];
+  const explicitViteBase = normalizeExtractBase(getViteExtractBase());
+  const envFallbackBases = parseExtractBaseCandidates(
+    String((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_BACKEND_ENTRY_URL_FALLBACKS || ''),
+  );
+  const storedFallbackBases = getLocalStorageBackendFallbackBases();
+  const hasConfiguredBase = Boolean(explicitViteBase) || envFallbackBases.length > 0 || storedFallbackBases.length > 0;
   const push = (value = '') => {
     const normalized = normalizeExtractBase(value);
     if (candidates.includes(normalized)) return;
@@ -75,8 +106,12 @@ const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
 
   push(preferredBase);
   push(getLocalStorageExtractBase());
-  push(getViteExtractBase());
-  push('');
+  push(explicitViteBase);
+  envFallbackBases.forEach((item) => push(item));
+  storedFallbackBases.forEach((item) => push(item));
+  if (!isNativeBuildMode() || !hasConfiguredBase) {
+    push('');
+  }
 
   return candidates.length > 0 ? candidates : [''];
 };

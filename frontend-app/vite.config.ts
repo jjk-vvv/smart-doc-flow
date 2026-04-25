@@ -8,6 +8,12 @@ const parsePort = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const normalizeBasePath = (value: string | undefined, fallback: string): string => {
+  const normalized = String(value || fallback).trim() || fallback;
+  const withLeadingSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
+  return withLeadingSlash.endsWith('/') ? withLeadingSlash : `${withLeadingSlash}/`;
+};
+
 const GRAPH_RUNTIME_PACKAGES = [
   '/node_modules/@neo4j-nvl/',
   '/node_modules/d3-force/',
@@ -37,11 +43,19 @@ export default defineConfig(({ mode }) => {
   const gatewayPort = parsePort(process.env.GATEWAY_PORT, 3001);
   const frontendAppPort = parsePort(process.env.FRONTEND_APP_PORT, 3002);
   const backendEntryUrl = process.env.VITE_BACKEND_ENTRY_URL || `http://localhost:${gatewayPort}`;
+  const frontendAppPublicBase = normalizeBasePath(
+    process.env.FRONTEND_APP_PUBLIC_BASE,
+    mode === 'native' ? '/' : '/m/',
+  );
+  const frontendAppBuildOutDir = String(
+    process.env.VITE_BUILD_OUT_DIR || (mode === 'native' ? 'dist-native' : 'dist'),
+  ).trim() || (mode === 'native' ? 'dist-native' : 'dist');
   const devProxyTimeoutMs = Math.max(
     180_000,
     Number.parseInt(process.env.VITE_DEV_PROXY_TIMEOUT_MS || '600000', 10) || 600_000,
   );
   return {
+    base: mode === 'production' ? frontendAppPublicBase : '/',
     server: {
       port: frontendAppPort,
       strictPort: true,
@@ -106,6 +120,7 @@ export default defineConfig(({ mode }) => {
       include: PREBUNDLED_DYNAMIC_PREVIEW_DEPS,
     },
     build: {
+      outDir: frontendAppBuildOutDir,
       rollupOptions: {
         output: {
           manualChunks(id) {

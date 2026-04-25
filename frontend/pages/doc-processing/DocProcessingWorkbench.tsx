@@ -48,6 +48,14 @@ import {
 } from './lib/reportSelection';
 import { buildModule1ApiUrl } from '@/shared/api/module1';
 import { consumeModule1DraftFromHomeWorkbench } from '../../shared/state/homeWorkbench';
+import {
+  clearModule1WorkbenchSession,
+  readModule1WorkbenchBinaryBundles,
+  readModule1WorkbenchSessionSnapshot,
+  syncModule1WorkbenchBinaryBundles,
+  type Module1WorkbenchBinaryBundle,
+  writeModule1WorkbenchSessionSnapshot,
+} from '../../shared/state/module1WorkbenchSession';
 
 const pdfWorkerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 pdfjs.GlobalWorkerOptions.workerSrc = `${pdfWorkerSrc}?v=${pdfjs.version}`;
@@ -331,6 +339,75 @@ type PreviewPaneMode = 'report' | 'current' | 'original' | 'compare';
 type PdfReadingMode = 'scroll' | 'paged';
 type PreviewCategory = 'pdf' | 'excel' | 'text' | 'image' | 'word' | 'other';
 
+type PersistedMessage = {
+  id: string;
+  type: Message['type'];
+  content: string;
+  fileIds?: string[];
+  displayMode?: Message['displayMode'];
+  timestamp: string;
+};
+
+type PersistedFileInfo = {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  content?: string;
+  uploadTime: string;
+  status: FileInfo['status'];
+  progress?: number;
+  preview?: string;
+  previewType?: string;
+  conversionStatus?: FileInfo['conversionStatus'];
+  convertedPdfFileName?: string;
+  result?: string;
+  error?: string;
+  sourceFileId?: string;
+};
+
+type PersistedConversationRecord = {
+  id: string;
+  title: string;
+  titleEdited: boolean;
+  createdAt: string;
+  updatedAt: string;
+  messages: PersistedMessage[];
+  files: PersistedFileInfo[];
+  composerFileIds: string[];
+  rememberedFileBatchIds: string[];
+  selectedFileId: string | null;
+  inputText: string;
+  previewPaneMode: PreviewPaneMode;
+  previewReadingMode: PdfReadingMode;
+  showPreviewPanel: boolean;
+};
+
+type Module1WorkbenchSessionSnapshot = {
+  version: 1;
+  activeConversationId: string | null;
+  conversations: PersistedConversationRecord[];
+  isConversationSidebarCollapsed: boolean;
+  editableReportByFileId: Record<string, string>;
+  reportFormattingByFileId: Record<string, ReportFormattingState>;
+  reportHistoryByFileId: Record<string, ReportHistorySnapshot[]>;
+  activeReportMessageIdByFileId: Record<string, string>;
+  reportSourceByVersionKey: Record<string, string>;
+};
+
+type RestoredWorkbenchSession = {
+  conversations: ConversationRecord[];
+  activeConversationId: string;
+  isConversationSidebarCollapsed: boolean;
+  editableReportByFileId: Record<string, string>;
+  reportFormattingByFileId: Record<string, ReportFormattingState>;
+  reportHistoryByFileId: Record<string, ReportHistorySnapshot[]>;
+  activeReportMessageIdByFileId: Record<string, string>;
+  reportSourceByVersionKey: Record<string, string>;
+};
+
+const MODULE1_WORKBENCH_SESSION_VERSION = 1;
+
 const REPORT_ACTION_FEEDBACK: Record<ReportQuickEditAction, string> = {
   rewrite: '已改写选中文本',
   expand: '已扩写选中文本',
@@ -355,6 +432,147 @@ const createReportProgressState = (
 });
 
 const buildReportVersionKey = (fileId: string, messageId: string): string => `${fileId}::${messageId}`;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  !!value && typeof value === 'object' && !Array.isArray(value)
+);
+
+const sanitizePersistedPreviewUrl = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized || /^blob:/i.test(normalized)) return undefined;
+  return normalized;
+};
+
+const restoreDate = (value: unknown, fallback: Date = new Date()): Date => {
+  if (typeof value !== 'string') return fallback;
+  const nextDate = new Date(value);
+  return Number.isNaN(nextDate.getTime()) ? fallback : nextDate;
+};
+
+const restorePreviewPaneMode = (value: unknown): PreviewPaneMode => (
+  value === 'report' || value === 'original' || value === 'compare' ? value : 'current'
+);
+
+const restorePdfReadingMode = (value: unknown): PdfReadingMode => (
+  value === 'scroll' ? 'scroll' : 'paged'
+);
+
+const restoreStringMap = (value: unknown): Record<string, string> => {
+  if (!isRecord(value)) return {};
+  return Object.entries(value).reduce<Record<string, string>>((accumulator, [key, entryValue]) => {
+    if (typeof entryValue === 'string' && key.trim()) {
+      accumulator[key] = entryValue;
+    }
+    return accumulator;
+  }, {});
+};
+
+const serializeMessage = (message: Message): PersistedMessage => ({
+  id: message.id,
+  type: message.type,
+  content: message.content,
+  fileIds: message.fileIds ? [...message.fileIds] : undefined,
+  displayMode: message.displayMode,
+  timestamp: message.timestamp.toISOString(),
+});
+
+const restoreMessage = (message: PersistedMessage): Message | null => {
+  if (!message || typeof message.id !== 'string' || typeof message.content !== 'string') {
+    return null;
+  }
+  if (message.type !== 'user' && message.type !== 'assistant' && message.type !== 'system') {
+    return null;
+  }
+  return {
+    id: message.id,
+    type: message.type,
+    content: message.content,
+    fileIds: Array.isArray(message.fileIds)
+      ? message.fileIds.filter((fileId): fileId is string => typeof fileId === 'string' && fileId.trim().length > 0)
+      : undefined,
+    displayMode: message.displayMode === 'report' ? 'report' : message.displayMode === 'chat' ? 'chat' : undefined,
+    timestamp: restoreDate(message.timestamp),
+  };
+};
+
+const serializeFileInfo = (file: FileInfo): PersistedFileInfo => ({
+  id: file.id,
+  name: file.name,
+  size: file.size,
+  type: file.type,
+  content: file.content,
+  uploadTime: file.uploadTime.toISOString(),
+  status: file.status,
+  progress: file.progress,
+  preview: sanitizePersistedPreviewUrl(file.preview),
+  previewType: file.previewType,
+  conversionStatus: file.conversionStatus,
+  convertedPdfFileName: file.convertedPdfFileName,
+  result: file.result,
+  error: file.error,
+  sourceFileId: file.sourceFileId,
+});
+
+const restoreFileInfo = (
+  file: PersistedFileInfo,
+  bundles: Record<string, Module1WorkbenchBinaryBundle>,
+): FileInfo | null => {
+  if (!file || typeof file.id !== 'string' || typeof file.name !== 'string') {
+    return null;
+  }
+
+  const bundle = bundles[file.id];
+  return {
+    id: file.id,
+    name: file.name,
+    size: Number.isFinite(file.size) ? file.size : bundle?.file?.size ?? 0,
+    type: typeof file.type === 'string' ? file.type : bundle?.file?.type ?? '',
+    content: typeof file.content === 'string' ? file.content : undefined,
+    uploadTime: restoreDate(file.uploadTime),
+    status: file.status === 'uploading'
+      || file.status === 'ready'
+      || file.status === 'error'
+      || file.status === 'processing'
+      || file.status === 'completed'
+      || file.status === 'converting'
+      ? file.status
+      : 'ready',
+    progress: typeof file.progress === 'number' && Number.isFinite(file.progress) ? file.progress : undefined,
+    file: bundle?.file ?? undefined,
+    preview: sanitizePersistedPreviewUrl(file.preview),
+    previewType: typeof file.previewType === 'string' ? file.previewType : undefined,
+    previewBlob: bundle?.previewBlob ?? undefined,
+    conversionStatus: file.conversionStatus === 'converting'
+      || file.conversionStatus === 'ready'
+      || file.conversionStatus === 'error'
+      ? file.conversionStatus
+      : 'idle',
+    convertedPdfBlob: bundle?.convertedPdfBlob ?? undefined,
+    convertedPdfFileName: typeof file.convertedPdfFileName === 'string' ? file.convertedPdfFileName : undefined,
+    result: typeof file.result === 'string' ? file.result : undefined,
+    error: typeof file.error === 'string' ? file.error : undefined,
+    originalFile: bundle?.originalFile ?? undefined,
+    sourceFileId: typeof file.sourceFileId === 'string' ? file.sourceFileId : undefined,
+  };
+};
+
+const serializeConversationRecord = (conversation: ConversationRecord): PersistedConversationRecord => ({
+  id: conversation.id,
+  title: conversation.title,
+  titleEdited: conversation.titleEdited,
+  createdAt: conversation.createdAt.toISOString(),
+  updatedAt: conversation.updatedAt.toISOString(),
+  messages: conversation.messages.map(serializeMessage),
+  files: Object.values(conversation.files).map(serializeFileInfo),
+  composerFileIds: [...conversation.composerFileIds],
+  rememberedFileBatchIds: [...conversation.rememberedFileBatchIds],
+  selectedFileId: conversation.selectedFileId,
+  inputText: conversation.inputText,
+  previewPaneMode: conversation.previewPaneMode,
+  previewReadingMode: conversation.previewReadingMode,
+  showPreviewPanel: conversation.showPreviewPanel,
+});
 
 // 辅助函数
 const formatFileSize = (bytes: number): string => {
@@ -657,6 +875,195 @@ const getFilesByIds = (
   ids: string[] | undefined
 ): FileInfo[] => getExistingFileIds(fileMap, ids).map((id) => fileMap[id]);
 
+const restoreConversationRecord = (
+  conversation: PersistedConversationRecord,
+  bundles: Record<string, Module1WorkbenchBinaryBundle>,
+): ConversationRecord | null => {
+  if (!conversation || typeof conversation.id !== 'string' || typeof conversation.title !== 'string') {
+    return null;
+  }
+
+  const restoredMessages = Array.isArray(conversation.messages)
+    ? conversation.messages
+        .map((message) => restoreMessage(message))
+        .filter((message): message is Message => Boolean(message))
+    : [];
+  const restoredFiles = Array.isArray(conversation.files)
+    ? conversation.files
+        .map((file) => restoreFileInfo(file, bundles))
+        .filter((file): file is FileInfo => Boolean(file))
+    : [];
+  const fileMap = restoredFiles.reduce<Record<string, FileInfo>>((accumulator, file) => {
+    accumulator[file.id] = file;
+    return accumulator;
+  }, {});
+
+  return {
+    id: conversation.id,
+    title: conversation.title,
+    titleEdited: Boolean(conversation.titleEdited),
+    createdAt: restoreDate(conversation.createdAt),
+    updatedAt: restoreDate(conversation.updatedAt),
+    messages: restoredMessages,
+    files: fileMap,
+    composerFileIds: getExistingFileIds(fileMap, Array.isArray(conversation.composerFileIds) ? conversation.composerFileIds : []),
+    rememberedFileBatchIds: getExistingFileIds(fileMap, Array.isArray(conversation.rememberedFileBatchIds) ? conversation.rememberedFileBatchIds : []),
+    selectedFileId: typeof conversation.selectedFileId === 'string' && fileMap[conversation.selectedFileId]
+      ? conversation.selectedFileId
+      : null,
+    inputText: typeof conversation.inputText === 'string' ? conversation.inputText : '',
+    previewPaneMode: restorePreviewPaneMode(conversation.previewPaneMode),
+    previewReadingMode: restorePdfReadingMode(conversation.previewReadingMode),
+    showPreviewPanel: Boolean(conversation.showPreviewPanel),
+  };
+};
+
+const cloneReportFormattingMap = (
+  value: unknown,
+): Record<string, ReportFormattingState> => {
+  if (!isRecord(value)) return {};
+  return Object.entries(value).reduce<Record<string, ReportFormattingState>>((accumulator, [key, entryValue]) => {
+    if (isRecord(entryValue) && key.trim()) {
+      accumulator[key] = cloneReportFormatting(entryValue as ReportFormattingState);
+    }
+    return accumulator;
+  }, {});
+};
+
+const cloneReportHistoryMap = (
+  value: unknown,
+): Record<string, ReportHistorySnapshot[]> => {
+  if (!isRecord(value)) return {};
+  return Object.entries(value).reduce<Record<string, ReportHistorySnapshot[]>>((accumulator, [key, entryValue]) => {
+    if (!Array.isArray(entryValue) || !key.trim()) return accumulator;
+    accumulator[key] = entryValue
+      .filter((snapshot): snapshot is ReportHistorySnapshot => (
+        isRecord(snapshot)
+        && typeof snapshot.text === 'string'
+        && isRecord(snapshot.formatting)
+      ))
+      .map((snapshot) => ({
+        text: snapshot.text,
+        formatting: cloneReportFormatting(snapshot.formatting as ReportFormattingState),
+      }));
+    return accumulator;
+  }, {});
+};
+
+const restoreWorkbenchSessionSnapshot = (
+  snapshot: Module1WorkbenchSessionSnapshot | null,
+  bundles: Record<string, Module1WorkbenchBinaryBundle>,
+): RestoredWorkbenchSession | null => {
+  if (!snapshot || snapshot.version !== MODULE1_WORKBENCH_SESSION_VERSION) {
+    return null;
+  }
+
+  const restoredConversations = Array.isArray(snapshot.conversations)
+    ? snapshot.conversations
+        .map((conversation) => restoreConversationRecord(conversation, bundles))
+        .filter((conversation): conversation is ConversationRecord => Boolean(conversation))
+    : [];
+
+  if (restoredConversations.length === 0) {
+    return null;
+  }
+
+  const activeConversationId = typeof snapshot.activeConversationId === 'string'
+    && restoredConversations.some((conversation) => conversation.id === snapshot.activeConversationId)
+    ? snapshot.activeConversationId
+    : restoredConversations[0].id;
+
+  return {
+    conversations: restoredConversations,
+    activeConversationId,
+    isConversationSidebarCollapsed: typeof snapshot.isConversationSidebarCollapsed === 'boolean'
+      ? snapshot.isConversationSidebarCollapsed
+      : true,
+    editableReportByFileId: restoreStringMap(snapshot.editableReportByFileId),
+    reportFormattingByFileId: cloneReportFormattingMap(snapshot.reportFormattingByFileId),
+    reportHistoryByFileId: cloneReportHistoryMap(snapshot.reportHistoryByFileId),
+    activeReportMessageIdByFileId: restoreStringMap(snapshot.activeReportMessageIdByFileId),
+    reportSourceByVersionKey: restoreStringMap(snapshot.reportSourceByVersionKey),
+  };
+};
+
+const buildWorkbenchSessionSnapshot = (
+  conversations: ConversationRecord[],
+  activeConversationId: string,
+  isConversationSidebarCollapsed: boolean,
+  editableReportByFileId: Record<string, string>,
+  reportFormattingByFileId: Record<string, ReportFormattingState>,
+  reportHistoryByFileId: Record<string, ReportHistorySnapshot[]>,
+  activeReportMessageIdByFileId: Record<string, string>,
+  reportSourceByVersionKey: Record<string, string>,
+): Module1WorkbenchSessionSnapshot => ({
+  version: MODULE1_WORKBENCH_SESSION_VERSION,
+  activeConversationId,
+  conversations: conversations.map(serializeConversationRecord),
+  isConversationSidebarCollapsed,
+  editableReportByFileId: { ...editableReportByFileId },
+  reportFormattingByFileId: cloneReportFormattingMap(reportFormattingByFileId),
+  reportHistoryByFileId: cloneReportHistoryMap(reportHistoryByFileId),
+  activeReportMessageIdByFileId: { ...activeReportMessageIdByFileId },
+  reportSourceByVersionKey: { ...reportSourceByVersionKey },
+});
+
+const collectConversationBinaryBundles = (
+  conversations: ConversationRecord[],
+): Module1WorkbenchBinaryBundle[] => {
+  const bundleMap = new Map<string, Module1WorkbenchBinaryBundle>();
+
+  conversations.forEach((conversation) => {
+    Object.values(conversation.files).forEach((file) => {
+      bundleMap.set(file.id, {
+        fileId: file.id,
+        file: file.file ?? null,
+        originalFile: file.originalFile ?? null,
+        previewBlob: file.previewBlob ?? null,
+        convertedPdfBlob: file.convertedPdfBlob ?? null,
+      });
+    });
+  });
+
+  return Array.from(bundleMap.values());
+};
+
+const buildBinaryBundleSignature = (conversations: ConversationRecord[]): string => JSON.stringify(
+  collectConversationBinaryBundles(conversations)
+    .map((bundle) => ({
+      fileId: bundle.fileId,
+      file: bundle.file
+        ? {
+            name: bundle.file.name,
+            size: bundle.file.size,
+            type: bundle.file.type,
+            lastModified: bundle.file.lastModified,
+          }
+        : null,
+      originalFile: bundle.originalFile
+        ? {
+            name: bundle.originalFile.name,
+            size: bundle.originalFile.size,
+            type: bundle.originalFile.type,
+            lastModified: bundle.originalFile.lastModified,
+          }
+        : null,
+      previewBlob: bundle.previewBlob
+        ? {
+            size: bundle.previewBlob.size,
+            type: bundle.previewBlob.type,
+          }
+        : null,
+      convertedPdfBlob: bundle.convertedPdfBlob
+        ? {
+            size: bundle.convertedPdfBlob.size,
+            type: bundle.convertedPdfBlob.type,
+          }
+        : null,
+    }))
+    .sort((left, right) => left.fileId.localeCompare(right.fileId))
+);
+
 const removeFileIds = (ids: string[], idsToRemove: string[]): string[] => {
   if (ids.length === 0 || idsToRemove.length === 0) return ids;
   const idsToRemoveSet = new Set(idsToRemove);
@@ -706,6 +1113,23 @@ const isConversationEmpty = (conversation: Pick<ConversationRecord, 'messages' |
   && Object.keys(conversation.files).length === 0
   && !conversation.inputText.trim()
 );
+
+const hasMeaningfulWorkbenchSession = (
+  conversations: ConversationRecord[],
+  editableReportByFileId: Record<string, string>,
+  reportFormattingByFileId: Record<string, ReportFormattingState>,
+  reportHistoryByFileId: Record<string, ReportHistorySnapshot[]>,
+): boolean => {
+  if (conversations.length !== 1) return true;
+  if (conversations.some((conversation) => !isConversationEmpty(conversation) || conversation.titleEdited)) {
+    return true;
+  }
+  return (
+    Object.keys(editableReportByFileId).length > 0
+    || Object.keys(reportFormattingByFileId).length > 0
+    || Object.keys(reportHistoryByFileId).length > 0
+  );
+};
 
 const deriveConversationTitle = (messages: Message[], fallbackTitle: string) => {
   const firstUserMessage = messages.find((message) => message.type === 'user' && message.content.trim());
@@ -1234,6 +1658,8 @@ export const DocProcessingWorkbench: React.FC = () => {
   const initialConversation = useMemo(() => createConversationRecord(1), []);
   const hydratingConversationRef = useRef(false);
   const activeConversationIdRef = useRef(initialConversation.id);
+  const snapshotPersistTimeoutRef = useRef<number | null>(null);
+  const [sessionHydrated, setSessionHydrated] = useState(false);
 
   const [conversations, setConversations] = useState<ConversationRecord[]>(() => [initialConversation]);
   const [activeConversationId, setActiveConversationId] = useState(initialConversation.id);
@@ -1346,6 +1772,23 @@ export const DocProcessingWorkbench: React.FC = () => {
       conversation.id === activeConversationId ? syncConversationRecord(conversation) : conversation
     ))
   ), [activeConversationId, syncConversationRecord]);
+  const conversationsForPersistence = useMemo(
+    () => commitCurrentConversation(conversations),
+    [commitCurrentConversation, conversations]
+  );
+  const binaryBundleSignature = useMemo(
+    () => buildBinaryBundleSignature(conversationsForPersistence),
+    [conversationsForPersistence]
+  );
+  const hasPersistedSessionContent = useMemo(
+    () => hasMeaningfulWorkbenchSession(
+      conversationsForPersistence,
+      editableReportByFileId,
+      reportFormattingByFileId,
+      reportHistoryByFileId,
+    ),
+    [conversationsForPersistence, editableReportByFileId, reportFormattingByFileId, reportHistoryByFileId]
+  );
   const selectedFile = useMemo(
     () => selectedFileId ? files[selectedFileId] : null,
     [files, selectedFileId]
@@ -1493,9 +1936,9 @@ export const DocProcessingWorkbench: React.FC = () => {
   }, [activeConversationId]);
 
   useEffect(() => {
-    if (hydratingConversationRef.current) return;
+    if (!sessionHydrated || hydratingConversationRef.current) return;
     setConversations((prev) => commitCurrentConversation(prev));
-  }, [commitCurrentConversation]);
+  }, [commitCurrentConversation, sessionHydrated]);
 
   useEffect(() => {
     if (selectedFileId) return;
@@ -1544,16 +1987,16 @@ export const DocProcessingWorkbench: React.FC = () => {
   const previewedFileName = previewedFile?.name ?? '预览文件';
 
   const syncPreviewUrl = useCallback((file: FileInfo | null, setter: React.Dispatch<React.SetStateAction<string | null>>) => {
-    if (!file?.preview && !file?.file) {
+    if (!file?.preview && !file?.previewBlob && !file?.file) {
       setter(null);
       return undefined;
     }
 
     // 预览优先使用后端或转换后的地址，缺失时才回退到本地 blob。
     let createdPreviewUrl: string | null = null;
-    const nextPreviewUrl = file.preview ?? URL.createObjectURL(file.file!);
+    const nextPreviewUrl = file.preview ?? URL.createObjectURL(file.previewBlob ?? file.file!);
 
-    if (!file.preview && file.file) {
+    if (!file.preview && (file.previewBlob || file.file)) {
       createdPreviewUrl = nextPreviewUrl;
     }
 
@@ -1621,6 +2064,10 @@ export const DocProcessingWorkbench: React.FC = () => {
   // 组件卸载时中止请求
   React.useEffect(() => {
     return () => {
+      if (snapshotPersistTimeoutRef.current) {
+        window.clearTimeout(snapshotPersistTimeoutRef.current);
+        snapshotPersistTimeoutRef.current = null;
+      }
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -1683,6 +2130,55 @@ export const DocProcessingWorkbench: React.FC = () => {
 
     hydratingConversationRef.current = false;
   }, [resetPreviewViewport]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      try {
+        const [snapshot, bundles] = await Promise.all([
+          Promise.resolve(readModule1WorkbenchSessionSnapshot<Module1WorkbenchSessionSnapshot>()),
+          readModule1WorkbenchBinaryBundles(),
+        ]);
+        if (cancelled) return;
+
+        const restoredSession = restoreWorkbenchSessionSnapshot(snapshot, bundles);
+        if (!restoredSession) {
+          setSessionHydrated(true);
+          return;
+        }
+
+        hydratingConversationRef.current = true;
+        reportSourceByVersionKeyRef.current = { ...restoredSession.reportSourceByVersionKey };
+        setConversations(restoredSession.conversations);
+        setActiveConversationId(restoredSession.activeConversationId);
+        setIsConversationSidebarCollapsed(restoredSession.isConversationSidebarCollapsed);
+        setEditableReportByFileId(restoredSession.editableReportByFileId);
+        setReportFormattingByFileId(restoredSession.reportFormattingByFileId);
+        setReportHistoryByFileId(restoredSession.reportHistoryByFileId);
+        setActiveReportMessageIdByFileId(restoredSession.activeReportMessageIdByFileId);
+
+        const activeConversation = restoredSession.conversations.find(
+          (conversation) => conversation.id === restoredSession.activeConversationId,
+        ) ?? restoredSession.conversations[0];
+        loadConversation(activeConversation);
+      } finally {
+        if (cancelled) return;
+        window.setTimeout(() => {
+          if (!cancelled) {
+            hydratingConversationRef.current = false;
+            setSessionHydrated(true);
+          }
+        }, 0);
+      }
+    };
+
+    void restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadConversation]);
 
   const createNewConversation = useCallback(() => {
     if (isLoading) return;
@@ -2031,6 +2527,7 @@ export const DocProcessingWorkbench: React.FC = () => {
   }, [processUploadedFiles]);
 
   useEffect(() => {
+    if (!sessionHydrated) return;
     void consumeModule1DraftFromHomeWorkbench().then((handoff) => {
       if (!handoff) return;
 
@@ -2038,7 +2535,62 @@ export const DocProcessingWorkbench: React.FC = () => {
         // process HomeWorkbench items ...
       }
     });
-  }, [processUploadedFiles]);
+  }, [processUploadedFiles, sessionHydrated]);
+
+  useEffect(() => {
+    if (!sessionHydrated) return;
+
+    if (snapshotPersistTimeoutRef.current) {
+      window.clearTimeout(snapshotPersistTimeoutRef.current);
+      snapshotPersistTimeoutRef.current = null;
+    }
+
+    const persistSnapshot = () => {
+      if (!hasPersistedSessionContent) {
+        void clearModule1WorkbenchSession();
+        return;
+      }
+
+      writeModule1WorkbenchSessionSnapshot(
+        buildWorkbenchSessionSnapshot(
+          conversationsForPersistence,
+          activeConversationId,
+          isConversationSidebarCollapsed,
+          editableReportByFileId,
+          reportFormattingByFileId,
+          reportHistoryByFileId,
+          activeReportMessageIdByFileId,
+          reportSourceByVersionKeyRef.current,
+        ),
+      );
+    };
+
+    snapshotPersistTimeoutRef.current = window.setTimeout(persistSnapshot, 160);
+
+    return () => {
+      if (snapshotPersistTimeoutRef.current) {
+        window.clearTimeout(snapshotPersistTimeoutRef.current);
+        snapshotPersistTimeoutRef.current = null;
+      }
+    };
+  }, [
+    activeConversationId,
+    activeReportMessageIdByFileId,
+    conversationsForPersistence,
+    editableReportByFileId,
+    hasPersistedSessionContent,
+    isConversationSidebarCollapsed,
+    reportFormattingByFileId,
+    reportHistoryByFileId,
+    sessionHydrated,
+  ]);
+
+  useEffect(() => {
+    if (!sessionHydrated) return;
+    void syncModule1WorkbenchBinaryBundles(
+      hasPersistedSessionContent ? collectConversationBinaryBundles(conversationsForPersistence) : [],
+    );
+  }, [binaryBundleSignature, hasPersistedSessionContent, sessionHydrated]);
 
   const handleDocumentDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (!isFileDragEvent(event.dataTransfer)) return;

@@ -1750,32 +1750,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
 
                     <div className="flex-1 flex flex-col relative py-2">
                       {visibleItems.length === 0 ? (
-                        <div className="absolute inset-0 overflow-hidden pointer-events-none select-none flex flex-col">
-                          <div className="bg-gradient-to-b from-transparent via-white/40 dark:via-[#0B1120]/40 to-white dark:to-[#0B1120] absolute inset-0 z-10" />
-          {Array.from({ length: 15 }).map((_, i) => (
-            <div key={i} className="grid grid-cols-[minmax(0,2.2fr)_140px_120px_140px_180px] gap-3 items-center border-b border-slate-50 dark:border-white/[0.02] py-3 px-6 opacity-60">
-              <div className="flex items-center gap-3">
-                <div className="h-7 w-7 rounded bg-slate-200 dark:bg-white/[0.05]" />
-                <div className="h-3 w-48 rounded bg-slate-200 dark:bg-white/[0.05]" />
-              </div>
-              <div className="h-3 w-20 rounded bg-slate-200 dark:bg-white/[0.05]" />
-              <div className="h-3 w-12 rounded bg-slate-200 dark:bg-white/[0.05]" />
-              <div className="h-3 w-24 rounded bg-slate-200 dark:bg-white/[0.05]" />
-              <div className="h-3 w-16 rounded bg-slate-200 dark:bg-white/[0.05]" />
-            </div>
-          ))}
-                          
-                          {searchValue ? (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center text-center z-20">
-                              <div className="flex h-16 w-16 items-center justify-center rounded-[24px] bg-slate-50 dark:bg-white/[0.02] text-slate-400 dark:text-slate-500">
-                                <Search size={28} />
-                              </div>
-                              <div className="mt-5 text-[14px] font-medium text-slate-500 dark:text-slate-400">
-                                没有找到匹配的文件
-                              </div>
+                        searchValue ? (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                            <div className="flex h-16 w-16 items-center justify-center rounded-[24px] bg-slate-50 dark:bg-white/[0.02] text-slate-400 dark:text-slate-500">
+                              <Search size={28} />
                             </div>
-                          ) : null}
-                        </div>
+                            <div className="mt-5 text-[14px] font-medium text-slate-500 dark:text-slate-400">
+                              没有找到匹配的文件
+                            </div>
+                          </div>
+                        ) : null
                       ) : (
                         <div className="space-y-0">
                           {visibleItems.map((item) => {

@@ -17,9 +17,28 @@ export const AssistantCitationList: React.FC<AssistantCitationListProps> = ({
 }) => {
     if (!Array.isArray(citations) || citations.length === 0) return null;
 
+    const limit = compact ? 3 : 5;
+    const prioritized: AssistantCitation[] = [];
+    const seenTypes = new Set<string>();
+
+    citations.forEach((citation) => {
+        const citationType = String(citation.citation_type || '').trim().toLowerCase() || 'other';
+        if (seenTypes.has(citationType) || prioritized.length >= limit) return;
+        seenTypes.add(citationType);
+        prioritized.push(citation);
+    });
+
+    if (prioritized.length < limit) {
+        citations.forEach((citation) => {
+            if (prioritized.length >= limit) return;
+            if (prioritized.includes(citation)) return;
+            prioritized.push(citation);
+        });
+    }
+
     return (
         <div className={cn("mt-2.5 space-y-2", compact && "mt-2 space-y-1.5")}>
-            {citations.slice(0, compact ? 3 : 5).map((citation, idx) => {
+            {prioritized.map((citation, idx) => {
                 const payload = citation.payload && typeof citation.payload === 'object'
                     ? citation.payload
                     : {};

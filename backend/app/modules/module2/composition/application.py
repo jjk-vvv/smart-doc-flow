@@ -11,6 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .foundation import build_module2_default_bootstrap_components
 
+LOCALHOST_CORS_ORIGIN_REGEX = (
+    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|capacitor://localhost|ionic://localhost)$"
+)
+
 MODULE2_ROOT = Path(__file__).resolve().parents[1]
 CUSTOM_MODULE2_ENV_FILE = str(os.getenv("MODULE2_ENV_FILE", "") or "").strip()
 
@@ -71,6 +75,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"] if CORS_ALLOW_ALL else CORS_ORIGINS,
+        allow_origin_regex=None if CORS_ALLOW_ALL else LOCALHOST_CORS_ORIGIN_REGEX,
         allow_credentials=not CORS_ALLOW_ALL,
         allow_methods=["*"],
         allow_headers=["*"],

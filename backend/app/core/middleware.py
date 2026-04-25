@@ -8,12 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import Settings
 
+LOCALHOST_CORS_ORIGIN_REGEX = (
+    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|capacitor://localhost|ionic://localhost)$"
+)
+
 
 def register_middleware(app: FastAPI, settings: Settings) -> None:
     allow_all = "*" in settings.cors_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"] if allow_all else list(settings.cors_origins),
+        allow_origin_regex=None if allow_all else LOCALHOST_CORS_ORIGIN_REGEX,
         allow_credentials=not allow_all,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -29,4 +34,3 @@ def register_middleware(app: FastAPI, settings: Settings) -> None:
         response.headers["X-Request-Id"] = request_id
         response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.2f}"
         return response
-

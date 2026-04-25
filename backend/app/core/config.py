@@ -8,6 +8,7 @@ from pathlib import Path
 from app.core.paths import (
     resolve_config_root_dir,
     resolve_data_root_dir,
+    resolve_frontend_app_dist_dir,
     resolve_frontend_dist_dir,
     resolve_runtime_root_dir,
 )
@@ -39,6 +40,15 @@ def _env_choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     return value if value in set(allowed) else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = str(os.getenv(name, str(default)) or "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _split_csv(raw_value: str) -> tuple[str, ...]:
     items = [item.strip() for item in str(raw_value or "").split(",") if item.strip()]
     if not items:
@@ -64,6 +74,8 @@ class Settings:
     auth_tenant_default_id: str = "default"
     gateway_health_probe_timeout_sec: float = 2.0
     gateway_startup_sidecar_grace_sec: float = 5.0
+    frontend_app_dist_dir: Path | None = None
+    frontend_mobile_auto_redirect: bool = True
 
 
 @lru_cache(maxsize=1)
@@ -72,6 +84,7 @@ def get_settings() -> Settings:
     config_root_dir = resolve_config_root_dir(runtime_root_dir)
     data_root_dir = resolve_data_root_dir(runtime_root_dir)
     frontend_dist_dir = resolve_frontend_dist_dir(runtime_root_dir)
+    frontend_app_dist_dir = resolve_frontend_app_dist_dir(runtime_root_dir)
     gateway_host = _env_str("GATEWAY_HOST", "0.0.0.0")
     gateway_port = _env_int("GATEWAY_PORT", 3001)
     gateway_loopback_host = gateway_host if gateway_host not in {"", "0.0.0.0", "::"} else "127.0.0.1"
@@ -106,4 +119,6 @@ def get_settings() -> Settings:
             0.0,
             _env_float("GATEWAY_STARTUP_SIDECAR_GRACE_SEC", 5.0),
         ),
+        frontend_app_dist_dir=frontend_app_dist_dir,
+        frontend_mobile_auto_redirect=_env_bool("GATEWAY_FRONTEND_MOBILE_AUTO_REDIRECT", True),
     )

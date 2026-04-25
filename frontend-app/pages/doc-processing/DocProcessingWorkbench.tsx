@@ -43,6 +43,17 @@ import {
   type Module1RecentActivityRecord,
   type Module1RecentActivityStatus,
 } from '../../shared/state/module1RecentActivities';
+import {
+  clearModule1WorkbenchSession,
+  readModule1WorkbenchBinaryBundles,
+  readModule1WorkbenchSessionSnapshot,
+  syncModule1WorkbenchBinaryBundles,
+  type Module1WorkbenchBinaryBundle,
+  writeModule1WorkbenchSessionSnapshot,
+} from '../../shared/state/module1WorkbenchSession';
+import {
+  saveBlobToMobileDevice,
+} from '../../shared/mobileDownload';
 
 import PdfIconImage from '../../assets/pdf.png';
 import DialogIllustrationImage from '../../assets/对话框插图.png';
@@ -56,6 +67,21 @@ import AppLogoImage from '../../assets/app-logo.png';
 const pdfWorkerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 pdfjs.GlobalWorkerOptions.workerSrc = `${pdfWorkerSrc}?v=${pdfjs.version}`;
 const ALLOWED_UPLOAD_EXTENSIONS = ['.pdf', '.doc', '.docx', '.txt', '.xlsx', '.md', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
+const DOCUMENT_UPLOAD_ACCEPT = [
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.txt',
+  '.xlsx',
+  '.md',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/markdown',
+].join(',');
+const IMAGE_UPLOAD_ACCEPT = ['image/*', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'].join(',');
 const MAX_UPLOAD_FILE_SIZE = 20 * 1024 * 1024;
 const WORD_PREVIEW_FALLBACK_MESSAGE = '当前环境暂时无法把 Word 转成 PDF 预览，你仍然可以继续处理并下载原文件。';
 const SAVEABLE_REPORT_EXTENSIONS = new Set(['doc', 'docx', 'txt', 'md', 'csv']);
@@ -301,6 +327,73 @@ type PdfReadingMode = 'scroll' | 'paged';
 type PreviewCategory = 'pdf' | 'excel' | 'text' | 'image' | 'word' | 'other';
 type MobileWorkbenchView = 'home' | 'preview' | 'report';
 
+type PersistedMessage = {
+  id: string;
+  type: Message['type'];
+  content: string;
+  fileIds?: string[];
+  displayMode?: Message['displayMode'];
+  timestamp: string;
+};
+
+type PersistedFileInfo = {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  content?: string;
+  uploadTime: string;
+  status: FileInfo['status'];
+  progress?: number;
+  preview?: string;
+  previewType?: string;
+  conversionStatus?: FileInfo['conversionStatus'];
+  convertedPdfFileName?: string;
+  result?: string;
+  error?: string;
+  sourceFileId?: string;
+};
+
+type PersistedConversationRecord = {
+  id: string;
+  title: string;
+  titleEdited: boolean;
+  createdAt: string;
+  updatedAt: string;
+  messages: PersistedMessage[];
+  files: PersistedFileInfo[];
+  composerFileIds: string[];
+  rememberedFileBatchIds: string[];
+  selectedFileId: string | null;
+  inputText: string;
+  previewPaneMode: PreviewPaneMode;
+  previewReadingMode: PdfReadingMode;
+  showPreviewPanel: boolean;
+};
+
+type Module1WorkbenchSessionSnapshot = {
+  version: 1;
+  activeConversationId: string | null;
+  conversations: PersistedConversationRecord[];
+  mobileView: MobileWorkbenchView;
+  editableReportByFileId: Record<string, string>;
+  reportFormattingByFileId: Record<string, ReportFormattingState>;
+  reportHistoryByFileId: Record<string, ReportHistorySnapshot[]>;
+  reportSourceByFileId: Record<string, string>;
+};
+
+type RestoredWorkbenchSession = {
+  conversations: ConversationRecord[];
+  activeConversationId: string;
+  mobileView: MobileWorkbenchView;
+  editableReportByFileId: Record<string, string>;
+  reportFormattingByFileId: Record<string, ReportFormattingState>;
+  reportHistoryByFileId: Record<string, ReportHistorySnapshot[]>;
+  reportSourceByFileId: Record<string, string>;
+};
+
+const MODULE1_WORKBENCH_SESSION_VERSION = 1;
+
 const REPORT_ACTION_FEEDBACK: Record<ReportQuickEditAction, string> = {
   rewrite: '已改写选中文本',
   expand: '已扩写选中文本',
@@ -322,6 +415,151 @@ const createReportProgressState = (
   progress: 0,
   status: 'idle',
   ...partial,
+});
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  !!value && typeof value === 'object' && !Array.isArray(value)
+);
+
+const sanitizePersistedPreviewUrl = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized || /^blob:/i.test(normalized)) return undefined;
+  return normalized;
+};
+
+const restoreDate = (value: unknown, fallback: Date = new Date()): Date => {
+  if (typeof value !== 'string') return fallback;
+  const nextDate = new Date(value);
+  return Number.isNaN(nextDate.getTime()) ? fallback : nextDate;
+};
+
+const restorePreviewPaneMode = (value: unknown): PreviewPaneMode => (
+  value === 'report' || value === 'original' || value === 'compare' ? value : 'current'
+);
+
+const restorePdfReadingMode = (value: unknown): PdfReadingMode => (
+  value === 'scroll' ? 'scroll' : 'paged'
+);
+
+const restoreMobileWorkbenchView = (value: unknown): MobileWorkbenchView => (
+  value === 'preview' || value === 'report' ? value : 'home'
+);
+
+const restoreStringMap = (value: unknown): Record<string, string> => {
+  if (!isRecord(value)) return {};
+  return Object.entries(value).reduce<Record<string, string>>((accumulator, [key, entryValue]) => {
+    if (typeof entryValue === 'string' && key.trim()) {
+      accumulator[key] = entryValue;
+    }
+    return accumulator;
+  }, {});
+};
+
+const serializeMessage = (message: Message): PersistedMessage => ({
+  id: message.id,
+  type: message.type,
+  content: message.content,
+  fileIds: message.fileIds ? [...message.fileIds] : undefined,
+  displayMode: message.displayMode,
+  timestamp: message.timestamp.toISOString(),
+});
+
+const restoreMessage = (message: PersistedMessage): Message | null => {
+  if (!message || typeof message.id !== 'string' || typeof message.content !== 'string') {
+    return null;
+  }
+  if (message.type !== 'user' && message.type !== 'assistant' && message.type !== 'system') {
+    return null;
+  }
+  return {
+    id: message.id,
+    type: message.type,
+    content: message.content,
+    fileIds: Array.isArray(message.fileIds)
+      ? message.fileIds.filter((fileId): fileId is string => typeof fileId === 'string' && fileId.trim().length > 0)
+      : undefined,
+    displayMode: message.displayMode === 'report' ? 'report' : message.displayMode === 'chat' ? 'chat' : undefined,
+    timestamp: restoreDate(message.timestamp),
+  };
+};
+
+const serializeFileInfo = (file: FileInfo): PersistedFileInfo => ({
+  id: file.id,
+  name: file.name,
+  size: file.size,
+  type: file.type,
+  content: file.content,
+  uploadTime: file.uploadTime.toISOString(),
+  status: file.status,
+  progress: file.progress,
+  preview: sanitizePersistedPreviewUrl(file.preview),
+  previewType: file.previewType,
+  conversionStatus: file.conversionStatus,
+  convertedPdfFileName: file.convertedPdfFileName,
+  result: file.result,
+  error: file.error,
+  sourceFileId: file.sourceFileId,
+});
+
+const restoreFileInfo = (
+  file: PersistedFileInfo,
+  bundles: Record<string, Module1WorkbenchBinaryBundle>,
+): FileInfo | null => {
+  if (!file || typeof file.id !== 'string' || typeof file.name !== 'string') {
+    return null;
+  }
+
+  const bundle = bundles[file.id];
+  return {
+    id: file.id,
+    name: file.name,
+    size: Number.isFinite(file.size) ? file.size : bundle?.file?.size ?? 0,
+    type: typeof file.type === 'string' ? file.type : bundle?.file?.type ?? '',
+    content: typeof file.content === 'string' ? file.content : undefined,
+    uploadTime: restoreDate(file.uploadTime),
+    status: file.status === 'uploading'
+      || file.status === 'ready'
+      || file.status === 'error'
+      || file.status === 'processing'
+      || file.status === 'completed'
+      || file.status === 'converting'
+      ? file.status
+      : 'ready',
+    progress: typeof file.progress === 'number' && Number.isFinite(file.progress) ? file.progress : undefined,
+    file: bundle?.file ?? undefined,
+    preview: sanitizePersistedPreviewUrl(file.preview),
+    previewType: typeof file.previewType === 'string' ? file.previewType : undefined,
+    previewBlob: bundle?.previewBlob ?? undefined,
+    conversionStatus: file.conversionStatus === 'converting'
+      || file.conversionStatus === 'ready'
+      || file.conversionStatus === 'error'
+      ? file.conversionStatus
+      : 'idle',
+    convertedPdfBlob: bundle?.convertedPdfBlob ?? undefined,
+    convertedPdfFileName: typeof file.convertedPdfFileName === 'string' ? file.convertedPdfFileName : undefined,
+    result: typeof file.result === 'string' ? file.result : undefined,
+    error: typeof file.error === 'string' ? file.error : undefined,
+    originalFile: bundle?.originalFile ?? undefined,
+    sourceFileId: typeof file.sourceFileId === 'string' ? file.sourceFileId : undefined,
+  };
+};
+
+const serializeConversationRecord = (conversation: ConversationRecord): PersistedConversationRecord => ({
+  id: conversation.id,
+  title: conversation.title,
+  titleEdited: conversation.titleEdited,
+  createdAt: conversation.createdAt.toISOString(),
+  updatedAt: conversation.updatedAt.toISOString(),
+  messages: conversation.messages.map(serializeMessage),
+  files: Object.values(conversation.files).map(serializeFileInfo),
+  composerFileIds: [...conversation.composerFileIds],
+  rememberedFileBatchIds: [...conversation.rememberedFileBatchIds],
+  selectedFileId: conversation.selectedFileId,
+  inputText: conversation.inputText,
+  previewPaneMode: conversation.previewPaneMode,
+  previewReadingMode: conversation.previewReadingMode,
+  showPreviewPanel: conversation.showPreviewPanel,
 });
 
 // 辅助函数
@@ -424,15 +662,13 @@ const replaceSelectionInPreparedReport = (
   return null;
 };
 
-const downloadBlob = (blob: Blob, fileName: string): void => {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 100);
+const downloadBlob = async (blob: Blob, fileName: string): Promise<void> => {
+  await saveBlobToMobileDevice({
+    blob,
+    fileName,
+    moduleName: 'module1',
+    mimeType: blob.type || 'application/octet-stream',
+  });
 };
 
 const parseContentDispositionFilename = (headerValue: string | null): string | null => {
@@ -514,6 +750,190 @@ const getFilesByIds = (
   ids: string[] | undefined
 ): FileInfo[] => getExistingFileIds(fileMap, ids).map((id) => fileMap[id]);
 
+const restoreConversationRecord = (
+  conversation: PersistedConversationRecord,
+  bundles: Record<string, Module1WorkbenchBinaryBundle>,
+): ConversationRecord | null => {
+  if (!conversation || typeof conversation.id !== 'string' || typeof conversation.title !== 'string') {
+    return null;
+  }
+
+  const restoredMessages = Array.isArray(conversation.messages)
+    ? conversation.messages
+        .map((message) => restoreMessage(message))
+        .filter((message): message is Message => Boolean(message))
+    : [];
+  const restoredFiles = Array.isArray(conversation.files)
+    ? conversation.files
+        .map((file) => restoreFileInfo(file, bundles))
+        .filter((file): file is FileInfo => Boolean(file))
+    : [];
+  const fileMap = restoredFiles.reduce<Record<string, FileInfo>>((accumulator, file) => {
+    accumulator[file.id] = file;
+    return accumulator;
+  }, {});
+
+  return {
+    id: conversation.id,
+    title: conversation.title,
+    titleEdited: Boolean(conversation.titleEdited),
+    createdAt: restoreDate(conversation.createdAt),
+    updatedAt: restoreDate(conversation.updatedAt),
+    messages: restoredMessages,
+    files: fileMap,
+    composerFileIds: getExistingFileIds(fileMap, Array.isArray(conversation.composerFileIds) ? conversation.composerFileIds : []),
+    rememberedFileBatchIds: getExistingFileIds(fileMap, Array.isArray(conversation.rememberedFileBatchIds) ? conversation.rememberedFileBatchIds : []),
+    selectedFileId: typeof conversation.selectedFileId === 'string' && fileMap[conversation.selectedFileId]
+      ? conversation.selectedFileId
+      : null,
+    inputText: typeof conversation.inputText === 'string' ? conversation.inputText : '',
+    previewPaneMode: restorePreviewPaneMode(conversation.previewPaneMode),
+    previewReadingMode: restorePdfReadingMode(conversation.previewReadingMode),
+    showPreviewPanel: Boolean(conversation.showPreviewPanel),
+  };
+};
+
+const cloneReportFormattingMap = (
+  value: unknown,
+): Record<string, ReportFormattingState> => {
+  if (!isRecord(value)) return {};
+  return Object.entries(value).reduce<Record<string, ReportFormattingState>>((accumulator, [key, entryValue]) => {
+    if (isRecord(entryValue) && key.trim()) {
+      accumulator[key] = cloneReportFormatting(entryValue as ReportFormattingState);
+    }
+    return accumulator;
+  }, {});
+};
+
+const cloneReportHistoryMap = (
+  value: unknown,
+): Record<string, ReportHistorySnapshot[]> => {
+  if (!isRecord(value)) return {};
+  return Object.entries(value).reduce<Record<string, ReportHistorySnapshot[]>>((accumulator, [key, entryValue]) => {
+    if (!Array.isArray(entryValue) || !key.trim()) return accumulator;
+    accumulator[key] = entryValue
+      .filter((snapshot): snapshot is ReportHistorySnapshot => (
+        isRecord(snapshot)
+        && typeof snapshot.text === 'string'
+        && isRecord(snapshot.formatting)
+      ))
+      .map((snapshot) => ({
+        text: snapshot.text,
+        formatting: cloneReportFormatting(snapshot.formatting as ReportFormattingState),
+      }));
+    return accumulator;
+  }, {});
+};
+
+const restoreWorkbenchSessionSnapshot = (
+  snapshot: Module1WorkbenchSessionSnapshot | null,
+  bundles: Record<string, Module1WorkbenchBinaryBundle>,
+): RestoredWorkbenchSession | null => {
+  if (!snapshot || snapshot.version !== MODULE1_WORKBENCH_SESSION_VERSION) {
+    return null;
+  }
+
+  const restoredConversations = Array.isArray(snapshot.conversations)
+    ? snapshot.conversations
+        .map((conversation) => restoreConversationRecord(conversation, bundles))
+        .filter((conversation): conversation is ConversationRecord => Boolean(conversation))
+    : [];
+
+  if (restoredConversations.length === 0) {
+    return null;
+  }
+
+  const activeConversationId = typeof snapshot.activeConversationId === 'string'
+    && restoredConversations.some((conversation) => conversation.id === snapshot.activeConversationId)
+    ? snapshot.activeConversationId
+    : restoredConversations[0].id;
+
+  return {
+    conversations: restoredConversations,
+    activeConversationId,
+    mobileView: restoreMobileWorkbenchView(snapshot.mobileView),
+    editableReportByFileId: restoreStringMap(snapshot.editableReportByFileId),
+    reportFormattingByFileId: cloneReportFormattingMap(snapshot.reportFormattingByFileId),
+    reportHistoryByFileId: cloneReportHistoryMap(snapshot.reportHistoryByFileId),
+    reportSourceByFileId: restoreStringMap(snapshot.reportSourceByFileId),
+  };
+};
+
+const buildWorkbenchSessionSnapshot = (
+  conversations: ConversationRecord[],
+  activeConversationId: string,
+  mobileView: MobileWorkbenchView,
+  editableReportByFileId: Record<string, string>,
+  reportFormattingByFileId: Record<string, ReportFormattingState>,
+  reportHistoryByFileId: Record<string, ReportHistorySnapshot[]>,
+  reportSourceByFileId: Record<string, string>,
+): Module1WorkbenchSessionSnapshot => ({
+  version: MODULE1_WORKBENCH_SESSION_VERSION,
+  activeConversationId,
+  conversations: conversations.map(serializeConversationRecord),
+  mobileView,
+  editableReportByFileId: { ...editableReportByFileId },
+  reportFormattingByFileId: cloneReportFormattingMap(reportFormattingByFileId),
+  reportHistoryByFileId: cloneReportHistoryMap(reportHistoryByFileId),
+  reportSourceByFileId: { ...reportSourceByFileId },
+});
+
+const collectConversationBinaryBundles = (
+  conversations: ConversationRecord[],
+): Module1WorkbenchBinaryBundle[] => {
+  const bundleMap = new Map<string, Module1WorkbenchBinaryBundle>();
+
+  conversations.forEach((conversation) => {
+    Object.values(conversation.files).forEach((file) => {
+      bundleMap.set(file.id, {
+        fileId: file.id,
+        file: file.file ?? null,
+        originalFile: file.originalFile ?? null,
+        previewBlob: file.previewBlob ?? null,
+        convertedPdfBlob: file.convertedPdfBlob ?? null,
+      });
+    });
+  });
+
+  return Array.from(bundleMap.values());
+};
+
+const buildBinaryBundleSignature = (conversations: ConversationRecord[]): string => JSON.stringify(
+  collectConversationBinaryBundles(conversations)
+    .map((bundle) => ({
+      fileId: bundle.fileId,
+      file: bundle.file
+        ? {
+            name: bundle.file.name,
+            size: bundle.file.size,
+            type: bundle.file.type,
+            lastModified: bundle.file.lastModified,
+          }
+        : null,
+      originalFile: bundle.originalFile
+        ? {
+            name: bundle.originalFile.name,
+            size: bundle.originalFile.size,
+            type: bundle.originalFile.type,
+            lastModified: bundle.originalFile.lastModified,
+          }
+        : null,
+      previewBlob: bundle.previewBlob
+        ? {
+            size: bundle.previewBlob.size,
+            type: bundle.previewBlob.type,
+          }
+        : null,
+      convertedPdfBlob: bundle.convertedPdfBlob
+        ? {
+            size: bundle.convertedPdfBlob.size,
+            type: bundle.convertedPdfBlob.type,
+          }
+        : null,
+    }))
+    .sort((left, right) => left.fileId.localeCompare(right.fileId))
+);
+
 const removeFileIds = (ids: string[], idsToRemove: string[]): string[] => {
   if (ids.length === 0 || idsToRemove.length === 0) return ids;
   const idsToRemoveSet = new Set(idsToRemove);
@@ -563,6 +983,23 @@ const isConversationEmpty = (conversation: Pick<ConversationRecord, 'messages' |
   && Object.keys(conversation.files).length === 0
   && !conversation.inputText.trim()
 );
+
+const hasMeaningfulWorkbenchSession = (
+  conversations: ConversationRecord[],
+  editableReportByFileId: Record<string, string>,
+  reportFormattingByFileId: Record<string, ReportFormattingState>,
+  reportHistoryByFileId: Record<string, ReportHistorySnapshot[]>,
+): boolean => {
+  if (conversations.length !== 1) return true;
+  if (conversations.some((conversation) => !isConversationEmpty(conversation) || conversation.titleEdited)) {
+    return true;
+  }
+  return (
+    Object.keys(editableReportByFileId).length > 0
+    || Object.keys(reportFormattingByFileId).length > 0
+    || Object.keys(reportHistoryByFileId).length > 0
+  );
+};
 
 const deriveConversationTitle = (messages: Message[], fallbackTitle: string) => {
   const firstUserMessage = messages.find((message) => message.type === 'user' && message.content.trim());
@@ -1112,6 +1549,8 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   const initialConversation = useMemo(() => createConversationRecord(1), []);
   const hydratingConversationRef = useRef(false);
   const activeConversationIdRef = useRef(initialConversation.id);
+  const snapshotPersistTimeoutRef = useRef<number | null>(null);
+  const [sessionHydrated, setSessionHydrated] = useState(false);
 
   const [conversations, setConversations] = useState<ConversationRecord[]>(() => [initialConversation]);
   const [activeConversationId, setActiveConversationId] = useState(initialConversation.id);
@@ -1136,6 +1575,7 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   const [previewReadingMode, setPreviewReadingMode] = useState<PdfReadingMode>(initialConversation.previewReadingMode);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1189,6 +1629,7 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
 
   const [mobileView, setMobileView] = useState<MobileWorkbenchView>('home');
   const [showUtilityDrawer, setShowUtilityDrawer] = useState(false);
+  const [showMobileUploadSheet, setShowMobileUploadSheet] = useState(false);
 
   // 计算属性
   const fileList = useMemo(() => Object.values(files), [files]);
@@ -1216,6 +1657,23 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
       conversation.id === activeConversationId ? syncConversationRecord(conversation) : conversation
     ))
   ), [activeConversationId, syncConversationRecord]);
+  const conversationsForPersistence = useMemo(
+    () => commitCurrentConversation(conversations),
+    [commitCurrentConversation, conversations]
+  );
+  const binaryBundleSignature = useMemo(
+    () => buildBinaryBundleSignature(conversationsForPersistence),
+    [conversationsForPersistence]
+  );
+  const hasPersistedSessionContent = useMemo(
+    () => hasMeaningfulWorkbenchSession(
+      conversationsForPersistence,
+      editableReportByFileId,
+      reportFormattingByFileId,
+      reportHistoryByFileId,
+    ),
+    [conversationsForPersistence, editableReportByFileId, reportFormattingByFileId, reportHistoryByFileId]
+  );
   const recentActivityConversations = useMemo(
     () => conversations.map((conversation) => (
       conversation.id === activeConversationId
@@ -1285,15 +1743,16 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   }, [activeConversationId]);
 
   useEffect(() => {
-    if (hydratingConversationRef.current) return;
+    if (!sessionHydrated || hydratingConversationRef.current) return;
     setConversations((prev) => commitCurrentConversation(prev));
-  }, [commitCurrentConversation]);
+  }, [commitCurrentConversation, sessionHydrated]);
 
   useEffect(() => {
+    if (!sessionHydrated) return;
     writeModule1RecentActivities(
       buildModule1RecentActivityRecords(recentActivityConversations),
     );
-  }, [recentActivityConversations]);
+  }, [recentActivityConversations, sessionHydrated]);
 
   useEffect(() => {
     if (selectedFileId) return;
@@ -1342,16 +1801,16 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   const previewedFileName = previewedFile?.name ?? '预览文件';
 
   const syncPreviewUrl = useCallback((file: FileInfo | null, setter: React.Dispatch<React.SetStateAction<string | null>>) => {
-    if (!file?.preview && !file?.file) {
+    if (!file?.preview && !file?.previewBlob && !file?.file) {
       setter(null);
       return undefined;
     }
 
     // 预览优先使用后端或转换后的地址，缺失时才回退到本地 blob。
     let createdPreviewUrl: string | null = null;
-    const nextPreviewUrl = file.preview ?? URL.createObjectURL(file.file!);
+    const nextPreviewUrl = file.preview ?? URL.createObjectURL(file.previewBlob ?? file.file!);
 
-    if (!file.preview && file.file) {
+    if (!file.preview && (file.previewBlob || file.file)) {
       createdPreviewUrl = nextPreviewUrl;
     }
 
@@ -1419,6 +1878,10 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   // 组件卸载时中止请求
   React.useEffect(() => {
     return () => {
+      if (snapshotPersistTimeoutRef.current) {
+        window.clearTimeout(snapshotPersistTimeoutRef.current);
+        snapshotPersistTimeoutRef.current = null;
+      }
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -1472,6 +1935,54 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
 
     hydratingConversationRef.current = false;
   }, [resetPreviewViewport]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      try {
+        const [snapshot, bundles] = await Promise.all([
+          Promise.resolve(readModule1WorkbenchSessionSnapshot<Module1WorkbenchSessionSnapshot>()),
+          readModule1WorkbenchBinaryBundles(),
+        ]);
+        if (cancelled) return;
+
+        const restoredSession = restoreWorkbenchSessionSnapshot(snapshot, bundles);
+        if (!restoredSession) {
+          setSessionHydrated(true);
+          return;
+        }
+
+        hydratingConversationRef.current = true;
+        reportSourceByFileIdRef.current = { ...restoredSession.reportSourceByFileId };
+        setConversations(restoredSession.conversations);
+        setActiveConversationId(restoredSession.activeConversationId);
+        setEditableReportByFileId(restoredSession.editableReportByFileId);
+        setReportFormattingByFileId(restoredSession.reportFormattingByFileId);
+        setReportHistoryByFileId(restoredSession.reportHistoryByFileId);
+        setMobileView(restoredSession.mobileView);
+
+        const activeConversation = restoredSession.conversations.find(
+          (conversation) => conversation.id === restoredSession.activeConversationId,
+        ) ?? restoredSession.conversations[0];
+        loadConversation(activeConversation);
+      } finally {
+        if (cancelled) return;
+        window.setTimeout(() => {
+          if (!cancelled) {
+            hydratingConversationRef.current = false;
+            setSessionHydrated(true);
+          }
+        }, 0);
+      }
+    };
+
+    void restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadConversation]);
 
   const createNewConversation = useCallback(() => {
     if (isLoading) return;
@@ -1533,6 +2044,59 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   }, [activeConversationId, commitCurrentConversation, conversations, isLoading, loadConversation]);
 
   // ---------- Word转PDF转换函数 ----------
+  useEffect(() => {
+    if (!sessionHydrated) return;
+
+    if (snapshotPersistTimeoutRef.current) {
+      window.clearTimeout(snapshotPersistTimeoutRef.current);
+      snapshotPersistTimeoutRef.current = null;
+    }
+
+    const persistSnapshot = () => {
+      if (!hasPersistedSessionContent) {
+        void clearModule1WorkbenchSession();
+        return;
+      }
+
+      writeModule1WorkbenchSessionSnapshot(
+        buildWorkbenchSessionSnapshot(
+          conversationsForPersistence,
+          activeConversationId,
+          mobileView,
+          editableReportByFileId,
+          reportFormattingByFileId,
+          reportHistoryByFileId,
+          reportSourceByFileIdRef.current,
+        ),
+      );
+    };
+
+    snapshotPersistTimeoutRef.current = window.setTimeout(persistSnapshot, 160);
+
+    return () => {
+      if (snapshotPersistTimeoutRef.current) {
+        window.clearTimeout(snapshotPersistTimeoutRef.current);
+        snapshotPersistTimeoutRef.current = null;
+      }
+    };
+  }, [
+    activeConversationId,
+    conversationsForPersistence,
+    editableReportByFileId,
+    hasPersistedSessionContent,
+    mobileView,
+    reportFormattingByFileId,
+    reportHistoryByFileId,
+    sessionHydrated,
+  ]);
+
+  useEffect(() => {
+    if (!sessionHydrated) return;
+    void syncModule1WorkbenchBinaryBundles(
+      hasPersistedSessionContent ? collectConversationBinaryBundles(conversationsForPersistence) : [],
+    );
+  }, [binaryBundleSignature, hasPersistedSessionContent, sessionHydrated]);
+
   const convertWordToPdf = async (file: File): Promise<{ pdfBlob: Blob; pdfFile: File } | null> => {
     const formData = new FormData();
     formData.append('file', file, file.name || 'document.docx');
@@ -1761,10 +2325,15 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   }, [convertWordToPdf, selectedFileId]);
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const fileList = event.target.files;
-    if (!fileList || fileList.length === 0) return;
+    const { files: selectedFiles } = event.target;
+    if (!selectedFiles || selectedFiles.length === 0) {
+      event.target.value = '';
+      return;
+    }
 
-    await processUploadedFiles(Array.from(fileList));
+    setShowMobileUploadSheet(false);
+    await processUploadedFiles(Array.from(selectedFiles));
+    event.target.value = '';
   }, [processUploadedFiles]);
 
   const handleDocumentDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
@@ -1815,7 +2384,27 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     setComposerFileIds((prev) => prev.filter((id) => id !== fileId));
   }, []);
 
-  const triggerFileInput = useCallback(() => fileInputRef.current?.click(), []);
+  const openDocumentUploadPicker = useCallback(() => {
+    setShowMobileUploadSheet(false);
+    fileInputRef.current?.click();
+  }, []);
+
+  const openImageUploadPicker = useCallback(() => {
+    setShowMobileUploadSheet(false);
+    imageFileInputRef.current?.click();
+  }, []);
+
+  const triggerFileInput = useCallback(() => {
+    if (
+      typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(min-width: 768px)').matches
+    ) {
+      fileInputRef.current?.click();
+      return;
+    }
+    setShowMobileUploadSheet(true);
+  }, []);
 
   const handleMessagesScroll = useCallback(() => {
     updateComposerCollapseState();
@@ -1999,7 +2588,7 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
           <p className="text-sm text-red-500 mb-4">Excel 文件不存在，暂时无法预览。</p>
           <button
             type="button"
-            onClick={() => downloadFile(file)}
+            onClick={() => handleMobileFileDownload(file)}
             className={`flex h-10 w-10 items-center justify-center rounded-xl ${METALLIC_PRIMARY_BUTTON_CLASS}`}
             title={`下载 ${file.name}`}
             aria-label={`下载 ${file.name}`}
@@ -2016,7 +2605,7 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
           <span className="font-medium">Excel 预览</span>
           <button
             type="button"
-            onClick={() => downloadFile(file)}
+            onClick={() => handleMobileFileDownload(file)}
             className={`flex h-9 w-9 items-center justify-center rounded-xl ${METALLIC_PRIMARY_BUTTON_CLASS}`}
             title={`下载 ${file.name}`}
             aria-label={`下载 ${file.name}`}
@@ -3030,13 +3619,13 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
           const outputBlob = await response.blob();
           const outputName = parseContentDispositionFilename(response.headers.get('Content-Disposition'))
             || `edited_${file.name}`;
-          downloadBlob(outputBlob, outputName);
+          await downloadBlob(outputBlob, outputName);
           return;
         }
       }
 
       const baseName = file.name.replace(/\.[^/.]+$/, '') || file.name;
-      downloadBlob(
+      await downloadBlob(
         new Blob([reportText], { type: 'text/plain;charset=utf-8' }),
         `分析提取报告_${baseName}.txt`,
       );
@@ -3167,6 +3756,21 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     anchor.click();
     URL.revokeObjectURL(url);
   }, [fileList, messages]);
+
+  const handleMobileFileDownload = useCallback((file: FileInfo) => {
+    const fileToDownload = file.file || file.originalFile;
+    if (!fileToDownload) return;
+
+    void saveBlobToMobileDevice({
+      blob: fileToDownload,
+      fileName: file.name,
+      moduleName: 'module1',
+      mimeType: fileToDownload.type || file.type,
+    }).catch((error) => {
+      console.error('涓嬭浇鏂囦欢澶辫触:', error);
+      alert('涓嬭浇鏂囦欢澶辫触锛岃閲嶈瘯');
+    });
+  }, []);
 
   const isSuggestionEligibleAssistantMessage = useCallback((message: Message) => (
     message.type === 'assistant'
@@ -3724,7 +4328,7 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
               {mobileView === 'preview' && mobileCurrentFile ? (
                 <button
                   type="button"
-                  onClick={() => downloadFile(previewedFile ?? mobileCurrentFile)}
+                  onClick={() => handleMobileFileDownload(previewedFile ?? mobileCurrentFile)}
                   className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-50 text-cyan-600 transition-colors hover:bg-cyan-100 active:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400 dark:hover:bg-cyan-900/50"
                   title="下载当前文件"
                   aria-label="下载当前文件"
@@ -4139,6 +4743,56 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
           }}
         />
 
+        {showMobileUploadSheet ? (
+          <div className="fixed inset-0 z-[65] flex items-end bg-slate-950/28 px-3 pb-[calc(12px+env(safe-area-inset-bottom))] pt-6 backdrop-blur-[2px]">
+            <button
+              type="button"
+              aria-label="关闭上传方式选择"
+              className="absolute inset-0"
+              onClick={() => setShowMobileUploadSheet(false)}
+            />
+            <div className="relative w-full overflow-hidden rounded-[28px] bg-white shadow-[0_24px_64px_rgba(15,23,42,0.18)] ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10">
+              <div className="px-5 pb-3 pt-4 text-center">
+                <p className="text-[16px] font-semibold text-slate-900 dark:text-slate-100">选择上传方式</p>
+                <p className="mt-1 text-[12px] text-slate-500 dark:text-slate-400">文件走文档选择器，图片保留拍摄与相册入口</p>
+              </div>
+              <div className="px-3 pb-2">
+                <button
+                  type="button"
+                  onClick={openDocumentUploadPicker}
+                  className="flex w-full items-center justify-between rounded-[20px] px-4 py-4 text-left transition-colors hover:bg-slate-50 active:scale-[0.99] dark:hover:bg-white/5"
+                >
+                  <div>
+                    <div className="text-[15px] font-medium text-slate-900 dark:text-slate-100">上传文件</div>
+                    <div className="mt-1 text-[12px] text-slate-500 dark:text-slate-400">支持 PDF、Word、TXT、XLSX、Markdown</div>
+                  </div>
+                  <FileText size={18} className="text-slate-400 dark:text-slate-500" />
+                </button>
+                <button
+                  type="button"
+                  onClick={openImageUploadPicker}
+                  className="mt-1 flex w-full items-center justify-between rounded-[20px] px-4 py-4 text-left transition-colors hover:bg-slate-50 active:scale-[0.99] dark:hover:bg-white/5"
+                >
+                  <div>
+                    <div className="text-[15px] font-medium text-slate-900 dark:text-slate-100">图片 / 拍照</div>
+                    <div className="mt-1 text-[12px] text-slate-500 dark:text-slate-400">继续保留相册与拍摄上传入口</div>
+                  </div>
+                  <Image size={18} className="text-slate-400 dark:text-slate-500" />
+                </button>
+              </div>
+              <div className="border-t border-slate-100 px-3 py-3 dark:border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setShowMobileUploadSheet(false)}
+                  className="flex w-full items-center justify-center rounded-[18px] bg-slate-100 px-4 py-3 text-[15px] font-medium text-slate-700 transition-colors hover:bg-slate-200 active:scale-[0.99] dark:bg-white/10 dark:text-slate-200 dark:hover:bg-white/15"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <MobileUtilityDrawer
           visible={showUtilityDrawer}
           fileCount={fileList.length}
@@ -4172,7 +4826,16 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         type="file"
         ref={fileInputRef}
         onChange={handleFileUpload}
-        accept=".pdf,.doc,.docx,.txt,.xlsx,.md,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+        accept={DOCUMENT_UPLOAD_ACCEPT}
+        multiple
+        className="hidden"
+      />
+
+      <input
+        type="file"
+        ref={imageFileInputRef}
+        onChange={handleFileUpload}
+        accept={IMAGE_UPLOAD_ACCEPT}
         multiple
         className="hidden"
       />

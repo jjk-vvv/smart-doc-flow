@@ -123,7 +123,7 @@ Vite proxies `/api`, `/extract`, `/module4`, `/gateway` to the backend (default 
 
 ### Electron (`electron/main.cjs`)
 
-Spawns the FastAPI process, resolves the gateway URL, creates a `BrowserWindow`, and manages the full app lifecycle. In packaged runtime, `SMART_DOC_FLOW_DATA_ROOT` defaults to Electron `userData/runtime-data` so auth data, extraction artifacts, and caches go to a user-writable location rather than the packaged resources.
+Spawns the FastAPI process, resolves the gateway URL, creates a `BrowserWindow`, and manages the full app lifecycle. In packaged runtime, `SMART_DOC_FLOW_DATA_ROOT` defaults to Electron `userData/runtime-data` so auth data, extraction artifacts, and caches go to a user-writable location rather than the packaged resources. Desktop-triggered downloads are intercepted in the Electron main process and default to `Downloads/Smart Doc Flow`, overridable via `SMART_DOC_FLOW_ELECTRON_DOWNLOAD_DIR` or `SMART_DOC_FLOW_ELECTRON_DOWNLOAD_BEHAVIOR=prompt`.
 
 ## Configuration
 
