@@ -220,10 +220,15 @@ def read_runtime_settings(api_mode_override: str | None = None) -> dict[str, Any
         raise ValueError("请在 .env 中配置 OPENAI_API_KEY")
 
     base_url = normalize_base_url(os.getenv("OPENAI_BASE_URL", "https://jeniya.cn/v1"))
-    model = os.getenv("OPENAI_MODEL", "gpt-5.1").strip() or "gpt-5.1"
-    api_mode = (api_mode_override or os.getenv("OPENAI_API_MODE", "responses")).strip().lower()
-    if api_mode not in {"responses", "chat"}:
-        raise ValueError("OPENAI_API_MODE 只支持 responses 或 chat")
+    model = os.getenv("OPENAI_MODEL", "qwen-max").strip() or "qwen-max"
+    vision_model = (
+        os.getenv("OPENAI_VISION_MODEL", "").strip()
+        or os.getenv("MODULE3_VISION_MODEL", "").strip()
+        or model
+    )
+    api_mode = (api_mode_override or os.getenv("OPENAI_API_MODE", "chat")).strip().lower()
+    if api_mode != "chat":
+        raise ValueError("OPENAI_API_MODE now only supports chat for qwen-compatible deployments")
 
     try:
         max_images = int(os.getenv("OPENAI_MAX_IMAGES", "12"))
@@ -240,6 +245,7 @@ def read_runtime_settings(api_mode_override: str | None = None) -> dict[str, Any
         "api_key": api_key,
         "base_url": base_url,
         "model": model,
+        "vision_model": vision_model,
         "api_mode": api_mode,
         "max_images": max_images,
         "max_image_bytes": max_image_bytes,

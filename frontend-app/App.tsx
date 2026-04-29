@@ -1,4 +1,4 @@
-import React, { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BookOpen, Database, FileSearch, Home, UserCircle2 } from 'lucide-react';
 
@@ -17,6 +17,8 @@ import { FusionGrid } from './pages/fusion/FusionGrid';
 import { KnowledgeNexus } from './pages/knowledge-nexus/KnowledgeNexus';
 import { OnboardingFlow } from './pages/onboarding/OnboardingFlow';
 import { getCurrentUser, logoutAuth, type AuthUser } from './shared/api/auth';
+import { getResponsiveDeviceClass, useResponsiveDevice } from './shared/hooks/useResponsiveDevice';
+import { useVisualViewport } from './shared/hooks/useVisualViewport';
 
 type AppTab =
   | 'dashboard'
@@ -32,7 +34,8 @@ const ACTIVE_TAB_KEY = 'smart_doc_flow.frontend_app.active_tab';
 const THEME_KEY = 'smart_doc_flow.frontend_app.theme';
 const ONBOARDING_KEY = 'smart_doc_flow.has_seen_onboarding';
 const AUTH_SESSION_HINT_KEY = 'smart_doc_flow.auth.session_hint';
-const MOBILE_BREAKPOINT = 1024;
+const isMobileViewportWidth = (width: number): boolean =>
+  getResponsiveDeviceClass(width) !== 'desktop';
 
 const normalizeMobileTab = (tab: NormalizedTab): NormalizedTab => {
   if (tab === 'nexus') return 'dashboard';
@@ -98,7 +101,7 @@ const readInitialTab = (): NormalizedTab => {
   if (typeof window === 'undefined') return 'dashboard';
   const requestedTab = readRequestedTabFromUrl();
   const nextTab = requestedTab ?? normalizeTab(window.localStorage.getItem(ACTIVE_TAB_KEY));
-  return window.innerWidth < MOBILE_BREAKPOINT ? normalizeMobileTab(nextTab) : nextTab;
+  return isMobileViewportWidth(window.innerWidth) ? normalizeMobileTab(nextTab) : nextTab;
 };
 
 const readInitialOnboarding = (): boolean => {
@@ -125,9 +128,6 @@ const MOBILE_BOTTOM_TABS: Array<{
 export default function App() {
   const [activeTab, setActiveTab] = useState<NormalizedTab>(() => readInitialTab());
   const [isDark, setIsDark] = useState(() => readInitialTheme());
-  const [isMobile, setIsMobile] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth < MOBILE_BREAKPOINT : false,
-  );
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showAccountSecurityModal, setShowAccountSecurityModal] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(() => readInitialOnboarding());
@@ -135,6 +135,8 @@ export default function App() {
   const [user, setUser] = useState<AuthUser>(null);
   const [authBootstrapDone, setAuthBootstrapDone] = useState(false);
   const [pendingProtectedTab, setPendingProtectedTab] = useState<NormalizedTab | null>(null);
+  const { isMobile } = useResponsiveDevice();
+  useVisualViewport();
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
@@ -142,15 +144,13 @@ export default function App() {
   }, [isDark]);
 
   useEffect(() => {
-    const handleResize = () => {
-      const nextMobile = window.innerWidth < MOBILE_BREAKPOINT;
-      setIsMobile(nextMobile);
+    document.documentElement.classList.toggle('mobile-runtime-root', isMobile);
+    document.body.classList.toggle('mobile-runtime-root', isMobile);
+    return () => {
+      document.documentElement.classList.remove('mobile-runtime-root');
+      document.body.classList.remove('mobile-runtime-root');
     };
-
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [isMobile]);
 
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
@@ -330,7 +330,7 @@ export default function App() {
       case 'deepread_extraction':
         if (!authBootstrapDone) {
           return (
-            <div className="min-h-screen bg-slate-50 px-4 pt-24 dark:bg-slate-950">
+            <div className="min-h-[var(--app-visual-height,100dvh)] bg-slate-50 px-4 pt-[max(6rem,var(--mobile-safe-top))] dark:bg-slate-950">
               <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-sm dark:border-white/10 dark:bg-slate-900">
                 <div className="text-base font-semibold text-slate-900 dark:text-slate-100">Checking Login</div>
                 <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
@@ -342,7 +342,7 @@ export default function App() {
         }
         if (!user) {
           return (
-            <div className="min-h-screen bg-slate-50 px-4 pt-24 dark:bg-slate-950">
+            <div className="min-h-[var(--app-visual-height,100dvh)] bg-slate-50 px-4 pt-[max(6rem,var(--mobile-safe-top))] dark:bg-slate-950">
               <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-sm dark:border-white/10 dark:bg-slate-900">
                 <div className="text-base font-semibold text-slate-900 dark:text-slate-100">Login Required</div>
                 <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
@@ -380,7 +380,10 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+    <div className={cn(
+      'min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100',
+      isMobile && 'mobile-runtime',
+    )}>
       <AuthModal
         show={showLoginModal && authBootstrapDone && !user}
         onClose={() => setShowLoginModal(false)}
@@ -410,11 +413,11 @@ export default function App() {
       )}
 
       {isMobile ? (
-        <div className="relative min-h-screen overflow-x-hidden">
+        <div className="relative min-h-[var(--app-visual-height,100dvh)] overflow-x-hidden">
           <div>{renderMobileContent()}</div>
           {activeTab !== 'doc-processing' && (
-            <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-4px_24px_rgba(15,23,42,0.02)] backdrop-blur-2xl dark:border-white/[0.04] dark:bg-[#0B1120]/95 dark:shadow-none">
-              <div className="mx-auto flex h-[56px] w-full max-w-md items-center justify-between px-2">
+            <nav className="mobile-bottom-nav fixed inset-x-0 bottom-0 z-40 border-t border-slate-100 bg-white/95 shadow-[0_-4px_24px_rgba(15,23,42,0.02)] backdrop-blur-2xl dark:border-white/[0.04] dark:bg-[#0B1120]/95 dark:shadow-none">
+              <div className="mobile-bottom-nav-inner mx-auto flex w-full max-w-md items-center justify-between px-2 min-[600px]:max-w-xl">
                 {MOBILE_BOTTOM_TABS.map((item) => {
                   const Icon = item.icon;
                   const active = activeTab === item.id;

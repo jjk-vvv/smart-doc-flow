@@ -15,4 +15,6 @@ def test_build_app_registers_prefixed_module1_routes() -> None:
     route_paths = {route.path for route in app.routes}
 
     assert "/module1/health" in route_paths
+    assert "/module1/office-online/preview/start" in route_paths
+    assert "/module1/office-online/preview/public/{token}/{filename:path}" in route_paths
     assert "/health" not in route_paths

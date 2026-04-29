@@ -33,6 +33,9 @@ import {
 import type { GraphRenderEdge, GraphRenderMode, GraphRenderModel, GraphRenderNode } from '../../features/knowledge-graph/graphragViewModel';
 import { getActiveExtractionFileHash } from '../../features/knowledge-graph/utils';
 
+const cn = (...parts: Array<string | false | null | undefined>) =>
+  parts.filter(Boolean).join(' ');
+
 const getFileIcon = (filename: string) => {
   if (!filename) return defaultDocIcon;
   const lowerName = filename.toLowerCase();
@@ -110,6 +113,12 @@ const LABEL_MODE_OPTIONS: Array<{ key: GraphLabelMode; label: string; descriptio
     description: '尽可能展示全部节点名称，自动做防重叠抑制',
   },
 ];
+
+const MODULE4_CONTROL_DRAWER_BREAKPOINT = 1360;
+const MODULE4_HEADER_DENSE_BREAKPOINT = 1220;
+const MODULE4_HEADER_ULTRA_DENSE_BREAKPOINT = 980;
+const MODULE4_DETAIL_DENSE_BREAKPOINT = 1280;
+const MODULE4_DETAIL_ULTRA_DENSE_BREAKPOINT = 1080;
 
 const DETAIL_PANEL_CARD_SOFT_CLASS =
   'rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900';
@@ -579,7 +588,16 @@ export const KnowledgeNexus: React.FC = () => {
   const [nodeDetailLoading, setNodeDetailLoading] = useState(false);
   const [nodeDetailError, setNodeDetailError] = useState('');
   const [isFileDropdownOpen, setIsFileDropdownOpen] = useState(false);
+  const [workbenchWidth, setWorkbenchWidth] = useState<number>(() =>
+    typeof window !== 'undefined' ? window.innerWidth : 1440
+  );
+  const [isControlDrawerOpen, setIsControlDrawerOpen] = useState<boolean>(() =>
+    typeof window !== 'undefined'
+      ? window.innerWidth <= MODULE4_CONTROL_DRAWER_BREAKPOINT
+      : false
+  );
   const fileDropdownRef = useRef<HTMLDivElement>(null);
+  const workbenchRef = useRef<HTMLElement | null>(null);
   const graphLoadSeqRef = useRef(0);
   const selectedFileHashRef = useRef('');
 
@@ -603,6 +621,51 @@ export const KnowledgeNexus: React.FC = () => {
   useEffect(() => {
     selectedFileHashRef.current = selectedFileHash;
   }, [selectedFileHash]);
+
+  useEffect(() => {
+    const target = workbenchRef.current;
+
+    const syncWidth = () => {
+      const nextWidth = Math.round(target?.getBoundingClientRect().width || window.innerWidth || 1440);
+      setWorkbenchWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+    };
+
+    syncWidth();
+
+    if (typeof ResizeObserver === 'undefined' || !target) {
+      window.addEventListener('resize', syncWidth);
+      return () => window.removeEventListener('resize', syncWidth);
+    }
+
+    const observer = new ResizeObserver(() => syncWidth());
+    observer.observe(target);
+    window.addEventListener('resize', syncWidth);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', syncWidth);
+    };
+  }, []);
+
+  const shouldUseControlDrawer = workbenchWidth > 0 && workbenchWidth <= MODULE4_CONTROL_DRAWER_BREAKPOINT;
+  const showDockedControlPanel = !shouldUseControlDrawer;
+  const showControlDrawer = shouldUseControlDrawer && isControlDrawerOpen;
+  const useDenseHeader = workbenchWidth > 0 && workbenchWidth <= MODULE4_HEADER_DENSE_BREAKPOINT;
+  const useUltraDenseHeader = workbenchWidth > 0 && workbenchWidth <= MODULE4_HEADER_ULTRA_DENSE_BREAKPOINT;
+  const useDenseDetailPanel = workbenchWidth > 0 && workbenchWidth <= MODULE4_DETAIL_DENSE_BREAKPOINT;
+  const useUltraDenseDetailPanel = workbenchWidth > 0 && workbenchWidth <= MODULE4_DETAIL_ULTRA_DENSE_BREAKPOINT;
+
+  const closeControlDrawer = useCallback(() => setIsControlDrawerOpen(false), []);
+  const toggleControlDrawer = useCallback(() => {
+    if (!shouldUseControlDrawer) return;
+    setIsControlDrawerOpen((prev) => !prev);
+  }, [shouldUseControlDrawer]);
+
+  useEffect(() => {
+    if (!shouldUseControlDrawer && isControlDrawerOpen) {
+      setIsControlDrawerOpen(false);
+    }
+  }, [isControlDrawerOpen, shouldUseControlDrawer]);
 
   const graphRAGFiles = useMemo(
     () => dedupePreferredGraphFiles(graphFiles.filter((item) => isGraphRAGFile(item))),
@@ -712,8 +775,11 @@ export const KnowledgeNexus: React.FC = () => {
       clearQueryResult();
       void loadGraph(nextFileHash);
       setIsFileDropdownOpen(false);
+      if (showControlDrawer) {
+        setIsControlDrawerOpen(false);
+      }
     },
-    [clearQueryResult, loadGraph]
+    [clearQueryResult, loadGraph, showControlDrawer]
   );
 
   const selectedFile = useMemo(
@@ -883,6 +949,7 @@ export const KnowledgeNexus: React.FC = () => {
     if (!selectedEdgeId) return null;
     return renderModel.edges.find((edge) => edge.id === selectedEdgeId) || null;
   }, [renderModel.edges, selectedEdgeId]);
+  const shouldShowDetailsPanel = Boolean(selectedNode || selectedEdge || renderMode !== 'overview');
 
   const selectedCommunity = useMemo(() => {
     const communityId = selectedNode?.kind === 'community' ? selectedNode.id : selectedNode?.communityId || focusedCommunityId;
@@ -921,7 +988,6 @@ export const KnowledgeNexus: React.FC = () => {
       ),
     [nodeDetail?.edge_evidence]
   );
-  const shouldShowDetailsPanel = Boolean(selectedNode || selectedEdge || renderMode !== 'overview');
 
   const evidenceNodeCount = useMemo(
     () => renderModel.nodes.filter((node) => node.role === 'evidence').length,
@@ -1086,6 +1152,9 @@ export const KnowledgeNexus: React.FC = () => {
       return;
     }
 
+    if (showControlDrawer) {
+      setIsControlDrawerOpen(false);
+    }
     setQueryLoading(true);
     setQueryError('');
     const requestedMode = queryMode;
@@ -1121,7 +1190,7 @@ export const KnowledgeNexus: React.FC = () => {
     } finally {
       setQueryLoading(false);
     }
-  }, [allGraphNodeIdSet, maxCommunityLevel, queryMode, queryText, resolveLinkedNodeId, selectedFileHash]);
+  }, [allGraphNodeIdSet, maxCommunityLevel, queryMode, queryText, resolveLinkedNodeId, selectedFileHash, showControlDrawer]);
 
   const focusQueryLinkedNode = useCallback(
     (offset: number) => {
@@ -1396,8 +1465,26 @@ export const KnowledgeNexus: React.FC = () => {
     selectedNodeId,
   ]);
 
+  const controlButtonLabel = useUltraDenseHeader ? '控制' : '检索/控制';
+  const refreshButtonLabel = loading ? '刷新中' : useUltraDenseHeader ? '刷新' : '刷新';
+  const headerFileSelectorMaxWidthClass = useUltraDenseHeader
+    ? 'max-w-[220px]'
+    : useDenseHeader
+      ? 'max-w-[260px]'
+      : 'max-w-[300px]';
+  const headerChromeClass = useUltraDenseHeader
+    ? 'pl-3 pr-3 py-1'
+    : useDenseHeader
+      ? 'pl-4 pr-4 py-1.5'
+      : 'pl-4 pr-6 py-1.5';
+  const headerGapClass = useUltraDenseHeader ? 'gap-2' : 'gap-3';
+  const detailAsideWidthClass = useUltraDenseDetailPanel ? 'w-[17rem]' : useDenseDetailPanel ? 'w-[18rem]' : 'w-80';
+  const detailSectionPaddingClass = useUltraDenseDetailPanel ? 'px-3 pb-3' : 'px-4 pb-4';
+  const detailHeaderPaddingClass = useUltraDenseDetailPanel ? 'px-3 pt-2' : 'px-4 pt-2';
+  const detailCardGapClass = useUltraDenseDetailPanel ? 'space-y-2.5' : 'space-y-3';
+
   return (
-    <section className="module4-workbench relative flex h-[100dvh] w-full flex-col overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-module2-primary-bg/40 via-module2-bg to-module2-primary-bg/40 p-0 text-module2-text-primary dark:bg-slate-950">
+    <section ref={workbenchRef} className="module4-workbench relative flex h-[100dvh] w-full flex-col overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-module2-primary-bg/40 via-module2-bg to-module2-primary-bg/40 p-0 text-module2-text-primary dark:bg-slate-950">
       <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
         {/* Enhanced bright theme background elements for more highlights and depth (Copied from Mod 2) */}
         <div className="absolute -top-[10%] -left-[5%] w-[60%] h-[60%] rounded-full bg-gradient-to-br from-blue-400/20 to-sky-500/20 blur-[100px] dark:from-blue-500/10 dark:to-sky-500/10" />
@@ -1410,26 +1497,51 @@ export const KnowledgeNexus: React.FC = () => {
         />
       </div>
       {/* 顶部紧凑控制栏*/}
-      <header className="relative z-10 flex shrink-0 items-center justify-between bg-[#fbfcfd]/90 pl-4 pr-6 py-1.5 backdrop-blur-xl border-b border-slate-200/40 shadow-[0_2px_12px_rgba(0,0,0,0.03)] dark:bg-slate-950/95 dark:border-white/5 dark:shadow-[0_4px_16px_rgba(0,0,0,0.4)]">
-        <div className="flex flex-1 min-w-0 items-center gap-3">
-          <div className="flex shrink-0 items-center -ml-5 translate-y-[2px]">
+      <header className={cn("relative z-10 flex shrink-0 items-center justify-between bg-[#fbfcfd]/90 backdrop-blur-xl border-b border-slate-200/40 shadow-[0_2px_12px_rgba(0,0,0,0.03)] dark:bg-slate-950/95 dark:border-white/5 dark:shadow-[0_4px_16px_rgba(0,0,0,0.4)]", headerChromeClass)}>
+        <div className={cn("flex flex-1 min-w-0 items-center", headerGapClass)}>
+          <div className={cn("flex shrink-0 items-center translate-y-[2px]", useUltraDenseHeader ? "-ml-2.5" : "-ml-5")}>
             <img 
                 src={module4Svg} 
                 alt="Knowledge Graph" 
-                className="h-[32px] w-auto origin-left scale-[3.0] translate-y-1 object-contain transition-all duration-300 mr-[110px]" 
+                className={cn(
+                  "w-auto origin-left scale-[3.0] translate-y-1 object-contain transition-all duration-300",
+                  useUltraDenseHeader ? "h-[24px] mr-[72px]" : useDenseHeader ? "h-[28px] mr-[96px]" : "h-[32px] mr-[110px]",
+                )} 
             />
-            <div className="flex shrink-0 items-center space-x-[1px] font-['Microsoft_YaHei'] text-[20px] font-bold tracking-widest -ml-0.5 translate-y-[2px] whitespace-nowrap">
+            <div className={cn(
+              "flex shrink-0 items-center space-x-[1px] font-['Microsoft_YaHei'] font-bold tracking-widest -ml-0.5 translate-y-[2px] whitespace-nowrap",
+              useUltraDenseHeader ? "text-[15px]" : useDenseHeader ? "text-[18px]" : "text-[20px]",
+            )}>
                 <span className="text-[#334155] dark:text-slate-200">全域</span>
                 <span className="text-[#3b82f6] dark:text-blue-400">知识图谱</span>
             </div>
           </div>
           
-          <div className="flex flex-1 min-w-0 items-center justify-end gap-2 ml-4">
+          <div className={cn("flex flex-1 min-w-0 items-center justify-end ml-4", useUltraDenseHeader ? "gap-1" : "gap-2")}>
+            {shouldUseControlDrawer && (
+              <button
+                type="button"
+                onClick={toggleControlDrawer}
+                className={cn(
+                  "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-white/90 text-slate-700 shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:bg-slate-50 hover:border-slate-300 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-600",
+                  useUltraDenseHeader ? "h-[24px] px-2 text-[11px]" : "h-[28px] px-3 text-[12px]",
+                )}
+                title={showControlDrawer ? '收起检索/控制' : '打开检索/控制'}
+                aria-label={showControlDrawer ? '收起检索/控制' : '打开检索/控制'}
+              >
+                {showControlDrawer ? <PanelRightClose size={useUltraDenseHeader ? 12 : 14} /> : <PanelRightOpen size={useUltraDenseHeader ? 12 : 14} />}
+                <span className={cn(useUltraDenseHeader ? 'hidden md:inline' : 'hidden sm:inline')}>{controlButtonLabel}</span>
+              </button>
+            )}
             <div className="relative shrink min-w-0" ref={fileDropdownRef}>
               <button
                 type="button"
                 onClick={() => setIsFileDropdownOpen(!isFileDropdownOpen)}
-                className="flex h-[28px] w-full max-w-[300px] shrink cursor-pointer items-center justify-between gap-2 rounded-md border border-slate-200 bg-white/80 px-2.5 text-[12px] text-slate-700 shadow-[0_1px_2px_rgba(0,0,0,0.04)] outline-none transition-colors hover:border-slate-300 hover:bg-white focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-200 dark:hover:border-slate-600"
+                className={cn(
+                  "flex h-[28px] w-full shrink cursor-pointer items-center justify-between gap-2 rounded-md border border-slate-200 bg-white/80 px-2.5 text-[12px] text-slate-700 shadow-[0_1px_2px_rgba(0,0,0,0.04)] outline-none transition-colors hover:border-slate-300 hover:bg-white focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-200 dark:hover:border-slate-600",
+                  useUltraDenseHeader ? "h-[24px] text-[11px]" : "",
+                  headerFileSelectorMaxWidthClass,
+                )}
               >
                 <div className="flex items-center gap-2 truncate">
                   {selectedFile ? (
@@ -1550,22 +1662,55 @@ export const KnowledgeNexus: React.FC = () => {
               type="button"
               onClick={() => void refresh()}
               disabled={loading}
-              className="inline-flex shrink-0 h-[28px] items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-[12px] font-medium text-slate-700 shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:bg-slate-50 hover:border-slate-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white font-medium text-slate-700 shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:bg-slate-50 hover:border-slate-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200",
+                useUltraDenseHeader ? "h-[24px] px-2 text-[11px]" : "h-[28px] px-3 text-[12px]",
+              )}
             >
-              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-              {loading ? '刷新中' : '刷新'}
+              <RefreshCw size={useUltraDenseHeader ? 12 : 14} className={loading ? 'animate-spin' : ''} />
+              <span className={cn(useUltraDenseHeader ? 'hidden md:inline' : 'hidden sm:inline')}>{refreshButtonLabel}</span>
             </button>
           </div>
         </div>
       </header>
 
       {/* 主体工作区*/}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 overflow-hidden">
+        {showControlDrawer && (
+          <button
+            type="button"
+            onClick={closeControlDrawer}
+            className="absolute inset-0 z-30 bg-slate-950/16 backdrop-blur-[2px]"
+            aria-label="关闭检索与控制抽屉"
+          />
+        )}
         
         {/* 左侧控制栏：检索与视图控制 */}
-        <aside className="flex w-80 shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-white/95 backdrop-blur-md dark:border-white/5 dark:bg-slate-950/95">
+        <aside
+          className={cn(
+            "flex shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-white/95 backdrop-blur-md dark:border-white/5 dark:bg-slate-950/95",
+            showDockedControlPanel
+              ? "relative w-80"
+              : showControlDrawer
+                ? "absolute inset-y-3 left-3 z-40 w-[min(320px,calc(100%-24px))] rounded-[24px] border border-slate-200/70 shadow-[0_24px_60px_-28px_rgba(15,23,42,0.32)] dark:border-white/[0.08] dark:shadow-[0_28px_72px_-34px_rgba(2,6,23,0.9)]"
+                : "hidden",
+          )}
+        >
             <div className="flex h-11 shrink-0 items-center px-4 pt-2">
-              <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">图谱检索</h2>
+              <div className="flex w-full items-center justify-between">
+                <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">图谱检索</h2>
+                {showControlDrawer && (
+                  <button
+                    type="button"
+                    onClick={closeControlDrawer}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                    title="关闭检索与控制"
+                    aria-label="关闭检索与控制"
+                  >
+                    <XCircle size={16} />
+                  </button>
+                )}
+              </div>
             </div>
           
           <div className="px-4 pb-4">
@@ -1851,8 +1996,8 @@ export const KnowledgeNexus: React.FC = () => {
 
         {/* 右侧详情面板 */}
         {(selectedNode || selectedEdge) && (
-          <aside className="flex w-80 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white/95 backdrop-blur-md dark:border-white/5 dark:bg-slate-950/95">
-            <div className="flex h-11 shrink-0 items-center justify-between px-4 pt-2">
+          <aside className={cn("flex shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white/95 backdrop-blur-md dark:border-white/5 dark:bg-slate-950/95", detailAsideWidthClass)}>
+            <div className={cn("flex h-11 shrink-0 items-center justify-between", detailHeaderPaddingClass)}>
               <h2 className={DETAIL_PANEL_SECTION_TITLE_CLASS}>当前选中</h2>
               {renderMode !== 'overview' && (
                 <button
@@ -1865,9 +2010,9 @@ export const KnowledgeNexus: React.FC = () => {
               )}
             </div>
 
-            <div className="px-4 pb-4">
+            <div className={detailSectionPaddingClass}>
               {selectedNode ? (
-                <div className="space-y-3 text-xs">
+                <div className={cn("text-xs", detailCardGapClass)}>
                   <div className={DETAIL_PANEL_CARD_SOFT_CLASS}>
                     <div className={DETAIL_PANEL_LABEL_CLASS}>节点名称</div>
                     <div className="mt-1 text-[12px] font-semibold leading-5 text-slate-900 dark:text-slate-100">
@@ -1977,7 +2122,7 @@ export const KnowledgeNexus: React.FC = () => {
                   )}
                 </div>
               ) : selectedEdge ? (
-                <div className="space-y-3 text-xs">
+                <div className={cn("text-xs", detailCardGapClass)}>
                   <div className={DETAIL_PANEL_CARD_SOFT_CLASS}>
                     <div className={DETAIL_PANEL_LABEL_CLASS}>关系标签</div>
                     <div className="mt-1 text-[12px] font-semibold leading-5 text-slate-900 dark:text-slate-100">
@@ -2036,10 +2181,10 @@ export const KnowledgeNexus: React.FC = () => {
 
             <div className="mx-4 my-2 h-px bg-slate-200/60 dark:bg-slate-800/60" />
 
-            <div className="flex h-11 shrink-0 items-center px-4 pt-2">
+            <div className={cn("flex h-11 shrink-0 items-center", detailHeaderPaddingClass)}>
               <h3 className={DETAIL_PANEL_SECTION_TITLE_CLASS}>渲染统计</h3>
             </div>
-            <div className="px-4 pb-4">
+            <div className={detailSectionPaddingClass}>
               <div className="grid grid-cols-2 gap-2 text-[10px]">
                 <div className={DETAIL_PANEL_CARD_BASE_CLASS}>
                   <div className={DETAIL_PANEL_LABEL_CLASS}>原始节点</div>
@@ -2073,10 +2218,3 @@ export const KnowledgeNexus: React.FC = () => {
     </section>
   );
 };
-
-
-
-
-
-
-

@@ -31,6 +31,7 @@ import {
   describeMobileDownloadResult,
   saveBlobToMobileDevice,
 } from '../../shared/mobileDownload';
+import { useMobileOverlayRegistration } from '../../shared/hooks/useMobileOverlayPresence';
 import { MobileAssistantDialog } from './mobile/MobileAssistantDialog';
 import { MobileDocumentPreviewCard } from './mobile/MobileDocumentPreviewCard';
 import TraceChartPreview from '../../components/trace/TraceChartPreview';
@@ -452,6 +453,10 @@ export const MobileDeepReadPage: React.FC = () => {
   const documentsRef = useRef<ExtractionDocument[]>([]);
   const sourceFilesByHashRef = useRef<Record<string, File>>({});
   const [sourceFilesByHash, setSourceFilesByHash] = useState<Record<string, File>>({});
+
+  useMobileOverlayRegistration(
+    previewOpen || artifactOpen || assistantOpen || Boolean(pendingRemoveDoc),
+  );
 
   useEffect(() => {
     const sync = () => {
@@ -1938,12 +1943,12 @@ export const MobileDeepReadPage: React.FC = () => {
       variants={containerVariants}
       initial="hidden"
       animate="show"
-      className="flex h-[100dvh] flex-col bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] font-sans overflow-hidden dark:from-slate-900 dark:via-slate-900 dark:to-slate-950"
+      className="flex h-[var(--app-visual-height,100dvh)] flex-col bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] font-sans overflow-hidden dark:from-slate-900 dark:via-slate-900 dark:to-slate-950"
     >
       {/* Impeccable 级悬浮搜索背景 (全宽毛玻璃，无生硬边缘，无尴尬留白) */}
       <motion.div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-x-0 top-0 z-[58] border-b border-slate-200/40 bg-[#fbfcfd]/90 pb-3 pt-[max(12px,env(safe-area-inset-top))] shadow-[0_2px_12px_rgba(0,0,0,0.03)] backdrop-blur-xl dark:border-white/5 dark:bg-[#0B1120]/95 dark:shadow-none"
+        className="pointer-events-none fixed inset-x-0 top-0 z-[58] border-b border-slate-200/40 bg-[#fbfcfd]/90 pb-3 pt-[max(12px,var(--mobile-safe-top))] shadow-[0_2px_12px_rgba(0,0,0,0.03)] backdrop-blur-xl dark:border-white/5 dark:bg-[#0B1120]/95 dark:shadow-none"
         style={{ opacity: stickySearchLayerOpacity }}
       >
         <div className="h-[46px]" /> {/* 占位撑开高度与搜索框一致 */}
@@ -1952,7 +1957,7 @@ export const MobileDeepReadPage: React.FC = () => {
       {/* 悬浮搜索框主体 (完全融入毛玻璃背景，放弃生硬的大白块包裹) */}
       <div
         ref={stickySearchShellRef}
-        className="pointer-events-none fixed inset-x-0 top-0 z-[65] px-4 pt-[max(12px,env(safe-area-inset-top))]"
+        className="pointer-events-none fixed inset-x-0 top-0 z-[65] px-4 pt-[max(12px,var(--mobile-safe-top))]"
       >
         <motion.div
           style={{
@@ -1979,7 +1984,7 @@ export const MobileDeepReadPage: React.FC = () => {
         </motion.div>
       </div>
 
-      <div className="px-4 pt-[max(0rem,env(safe-area-inset-top))] flex-1 flex flex-col min-h-0">
+      <div className="px-4 pt-[max(0rem,var(--mobile-safe-top))] flex-1 flex flex-col min-h-0">
         {/* 顶部独立导航区 (分离式设计：主标题与副标题) */}
         {/* 整体上移：将 pt-6 减小为 pt-3，使得页面内容整体向上提升约 12px */}
         <motion.div variants={itemVariants} className="relative z-40 flex items-start justify-between px-3 pt-2 overflow-visible pointer-events-auto">
@@ -2036,7 +2041,7 @@ export const MobileDeepReadPage: React.FC = () => {
         <div ref={heroSearchAnchorRef} className="pointer-events-none h-0" aria-hidden="true" />
         <motion.div
           variants={itemVariants}
-          className="relative mb-4 pt-6 z-30"
+          className="relative z-30 mb-3 pt-4 max-[360px]:mb-2 max-[360px]:pt-3"
           style={{
             opacity: heroSearchOpacity,
             y: heroSearchYOffset,
@@ -2044,7 +2049,7 @@ export const MobileDeepReadPage: React.FC = () => {
             filter: `blur(${heroSearchBlur.toFixed(2)}px)`,
           }}
         >
-          <div className="flex h-[46px] w-full items-center gap-3 rounded-full bg-white/96 px-5 shadow-[0_8px_24px_rgba(0,0,0,0.04)] ring-1 ring-white/50 dark:bg-slate-800 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)] dark:ring-slate-700/50">
+          <div className="flex h-[46px] w-full items-center gap-3 rounded-full bg-white/96 px-5 shadow-[0_8px_24px_rgba(0,0,0,0.04)] ring-1 ring-white/50 max-[360px]:h-[42px] dark:bg-slate-800 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)] dark:ring-slate-700/50">
             <Search className="text-slate-400" size={18} />
             <input
               ref={heroSearchInputRef}
@@ -2060,12 +2065,12 @@ export const MobileDeepReadPage: React.FC = () => {
         </motion.div>
 
         {/* Quick Upload Rail */}
-        <motion.div variants={itemVariants} className="mb-2">
+        <motion.div variants={itemVariants} className="mb-2 max-[360px]:mb-0">
           <div className="mb-2 px-1">
-            <h3 className="text-[15px] font-bold text-slate-800 dark:text-slate-100">文件上传</h3>
+            <h3 className="text-[15px] font-bold text-slate-800 max-[360px]:text-[14px] dark:text-slate-100">文件上传</h3>
           </div>
 
-          <div className="-mx-1 flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-1 pb-1 scrollbar-hide [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+          <div className="-mx-1 flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-1 pb-1 scrollbar-hide max-[360px]:gap-1.5 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
             {QUICK_UPLOAD_SHORTCUTS.map((shortcut) => {
               const isActive = activeUploadShortcut === shortcut.id;
               const Icon = shortcut.icon;
@@ -2074,11 +2079,11 @@ export const MobileDeepReadPage: React.FC = () => {
                   key={shortcut.id}
                   type="button"
                   onClick={() => handleQuickUploadShortcut(shortcut)}
-                  className="group flex min-w-[74px] snap-start shrink-0 flex-col items-center gap-2.5 rounded-[16px] bg-transparent px-1 py-1 text-center transition-transform active:scale-[0.97]"
+                  className="group flex min-w-[74px] snap-start shrink-0 flex-col items-center gap-2.5 rounded-[16px] bg-transparent px-1 py-1 text-center transition-transform active:scale-[0.97] max-[360px]:min-w-[64px] max-[360px]:gap-1.5"
                 >
                   <div
                     className={cn(
-                      'flex h-[56px] w-[56px] items-center justify-center rounded-[18px] border shadow-[0_4px_12px_rgba(15,23,42,0.04)] transition-all dark:shadow-[0_4px_12px_rgba(2,6,23,0.16)]',
+                      'flex h-[56px] w-[56px] items-center justify-center rounded-[18px] border shadow-[0_4px_12px_rgba(15,23,42,0.04)] transition-all max-[360px]:h-[48px] max-[360px]:w-[48px] max-[360px]:rounded-[16px] dark:shadow-[0_4px_12px_rgba(2,6,23,0.16)]',
                       isActive
                         ? cn(shortcut.activeBg, shortcut.activeBorder, 'shadow-[0_8px_16px_rgba(59,130,246,0.08)]')
                         : 'border-white/80 bg-white/92 dark:border-slate-700/60 dark:bg-slate-800/95',
@@ -2088,7 +2093,7 @@ export const MobileDeepReadPage: React.FC = () => {
                       <img
                         src={shortcut.iconImg}
                         alt={shortcut.label}
-                        className="h-[32px] w-[32px] object-contain transition-transform group-hover:scale-110"
+                        className="h-[32px] w-[32px] object-contain transition-transform group-hover:scale-110 max-[360px]:h-[28px] max-[360px]:w-[28px]"
                       />
                     ) : Icon ? (
                       <Icon
@@ -2100,7 +2105,7 @@ export const MobileDeepReadPage: React.FC = () => {
                   </div>
                   <p
                     className={cn(
-                      'text-[12px] font-semibold tracking-tight',
+                      'text-[12px] font-semibold tracking-tight max-[360px]:text-[11px]',
                       isActive ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-300',
                     )}
                   >
@@ -2220,21 +2225,31 @@ export const MobileDeepReadPage: React.FC = () => {
         )}
 
         <motion.section variants={cardVariants} className="relative z-20 flex-1 flex flex-col min-h-0">
-          <div className="-mx-4 rounded-t-[32px] bg-white pt-6 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] dark:bg-slate-900/95 dark:shadow-[0_-4px_24px_rgba(0,0,0,0.2)] flex-1 flex flex-col min-h-0">
-            <div className="mb-4 flex items-center justify-between px-6 shrink-0">
+          <div className="-mx-4 flex flex-1 flex-col rounded-t-[32px] bg-white pt-5 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] max-[360px]:pt-4 dark:bg-slate-900/95 dark:shadow-[0_-4px_24px_rgba(0,0,0,0.2)] min-h-0">
+            <div className="mb-3 flex shrink-0 items-center justify-between px-6 max-[360px]:mb-2">
               <h3 className="text-[16px] font-bold text-slate-800 dark:text-slate-100">解析文档列表</h3>
             </div>
             
-            <div className="relative z-10 px-6 flex-1 overflow-y-auto pb-[calc(env(safe-area-inset-bottom)+70px)]">
+            <div className="relative z-10 px-6 flex-1 overflow-y-auto pb-[calc(var(--mobile-content-bottom)+12px)]">
               {filteredDocuments.length === 0 ? (
-                <div className="mt-2 flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200/60 bg-slate-50/50 py-14 text-center dark:border-slate-700/60 dark:bg-slate-800/20">
-                  <div className="mb-4 flex h-[60px] w-[60px] items-center justify-center rounded-[18px] bg-white shadow-[0_8px_30px_rgba(6,182,212,0.15)] ring-1 ring-slate-100 dark:bg-slate-800 dark:shadow-[0_8px_30px_rgba(6,182,212,0.08)] dark:ring-slate-700">
-                    <FileSearch size={28} className="text-cyan-500 dark:text-cyan-400" strokeWidth={1.5} />
+                <div className="mt-2 flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200/60 bg-slate-50/50 py-10 text-center max-[360px]:py-8 dark:border-slate-700/60 dark:bg-slate-800/20">
+                  <div className="mb-3 flex h-[54px] w-[54px] items-center justify-center rounded-[18px] bg-white shadow-[0_8px_30px_rgba(6,182,212,0.15)] ring-1 ring-slate-100 max-[360px]:h-[48px] max-[360px]:w-[48px] dark:bg-slate-800 dark:shadow-[0_8px_30px_rgba(6,182,212,0.08)] dark:ring-slate-700">
+                    <FileSearch size={24} className="text-cyan-500 dark:text-cyan-400" strokeWidth={1.5} />
                   </div>
-                  <p className="text-[15px] font-bold text-slate-700 dark:text-slate-200">暂无解析记录</p>
-                  <p className="mt-1.5 max-w-[200px] text-[13px] leading-relaxed text-slate-400 dark:text-slate-500">
+                  <p className="text-[15px] font-bold text-slate-700 max-[360px]:text-[14px] dark:text-slate-200">暂无解析记录</p>
+                  <p className="mt-1.5 max-w-[200px] text-[13px] leading-relaxed text-slate-400 max-[360px]:text-[12px] dark:text-slate-500">
                     {documents.length > 0 ? "没有找到符合条件的文档" : "请先上传文件并创建解析任务"}
                   </p>
+                  {documents.length === 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => handleQuickUploadShortcut(QUICK_UPLOAD_SHORTCUTS[0])}
+                      className="mt-4 inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-slate-900 px-4 text-[13px] font-semibold text-white shadow-[0_8px_18px_rgba(15,23,42,0.16)] transition active:scale-[0.97] dark:bg-white dark:text-slate-900"
+                    >
+                      <UploadCloud size={14} />
+                      上传文件
+                    </button>
+                  ) : null}
                 </div>
               ) : (
               <div className="flex flex-col gap-3">
@@ -2402,8 +2417,8 @@ export const MobileDeepReadPage: React.FC = () => {
       </div>
 
       {previewOpen && previewDoc && (
-        <div className="fixed inset-0 z-[72] bg-white dark:bg-slate-950 overflow-hidden">
-          <div className="flex h-14 items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pt-[max(0px,env(safe-area-inset-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
+        <div className="fixed inset-0 z-[72] flex flex-col overflow-hidden bg-white dark:bg-slate-950" data-mobile-overlay="true">
+          <div className="flex min-h-14 shrink-0 items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pt-[max(0px,var(--mobile-safe-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
             <div className="flex-1 min-w-0 pr-4">
               <p className="text-[17px] font-bold text-slate-900 dark:text-slate-100">文件预览</p>
             </div>
@@ -2432,7 +2447,7 @@ export const MobileDeepReadPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex h-[calc(100dvh-3.5rem)] w-full flex-col overflow-hidden pb-[calc(env(safe-area-inset-bottom))]">
+          <div className="flex min-h-0 flex-1 w-full flex-col overflow-hidden pb-[var(--mobile-safe-bottom)]">
             <MobileDocumentPreviewCard
               activeDoc={previewDoc}
               preferredBase={apiBaseHint}
@@ -2443,8 +2458,8 @@ export const MobileDeepReadPage: React.FC = () => {
       )}
 
       {artifactOpen && activeDoc && (
-        <div className="fixed inset-0 z-[73] bg-[#f4fbfd] dark:bg-slate-950">
-          <div className="flex h-14 items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pt-[max(0px,env(safe-area-inset-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
+        <div className="fixed inset-0 z-[73] flex flex-col overflow-hidden bg-[#f4fbfd] dark:bg-slate-950" data-mobile-overlay="true">
+          <div className="flex min-h-14 shrink-0 items-center justify-between border-b border-slate-200/70 bg-white/92 px-4 pt-[max(0px,var(--mobile-safe-top))] shadow-[0_6px_18px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/92 dark:shadow-none">
             <div className="flex-1 min-w-0 pr-4">
               <p className="text-[17px] font-bold text-slate-900 dark:text-slate-100">解析产物</p>
             </div>
@@ -2471,14 +2486,14 @@ export const MobileDeepReadPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="h-[calc(100dvh-3.5rem)] overflow-y-auto px-2 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-2">
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-[calc(var(--mobile-safe-bottom)+1.5rem)] pt-2">
             {renderArtifactDetailPanel()}
           </div>
         </div>
       )}
 
       {pendingRemoveDoc && (
-        <div className="fixed inset-0 z-[70] flex items-end bg-black/40 p-4 backdrop-blur-[1px]">
+        <div className="fixed inset-0 z-[70] flex items-end bg-black/40 p-4 backdrop-blur-[1px]" data-mobile-overlay="true">
           <div className="w-full rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_20px_40px_rgba(15,23,42,0.2)] dark:border-slate-700 dark:bg-slate-900">
             <p className="text-[16px] font-semibold text-slate-900 dark:text-slate-100">
               移除文件
@@ -2508,7 +2523,7 @@ export const MobileDeepReadPage: React.FC = () => {
       )}
 
       {toastMessage && (
-        <div className="pointer-events-none fixed bottom-[calc(env(safe-area-inset-bottom)+5.8rem)] left-1/2 z-[75] -translate-x-1/2">
+        <div className="pointer-events-none fixed bottom-[calc(var(--mobile-content-bottom)+1.25rem)] left-1/2 z-[75] -translate-x-1/2">
           <div className="max-w-[88vw] rounded-full bg-slate-900/92 px-4 py-2 text-[12px] font-medium text-white shadow-[0_12px_24px_rgba(15,23,42,0.28)] dark:bg-slate-700/95">
             {toastMessage}
           </div>

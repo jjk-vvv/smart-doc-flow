@@ -10,6 +10,7 @@ import {
   sendRegisterCode,
 } from '../shared/api/auth';
 import { cn } from '../lib/utils';
+import { useMobileOverlayRegistration } from '../shared/hooks/useMobileOverlayPresence';
 
 interface AuthModalProps {
   show: boolean;
@@ -89,6 +90,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onLoginSuccess,
 }) => {
+  useMobileOverlayRegistration(show);
+
   const [authView, setAuthView] = useState<'login' | 'register' | 'forgot'>('login');
 
   const baseInputClasses =
@@ -337,8 +340,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       : AUTH_TEXT.forgotHintDefault;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 p-4 dark:bg-black/60 backdrop-blur-md animate-in fade-in duration-300">
-      <div className="relative w-full max-w-[420px] overflow-hidden rounded-[24px] border border-white/60 bg-white/95 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.1)] backdrop-blur-xl animate-in zoom-in-95 duration-300 dark:border-white/[0.05] dark:bg-[#0B1120]/95 dark:shadow-[0_20px_80px_-15px_rgba(0,0,0,0.6)]">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 p-4 pt-[max(1rem,var(--mobile-safe-top))] pb-[max(1rem,var(--mobile-safe-bottom))] dark:bg-black/60 backdrop-blur-md animate-in fade-in duration-300">
+      <div className="relative flex max-h-[calc(var(--app-visual-height,100dvh)-2rem)] w-full max-w-[420px] flex-col overflow-hidden rounded-[24px] border border-white/60 bg-white/95 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.1)] backdrop-blur-xl animate-in zoom-in-95 duration-300 dark:border-white/[0.05] dark:bg-[#0B1120]/95 dark:shadow-[0_20px_80px_-15px_rgba(0,0,0,0.6)]">
         <button
           onClick={onClose}
           className="absolute right-5 top-5 z-10 flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition-all hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/10 dark:hover:text-slate-300"
@@ -346,7 +349,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <X size={18} className="currentColor" />
         </button>
 
-        <div className="p-6 sm:p-8 max-h-[90vh] overflow-y-auto">
+        <div className="overflow-y-auto p-6 sm:p-8">
           <div className="mb-6 text-center">
             <h2 className="mb-2.5 text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
               {authView === 'login' && AUTH_TEXT.loginTitle}

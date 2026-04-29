@@ -151,6 +151,10 @@ const LANDING_SUGGESTION_BUTTON_CLASS = `
   dark:border-slate-700 dark:bg-slate-900/88 dark:text-slate-200
   dark:hover:border-slate-600 dark:hover:bg-slate-800 dark:hover:text-sky-200
 `.replace(/\s+/g, ' ').trim();
+const RESPONSIVE_HISTORY_COLLAPSE_WIDTH = 1380;
+const RESPONSIVE_PREVIEW_OVERLAY_WIDTH = 1180;
+const RESPONSIVE_COMPARE_STACK_WIDTH = 1320;
+const RESPONSIVE_COMPACT_HEADER_WIDTH = 920;
 
 const isFileDragEvent = (dataTransfer: DataTransfer | null) => (
   Array.from(dataTransfer?.types ?? []).includes('Files')
@@ -335,6 +339,7 @@ const INITIAL_LANDING_SUGGESTIONS: PromptSuggestionItem[] = [
 
 // 布局模式
 type LayoutMode = 'default' | 'compact' | 'expanded';
+type ResponsiveWorkbenchMode = 'wide' | 'medium' | 'narrow';
 type PreviewPaneMode = 'report' | 'current' | 'original' | 'compare';
 type PdfReadingMode = 'scroll' | 'paged';
 type PreviewCategory = 'pdf' | 'excel' | 'text' | 'image' | 'word' | 'other';
@@ -1699,6 +1704,9 @@ export const DocProcessingWorkbench: React.FC = () => {
   const reportContentRef = useRef<HTMLDivElement>(null);
   const reportSourceByVersionKeyRef = useRef<Record<string, string>>({});
   const documentDragDepthRef = useRef(0);
+  const [workbenchWidth, setWorkbenchWidth] = useState<number>(() => (
+    typeof window !== 'undefined' ? window.innerWidth : 1440
+  ));
   const [showPreviewPanel, setShowPreviewPanel] = useState(initialConversation.showPreviewPanel);
   const [isDocumentDragOver, setIsDocumentDragOver] = useState(false);
   const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
@@ -1887,10 +1895,66 @@ export const DocProcessingWorkbench: React.FC = () => {
     [activeReportMessageForSelectedFile, selectedFile]
   );
 
+  useEffect(() => {
+    const root = workbenchRootRef.current;
+
+    const syncWidth = () => {
+      const nextWidth = Math.round(root?.clientWidth || window.innerWidth || 1440);
+      setWorkbenchWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+    };
+
+    syncWidth();
+
+    if (typeof ResizeObserver === 'undefined' || !root) {
+      window.addEventListener('resize', syncWidth);
+      return () => window.removeEventListener('resize', syncWidth);
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const nextWidth = Math.round(entry.contentRect.width || root.clientWidth || window.innerWidth || 1440);
+      setWorkbenchWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+    });
+
+    observer.observe(root);
+    window.addEventListener('resize', syncWidth);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', syncWidth);
+    };
+  }, []);
+
+  const responsiveWorkbenchMode = useMemo<ResponsiveWorkbenchMode>(() => {
+    if (workbenchWidth < RESPONSIVE_PREVIEW_OVERLAY_WIDTH) return 'narrow';
+    if (workbenchWidth < RESPONSIVE_HISTORY_COLLAPSE_WIDTH) return 'medium';
+    return 'wide';
+  }, [workbenchWidth]);
+
+  const shouldUseHistoryOverlay = responsiveWorkbenchMode !== 'wide';
+  const shouldUsePreviewOverlay = workbenchWidth < RESPONSIVE_PREVIEW_OVERLAY_WIDTH;
+  const shouldUseCompareStacked = shouldUsePreviewOverlay || workbenchWidth < RESPONSIVE_COMPARE_STACK_WIDTH;
+  const showDockedHistorySidebar = !shouldUseHistoryOverlay && !isConversationSidebarCollapsed;
+  const showHistoryOverlay = shouldUseHistoryOverlay && !isConversationSidebarCollapsed;
+  const showDockedPreviewPanel = showPreviewPanel && !shouldUsePreviewOverlay;
+  const showPreviewOverlay = showPreviewPanel && shouldUsePreviewOverlay && !isPreviewFullscreen;
+  const showCompactHeaderControls = workbenchWidth < RESPONSIVE_COMPACT_HEADER_WIDTH;
+  const showConversationTimestamp = workbenchWidth >= 960;
+  const isHistoryPanelVisible = showDockedHistorySidebar || showHistoryOverlay;
+  const isInitialLandingCompact = workbenchWidth < 1040;
+  const isInitialLandingNarrow = workbenchWidth < 760;
+
+  useEffect(() => {
+    if (!showPreviewPanel || !shouldUsePreviewOverlay || !shouldUseHistoryOverlay) return;
+    if (isConversationSidebarCollapsed) return;
+    setIsConversationSidebarCollapsed(true);
+  }, [isConversationSidebarCollapsed, shouldUseHistoryOverlay, shouldUsePreviewOverlay, showPreviewPanel]);
+
   
   
   const contentColumnsStyle = useMemo<React.CSSProperties | undefined>(() => {
-    if (!showPreviewPanel) return undefined;
+    if (!showDockedPreviewPanel) return undefined;
 
     if (layoutMode === 'compact') {
       return { gridTemplateColumns: 'minmax(0, 42%) minmax(0, 1fr)' };
@@ -1901,7 +1965,7 @@ export const DocProcessingWorkbench: React.FC = () => {
     }
 
     return { gridTemplateColumns: 'minmax(0, 48%) minmax(0, 1fr)' };
-  }, [layoutMode, showPreviewPanel]);
+  }, [layoutMode, showDockedPreviewPanel]);
 
   const canPreviewOriginal = useMemo(
     () => Boolean(selectedFile?.sourceFileId && files[selectedFile.sourceFileId]),
@@ -3318,6 +3382,25 @@ export const DocProcessingWorkbench: React.FC = () => {
     setRotation(0);
   };
 
+  const closeConversationSidebarPanel = useCallback(() => {
+    setIsConversationSidebarCollapsed(true);
+  }, []);
+
+  const openConversationSidebarPanel = useCallback(() => {
+    setIsConversationSidebarCollapsed(false);
+    if (shouldUsePreviewOverlay) {
+      setShowPreviewPanel(false);
+    }
+  }, [shouldUsePreviewOverlay]);
+
+  const toggleConversationSidebarPanel = useCallback(() => {
+    if (isHistoryPanelVisible) {
+      closeConversationSidebarPanel();
+      return;
+    }
+    openConversationSidebarPanel();
+  }, [closeConversationSidebarPanel, isHistoryPanelVisible, openConversationSidebarPanel]);
+
   const switchPreviewPane = useCallback((mode: PreviewPaneMode) => {
     setPreviewPaneMode(mode);
     resetPreviewViewport();
@@ -3347,7 +3430,27 @@ export const DocProcessingWorkbench: React.FC = () => {
 
   const openPreviewPanel = useCallback(() => {
     setShowPreviewPanel(true);
-  }, []);
+    if (shouldUseHistoryOverlay) {
+      setIsConversationSidebarCollapsed(true);
+    }
+  }, [shouldUseHistoryOverlay]);
+
+  const togglePreviewPanelVisibility = useCallback(() => {
+    if (showPreviewPanel) {
+      void closePreviewPanel();
+      return;
+    }
+    openPreviewPanel();
+  }, [closePreviewPanel, openPreviewPanel, showPreviewPanel]);
+
+  const dismissResponsiveOverlays = useCallback(() => {
+    if (showHistoryOverlay) {
+      closeConversationSidebarPanel();
+    }
+    if (showPreviewOverlay) {
+      void closePreviewPanel();
+    }
+  }, [closeConversationSidebarPanel, closePreviewPanel, showHistoryOverlay, showPreviewOverlay]);
 
   // 获取指定文件的最新分析报告内容
   const getAnalysisReportForFile = useCallback((fileId: string, reportMessageId?: string): string | null => {
@@ -4592,7 +4695,7 @@ export const DocProcessingWorkbench: React.FC = () => {
       <div
         className={`pointer-events-none absolute inset-0 ${
           isInitialLanding
-            ? 'bg-[radial-gradient(150%_96%_at_50%_18%,rgba(255,255,255,0.56),rgba(255,255,255,0)_52%),linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))]'
+            ? 'bg-[radial-gradient(ellipse_150%_96%_at_50%_18%,rgba(255,255,255,0.56),rgba(255,255,255,0)_52%),linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))]'
             : 'bg-[radial-gradient(circle_at_14%_16%,rgba(214,222,242,0.34),transparent_34%),radial-gradient(circle_at_88%_10%,rgba(225,236,245,0.28),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0.02))]'
         } dark:bg-[radial-gradient(circle_at_top_left,_rgba(37,99,235,0.18),_transparent_24%),radial-gradient(circle_at_bottom_right,_rgba(6,182,212,0.12),_transparent_28%)]`}
       />
@@ -4604,10 +4707,22 @@ export const DocProcessingWorkbench: React.FC = () => {
       </div>
   
       <div className="relative z-10 flex h-full min-h-0 flex-col">
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="relative flex min-h-0 flex-1 overflow-hidden">
+          {(showHistoryOverlay || showPreviewOverlay) && (
+            <button
+              type="button"
+              onClick={dismissResponsiveOverlays}
+              className="absolute inset-0 z-30 bg-slate-950/18 backdrop-blur-[2px]"
+              aria-label="关闭浮层"
+            />
+          )}
           <aside
-            className={`relative min-h-0 shrink-0 overflow-hidden bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,251,255,0.94))] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.94),rgba(2,6,23,0.92))] transition-all duration-300 ease-out ${
-              isConversationSidebarCollapsed ? 'w-0 border-r-0 opacity-0 pointer-events-none' : 'w-[288px] border-r border-[rgba(191,216,255,0.42)] dark:border-slate-800/80 opacity-100'
+            className={`min-h-0 shrink-0 overflow-hidden bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,251,255,0.94))] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.94),rgba(2,6,23,0.92))] transition-all duration-300 ease-out ${
+              showHistoryOverlay
+                ? 'absolute inset-y-3 left-3 z-40 w-[calc(100%-24px)] max-w-[320px] rounded-[28px] border border-[rgba(191,216,255,0.42)] opacity-100 shadow-[0_30px_70px_-42px_rgba(15,23,42,0.4)] dark:border-slate-800/80 dark:shadow-[0_32px_72px_-44px_rgba(2,6,23,0.9)]'
+                : showDockedHistorySidebar
+                  ? 'relative w-[288px] border-r border-[rgba(191,216,255,0.42)] opacity-100 dark:border-slate-800/80'
+                  : 'w-0 border-r-0 opacity-0 pointer-events-none'
             }`}
           >
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(96,165,250,0.06),_transparent_34%)]" />
@@ -4621,7 +4736,7 @@ export const DocProcessingWorkbench: React.FC = () => {
                     >
                       <button
                         type="button"
-                        onClick={() => setIsConversationSidebarCollapsed(true)}
+                        onClick={closeConversationSidebarPanel}
                         className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] ${LANDING_CORNER_BUTTON_CLASS}`}
                         title="收起历史对话栏"
                         aria-label="收起历史对话栏"
@@ -4733,7 +4848,7 @@ export const DocProcessingWorkbench: React.FC = () => {
           </aside>
   
           <div
-            className={`grid min-h-0 flex-1 overflow-hidden ${showPreviewPanel ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)]' : 'grid-cols-1'}`}
+            className={`grid min-h-0 flex-1 overflow-hidden ${showDockedPreviewPanel ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)]' : 'grid-cols-1'}`}
             style={contentColumnsStyle}
           >
             <div
@@ -4746,7 +4861,7 @@ export const DocProcessingWorkbench: React.FC = () => {
               <div
                 className={`pointer-events-none absolute inset-0 ${
                   isInitialLanding
-                    ? 'bg-[radial-gradient(150%_120%_at_50%_10%,rgba(255,255,255,0.34),rgba(255,255,255,0)_48%),radial-gradient(88%_84%_at_80%_18%,rgba(231,249,254,0.18),rgba(231,249,254,0)_58%),linear-gradient(120deg,rgba(227,237,253,0.16),rgba(227,237,253,0)_26%,rgba(227,237,253,0)_74%,rgba(227,237,253,0.1))]'
+                    ? 'bg-[radial-gradient(ellipse_150%_120%_at_50%_10%,rgba(255,255,255,0.34),rgba(255,255,255,0)_48%),radial-gradient(ellipse_88%_84%_at_80%_18%,rgba(231,249,254,0.18),rgba(231,249,254,0)_58%),linear-gradient(120deg,rgba(227,237,253,0.16),rgba(227,237,253,0)_26%,rgba(227,237,253,0)_74%,rgba(227,237,253,0.1))]'
                     : 'bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.9),_transparent_32%),radial-gradient(circle_at_top_right,_rgba(96,165,250,0.06),_transparent_24%)]'
                 } dark:bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.12),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(34,211,238,0.08),_transparent_24%)]`}
               />
@@ -4758,7 +4873,7 @@ export const DocProcessingWorkbench: React.FC = () => {
                       {isConversationSidebarCollapsed && (
                         <button
                           type="button"
-                          onClick={() => setIsConversationSidebarCollapsed(false)}
+                          onClick={openConversationSidebarPanel}
                           className={`flex h-[42px] w-[42px] items-center justify-center rounded-[15px] ${LANDING_CORNER_BUTTON_CLASS}`}
                           title="展开历史对话栏"
                           aria-label="展开历史对话栏"
@@ -4783,15 +4898,21 @@ export const DocProcessingWorkbench: React.FC = () => {
                       </button>
                     </div>
 
-                    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-10 sm:px-8">
-                      <div className="w-full max-w-[820px] -mt-16 flex flex-col items-center">
+                    <div className={`flex min-h-0 flex-1 flex-col items-center justify-center ${isInitialLandingCompact ? 'px-4 pb-8 pt-8 sm:px-6' : 'px-6 pb-10 sm:px-8'}`}>
+                      <div className={`w-full flex flex-col items-center ${isInitialLandingCompact ? 'max-w-[620px] mt-4' : 'max-w-[820px] -mt-16'}`}>
                         <div className="mx-auto flex w-full flex-col items-center text-center">
-                          <div className="mb-0 mt-10 flex w-full justify-center">
+                          <div className={`mb-0 flex w-full justify-center ${isInitialLandingCompact ? 'mt-4' : 'mt-10'}`}>
                             <div className="flex justify-center w-full">
                               <img
                                 src={SMART_DOC_WORDMARK_SRC}
                                 alt="SmartDocOps"
-                                className="w-[470px] max-w-[92vw] select-none object-contain opacity-95 drop-shadow-[0_14px_28px_rgba(92,114,180,0.15)] sm:w-[546px] ml-[80px] translate-y-3"
+                                className={`select-none object-contain opacity-95 drop-shadow-[0_14px_28px_rgba(92,114,180,0.15)] ${
+                                  isInitialLandingNarrow
+                                    ? 'w-[260px] max-w-full translate-y-0'
+                                    : isInitialLandingCompact
+                                      ? 'w-[360px] max-w-full translate-y-1'
+                                      : 'w-[470px] max-w-[92vw] sm:w-[546px] ml-[80px] translate-y-3'
+                                }`}
                               />
                             </div>
                           </div>
@@ -4815,14 +4936,16 @@ export const DocProcessingWorkbench: React.FC = () => {
                               </div>
                             )}
 
-                            <div className="relative z-10 px-5 pb-4 pt-4 sm:px-6 sm:pb-[16px] sm:pt-[16px]">
+                            <div className={`relative z-10 ${isInitialLandingCompact ? 'px-4 pb-3.5 pt-3.5' : 'px-5 pb-4 pt-4 sm:px-6 sm:pb-[16px] sm:pt-[16px]'}`}>
                               <textarea
                                 ref={composerTextareaRef}
                                 value={inputText}
                                 onChange={(e) => setInputText(e.target.value)}
                                 onKeyPress={handleKeyPress}
                                 placeholder={initialLandingPlaceholder}
-                                className="min-h-[84px] max-h-[144px] w-full resize-none bg-transparent px-1 py-1 text-[15px] leading-6 text-[#516a88] outline-none placeholder:text-[#a4b1c4] dark:text-slate-100 dark:placeholder:text-slate-500 sm:min-h-[90px]"
+                                className={`w-full resize-none bg-transparent px-1 py-1 text-[15px] leading-6 text-[#516a88] outline-none placeholder:text-[#a4b1c4] dark:text-slate-100 dark:placeholder:text-slate-500 ${
+                                  isInitialLandingCompact ? 'min-h-[72px] max-h-[132px]' : 'min-h-[84px] max-h-[144px] sm:min-h-[90px]'
+                                }`}
                                 rows={3}
                                 disabled={isLoading}
                               />
@@ -4866,13 +4989,13 @@ export const DocProcessingWorkbench: React.FC = () => {
                             </div>
                           </div>
 
-                          <div className="mt-7 flex w-full max-w-[150px] items-center gap-3 text-[#9babc1] dark:text-slate-500">
+                          <div className={`flex w-full max-w-[150px] items-center gap-3 text-[#9babc1] dark:text-slate-500 ${isInitialLandingCompact ? 'mt-5' : 'mt-7'}`}>
                             <span className="h-px flex-1 bg-[linear-gradient(90deg,rgba(187,201,228,0),rgba(187,201,228,0.92))] dark:bg-[linear-gradient(90deg,rgba(71,85,105,0),rgba(71,85,105,0.9))]" />
                             <span className="text-[11px] font-semibold tracking-[0.14em] text-[#9aaac0] dark:text-slate-400">猜你想问</span>
                             <span className="h-px flex-1 bg-[linear-gradient(90deg,rgba(187,201,228,0.92),rgba(187,201,228,0))] dark:bg-[linear-gradient(90deg,rgba(71,85,105,0.9),rgba(71,85,105,0))]" />
                           </div>
 
-                          <div className="mt-5 flex w-full max-w-[772px] flex-nowrap justify-center gap-2 overflow-x-auto pb-1 sm:gap-3">
+                          <div className={`w-full ${isInitialLandingCompact ? 'mt-4 max-w-[440px] flex flex-wrap justify-center gap-2' : 'mt-5 flex max-w-[772px] flex-nowrap justify-center gap-2 overflow-x-auto pb-1 sm:gap-3'}`}>
                             {INITIAL_LANDING_SUGGESTIONS.map((item) => {
                               const Icon = item.icon;
 
@@ -4882,7 +5005,7 @@ export const DocProcessingWorkbench: React.FC = () => {
                                   type="button"
                                   onClick={() => { void sendMessage(item.prompt); }}
                                   disabled={isLoading}
-                                  className={LANDING_SUGGESTION_BUTTON_CLASS}
+                                  className={`${LANDING_SUGGESTION_BUTTON_CLASS} ${isInitialLandingCompact ? 'justify-center' : ''}`}
                                 >
                                   <Icon size={14} />
                                   {item.label}
@@ -4898,23 +5021,7 @@ export const DocProcessingWorkbench: React.FC = () => {
                   <>
                     <div className="shrink-0 border-b border-[#e8effb] bg-[linear-gradient(180deg,#ffffff,#f9fbff)] dark:border-slate-800/80 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.98),rgba(15,23,42,0.88))] px-4 py-3">
                       <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0 flex items-center gap-2">
-                          {isConversationSidebarCollapsed && (
-                            <button
-                              type="button"
-                              onClick={() => setIsConversationSidebarCollapsed(false)}
-                              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] ${COBALT_GLASS_BUTTON_CLASS}`}
-                              title="展开历史对话栏"
-                              aria-label="展开历史对话栏"
-                            >
-                              <img
-                                src={SIDEBAR_TOGGLE_ICON_SRC}
-                                alt=""
-                                aria-hidden="true"
-                                className="h-4 w-4 object-contain brightness-0 invert"
-                              />
-                            </button>
-                          )}
+                        <div className="min-w-0 flex flex-1 items-center gap-2">
                           <button
                             type="button"
                             onClick={createNewConversation}
@@ -4943,21 +5050,72 @@ export const DocProcessingWorkbench: React.FC = () => {
                                       cancelConversationRename();
                                     }
                                   }}
-                                  className="min-w-[160px] max-w-[280px] rounded-[14px] border border-[#d8e5fb] bg-white px-3 py-1.5 text-[16px] font-bold text-[#1f3f5f] outline-none ring-2 ring-[#e8f0ff] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-700"
+                                  className={`w-full rounded-[14px] border border-[#d8e5fb] bg-white px-3 py-1.5 text-[16px] font-bold text-[#1f3f5f] outline-none ring-2 ring-[#e8f0ff] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-700 ${
+                                    showCompactHeaderControls ? 'min-w-0 max-w-[180px]' : 'min-w-[160px] max-w-[280px]'
+                                  }`}
                                 />
                               ) : (
                                 <button
                                   type="button"
                                   onClick={() => activeConversation && startConversationRename(activeConversation)}
-                                  className="truncate rounded-[12px] px-1 py-0.5 text-left text-[16px] font-bold text-[#233f5b] transition-colors hover:bg-[#f5f9ff] hover:text-[#102f5a] dark:text-slate-100 dark:hover:bg-slate-800 dark:hover:text-sky-200"
+                                  className={`truncate rounded-[12px] px-1 py-0.5 text-left text-[16px] font-bold text-[#233f5b] transition-colors hover:bg-[#f5f9ff] hover:text-[#102f5a] dark:text-slate-100 dark:hover:bg-slate-800 dark:hover:text-sky-200 ${
+                                    showCompactHeaderControls ? 'max-w-[180px]' : 'max-w-[280px]'
+                                  }`}
                                   title="点击修改对话名称"
                                 >
                                   {activeConversationTitle}
                                 </button>
                               )}
-                              <span className="text-[10px] text-[#7d8e9f] dark:text-slate-400">{activeConversationTimestamp}</span>
+                              {showConversationTimestamp && (
+                                <span className="text-[10px] text-[#7d8e9f] dark:text-slate-400">{activeConversationTimestamp}</span>
+                              )}
                             </div>
                           </div>
+                        </div>
+
+                        <div className="flex shrink-0 items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={toggleConversationSidebarPanel}
+                            className={`inline-flex h-9 items-center gap-2 rounded-[12px] px-3 text-sm font-medium transition-all ${
+                              isHistoryPanelVisible ? COBALT_GLASS_BUTTON_CLASS : METALLIC_SECONDARY_BUTTON_CLASS
+                            }`}
+                            title={isHistoryPanelVisible ? '收起历史对话栏' : '打开历史对话栏'}
+                            aria-label={isHistoryPanelVisible ? '收起历史对话栏' : '打开历史对话栏'}
+                          >
+                            <img
+                              src={SIDEBAR_TOGGLE_ICON_SRC}
+                              alt=""
+                              aria-hidden="true"
+                              className={`h-4 w-4 object-contain ${isHistoryPanelVisible ? 'brightness-0 invert' : ''}`}
+                            />
+                            <span>{showCompactHeaderControls ? '历史' : '历史对话'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={togglePreviewPanelVisibility}
+                            className={`inline-flex h-9 items-center gap-2 rounded-[12px] px-3 text-sm font-medium transition-all ${
+                              showPreviewPanel ? COBALT_GLASS_BUTTON_CLASS : METALLIC_SECONDARY_BUTTON_CLASS
+                            }`}
+                            title={showPreviewPanel ? '收起预览' : '打开预览'}
+                            aria-label={showPreviewPanel ? '收起预览' : '打开预览'}
+                          >
+                            <Eye size={14} />
+                            <span>{showCompactHeaderControls ? '预览' : (showPreviewPanel ? '收起预览' : '打开预览')}</span>
+                          </button>
+                          {!showCompactHeaderControls && (
+                            <button
+                              type="button"
+                              onClick={exportResults}
+                              disabled={fileList.length === 0}
+                              className={`inline-flex h-9 items-center gap-2 rounded-[12px] px-3 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-40 ${METALLIC_SECONDARY_BUTTON_CLASS}`}
+                              title="导出当前会话结果"
+                              aria-label="导出当前会话结果"
+                            >
+                              <FileUp size={14} />
+                              导出
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -5290,13 +5448,7 @@ export const DocProcessingWorkbench: React.FC = () => {
                                 <div className="mx-1 h-4 w-px bg-[#dce7fa] dark:bg-slate-700/80" />
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    if (showPreviewPanel) {
-                                      void closePreviewPanel();
-                                      return;
-                                    }
-                                    openPreviewPanel();
-                                  }}
+                                  onClick={togglePreviewPanelVisibility}
                                   className={`flex h-8 w-8 items-center justify-center rounded-[12px] transition-all ${showPreviewPanel ? METALLIC_SECONDARY_ACTIVE_BUTTON_CLASS : METALLIC_SECONDARY_BUTTON_CLASS}`}
                                   title={showPreviewPanel ? '收起预览' : '打开预览'}
                                   aria-label={showPreviewPanel ? '收起预览' : '打开预览'}
@@ -5354,10 +5506,12 @@ export const DocProcessingWorkbench: React.FC = () => {
             {showPreviewPanel && (
               <div
                 ref={previewPanelRef}
-                className={`relative h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-[linear-gradient(180deg,#ffffff,#fbfdff)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.98),rgba(2,6,23,0.94))] animate-slideIn ${
+                className={`min-h-0 min-w-0 overflow-hidden bg-[linear-gradient(180deg,#ffffff,#fbfdff)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.98),rgba(2,6,23,0.94))] animate-slideIn ${
                   isPreviewFullscreen
-                    ? 'h-screen w-screen rounded-none border-0'
-                    : 'rounded-none border border-[rgba(191,216,255,0.4)] shadow-[0_22px_46px_-30px_rgba(42,100,246,0.16)] dark:border-slate-800/80 dark:shadow-[0_28px_52px_-32px_rgba(2,6,23,0.88)]'
+                    ? 'relative h-screen w-screen rounded-none border-0'
+                    : showPreviewOverlay
+                      ? 'absolute inset-y-3 right-3 z-40 w-[calc(100%-24px)] max-w-[920px] rounded-[28px] border border-[rgba(191,216,255,0.4)] shadow-[0_30px_70px_-40px_rgba(15,23,42,0.38)] dark:border-slate-800/80 dark:shadow-[0_34px_74px_-42px_rgba(2,6,23,0.9)]'
+                      : 'relative h-full flex-1 rounded-none border border-[rgba(191,216,255,0.4)] shadow-[0_22px_46px_-30px_rgba(42,100,246,0.16)] dark:border-slate-800/80 dark:shadow-[0_28px_52px_-32px_rgba(2,6,23,0.88)]'
                 }`}
               >
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(96,165,250,0.05),_transparent_28%)] dark:bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.1),_transparent_24%)]" />
@@ -5676,7 +5830,7 @@ export const DocProcessingWorkbench: React.FC = () => {
                     ) : effectivePreviewPaneMode === 'compare' ? (
                       canComparePreview && comparisonFile ? (
                         isPreviewPdf && previewPdfSource && comparisonPdfSource ? (
-                          <div className="grid h-full min-h-0 grid-cols-2 gap-4">
+                          <div className={`grid h-full min-h-0 gap-4 ${shouldUseCompareStacked ? 'grid-cols-1 overflow-auto pr-1' : 'grid-cols-2'}`}>
                             <div className={`min-h-0 overflow-auto rounded-[26px] p-4 shadow-inner shadow-slate-400/10 dark:border-slate-800/70 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.86),rgba(51,65,85,0.36))] ${METALLIC_PANEL_CLASS}`}>
                               <div className="mb-3 flex items-center justify-between gap-3">
                                 <span className={`shrink-0 whitespace-nowrap rounded-[10px] px-2.5 py-1 text-[11px] font-medium ${METALLIC_SECONDARY_ACTIVE_BUTTON_CLASS}`}>修改后</span>
@@ -5719,7 +5873,7 @@ export const DocProcessingWorkbench: React.FC = () => {
                             </div>
                           </div>
                         ) : isPreviewImage && previewUrl && comparisonPreviewUrl ? (
-                          <div className="grid h-full grid-cols-2 gap-4">
+                          <div className={`grid h-full gap-4 ${shouldUseCompareStacked ? 'grid-cols-1 overflow-auto pr-1' : 'grid-cols-2'}`}>
                             <div className={`flex flex-col rounded-[26px] p-4 shadow-inner shadow-slate-400/10 dark:border-slate-800/70 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.86),rgba(51,65,85,0.36))] ${METALLIC_PANEL_CLASS}`}>
                               <div className="mb-3 flex items-center justify-between gap-3">
                                 <span className={`shrink-0 whitespace-nowrap rounded-[10px] px-2.5 py-1 text-[11px] font-medium ${METALLIC_SECONDARY_ACTIVE_BUTTON_CLASS}`}>修改后</span>

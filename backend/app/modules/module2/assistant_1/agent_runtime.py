@@ -36,13 +36,15 @@ class Assistant1AgentRuntime:
         self.ingest = Assistant1IngestPipeline(self.settings)
         self.schema_tools = Assistant1SchemaTools(self.settings, self.provider)
         self.sql_tools = Assistant1SqlTools(self.settings, self.provider)
-        self.tavily = TavilySearchClient(self.settings)
+        self.tavily = TavilySearchClient(self.settings) if self.settings.web_search_enabled else None
         self.warmup = Assistant1WarmupRuntime(
             self.settings,
             retrieval=self.retrieval,
             ingest=self.ingest,
         )
-        self.response_planner = Assistant1ResponsePlanner()
+        self.response_planner = Assistant1ResponsePlanner(
+            web_search_enabled=bool(getattr(self.tavily, "ready", False))
+        )
         self.tool_router = Assistant1ToolRouter(
             retrieval=self.retrieval,
             ingest=self.ingest,
@@ -386,7 +388,9 @@ class Assistant1AgentRuntime:
         user_message: str,
         default_file_hash: str,
     ) -> Assistant1ResponsePlan:
-        planner = getattr(self, "response_planner", None) or Assistant1ResponsePlanner()
+        planner = getattr(self, "response_planner", None) or Assistant1ResponsePlanner(
+            web_search_enabled=bool(getattr(getattr(self, "tavily", None), "ready", False))
+        )
         return planner.plan(
             user_message=user_message,
             default_file_hash=default_file_hash,

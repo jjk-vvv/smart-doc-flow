@@ -338,7 +338,7 @@ export const Module3ExcelPreview: React.FC<Module3ExcelPreviewProps> = ({
 
   return (
     <div className="relative flex h-full min-h-full w-full min-w-0 flex-col overflow-hidden bg-white">
-      <div className="relative z-10 flex items-center justify-between gap-3 border-b border-slate-100 bg-white/80 px-4 pb-3 pt-[max(12px,env(safe-area-inset-top))] backdrop-blur-md shadow-sm">
+      <div className="relative z-10 flex items-center justify-between gap-3 border-b border-slate-100 bg-white/80 px-4 pb-3 pt-[max(12px,var(--mobile-safe-top))] backdrop-blur-md shadow-sm">
         {onBack ? (
           <button
             type="button"

@@ -50,7 +50,7 @@ export const MobileComposer: React.FC<MobileComposerProps> = ({
   const isExpanded = isFocused || inputText.trim().length > 0 || files.length > 0;
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 z-50 px-4 pb-[calc(16px+env(safe-area-inset-bottom))] pt-8 bg-gradient-to-t from-white/95 via-white/80 to-transparent dark:from-[#0B1120]/95 dark:via-[#0B1120]/80 dark:to-transparent pointer-events-none">
+    <div className="absolute bottom-0 left-0 right-0 z-50 px-4 pb-[calc(16px+var(--mobile-safe-bottom))] pt-8 bg-gradient-to-t from-white/95 via-white/80 to-transparent dark:from-[#0B1120]/95 dark:via-[#0B1120]/80 dark:to-transparent pointer-events-none">
       <div 
         className={`pointer-events-auto flex flex-col relative transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] bg-white dark:bg-slate-900 border border-slate-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] dark:border-white/10 dark:shadow-[0_8px_30px_rgba(0,0,0,0.3)] ${
           isExpanded ? 'rounded-[20px] min-h-[90px]' : 'rounded-[24px] min-h-[48px]'

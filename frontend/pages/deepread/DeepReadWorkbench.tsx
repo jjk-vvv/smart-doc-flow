@@ -120,6 +120,10 @@ const RIGHT_PANE_DEFAULT_WIDTH = 332;
 const RIGHT_PANE_MAX_WIDTH = 520;
 const CENTER_PANE_SAFE_WIDTH = 320;
 const PANE_DIVIDER_WIDTH = 1;
+const MODULE2_LEFT_DRAWER_BREAKPOINT = 1280;
+const MODULE2_ASSISTANT_PROTECT_BREAKPOINT = 1366;
+const MODULE2_CENTER_SAFE_NARROW_BREAKPOINT = 980;
+const CENTER_PANE_NARROW_SAFE_WIDTH = 280;
 const TEXT_PREVIEW_LEFT_PANE_WIDE_WIDTH = 208;
 const TEXT_PREVIEW_LEFT_PANE_COMPACT_WIDTH = 200;
 const TEXT_PREVIEW_RIGHT_PANE_WIDE_WIDTH = 288;
@@ -136,6 +140,18 @@ type PaneResizeSide = 'left' | 'right';
 type SmartUnitTabId = 'results' | 'assistant';
 
 const clampNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const resolveCenterPaneSafeWidth = (containerWidth: number): number => (
+    containerWidth > 0 && containerWidth <= MODULE2_CENTER_SAFE_NARROW_BREAKPOINT
+        ? CENTER_PANE_NARROW_SAFE_WIDTH
+        : CENTER_PANE_SAFE_WIDTH
+);
+
+const resolveRightPaneMinWidth = (containerWidth: number): number => (
+    containerWidth > 0 && containerWidth <= MODULE2_ASSISTANT_PROTECT_BREAKPOINT
+        ? RIGHT_PANE_DEFAULT_WIDTH
+        : RIGHT_PANE_MIN_WIDTH
+);
 
 const sanitizePaneWidth = (
     value: unknown,
@@ -223,8 +239,10 @@ const clampWorkbenchPaneLayout = (
     containerWidth: number,
     showLeftPane: boolean,
 ): WorkbenchPaneLayout => {
+    const effectiveCenterSafeWidth = resolveCenterPaneSafeWidth(containerWidth);
+    const effectiveRightMinWidth = resolveRightPaneMinWidth(containerWidth);
     const nextLeftWidth = sanitizePaneWidth(layout.leftWidth, LEFT_PANE_DEFAULT_WIDTH, LEFT_PANE_MIN_WIDTH, LEFT_PANE_MAX_WIDTH);
-    const nextRightWidth = sanitizePaneWidth(layout.rightWidth, RIGHT_PANE_DEFAULT_WIDTH, RIGHT_PANE_MIN_WIDTH, RIGHT_PANE_MAX_WIDTH);
+    const nextRightWidth = sanitizePaneWidth(layout.rightWidth, RIGHT_PANE_DEFAULT_WIDTH, effectiveRightMinWidth, RIGHT_PANE_MAX_WIDTH);
 
     if (!Number.isFinite(containerWidth) || containerWidth <= 0) {
         return {
@@ -240,27 +258,27 @@ const clampWorkbenchPaneLayout = (
     if (showLeftPane) {
         const maxRight = Math.min(
             RIGHT_PANE_MAX_WIDTH,
-            Math.max(RIGHT_PANE_MIN_WIDTH, containerWidth - resolvedLeftWidth - dividerWidth - CENTER_PANE_SAFE_WIDTH),
+            Math.max(effectiveRightMinWidth, containerWidth - resolvedLeftWidth - dividerWidth - effectiveCenterSafeWidth),
         );
-        resolvedRightWidth = clampNumber(resolvedRightWidth, RIGHT_PANE_MIN_WIDTH, maxRight);
+        resolvedRightWidth = clampNumber(resolvedRightWidth, effectiveRightMinWidth, maxRight);
 
         const maxLeft = Math.min(
             LEFT_PANE_MAX_WIDTH,
-            Math.max(LEFT_PANE_MIN_WIDTH, containerWidth - resolvedRightWidth - dividerWidth - CENTER_PANE_SAFE_WIDTH),
+            Math.max(LEFT_PANE_MIN_WIDTH, containerWidth - resolvedRightWidth - dividerWidth - effectiveCenterSafeWidth),
         );
         resolvedLeftWidth = clampNumber(resolvedLeftWidth, LEFT_PANE_MIN_WIDTH, maxLeft);
 
         const refinedMaxRight = Math.min(
             RIGHT_PANE_MAX_WIDTH,
-            Math.max(RIGHT_PANE_MIN_WIDTH, containerWidth - resolvedLeftWidth - dividerWidth - CENTER_PANE_SAFE_WIDTH),
+            Math.max(effectiveRightMinWidth, containerWidth - resolvedLeftWidth - dividerWidth - effectiveCenterSafeWidth),
         );
-        resolvedRightWidth = clampNumber(resolvedRightWidth, RIGHT_PANE_MIN_WIDTH, refinedMaxRight);
+        resolvedRightWidth = clampNumber(resolvedRightWidth, effectiveRightMinWidth, refinedMaxRight);
     } else {
         const maxRight = Math.min(
             RIGHT_PANE_MAX_WIDTH,
-            Math.max(RIGHT_PANE_MIN_WIDTH, containerWidth - dividerWidth - CENTER_PANE_SAFE_WIDTH),
+            Math.max(effectiveRightMinWidth, containerWidth - dividerWidth - effectiveCenterSafeWidth),
         );
-        resolvedRightWidth = clampNumber(resolvedRightWidth, RIGHT_PANE_MIN_WIDTH, maxRight);
+        resolvedRightWidth = clampNumber(resolvedRightWidth, effectiveRightMinWidth, maxRight);
     }
 
     return {
@@ -1924,6 +1942,36 @@ const normalizeExtractBase = (raw: string): string => {
     return base.endsWith('/extract') ? base.slice(0, -8) : base;
 };
 
+const isLoopbackExtractHost = (hostname: string): boolean => {
+    const normalized = String(hostname || '').trim().toLowerCase();
+    return (
+        normalized === 'localhost'
+        || normalized === '127.0.0.1'
+        || normalized === '0.0.0.0'
+        || normalized === '::1'
+        || normalized === '[::1]'
+        || normalized.endsWith('.localhost')
+    );
+};
+
+const buildLoopbackGatewayBaseCandidate = (): string => {
+    if (typeof window === 'undefined') return '';
+    try {
+        const hostname = window.location.hostname;
+        const port = window.location.port;
+        if (!isLoopbackExtractHost(hostname) || port === '3001') return '';
+
+        const url = new URL(window.location.href);
+        url.pathname = '';
+        url.search = '';
+        url.hash = '';
+        url.port = '3001';
+        return normalizeExtractBase(`${url.protocol}//${url.host}`);
+    } catch {
+        return '';
+    }
+};
+
 const getLocalStorageExtractBase = (): string => {
     if (typeof window === 'undefined') return '';
     try {
@@ -1944,17 +1992,9 @@ const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
     push(preferredBase);
     push(getViteExtractBase());
     push(getLocalStorageExtractBase());
-
-    if (typeof window !== 'undefined') {
-        const protocol = window.location.protocol;
-        const hostname = window.location.hostname;
-        const port = window.location.port;
-        if (hostname) {
-            // Keep extraction traffic on the current host so auth cookies and
-            // session-scoped artifacts do not drift across localhost/127.0.0.1.
-            if (port !== '3001') push(`${protocol}//${hostname}:3001`);
-        }
-    }
+    // Only synthesize :3001 for loopback dev servers. Public/frp origins must
+    // stay same-origin so browsers do not hit an unreachable cross-port API.
+    push(buildLoopbackGatewayBaseCandidate());
 
     return out;
 };
@@ -2634,6 +2674,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     const [smartUnitTab, setSmartUnitTab] = useState<SmartUnitTabId>('results');
     const [showAssistantHelp, setShowAssistantHelp] = useState(false);
     const [isPreviewFocused, setIsPreviewFocused] = useState(false);
+    const [isLeftQueueDrawerOpen, setIsLeftQueueDrawerOpen] = useState(false);
     const [isUploaderDragOver, setIsUploaderDragOver] = useState(false);
     const [resultSearchQuery, setResultSearchQuery] = useState('');
     const [paneLayout, setPaneLayout] = useState<WorkbenchPaneLayout>(() => readWorkbenchPaneLayout());
@@ -2928,7 +2969,11 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         () => Boolean(activeDoc && (((activeDoc.errors?.length || 0) > 0) || getDisplaySoftWarnings(activeDoc).length > 0)),
         [activeDoc]
     );
-    const showLeftPanel = !isPreviewFocused;
+    const shouldUseLeftQueueDrawer = selectedFiles.length > 0
+        && workbenchViewportWidth > 0
+        && workbenchViewportWidth <= MODULE2_LEFT_DRAWER_BREAKPOINT;
+    const showLeftPanel = !isPreviewFocused && !shouldUseLeftQueueDrawer;
+    const showLeftQueueDrawer = shouldUseLeftQueueDrawer && isLeftQueueDrawerOpen && selectedFiles.length > 0;
     const isTextPreviewStage = ['txt', 'md'].includes(activeExt);
     const currentPaneLayoutStage: PaneLayoutStage = isTextPreviewStage ? 'text' : 'default';
     const resolvePaneLayoutViewportWidth = () => (
@@ -3025,6 +3070,16 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             return prev.leftWidth === next.leftWidth && prev.rightWidth === next.rightWidth ? prev : next;
         });
     }, [showLeftPanel, workbenchViewportWidth]);
+
+    useEffect(() => {
+        if (selectedFiles.length === 0 && isLeftQueueDrawerOpen) {
+            setIsLeftQueueDrawerOpen(false);
+            return;
+        }
+        if (!shouldUseLeftQueueDrawer && isLeftQueueDrawerOpen) {
+            setIsLeftQueueDrawerOpen(false);
+        }
+    }, [isLeftQueueDrawerOpen, selectedFiles.length, shouldUseLeftQueueDrawer]);
 
     useEffect(() => {
         if (typeof window === 'undefined') return;
@@ -5111,6 +5166,24 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         setPdfViewportPage(1);
         setPdfScrollRequest(createPdfScrollRequest(1));
         setActiveDocIndex(index);
+        if (showLeftQueueDrawer) {
+            setIsLeftQueueDrawerOpen(false);
+        }
+    };
+    const openLeftQueueDrawer = () => {
+        if (!shouldUseLeftQueueDrawer) {
+            setIsPreviewFocused(false);
+            return;
+        }
+        setIsLeftQueueDrawerOpen(true);
+    };
+    const closeLeftQueueDrawer = () => setIsLeftQueueDrawerOpen(false);
+    const toggleLeftQueueAccess = () => {
+        if (!shouldUseLeftQueueDrawer) {
+            setIsPreviewFocused((prev) => !prev);
+            return;
+        }
+        setIsLeftQueueDrawerOpen((prev) => !prev);
     };
     const stopTraceCardAction = (
         event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>
@@ -6046,11 +6119,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         window.addEventListener('pointercancel', handleUp);
     };
 
+    const effectiveCenterSafeWidth = resolveCenterPaneSafeWidth(workbenchViewportWidth);
     const workbenchGridMinWidth = selectedFiles.length === 0
-        ? CENTER_PANE_SAFE_WIDTH
+        ? effectiveCenterSafeWidth
         : (showLeftPanel
-            ? paneLayout.leftWidth + paneLayout.rightWidth + (PANE_DIVIDER_WIDTH * 2) + CENTER_PANE_SAFE_WIDTH
-            : paneLayout.rightWidth + PANE_DIVIDER_WIDTH + CENTER_PANE_SAFE_WIDTH);
+            ? paneLayout.leftWidth + paneLayout.rightWidth + (PANE_DIVIDER_WIDTH * 2) + effectiveCenterSafeWidth
+            : paneLayout.rightWidth + PANE_DIVIDER_WIDTH + effectiveCenterSafeWidth);
              
     const workbenchGridStyle = selectedFiles.length === 0
         ? {
@@ -6105,6 +6179,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     // remain inside the visible pane and stay genuinely clickable.
     const useCompactWorkbenchChrome = workbenchViewportWidth > 0 && workbenchViewportWidth <= 1600;
     const useDenseWorkbenchChrome = workbenchViewportWidth > 0 && workbenchViewportWidth <= 1366;
+    const useUltraDenseWorkbenchChrome = workbenchViewportWidth > 0 && workbenchViewportWidth <= 1180;
     const smartUnitActivePanelState = { opacity: 1, x: 0, y: 0, scale: 1 };
     const smartUnitLeftHiddenPanelState = prefersReducedMotion
         ? { opacity: 0, x: 0, y: 0, scale: 1 }
@@ -6123,6 +6198,14 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         : `${Math.round(scale * 100)}%`;
     const previewFocusButtonTitle = '聚焦预览并隐藏文档列表';
     const restoreFolderButtonTitle = '展开文档列表并退出聚焦预览';
+    const leftQueueAccessButtonTitle = shouldUseLeftQueueDrawer
+        ? (showLeftQueueDrawer ? '收起文件/队列' : '打开文件/队列')
+        : (showLeftPanel ? '收起文件/队列' : '展开文件/队列');
+    const topBarQueueButtonLabel = useUltraDenseWorkbenchChrome ? '文件' : useDenseWorkbenchChrome ? '文件' : '文件/队列';
+    const topBarExtractButtonLabel = useUltraDenseWorkbenchChrome
+        ? (isProcessing ? '解析中' : activeParsedDocument ? '重解析' : '解析')
+        : activeExtractActionLabel;
+    const previewToolbarTitle = useUltraDenseWorkbenchChrome ? '预览' : '文档预览';
     const filePipelineStats = useMemo(() => {
         let completed = 0;
         let failed = 0;
@@ -6346,17 +6429,25 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     ];
     const assistantPanel = (
         <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white dark:bg-[#0B1120]">
-            <div className={cn("bg-white py-3 dark:bg-none dark:bg-white/[0.02]", useDenseWorkbenchChrome ? "px-4" : "px-4")}>
-                <div className="flex items-start justify-between gap-2.5">
-                    <div className={cn("flex min-w-0 items-start", useDenseWorkbenchChrome ? "gap-1" : "gap-1.5")}>
-                        <img src={iconErnieBot} alt="智能助手" className={cn("h-[20px] w-[20px] shrink-0 object-contain", useDenseWorkbenchChrome ? "translate-y-[0px]" : "translate-y-[1px]")} />
+            <div className={cn(
+                "bg-white dark:bg-none dark:bg-white/[0.02]",
+                useUltraDenseWorkbenchChrome ? "px-3 py-2.5" : "px-4 py-3"
+            )}>
+                <div className={cn(
+                    "flex items-start justify-between",
+                    useUltraDenseWorkbenchChrome ? "gap-2" : "gap-2.5"
+                )}>
+                    <div className={cn("flex min-w-0 items-start", useUltraDenseWorkbenchChrome ? "gap-1" : useDenseWorkbenchChrome ? "gap-1" : "gap-1.5")}>
+                        <img src={iconErnieBot} alt="智能助手" className={cn("shrink-0 object-contain", useUltraDenseWorkbenchChrome ? "h-[18px] w-[18px] translate-y-[1px]" : "h-[20px] w-[20px]", useDenseWorkbenchChrome ? "translate-y-[0px]" : "translate-y-[1px]")} />
                         <div className="min-w-0">
-                            <h3 className={cn("truncate font-semibold tracking-[0.01em] text-slate-800 dark:text-slate-200", useDenseWorkbenchChrome ? "text-[12px]" : "text-[13px]")}>
+                            <h3 className={cn("truncate font-semibold tracking-[0.01em] text-slate-800 dark:text-slate-200", useUltraDenseWorkbenchChrome ? "text-[11.5px]" : useDenseWorkbenchChrome ? "text-[12px]" : "text-[13px]")}>
                                 智能助手
                             </h3>
-                            <p className="mt-0.5 text-[11px] leading-[1.35] text-slate-400 dark:text-slate-500">
-                                面向当前文档的提问、摘要与修正协同
-                            </p>
+                            {!useUltraDenseWorkbenchChrome && (
+                                <p className="mt-0.5 text-[11px] leading-[1.35] text-slate-400 dark:text-slate-500">
+                                    面向当前文档的提问、摘要与修正协同
+                                </p>
+                            )}
                         </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
@@ -6365,7 +6456,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                 type="button"
                                 onClick={() => setAssistantCompanionOpen((prev) => !prev)}
                                 className={cn(
-                                    "inline-flex h-[26px] items-center gap-1 rounded-full border px-2.5 text-[11px] font-medium transition-all",
+                                    "inline-flex items-center gap-1 rounded-full border font-medium transition-all",
+                                    useUltraDenseWorkbenchChrome ? "h-[24px] px-2" : "h-[26px] px-2.5 text-[11px]",
                                     assistantCompanionOpen
                                         ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-300"
                                         : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:text-blue-600 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-slate-400 dark:hover:border-blue-500/30 dark:hover:text-blue-300"
@@ -6374,7 +6466,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                 title={assistantCompanionSummary || '查看辅助信息'}
                             >
                                 <Layout size={12} />
-                                <span>辅助信息</span>
+                                {!useUltraDenseWorkbenchChrome && <span>辅助信息</span>}
                                 {assistantCompanionCitations.length > 0 && (
                                     <span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] leading-none text-current ring-1 ring-inset ring-current/10 dark:bg-white/[0.08]">
                                         {assistantCompanionCitations.length}
@@ -6384,7 +6476,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                         )}
                         <button
                         onClick={() => setShowAssistantHelp(true)}
-                        className="inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md text-slate-400 transition-all hover:bg-slate-50 hover:text-blue-600 active:scale-95 dark:text-slate-500 dark:hover:bg-white/[0.08] dark:hover:text-blue-400"
+                        className={cn(
+                            "inline-flex shrink-0 items-center justify-center rounded-md text-slate-400 transition-all hover:bg-slate-50 hover:text-blue-600 active:scale-95 dark:text-slate-500 dark:hover:bg-white/[0.08] dark:hover:text-blue-400",
+                            useUltraDenseWorkbenchChrome ? "h-[22px] w-[22px]" : "h-[24px] w-[24px]"
+                        )}
                         aria-label="查看助手功能说明"
                         title="查看助手功能说明"
                     >
@@ -6395,18 +6490,33 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
-                <div ref={assistantDialogRef} data-testid="module2-assistant-dialog" className="relative flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4 custom-scrollbar">
+                <div ref={assistantDialogRef} data-testid="module2-assistant-dialog" className={cn(
+                    "relative flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar",
+                    useUltraDenseWorkbenchChrome ? "px-3 py-3" : "px-4 py-4"
+                )}>
                     {renderableAssistantDialog.length === 0 ? (
-                        <div className="flex h-full flex-col items-center justify-center px-4 pb-12">
-                            <div className="mb-5 text-slate-300 dark:text-slate-600/80">
-                                <Sparkles size={42} strokeWidth={1.2} />
+                        <div className={cn(
+                            "flex h-full flex-col items-center justify-center px-4",
+                            useUltraDenseWorkbenchChrome ? "pb-8" : "pb-12"
+                        )}>
+                            <div className={cn(
+                                "text-slate-300 dark:text-slate-600/80",
+                                useUltraDenseWorkbenchChrome ? "mb-4" : "mb-5"
+                            )}>
+                                <Sparkles size={useUltraDenseWorkbenchChrome ? 34 : 42} strokeWidth={1.2} />
                             </div>
-                            <h2 className="text-[18px] font-medium tracking-tight text-slate-700 dark:text-slate-300">
+                            <h2 className={cn(
+                                "font-medium tracking-tight text-slate-700 dark:text-slate-300",
+                                useUltraDenseWorkbenchChrome ? "text-[16px]" : "text-[18px]"
+                            )}>
                                 今天我能帮您些什么？
                             </h2>
                         </div>
                     ) : (
-                        <div className="flex flex-col space-y-5">
+                        <div className={cn(
+                            "flex flex-col",
+                            useUltraDenseWorkbenchChrome ? "space-y-4" : "space-y-5"
+                        )}>
                             {renderableAssistantDialog.map((msg) => renderAssistantDialogMessage(msg))}
                             <div className="h-3" />
                         </div>
@@ -6415,7 +6525,10 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
                 {renderAssistantCompanionPanel()}
 
-                <div className="relative z-10 px-4 pb-5 pt-2">
+                <div className={cn(
+                    "relative z-10",
+                    useUltraDenseWorkbenchChrome ? "px-3 pb-3.5 pt-1.5" : "px-4 pb-5 pt-2"
+                )}>
                     <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-white via-white/95 to-transparent dark:from-[#0B1120] dark:via-[#0B1120]/95" />
                     <div className="relative z-10">
                         <AssistantComposerStatus
@@ -6448,18 +6561,29 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                     }
                                 }}
                                 placeholder="在这里输入您的问题或指令..."
-                                className="max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-4 pt-4 pb-0 text-[15px] leading-relaxed text-slate-800 placeholder:text-slate-400 outline-none dark:text-slate-200 custom-scrollbar"
+                                className={cn(
+                                    "w-full resize-none bg-transparent text-slate-800 placeholder:text-slate-400 outline-none dark:text-slate-200 custom-scrollbar",
+                                    useUltraDenseWorkbenchChrome
+                                        ? "max-h-[168px] min-h-[46px] px-3.5 pt-3.5 pb-0 text-[14px] leading-relaxed"
+                                        : "max-h-[200px] min-h-[52px] px-4 pt-4 pb-0 text-[15px] leading-relaxed"
+                                )}
                             />
-                            <div className="flex items-center justify-between px-3 pb-3 pt-1">
+                            <div className={cn(
+                                "flex items-center justify-between pt-1",
+                                useUltraDenseWorkbenchChrome ? "px-2.5 pb-2.5" : "px-3 pb-3"
+                            )}>
                                 <div className="flex items-center gap-1.5">
                                     <button
                                         type="button"
                                         onClick={() => fileInputRef.current?.click()}
-                                        className="group relative flex h-[36px] w-[36px] items-center justify-center rounded-full text-slate-500 transition-all hover:bg-slate-100 hover:text-slate-700 active:scale-95 dark:text-slate-400 dark:hover:bg-white/[0.1] dark:hover:text-slate-200"
+                                        className={cn(
+                                            "group relative flex items-center justify-center rounded-full text-slate-500 transition-all hover:bg-slate-100 hover:text-slate-700 active:scale-95 dark:text-slate-400 dark:hover:bg-white/[0.1] dark:hover:text-slate-200",
+                                            useUltraDenseWorkbenchChrome ? "h-[32px] w-[32px]" : "h-[36px] w-[36px]"
+                                        )}
                                         title="上传文档进行分析"
                                         aria-label="上传文档进行分析"
                                     >
-                                        <Plus size={20} strokeWidth={2} className="transition-transform group-hover:scale-110" />
+                                        <Plus size={useUltraDenseWorkbenchChrome ? 18 : 20} strokeWidth={2} className="transition-transform group-hover:scale-110" />
                                     </button>
                                 </div>
                                 <div className="flex items-center gap-2">
@@ -6469,7 +6593,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                         onClick={() => void runAssistantInstruction()}
                                         disabled={!assistantQueryLoading && !assistantInput.trim()}
                                         className={cn(
-                                            'group relative flex h-[36px] w-[36px] items-center justify-center rounded-full transition-all duration-200',
+                                            'group relative flex items-center justify-center rounded-full transition-all duration-200',
+                                            useUltraDenseWorkbenchChrome ? 'h-[32px] w-[32px]' : 'h-[36px] w-[36px]',
                                             !assistantQueryLoading && !assistantInput.trim()
                                                 ? 'cursor-not-allowed bg-[#F3F4F6] text-[#A1A1AA] dark:bg-white/[0.05] dark:text-slate-600'
                                                 : assistantQueryLoading
@@ -6479,7 +6604,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                         title={assistantQueryLoading ? "停止本次回答" : "发送"}
                                         aria-label={assistantQueryLoading ? "停止本次回答" : "发送"}
                                     >
-                                        {assistantQueryLoading ? <X size={16} /> : <ArrowUp size={18} strokeWidth={2.5} className="transition-transform group-hover:-translate-y-0.5" />}
+                                        {assistantQueryLoading ? <X size={useUltraDenseWorkbenchChrome ? 15 : 16} /> : <ArrowUp size={useUltraDenseWorkbenchChrome ? 16 : 18} strokeWidth={2.5} className="transition-transform group-hover:-translate-y-0.5" />}
                                     </button>
                                 </div>
                             </div>
@@ -6532,7 +6657,9 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
                     className={cn(
                         'relative z-10 shrink-0 bg-[#fbfcfd]/90 backdrop-blur-xl border-b border-slate-200/40 shadow-[0_2px_12px_rgba(0,0,0,0.03)] dark:bg-slate-950/95 dark:border-white/5 dark:shadow-[0_4px_16px_rgba(0,0,0,0.4)]',
-                        useDenseWorkbenchChrome
+                        useUltraDenseWorkbenchChrome
+                            ? 'pl-3 pr-0 py-1.5'
+                            : useDenseWorkbenchChrome
                             ? 'pl-4 pr-0 py-1.5'
                             : useCompactWorkbenchChrome
                                 ? 'pl-4 pr-0 py-2'
@@ -6541,21 +6668,21 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                 >
                     <div className={cn(
                         'flex flex-wrap items-center justify-between gap-x-4 gap-y-2',
-                        useDenseWorkbenchChrome && 'gap-x-3 gap-y-1'
+                        useUltraDenseWorkbenchChrome ? 'gap-x-2.5 gap-y-1' : useDenseWorkbenchChrome && 'gap-x-3 gap-y-1'
                     )}>
-                        <div className="min-w-[210px] flex-1">
-                            <div className="flex items-center -ml-5">
+                        <div className={cn("flex-1", useUltraDenseWorkbenchChrome ? 'min-w-[160px]' : 'min-w-[210px]')}>
+                            <div className={cn("flex items-center", useUltraDenseWorkbenchChrome ? '-ml-2.5' : '-ml-5')}>
                                 <img 
                                     src={module2Svg} 
                                     alt="非结构化文档分析" 
                                     className={cn(
                                         "w-auto object-contain transition-all duration-300 origin-left scale-[3.0] translate-y-1",
-                                        useDenseWorkbenchChrome ? "h-[28px] mr-[96px]" : "h-[36px] mr-[126px]"
+                                        useUltraDenseWorkbenchChrome ? "h-[24px] mr-[70px]" : useDenseWorkbenchChrome ? "h-[28px] mr-[96px]" : "h-[36px] mr-[126px]"
                                     )} 
                                 />
                                 <div className={cn(
                                     "flex items-center space-x-[1px] font-['Microsoft_YaHei'] font-bold tracking-widest translate-y-1",
-                                    useDenseWorkbenchChrome ? "text-[18px] ml-0.5" : "text-[23px] ml-1"
+                                    useUltraDenseWorkbenchChrome ? "text-[15px] ml-0" : useDenseWorkbenchChrome ? "text-[18px] ml-0.5" : "text-[23px] ml-1"
                                 )}>
                                     <span className="text-[#334155] dark:text-slate-200">AI</span>
                                     <span className="text-[#3b82f6] dark:text-blue-400">信息抽取</span>
@@ -6576,12 +6703,38 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                         >
                             <button
                                 type="button"
+                                onClick={toggleLeftQueueAccess}
+                                className={cn(
+                                    'group inline-flex shrink-0 whitespace-nowrap items-center justify-center rounded-full border font-medium transition-all duration-200 active:scale-95',
+                                    useUltraDenseWorkbenchChrome ? 'h-[24px] px-2.5 text-[11px]' : useDenseWorkbenchChrome ? 'h-[26px] px-3 text-[12px]' : 'h-[28px] px-3.5 text-[12px]',
+                                    (showLeftPanel || showLeftQueueDrawer)
+                                        ? 'border-blue-200 bg-blue-50 text-blue-700 shadow-sm hover:bg-blue-100 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300 dark:hover:bg-blue-500/20'
+                                        : 'border-slate-200/80 bg-white text-slate-600 shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300 dark:border-white/[0.05] dark:bg-white/[0.05] dark:text-slate-300 dark:hover:bg-white/[0.1] dark:hover:text-slate-100'
+                                )}
+                                title={
+                                    shouldUseLeftQueueDrawer
+                                        ? (showLeftQueueDrawer ? '收起文件/队列' : '打开文件/队列')
+                                        : (showLeftPanel ? '收起文件/队列' : '展开文件/队列')
+                                }
+                                aria-label={
+                                    shouldUseLeftQueueDrawer
+                                        ? (showLeftQueueDrawer ? '收起文件/队列' : '打开文件/队列')
+                                        : (showLeftPanel ? '收起文件/队列' : '展开文件/队列')
+                                }
+                            >
+                                <div className="flex items-center gap-1.5">
+                                    <FolderOpen size={13} className="transition-transform duration-200 group-hover:scale-110" />
+                                    <span>{topBarQueueButtonLabel}</span>
+                                </div>
+                            </button>
+                            <button
+                                type="button"
                                 onClick={runExtraction}
                                 data-testid="module2-start-extract"
                                 disabled={!canRunActiveExtraction || isProcessing}
                                 className={cn(
                                     'group inline-flex shrink-0 whitespace-nowrap items-center justify-center rounded-full font-medium transition-all duration-200 active:scale-95 ring-1 ring-transparent',
-                                    useDenseWorkbenchChrome ? 'h-[26px] px-3 text-[12px]' : 'h-[28px] px-4 text-[12px]',
+                                    useUltraDenseWorkbenchChrome ? 'h-[24px] px-2.5 text-[11px]' : useDenseWorkbenchChrome ? 'h-[26px] px-3 text-[12px]' : 'h-[28px] px-4 text-[12px]',
                                     canRunActiveExtraction && !isProcessing
                                         ? 'bg-blue-600 text-white shadow-sm hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-500'
                                         : 'cursor-not-allowed bg-slate-100 text-slate-400 shadow-none dark:bg-white/[0.05] dark:text-slate-500'
@@ -6589,7 +6742,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                             >
                                 <div className="flex items-center gap-1.5">
                                     {isProcessing ? <Loader2 size={13} className="animate-spin" /> : <PlayCircle size={13} className="transition-transform duration-200 group-hover:scale-110" />}
-                                    <span>{activeExtractActionLabel}</span>
+                                    <span>{topBarExtractButtonLabel}</span>
                                 </div>
                             </button>
                             {documents.length > 0 && (
@@ -6598,12 +6751,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                     onClick={exportResults}
                                     className={cn(
                                         'group inline-flex shrink-0 whitespace-nowrap items-center justify-center rounded-full border border-slate-200/80 bg-white font-medium text-slate-600 shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-all hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300 active:scale-95 dark:border-white/[0.05] dark:bg-white/[0.05] dark:text-slate-300 dark:hover:bg-white/[0.1] dark:hover:text-slate-100',
-                                        useDenseWorkbenchChrome ? 'h-[26px] px-3 text-[12px]' : 'h-[28px] px-3.5 text-[12px]'
+                                        useUltraDenseWorkbenchChrome ? 'h-[24px] px-2.5 text-[11px]' : useDenseWorkbenchChrome ? 'h-[26px] px-3 text-[12px]' : 'h-[28px] px-3.5 text-[12px]'
                                     )}
                                 >
                                     <div className="flex items-center gap-1.5">
                                         <Download size={13} className="opacity-70 transition-transform duration-200 group-hover:scale-110" />
-                                        <span>导出</span>
+                                        {!useUltraDenseWorkbenchChrome && <span>导出</span>}
                                     </div>
                                 </button>
                             )}
@@ -6615,7 +6768,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                     disabled={isProcessing}
                                     className={cn(
                                         'group inline-flex shrink-0 whitespace-nowrap items-center justify-center rounded-full font-medium transition-all duration-300 ease-spring-gentle',
-                                        useDenseWorkbenchChrome ? 'h-[26px] px-2 text-[12px]' : 'h-[28px] px-2.5 text-[12px]',
+                                        useUltraDenseWorkbenchChrome ? 'h-[24px] px-2 text-[11px]' : useDenseWorkbenchChrome ? 'h-[26px] px-2 text-[12px]' : 'h-[28px] px-2.5 text-[12px]',
                                         !isProcessing
                                             ? 'text-slate-500 hover:bg-red-50 hover:text-red-600 active:scale-95 dark:text-slate-400 dark:hover:bg-red-500/10 dark:hover:text-red-400'
                                             : 'cursor-not-allowed text-slate-300 dark:text-slate-600'
@@ -6623,7 +6776,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                 >
                                     <div className="flex items-center gap-1.5">
                                         <Trash2 size={13} className="opacity-80 transition-transform duration-200 group-hover:scale-110" />
-                                        <span>清空</span>
+                                        {!useUltraDenseWorkbenchChrome && <span>清空</span>}
                                     </div>
                                 </button>
                             )}
@@ -6640,11 +6793,25 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     )}
                     style={workbenchGridStyle}
                 >
-                    {showLeftPanel && selectedFiles.length > 0 && (
+                    {showLeftQueueDrawer && (
+                        <button
+                            type="button"
+                            onClick={closeLeftQueueDrawer}
+                            className="absolute inset-0 z-30 bg-slate-950/16 backdrop-blur-[2px]"
+                            aria-label="关闭文件队列抽屉"
+                        />
+                    )}
+
+                    {(showLeftPanel || showLeftQueueDrawer) && selectedFiles.length > 0 && (
                         <div
                             id="module2-left-panel"
                             data-testid="module2-left-panel"
-                            className="relative z-10 flex h-full min-h-0 flex-col"
+                            className={cn(
+                                "z-40 flex min-h-0 flex-col",
+                                showLeftQueueDrawer
+                                    ? "absolute inset-y-3 left-3 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-[24px] border border-slate-200/70 bg-white shadow-[0_24px_60px_-28px_rgba(15,23,42,0.32)] dark:border-white/[0.08] dark:bg-slate-950 dark:shadow-[0_28px_72px_-34px_rgba(2,6,23,0.9)]"
+                                    : "relative h-full"
+                            )}
                         >
                             <div
                                 onDragOver={handleDragOver}
@@ -6661,8 +6828,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                     "relative z-20 flex items-center w-full px-4 bg-white/80 backdrop-blur-md border-b border-slate-200/60 shadow-[0_4px_12px_rgba(0,0,0,0.05)] transition-colors duration-200 dark:bg-white/[0.02] dark:border-b dark:border-white/[0.05] dark:shadow-[0_4px_12px_rgba(0,0,0,0.2)]",
                                     useDenseWorkbenchChrome ? "h-[40px]" : "h-[48px]"
                                 )}>
-                                    <div className="flex w-full items-center gap-3">
-                                        <div className="flex items-center gap-1">
+                                    <div className="flex w-full items-center justify-between gap-3">
+                                        <div className="flex min-w-0 items-center gap-1">
                                             <img src={iconDocumentQueue} alt="文档队列" className="h-[18px] w-[18px] object-contain" />
                                             <h3 className={cn(
                                                 "truncate font-semibold tracking-tight text-slate-800 dark:text-slate-200",
@@ -6671,6 +6838,17 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                 文档队列
                                             </h3>
                                         </div>
+                                        {showLeftQueueDrawer && (
+                                            <button
+                                                type="button"
+                                                onClick={closeLeftQueueDrawer}
+                                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 active:scale-95 dark:text-slate-400 dark:hover:bg-white/[0.08] dark:hover:text-slate-200"
+                                                title="关闭文件队列"
+                                                aria-label="关闭文件队列"
+                                            >
+                                                <X size={16} />
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
 
@@ -7005,16 +7183,16 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                             {selectedFiles.length > 0 && (
                                 <div className={cn(
                                     'relative z-20 flex w-full flex-nowrap items-center px-4 bg-white/80 backdrop-blur-md border-b border-slate-200/60 shadow-[0_2px_8px_rgba(0,0,0,0.03)] transition-colors duration-200 dark:bg-slate-950/80 dark:border-b dark:border-white/[0.05] dark:shadow-[0_2px_8px_rgba(0,0,0,0.15)]',
-                                    useDenseWorkbenchChrome ? 'gap-1.5 h-[40px]' : 'gap-2 h-[48px]'
+                                    useUltraDenseWorkbenchChrome ? 'gap-1 h-[36px] px-3' : useDenseWorkbenchChrome ? 'gap-1.5 h-[40px]' : 'gap-2 h-[48px]'
                                 )}>
-                                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-                                    {showLeftPanel && (
+                                <div className={cn("flex min-w-0 items-center overflow-hidden", useUltraDenseWorkbenchChrome ? 'gap-1' : 'gap-1.5')}>
+                                    {showLeftPanel && !shouldUseLeftQueueDrawer && (
                                         <button
                                             type="button"
                                             onClick={() => setIsPreviewFocused(true)}
                                             className={cn(
                                                 'group inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent text-blue-600 transition-all duration-300 ease-spring-gentle active:scale-95 hover:border-slate-100/80 hover:bg-white hover:text-blue-700 hover:shadow-soft-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:text-blue-400 dark:hover:border-white/[0.1] dark:hover:bg-white/[0.08]',
-                                                useDenseWorkbenchChrome ? 'h-7 w-7' : 'h-8 w-8'
+                                                useUltraDenseWorkbenchChrome ? 'h-6 w-6' : useDenseWorkbenchChrome ? 'h-7 w-7' : 'h-8 w-8'
                                             )}
                                             title={previewFocusButtonTitle}
                                             aria-label={previewFocusButtonTitle}
@@ -7022,7 +7200,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                             data-testid="module2-preview-focus-toggle"
                                         >
                                             <span className="transition-transform duration-200 ease-out group-hover:scale-105">
-                                                <Maximize size={useDenseWorkbenchChrome ? 14 : 16} strokeWidth={2.2} />
+                                                <Maximize size={useUltraDenseWorkbenchChrome ? 13 : useDenseWorkbenchChrome ? 14 : 16} strokeWidth={2.2} />
                                             </span>
                                         </button>
                                     )}
@@ -7034,85 +7212,91 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                             initial={{ opacity: 0, x: -8 }}
                                             animate={{ opacity: 1, x: 0 }}
                                             transition={{ duration: 0.18, ease: 'easeOut' }}
-                                            onClick={() => setIsPreviewFocused(false)}
+                                            onClick={() => {
+                                                if (shouldUseLeftQueueDrawer) {
+                                                    toggleLeftQueueAccess();
+                                                    return;
+                                                }
+                                                setIsPreviewFocused(false);
+                                            }}
                                             className={cn(
                                                 'ml-1 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-100/80 bg-white px-3 font-bold text-slate-800 shadow-soft-sm transition-all duration-300 ease-spring-gentle hover:border-blue-200 hover:bg-blue-50/60 hover:text-blue-700 hover:shadow-soft-md active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:border-white/[0.05] dark:bg-white/[0.05] dark:text-slate-200 dark:hover:border-blue-700 dark:hover:bg-white/[0.08] dark:hover:text-blue-300',
-                                                useDenseWorkbenchChrome ? 'h-7 text-[11px] tabular-nums' : 'h-8 text-xs'
+                                                useUltraDenseWorkbenchChrome ? 'ml-0 h-6 px-2 text-[10px] tabular-nums' : useDenseWorkbenchChrome ? 'h-7 text-[11px] tabular-nums' : 'h-8 text-xs'
                                             )}
-                                            title={restoreFolderButtonTitle}
-                                            aria-label={restoreFolderButtonTitle}
+                                            title={shouldUseLeftQueueDrawer ? leftQueueAccessButtonTitle : restoreFolderButtonTitle}
+                                            aria-label={shouldUseLeftQueueDrawer ? leftQueueAccessButtonTitle : restoreFolderButtonTitle}
                                             aria-controls="module2-left-panel"
                                             data-testid="module2-restore-left-panel"
                                         >
-                                            <FolderOpen size={useDenseWorkbenchChrome ? 13 : 14} />
-                                            <span className="hidden sm:inline">文档列表</span>
+                                            <FolderOpen size={useUltraDenseWorkbenchChrome ? 12 : useDenseWorkbenchChrome ? 13 : 14} />
+                                            {!useUltraDenseWorkbenchChrome && <span className="hidden sm:inline">{shouldUseLeftQueueDrawer ? '文件/队列' : '文档列表'}</span>}
                                         </motion.button>
                                     )}
 
-                                    <div className="flex min-w-0 items-center gap-2 text-slate-900 dark:text-slate-100">
-                                        <span className={cn('truncate font-bold', useDenseWorkbenchChrome ? 'text-[13px]' : 'text-sm')}>文档预览</span>
+                                    <div className={cn("flex min-w-0 items-center text-slate-900 dark:text-slate-100", useUltraDenseWorkbenchChrome ? 'gap-1' : 'gap-2')}>
+                                        <span className={cn('truncate font-bold', useUltraDenseWorkbenchChrome ? 'text-[12px]' : useDenseWorkbenchChrome ? 'text-[13px]' : 'text-sm')}>{previewToolbarTitle}</span>
                                     </div>
                                 </div>
 
                                 <div className={cn(
                                     'ml-auto flex max-w-full flex-wrap items-center justify-end',
-                                    useDenseWorkbenchChrome ? 'gap-1.5 sm:gap-2' : 'gap-2 sm:gap-2.5'
+                                    useUltraDenseWorkbenchChrome ? 'gap-1 sm:gap-1.5' : useDenseWorkbenchChrome ? 'gap-1.5 sm:gap-2' : 'gap-2 sm:gap-2.5'
                                 )}>
-                                    <div className="flex max-w-full flex-nowrap items-center justify-end gap-0.5 sm:gap-1">
+                                    <div className={cn("flex max-w-full flex-nowrap items-center justify-end", useUltraDenseWorkbenchChrome ? 'gap-0' : 'gap-0.5 sm:gap-1')}>
                                         <button
                                             onClick={handleZoomOut}
                                             disabled={previewControlsDisabled}
                                             className={cn(
-                                                useDenseWorkbenchChrome ? 'p-1.25 rounded-lg transition-colors active:scale-95 shrink-0' : 'p-1.5 rounded-lg transition-colors active:scale-95 shrink-0',
+                                                useUltraDenseWorkbenchChrome ? 'p-1 rounded-lg transition-colors active:scale-95 shrink-0' : useDenseWorkbenchChrome ? 'p-1.25 rounded-lg transition-colors active:scale-95 shrink-0' : 'p-1.5 rounded-lg transition-colors active:scale-95 shrink-0',
                                                 previewControlsDisabled
                                                     ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
                                                     : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.08] hover:text-blue-600"
                                             )}
                                             title="缩小"
                                         >
-                                            <ZoomOut size={useDenseWorkbenchChrome ? 14 : 16} strokeWidth={2} />
+                                            <ZoomOut size={useUltraDenseWorkbenchChrome ? 13 : useDenseWorkbenchChrome ? 14 : 16} strokeWidth={2} />
                                         </button>
                                         <span className={cn(
                                             'shrink-0 text-center font-medium text-slate-700 dark:text-slate-300',
-                                            useDenseWorkbenchChrome ? 'w-9 text-[11px] tabular-nums' : 'w-10 text-xs'
+                                            useUltraDenseWorkbenchChrome ? 'w-8 text-[10px] tabular-nums' : useDenseWorkbenchChrome ? 'w-9 text-[11px] tabular-nums' : 'w-10 text-xs'
                                         )}>{previewScaleLabel}</span>
                                         <button
                                             onClick={handleZoomIn}
                                             disabled={previewControlsDisabled}
                                             className={cn(
-                                                useDenseWorkbenchChrome ? 'p-1.25 rounded-lg transition-colors active:scale-95 shrink-0' : 'p-1.5 rounded-lg transition-colors active:scale-95 shrink-0',
+                                                useUltraDenseWorkbenchChrome ? 'p-1 rounded-lg transition-colors active:scale-95 shrink-0' : useDenseWorkbenchChrome ? 'p-1.25 rounded-lg transition-colors active:scale-95 shrink-0' : 'p-1.5 rounded-lg transition-colors active:scale-95 shrink-0',
                                                 previewControlsDisabled
                                                     ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
                                                     : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.08] hover:text-blue-600"
                                             )}
                                             title="放大"
                                         >
-                                            <ZoomIn size={useDenseWorkbenchChrome ? 14 : 16} strokeWidth={2} />
+                                            <ZoomIn size={useUltraDenseWorkbenchChrome ? 13 : useDenseWorkbenchChrome ? 14 : 16} strokeWidth={2} />
                                         </button>
 
                                         {activeRenderExt === 'pdf' && (
                                             <>
                                                 <div className={cn(
                                                     'w-px shrink-0 bg-slate-200/80 dark:bg-white/[0.1]',
-                                                    useDenseWorkbenchChrome ? 'mx-1.5 h-3.5' : 'mx-2 h-4'
+                                                    useUltraDenseWorkbenchChrome ? 'mx-1 h-3' : useDenseWorkbenchChrome ? 'mx-1.5 h-3.5' : 'mx-2 h-4'
                                                 )} />
-                                                <div className="flex items-center gap-0.5 shrink-0">
+                                                <div className={cn("flex items-center shrink-0", useUltraDenseWorkbenchChrome ? 'gap-0' : 'gap-0.5')}>
                                                     <button
                                                         onClick={handlePrevPdfPage}
                                                         disabled={currentPdfPage <= 1}
                                                         className={cn(
-                                                            useDenseWorkbenchChrome ? 'p-1.25 rounded-lg transition-colors active:scale-95 shrink-0' : 'p-1.5 rounded-lg transition-colors active:scale-95 shrink-0',
+                                                            useUltraDenseWorkbenchChrome ? 'p-1 rounded-lg transition-colors active:scale-95 shrink-0' : useDenseWorkbenchChrome ? 'p-1.25 rounded-lg transition-colors active:scale-95 shrink-0' : 'p-1.5 rounded-lg transition-colors active:scale-95 shrink-0',
                                                             currentPdfPage > 1
                                                                 ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-white/[0.08] dark:text-slate-300"
                                                                 : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
                                                         )}
                                                         title="上一页"
                                                     >
-                                                        <ChevronRight size={useDenseWorkbenchChrome ? 14 : 16} className="rotate-180" />
+                                                        <ChevronRight size={useUltraDenseWorkbenchChrome ? 13 : useDenseWorkbenchChrome ? 14 : 16} className="rotate-180" />
                                                     </button>
                                                     <span className={cn(
                                                         'shrink-0 text-center font-medium text-slate-700 dark:text-slate-300',
-                                                        useDenseWorkbenchChrome ? 'min-w-[36px] text-[11px] tabular-nums' : 'min-w-[42px] text-xs'
+                                                        useUltraDenseWorkbenchChrome ? 'min-w-[30px] text-[10px] tabular-nums' : useDenseWorkbenchChrome ? 'min-w-[36px] text-[11px] tabular-nums' : 'min-w-[42px] text-xs'
                                                     )} data-testid="module2-preview-page-indicator">
                                                         {`${currentPdfPage} / ${inferredPdfPageCount}`}
                                                     </span>
@@ -7120,20 +7304,20 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                         onClick={handleNextPdfPage}
                                                         disabled={currentPdfPage >= inferredPdfPageCount}
                                                         className={cn(
-                                                            useDenseWorkbenchChrome ? 'p-1.25 rounded-lg transition-colors active:scale-95 shrink-0' : 'p-1.5 rounded-lg transition-colors active:scale-95 shrink-0',
+                                                            useUltraDenseWorkbenchChrome ? 'p-1 rounded-lg transition-colors active:scale-95 shrink-0' : useDenseWorkbenchChrome ? 'p-1.25 rounded-lg transition-colors active:scale-95 shrink-0' : 'p-1.5 rounded-lg transition-colors active:scale-95 shrink-0',
                                                             currentPdfPage < inferredPdfPageCount
                                                                 ? "text-slate-700 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-white/[0.08] dark:text-slate-300"
                                                                 : "text-slate-300 dark:text-slate-600 cursor-not-allowed"
                                                         )}
                                                         title="下一页"
                                                     >
-                                                        <ChevronRight size={useDenseWorkbenchChrome ? 14 : 16} />
+                                                        <ChevronRight size={useUltraDenseWorkbenchChrome ? 13 : useDenseWorkbenchChrome ? 14 : 16} />
                                                     </button>
                                                 </div>
 
                                                 <div className={cn(
                                                     'w-px shrink-0 bg-slate-200/80 dark:bg-white/[0.1]',
-                                                    useDenseWorkbenchChrome ? 'mx-1.5 h-3.5' : 'mx-2 h-4'
+                                                    useUltraDenseWorkbenchChrome ? 'mx-1 h-3' : useDenseWorkbenchChrome ? 'mx-1.5 h-3.5' : 'mx-2 h-4'
                                                 )} />
                                                 
                                                 <button
@@ -7144,15 +7328,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                     disabled={previewControlsDisabled}
                                                     className={cn(
                                                         'flex items-center justify-center gap-1 font-medium transition-colors active:scale-95 shrink-0',
-                                                        useDenseWorkbenchChrome ? 'px-2 py-1.25 rounded-lg text-[11px]' : 'px-2.5 py-1.5 rounded-lg text-xs',
+                                                        useUltraDenseWorkbenchChrome ? 'px-1.5 py-1 rounded-lg text-[10px]' : useDenseWorkbenchChrome ? 'px-2 py-1.25 rounded-lg text-[11px]' : 'px-2.5 py-1.5 rounded-lg text-xs',
                                                         previewControlsDisabled
                                                             ? "cursor-not-allowed text-slate-300 dark:text-slate-600"
                                                             : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.08] hover:text-blue-600"
                                                     )}
                                                     title="切换布局"
                                                 >
-                                                    <Layout size={useDenseWorkbenchChrome ? 13 : 14} />
-                                                    <span>布局</span>
+                                                    <Layout size={useUltraDenseWorkbenchChrome ? 12 : useDenseWorkbenchChrome ? 13 : 14} />
+                                                    {!useUltraDenseWorkbenchChrome && <span>布局</span>}
                                                 </button>
                                             </>
                                         )}
@@ -8350,4 +8534,3 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         </div>
     );
 };
-

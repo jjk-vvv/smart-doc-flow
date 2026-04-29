@@ -30,6 +30,9 @@ class Assistant1ToolRouter:
         self.sql_tools = sql_tools
         self.tavily = tavily
 
+    def _web_search_enabled(self) -> bool:
+        return bool(getattr(self.tavily, "ready", False))
+
     def tool_definitions(self, tool_names: tuple[str, ...] = ()) -> List[Dict[str, Any]]:
         definitions = [
             {
@@ -248,6 +251,12 @@ class Assistant1ToolRouter:
                 },
             },
         ]
+        if not self._web_search_enabled():
+            definitions = [
+                item
+                for item in definitions
+                if str(item.get("name") or "").strip() != "web_search_tavily"
+            ]
         if not tool_names:
             return definitions
         allowed = {name for name in tool_names if name}
@@ -263,6 +272,8 @@ class Assistant1ToolRouter:
         if name == "ingest_document":
             return self._tool_ingest_document(arguments, context)
         if name == "web_search_tavily":
+            if not self._web_search_enabled():
+                return {"ok": False, "error": "web search is disabled"}
             return self._tool_web_search(arguments, context)
         if name == "inspect_database_schema":
             return self._tool_inspect_database_schema(arguments)
@@ -424,6 +435,8 @@ class Assistant1ToolRouter:
         }
 
     def _tool_web_search(self, arguments: Dict[str, Any], context: Assistant1ToolContext) -> Dict[str, Any]:
+        if not self._web_search_enabled():
+            return {"ok": False, "error": "web search is disabled"}
         try:
             prepared = prepare_web_search_request(
                 arguments,

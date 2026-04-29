@@ -101,6 +101,7 @@ class Assistant1Settings:
     tavily_search_url: str
     tavily_timeout_sec: float
     tavily_max_results: int
+    web_search_enabled: bool
     sql_timeout_sec: float
     sql_max_preview_rows: int
 
@@ -120,10 +121,14 @@ class Assistant1Settings:
 
         endpoint_style = _env(
             "ASSISTANT1_EMBEDDING_ENDPOINT_STYLE",
-            default="auto",
+            default="openai",
         ).lower()
-        if endpoint_style not in {"auto", "native", "openai"}:
-            endpoint_style = "auto"
+        if endpoint_style == "native":
+            raise RuntimeError(
+                "ASSISTANT1_EMBEDDING_ENDPOINT_STYLE=native is disabled; use openai for Embedding-V1."
+            )
+        if endpoint_style not in {"auto", "openai"}:
+            endpoint_style = "openai"
 
         similarity_metric = _env(
             "ASSISTANT1_VECTOR_SIMILARITY_METRIC",
@@ -134,15 +139,15 @@ class Assistant1Settings:
 
         chat_endpoint_style = _env(
             "ASSISTANT1_CHAT_ENDPOINT_STYLE",
-            default="openai_responses",
+            default="openai_chat_completions",
         ).lower()
         if chat_endpoint_style not in {"openai_responses", "openai_chat_completions"}:
-            chat_endpoint_style = "openai_responses"
+            chat_endpoint_style = "openai_chat_completions"
 
         chat_endpoint_path = _env(
             "ASSISTANT1_CHAT_ENDPOINT_PATH",
-            default="/v1/responses",
-        ).strip() or "/v1/responses"
+            default="/chat/completions",
+        ).strip() or "/chat/completions"
         if not chat_endpoint_path.startswith("/"):
             chat_endpoint_path = f"/{chat_endpoint_path}"
 
@@ -163,9 +168,19 @@ class Assistant1Settings:
                 "ASSISTANT1_EMBEDDING_BASE_URL",
                 "MODULE2_LLM_BASE_URL",
                 "MODULE2_LLM_API_BASE_URL",
-                default="https://generativelanguage.googleapis.com",
+                default="https://jeniya.cn/v1",
             )
-        ) or "https://generativelanguage.googleapis.com"
+        ) or "https://jeniya.cn/v1"
+
+        tavily_api_key = _env(
+            "ASSISTANT1_TAVILY_API_KEY",
+            default="",
+        )
+        tavily_max_results = max(
+            0,
+            min(10, int(_env("ASSISTANT1_TAVILY_MAX_RESULTS", default="0"))),
+        )
+        web_search_enabled = bool(tavily_api_key and tavily_search_url and tavily_max_results > 0)
 
         return cls(
             module2_root=MODULE2_ROOT,
@@ -185,10 +200,10 @@ class Assistant1Settings:
             embedding_base_url=embedding_base_url,
             embedding_model=_env(
                 "ASSISTANT1_EMBEDDING_MODEL",
-                default="gemini-embedding-001",
+                default="Embedding-V1",
             ),
             embedding_endpoint_style=endpoint_style,
-            embedding_dimensions=max(128, int(_env("ASSISTANT1_EMBEDDING_DIMENSIONS", default="1536"))),
+            embedding_dimensions=max(128, int(_env("ASSISTANT1_EMBEDDING_DIMENSIONS", default="384"))),
             embedding_timeout_sec=max(
                 5.0,
                 float(_env("ASSISTANT1_EMBEDDING_TIMEOUT_SEC", default="45")),
@@ -214,13 +229,13 @@ class Assistant1Settings:
             chat_base_url=_env(
                 "ASSISTANT1_CHAT_BASE_URL",
                 "OPENAI_BASE_URL",
-                default="https://api.openai.com",
+                default="https://jeniya.cn/v1",
             ),
             chat_endpoint_path=chat_endpoint_path,
             chat_endpoint_style=chat_endpoint_style,
             chat_model=_env(
                 "ASSISTANT1_CHAT_MODEL",
-                default="gpt-5-mini",
+                default="qwen-plus",
             ),
             chat_temperature=max(
                 0.0,
@@ -235,19 +250,14 @@ class Assistant1Settings:
                 int(_env("ASSISTANT1_CHAT_MAX_OUTPUT_TOKENS", default="2400")),
             ),
             chat_reasoning_effort=chat_reasoning_effort,
-            tavily_api_key=_env(
-                "ASSISTANT1_TAVILY_API_KEY",
-                default="",
-            ),
+            tavily_api_key=tavily_api_key,
             tavily_search_url=tavily_search_url,
             tavily_timeout_sec=max(
                 5.0,
                 float(_env("ASSISTANT1_TAVILY_TIMEOUT_SEC", default="20")),
             ),
-            tavily_max_results=max(
-                1,
-                min(10, int(_env("ASSISTANT1_TAVILY_MAX_RESULTS", default="6"))),
-            ),
+            tavily_max_results=tavily_max_results,
+            web_search_enabled=web_search_enabled,
             sql_timeout_sec=max(
                 5.0,
                 float(_env("ASSISTANT1_SQL_TIMEOUT_SEC", default="20")),

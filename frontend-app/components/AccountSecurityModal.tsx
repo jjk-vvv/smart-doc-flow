@@ -18,6 +18,7 @@ import {
   type AuthSessionItem,
   type AuthUser,
 } from '../shared/api/auth';
+import { useMobileOverlayRegistration } from '../shared/hooks/useMobileOverlayPresence';
 
 interface AccountSecurityModalProps {
   show: boolean;
@@ -93,6 +94,8 @@ export const AccountSecurityModal: React.FC<AccountSecurityModalProps> = ({
   onClose,
   onLoggedOut,
 }) => {
+  useMobileOverlayRegistration(Boolean(show && user));
+
   const [sessions, setSessions] = useState<AuthSessionItem[]>([]);
   const [supportsPersistentSessions, setSupportsPersistentSessions] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
@@ -206,10 +209,10 @@ export const AccountSecurityModal: React.FC<AccountSecurityModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/40 px-4 backdrop-blur-sm transition-all">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/40 px-4 py-[max(1rem,var(--mobile-safe-top))] pb-[max(1rem,var(--mobile-safe-bottom))] backdrop-blur-sm transition-all">
       <div
         data-testid="account-security-modal"
-        className="relative flex max-h-[88vh] w-full max-w-[840px] flex-col overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-2xl dark:border-white/10 dark:bg-[#0A0A0B] dark:shadow-[0_0_60px_-15px_rgba(0,0,0,0.7)]"
+        className="relative flex max-h-[calc(var(--app-visual-height,100dvh)-2rem)] w-full max-w-[840px] flex-col overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-2xl dark:border-white/10 dark:bg-[#0A0A0B] dark:shadow-[0_0_60px_-15px_rgba(0,0,0,0.7)]"
       >
         <button
           type="button"

@@ -132,17 +132,17 @@ class AssistantSettings:
     ) -> "AssistantSettings":
         endpoint_path = _env(
             *_prefixed_names(prefixes, "ENDPOINT_PATH"),
-            default="/v1/responses",
-        ).strip() or "/v1/responses"
+            default="/chat/completions",
+        ).strip() or "/chat/completions"
         if not endpoint_path.startswith("/"):
             endpoint_path = f"/{endpoint_path}"
 
         endpoint_style = _env(
             *_prefixed_names(prefixes, "ENDPOINT_STYLE"),
-            default="openai_responses",
+            default="openai_chat_completions",
         ).strip().lower()
         if endpoint_style not in {"openai_responses", "openai_chat_completions"}:
-            endpoint_style = "openai_responses"
+            endpoint_style = "openai_chat_completions"
 
         reasoning_effort = _env(
             *_prefixed_names(prefixes, "REASONING_EFFORT"),
@@ -173,13 +173,13 @@ class AssistantSettings:
             ),
             chat_base_url=_env(
                 *base_url_names,
-                default="https://api.openai.com",
+                default="https://jeniya.cn/v1",
             ),
             chat_endpoint_path=endpoint_path,
             chat_endpoint_style=endpoint_style,
             chat_model=_env(
                 *model_names,
-                default="gpt-5-mini",
+                default="qwen-plus",
             ),
             chat_temperature=max(
                 0.0,

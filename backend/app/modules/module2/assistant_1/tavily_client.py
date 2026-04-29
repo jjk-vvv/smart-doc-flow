@@ -38,7 +38,7 @@ class TavilySearchClient:
 
     @property
     def ready(self) -> bool:
-        return bool(self.api_key and self.search_url)
+        return bool(self.api_key and self.search_url and self.max_results > 0)
 
     def search(
         self,

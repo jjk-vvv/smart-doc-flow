@@ -127,16 +127,14 @@ def resolve_llm_provider_mode(explicit: Optional[str] = None) -> str:
         explicit,
         os.getenv("MODULE2_LLM_PROVIDER", ""),
     ).strip().lower()
-    if raw in {"openai_compatible", "gemini_native", "google_native", "auto"}:
-        return "gemini_native" if raw == "google_native" else raw
-    native_hint = _first_non_empty(
-        os.getenv("MODULE2_LLM_NATIVE_API_URL", ""),
-        os.getenv("MODULE2_LLM_API_BASE_URL", ""),
-        os.getenv("MODULE2_GEMINI_NATIVE_API_URL", ""),
-    )
-    if native_hint:
-        return "gemini_native"
-    return "auto"
+    if raw in {"", "auto", "openai_compatible"}:
+        return "openai_compatible"
+    if raw in {"gemini_native", "google_native", "native"}:
+        raise RuntimeError(
+            "MODULE2_LLM_PROVIDER no longer supports native Gemini/Google branches; "
+            "set MODULE2_LLM_PROVIDER=openai_compatible."
+        )
+    raise RuntimeError(f"unsupported MODULE2_LLM_PROVIDER={raw!r}; expected openai_compatible")
 
 
 def resolve_llm_base_url(explicit: Optional[str] = None) -> str:
@@ -164,26 +162,15 @@ def resolve_llm_native_api_url(explicit: Optional[str] = None) -> str:
 
 def _normalize_provider_mode(raw_mode: Optional[str]) -> str:
     normalized = str(raw_mode or "").strip().lower()
-    if normalized in {"gemini_native", "google_native"}:
-        return "gemini_native"
-    if normalized == "openai_compatible":
+    if normalized in {"", "auto", "openai_compatible"}:
         return "openai_compatible"
-    return "auto"
+    if normalized in {"gemini_native", "google_native", "native"}:
+        raise RuntimeError("native Gemini/Google provider mode is disabled")
+    raise RuntimeError(f"unsupported provider mode: {normalized!r}")
 
 
 def resolve_llm_api_key(explicit: Optional[str] = None, *, provider_mode: Optional[str] = None) -> str:
     mode = _normalize_provider_mode(provider_mode or resolve_llm_provider_mode())
-    if mode == "gemini_native":
-        return _first_non_empty(
-            explicit,
-            os.getenv("MODULE2_GEMINI_API_KEY", ""),
-            os.getenv("GEMINI_API_KEY", ""),
-            _load_backend_env_value("GEMINI_API_KEY"),
-            os.getenv("GOOGLE_API_KEY", ""),
-            _load_backend_env_value("GOOGLE_API_KEY"),
-            os.getenv("MODULE2_LLM_API_KEY", ""),
-            os.getenv("OPENAI_API_KEY", ""),
-        )
     return _first_non_empty(
         explicit,
         os.getenv("MODULE2_LLM_API_KEY", ""),
@@ -194,7 +181,7 @@ def resolve_llm_api_key(explicit: Optional[str] = None, *, provider_mode: Option
     )
 
 
-def resolve_llm_model(explicit: Optional[str] = None, *, default: str = "gemini-3.1-pro") -> str:
+def resolve_llm_model(explicit: Optional[str] = None, *, default: str = "qwen-max") -> str:
     return _first_non_empty(
         explicit,
         os.getenv("MODULE2_LLM_MODEL", ""),
@@ -215,22 +202,12 @@ def build_module2_llm_provider(
 ) -> "OpenAICompatibleChatProvider":
     resolved_mode = resolve_llm_provider_mode()
     resolved_base_url = resolve_llm_base_url(base_url)
-    resolved_native_api_url = resolve_llm_native_api_url(native_api_url)
-    if resolved_mode == "gemini_native" or (
-        resolved_mode == "auto" and resolved_native_api_url and not resolved_base_url
-    ):
-        return GeminiNativeChatProvider(
-            native_api_url=resolved_native_api_url,
-            api_key=resolve_llm_api_key(api_key, provider_mode="gemini_native"),
-            model=resolve_llm_model(model, default="gemini-3.1-pro"),
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout_sec=timeout_sec,
-        )
+    if resolved_mode != "openai_compatible":
+        raise RuntimeError(f"unsupported module2 llm provider mode: {resolved_mode}")
     return OpenAICompatibleChatProvider(
         base_url=resolved_base_url,
         api_key=resolve_llm_api_key(api_key, provider_mode="openai_compatible"),
-        model=resolve_llm_model(model, default="gemini-3.1-pro"),
+        model=resolve_llm_model(model, default="qwen-max"),
         temperature=temperature,
         max_tokens=max_tokens,
         timeout_sec=timeout_sec,
@@ -361,7 +338,7 @@ class OpenAICompatibleChatProvider:
 
         self.base_url = _normalize_base_url(env_base)
         self.api_key = str(env_key or "").strip()
-        self.model = str(env_model or "gemini-3.1-pro").strip() or "gemini-3.1-pro"
+        self.model = str(env_model or "qwen-max").strip() or "qwen-max"
         self.temperature = max(0.0, min(1.0, float(env_temp)))
         self.max_tokens = max(256, int(env_max_tokens))
         self.timeout_sec = max(10.0, float(env_timeout))

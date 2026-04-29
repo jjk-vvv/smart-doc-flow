@@ -156,7 +156,7 @@ def _query_storage_cli_overrides(runtime: GraphRAGResolvedRuntime) -> Dict[str, 
 def _query_model_cli_overrides() -> Dict[str, Any]:
     api_base = str(os.getenv("MODULE4_GRAPHRAG_API_BASE") or os.getenv("GRAPHRAG_API_BASE") or "").strip()
     chat_model = str(
-        os.getenv("MODULE4_GRAPHRAG_CHAT_MODEL") or os.getenv("GRAPHRAG_CHAT_MODEL") or "gpt-4.1-mini"
+        os.getenv("MODULE4_GRAPHRAG_CHAT_MODEL") or os.getenv("GRAPHRAG_CHAT_MODEL") or "qwen-max"
     ).strip()
     chat_api_key = str(
         os.getenv("MODULE4_GRAPHRAG_CHAT_API_KEY") or os.getenv("GRAPHRAG_CHAT_API_KEY") or ""
@@ -164,7 +164,7 @@ def _query_model_cli_overrides() -> Dict[str, Any]:
     embedding_model = str(
         os.getenv("MODULE4_GRAPHRAG_EMBEDDING_MODEL")
         or os.getenv("GRAPHRAG_EMBEDDING_MODEL")
-        or "text-embedding-3-small"
+        or "Embedding-V1"
     ).strip()
     embedding_api_key = str(
         os.getenv("MODULE4_GRAPHRAG_EMBEDDING_API_KEY") or os.getenv("GRAPHRAG_EMBEDDING_API_KEY") or ""

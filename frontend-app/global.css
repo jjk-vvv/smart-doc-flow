@@ -4,6 +4,21 @@
 @layer base {
   :root {
     --app-font-ui: "Microsoft YaHei", "PingFang SC", "Heiti SC", system-ui, -apple-system, sans-serif;
+    --app-visual-width: 100vw;
+    --app-visual-height: 100dvh;
+    --app-visual-offset-top: 0px;
+    --app-keyboard-inset: 0px;
+    --mobile-safe-top: env(safe-area-inset-top, 0px);
+    --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --mobile-bottom-nav-height: 56px;
+    --mobile-page-x: clamp(14px, 4vw, 24px);
+    --mobile-content-bottom: calc(var(--mobile-bottom-nav-height) + var(--mobile-safe-bottom) + 16px);
+    --mobile-title-size: clamp(23px, 7vw, 30px);
+    --mobile-section-title-size: clamp(18px, 5vw, 22px);
+    --mobile-body-size: clamp(13px, 3.6vw, 15px);
+    --mobile-card-radius: clamp(18px, 5vw, 28px);
+    --mobile-sheet-max-height: min(84vh, calc(var(--app-visual-height, 100dvh) - 24px));
+    --mobile-floating-action-size: 58px;
     /* Light Mode Variables - Crisp, Modern, High Contrast */
     --background: 210 40% 98%; /* Slate 50 */
     --foreground: 222.2 84% 4.9%; /* Slate 900 */
@@ -2057,5 +2072,118 @@
   }
   .animate-text-shimmer {
     animation: text-shimmer 3s linear infinite;
+  }
+}
+
+.mobile-page-shell {
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+.mobile-page-content {
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: var(--app-visual-height, 100dvh);
+  width: 100%;
+}
+
+.mobile-page-content-with-nav {
+  padding-bottom: var(--mobile-content-bottom);
+}
+
+.mobile-page-content-phone,
+.mobile-page-content-tablet {
+  margin-inline: auto;
+}
+
+@media (min-width: 480px) {
+  .mobile-page-content-phone {
+    max-width: 430px;
+  }
+}
+
+@media (min-width: 600px) and (max-width: 1023px) {
+  .mobile-page-content-phone {
+    max-width: 560px;
+  }
+
+  .mobile-page-content-tablet {
+    max-width: 680px;
+  }
+}
+
+.mobile-bottom-nav {
+  min-height: calc(var(--mobile-bottom-nav-height) + var(--mobile-safe-bottom));
+  padding-bottom: var(--mobile-safe-bottom);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.mobile-bottom-nav-inner {
+  height: var(--mobile-bottom-nav-height);
+}
+
+@media (max-width: 1023px) {
+  html.mobile-runtime-root,
+  body.mobile-runtime-root {
+    overflow-x: hidden;
+    scrollbar-width: none;
+  }
+
+  html.mobile-runtime-root::-webkit-scrollbar,
+  body.mobile-runtime-root::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  .mobile-runtime {
+    overflow-x: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-runtime * {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-runtime::-webkit-scrollbar,
+  .mobile-runtime *::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  html.mobile-overlay-active,
+  body.mobile-overlay-active {
+    overscroll-behavior: none;
+  }
+
+  .platform-assistant-open .mobile-bottom-nav {
+    pointer-events: none;
+    opacity: 0.38;
+    transform: translateY(8px);
+  }
+
+  .mobile-overlay-active .mobile-bottom-nav {
+    pointer-events: none;
+  }
+
+  .mobile-runtime [data-mobile-overlay="true"] {
+    overscroll-behavior: contain;
+  }
+}
+
+@media (max-width: 359px) {
+  :root {
+    --mobile-page-x: 14px;
+    --mobile-title-size: clamp(22px, 7vw, 26px);
+    --mobile-section-title-size: clamp(17px, 5.2vw, 20px);
+    --mobile-body-size: 13px;
+    --mobile-card-radius: 20px;
+    --mobile-content-bottom: calc(var(--mobile-bottom-nav-height) + var(--mobile-safe-bottom) + 12px);
+    --mobile-floating-action-size: 52px;
   }
 }

@@ -57,8 +57,20 @@ export const DeepReadWelcomeScreen: React.FC<DeepReadWelcomeScreenProps> = ({
             <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70%] h-[70%] bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.04)_0%,transparent_70%)] hidden dark:block rounded-full blur-[80px]" />
             
             {/* Impeccable Dot Matrix Pattern - Very subtle and professional */}
-            <div className="pointer-events-none absolute inset-0 hidden dark:block bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08)_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:radial-gradient(ellipse_100%_80%_at_50%_50%,#000_70%,transparent_100%)] opacity-100" />
-            <div className="pointer-events-none absolute inset-0 block dark:hidden bg-[radial-gradient(circle_at_center,rgba(0,0,0,0.03)_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:radial-gradient(ellipse_80%_60%_at_50%_40%,#000_70%,transparent_100%)] opacity-80" />
+            <div
+                className="pointer-events-none absolute inset-0 hidden dark:block bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08)_1px,transparent_1px)] bg-[size:24px_24px] opacity-100"
+                style={{
+                    WebkitMaskImage: 'radial-gradient(ellipse 100% 80% at 50% 50%, #000 70%, transparent 100%)',
+                    maskImage: 'radial-gradient(ellipse 100% 80% at 50% 50%, #000 70%, transparent 100%)',
+                }}
+            />
+            <div
+                className="pointer-events-none absolute inset-0 block dark:hidden bg-[radial-gradient(circle_at_center,rgba(0,0,0,0.03)_1px,transparent_1px)] bg-[size:24px_24px] opacity-80"
+                style={{
+                    WebkitMaskImage: 'radial-gradient(ellipse 80% 60% at 50% 40%, #000 70%, transparent 100%)',
+                    maskImage: 'radial-gradient(ellipse 80% 60% at 50% 40%, #000 70%, transparent 100%)',
+                }}
+            />
 
             {/* Impeccable Ambient Flowing Light - Soft, not blown out */}
             <div className="pointer-events-none absolute inset-0 overflow-hidden flex items-center justify-center">

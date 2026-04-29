@@ -113,7 +113,7 @@ class AssistantResponsesProvider:
         self.base_url = _normalize_base_url(self.settings.chat_base_url)
         self.endpoint_path = str(self.settings.chat_endpoint_path or "/v1/responses").strip() or "/v1/responses"
         self.api_key = str(self.settings.chat_api_key or "").strip()
-        self.model = str(self.settings.chat_model or "gpt-5-mini").strip() or "gpt-5-mini"
+        self.model = str(self.settings.chat_model or "qwen-plus").strip() or "qwen-plus"
         self.temperature = float(self.settings.chat_temperature)
         self.timeout_sec = float(self.settings.chat_timeout_sec)
         self.max_output_tokens = int(self.settings.chat_max_output_tokens)

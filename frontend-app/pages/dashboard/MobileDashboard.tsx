@@ -99,10 +99,19 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
 
   const handleScroll = useCallback(() => {
     if (!scrollContainerRef.current) return;
-    const scrollLeft = scrollContainerRef.current.scrollLeft;
-    const cardWidth = 310; // 300px width + 10px gap
-    const newIndex = Math.round(scrollLeft / cardWidth);
-    setActiveCardIndex(Math.max(0, Math.min(newIndex, 2)));
+    const container = scrollContainerRef.current;
+    const cards = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-mobile-dashboard-card]'),
+    );
+    if (cards.length === 0) return;
+    const containerRect = container.getBoundingClientRect();
+    const containerCenter = containerRect.left + containerRect.width / 2;
+    const closestIndex = cards.reduce((closest, card, index) => {
+      const rect = card.getBoundingClientRect();
+      const distance = Math.abs(rect.left + rect.width / 2 - containerCenter);
+      return distance < closest.distance ? { index, distance } : closest;
+    }, { index: 0, distance: Number.POSITIVE_INFINITY }).index;
+    setActiveCardIndex(Math.max(0, Math.min(closestIndex, cards.length - 1)));
   }, []);
 
   useEffect(() => {
@@ -114,10 +123,13 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
       interval = setInterval(() => {
         setActiveCardIndex((prev) => {
           const next = (prev + 1) % 3;
-          const cardWidth = 310;
-          container.scrollTo({
-            left: next * cardWidth,
-            behavior: 'smooth'
+          const cards = Array.from(
+            container.querySelectorAll<HTMLElement>('[data-mobile-dashboard-card]'),
+          );
+          cards[next]?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+            inline: 'center',
           });
           return next;
         });
@@ -196,7 +208,7 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="-mb-28 relative flex min-h-screen flex-col overflow-hidden bg-[#F8FAFC] font-sans dark:bg-slate-950"
+      className="-mb-28 relative flex min-h-[var(--app-visual-height,100dvh)] flex-col overflow-hidden bg-[#F8FAFC] font-sans dark:bg-slate-950"
     >
       {/* Impeccable Ambient Background Glow */}
       <div className="pointer-events-none absolute inset-0 opacity-[0.5] mix-blend-multiply dark:opacity-[0.15] dark:mix-blend-normal bg-[radial-gradient(circle_at_1px_1px,_rgba(15,23,42,0.06)_1px,_transparent_0)] dark:bg-[radial-gradient(circle_at_1px_1px,_rgba(255,255,255,0.06)_1px,_transparent_0)] bg-[length:24px_24px]" />
@@ -213,7 +225,7 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
       />
       <div className="pointer-events-none absolute bottom-[10%] left-[20%] h-[400px] w-[500px] rounded-full bg-blue-200/10 blur-[100px] dark:bg-blue-900/10" />
 
-      <div className="relative z-10 px-5 pb-6 pt-[max(1.5rem,env(safe-area-inset-top))]">
+      <div className="relative z-10 px-5 pb-6 pt-[max(1.5rem,var(--mobile-safe-top))]">
         <div className="mb-5 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h1 className="text-[20px] font-black tracking-tight text-[#11323B] dark:text-white">
@@ -229,8 +241,9 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
           className="-mx-5 flex snap-x gap-2.5 overflow-x-auto px-5 pb-0 pt-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
         >
           <article
+            data-mobile-dashboard-card
             onClick={() => onNavigate('doc-processing')}
-            className="group relative flex h-[260px] w-[290px] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 active:scale-[0.98] transition-all duration-300 dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
+            className="group relative flex h-[clamp(236px,68vw,280px)] w-[min(82vw,330px)] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 transition-all duration-300 active:scale-[0.98] dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
           >
             <div className="absolute inset-x-0 top-0 h-[185px] overflow-hidden bg-[#D4F4F6] dark:bg-cyan-950/30">
               <img src={ImageModule1} alt="智能文档解析" className="h-full w-full object-cover object-bottom transition-transform duration-500 group-hover:scale-105" />
@@ -256,8 +269,9 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
           </article>
 
           <article
+            data-mobile-dashboard-card
             onClick={() => onNavigate('deepread_extraction')}
-            className="group relative flex h-[260px] w-[290px] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 active:scale-[0.98] transition-all duration-300 dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
+            className="group relative flex h-[clamp(236px,68vw,280px)] w-[min(82vw,330px)] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 transition-all duration-300 active:scale-[0.98] dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
           >
             <div className="absolute inset-x-0 top-0 h-[185px] overflow-hidden bg-[#EAF5FD] dark:bg-sky-950/30">
               <img src={ImageModule2} alt="AI信息提取" className="h-full w-full object-cover object-bottom transition-transform duration-500 group-hover:scale-105" />
@@ -282,8 +296,9 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
           </article>
 
           <article
+            data-mobile-dashboard-card
             onClick={() => onNavigate('fusion')}
-            className="group relative flex h-[260px] w-[290px] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 active:scale-[0.98] transition-all duration-300 dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
+            className="group relative flex h-[clamp(236px,68vw,280px)] w-[min(82vw,330px)] shrink-0 snap-center flex-col overflow-hidden rounded-[24px] bg-white shadow-[0_8px_32px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 transition-all duration-300 active:scale-[0.98] dark:bg-slate-800/80 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)] dark:ring-white/[0.05]"
           >
             <div className="absolute inset-x-0 top-0 h-[185px] overflow-hidden bg-[#F5F1FD] dark:bg-indigo-950/30">
               <img src={ImageModule3} alt="自定义智能填表" className="h-full w-full object-cover object-bottom transition-transform duration-500 group-hover:scale-105" />
@@ -313,7 +328,7 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1], delay: 0.2 }}
-        className="-mt-2 flex-1 rounded-t-[32px] bg-white/95 px-4 pb-[calc(env(safe-area-inset-bottom)+120px)] pt-6 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] backdrop-blur-2xl dark:bg-slate-900/95"
+        className="-mt-2 flex-1 rounded-t-[32px] bg-white/95 px-4 pb-[calc(var(--mobile-content-bottom)+48px)] pt-6 shadow-[0_-4px_24px_rgba(0,0,0,0.02)] backdrop-blur-2xl dark:bg-slate-900/95"
       >
         <section>
           <div className="mb-4 flex items-center justify-between">
@@ -332,6 +347,29 @@ export const MobileDashboard: React.FC<MobileDashboardProps> = ({
               <p className="mt-1.5 max-w-[220px] text-[13px] leading-relaxed text-[#64748B] dark:text-slate-400">
                 在模块一、模块二或模块三处理文件后，这里会同步最近进度摘要
               </p>
+              <div className="mt-5 grid w-full max-w-[260px] grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('doc-processing')}
+                  className="rounded-full bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 shadow-sm ring-1 ring-slate-100 transition active:scale-[0.97] dark:bg-slate-800 dark:text-slate-200 dark:ring-white/10"
+                >
+                  文档处理
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('deepread_extraction')}
+                  className="rounded-full bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 shadow-sm ring-1 ring-slate-100 transition active:scale-[0.97] dark:bg-slate-800 dark:text-slate-200 dark:ring-white/10"
+                >
+                  AI提取
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('fusion')}
+                  className="rounded-full bg-slate-900 px-3 py-2 text-[12px] font-semibold text-white shadow-sm transition active:scale-[0.97] dark:bg-cyan-400 dark:text-slate-950"
+                >
+                  智能填表
+                </button>
+              </div>
             </div>
           ) : (
             <div className="space-y-4">

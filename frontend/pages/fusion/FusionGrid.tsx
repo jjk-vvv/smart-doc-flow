@@ -126,11 +126,16 @@ type TaskItem = {
 type SegmentedOption = {
   icon: React.ComponentType<{ size?: number; className?: string }>;
   label: string;
+  compactLabel?: string;
   onClick: () => void;
   disabled?: boolean;
   dropdownContent?: React.ReactNode;
   dropdownAlign?: "left" | "right";
 };
+
+const MODULE3_TASK_DRAWER_BREAKPOINT = 1320;
+const MODULE3_TOPBAR_DENSE_BREAKPOINT = 1180;
+const MODULE3_TOPBAR_ULTRA_DENSE_BREAKPOINT = 980;
 
 type PreviewSheet = {
   id: string;
@@ -1196,7 +1201,15 @@ const updateTaskFromStatus = (
     status.completed_at ?? status.finished_at ?? task.completedAt ?? null,
 });
 
-const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
+const SegmentedControl = ({
+  options,
+  denseMode = false,
+  ultraDenseMode = false,
+}: {
+  options: SegmentedOption[];
+  denseMode?: boolean;
+  ultraDenseMode?: boolean;
+}) => {
   const [openDropdownIndex, setOpenDropdownIndex] = useState<number | null>(
     null,
   );
@@ -1310,11 +1323,24 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
 
   return (
     <>
-      <div className="relative flex w-full max-w-full lg:max-w-[800px] overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] justify-start sm:justify-end items-center gap-1 sm:gap-2 lg:ml-auto pb-1 sm:pb-0">
+      <div
+        className={cn(
+          "relative flex w-full max-w-full overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] justify-start sm:justify-end items-center lg:ml-auto pb-1 sm:pb-0",
+          ultraDenseMode
+            ? "gap-0.5 sm:gap-1 lg:max-w-[620px]"
+            : denseMode
+              ? "gap-0.5 sm:gap-1.5 lg:max-w-[700px]"
+              : "gap-1 sm:gap-2 lg:max-w-[800px]",
+        )}
+      >
         {options.map((option, index) => {
           const Icon = option.icon;
           const hasDropdown = !!option.dropdownContent;
           const isDropdownOpen = currentOpenIndex === index;
+          const displayLabel =
+            denseMode || ultraDenseMode
+              ? option.compactLabel || option.label
+              : option.label;
 
           return (
             <motion.button
@@ -1330,7 +1356,12 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
               onMouseEnter={() => handleMouseEnter(index, hasDropdown)}
               onMouseLeave={handleMouseLeave}
               className={cn(
-                  "relative flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2.5 h-[26px] text-[12px] font-medium transition-colors duration-200 shrink-0",
+                "relative flex shrink-0 items-center justify-center whitespace-nowrap font-medium transition-colors duration-200",
+                ultraDenseMode
+                  ? "gap-1 rounded-md px-2 h-[24px] text-[11px]"
+                  : denseMode
+                    ? "gap-1 rounded-md px-2.25 h-[25px] text-[11px]"
+                    : "gap-1.5 rounded-md px-2.5 h-[26px] text-[12px]",
                 "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80 dark:text-slate-300 dark:hover:text-white dark:hover:bg-white/[0.05]",
                 isDropdownOpen
                   ? "bg-slate-100/80 text-slate-900 dark:bg-white/[0.05] dark:text-white"
@@ -1342,15 +1373,18 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
               whileTap={{ scale: option.disabled ? 1 : 0.98 }}
             >
               <div className="relative z-10 flex items-center justify-center gap-1.5">
-                <Icon size={14} className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline font-medium">
-                  {option.label}
+                <Icon
+                  size={ultraDenseMode ? 13 : 14}
+                  className={cn(ultraDenseMode ? "w-[13px] h-[13px]" : "w-3.5 h-3.5")}
+                />
+                <span className={cn("font-medium", ultraDenseMode ? "hidden md:inline" : "hidden sm:inline")}>
+                  {displayLabel}
                 </span>
                 {hasDropdown && (
                   <ChevronDown
-                    size={12}
+                    size={ultraDenseMode ? 10 : 12}
                     className={cn(
-                      "transition-transform duration-200 w-3 h-3",
+                      ultraDenseMode ? "transition-transform duration-200 w-2.5 h-2.5" : "transition-transform duration-200 w-3 h-3",
                       isDropdownOpen ? "rotate-180" : "",
                     )}
                   />
@@ -1412,6 +1446,10 @@ const SegmentedControl = ({ options }: { options: SegmentedOption[] }) => {
 
 export const FusionGrid: React.FC = () => {
   const [leftPanelWidth, setLeftPanelWidth] = useState(25); // Percentage width of the left panel
+  const [workbenchWidth, setWorkbenchWidth] = useState<number>(() =>
+    typeof window !== "undefined" ? window.innerWidth : 1440,
+  );
+  const [isTaskDrawerOpen, setIsTaskDrawerOpen] = useState(false);
   const isResizingRef = useRef(false);
   const dragOffsetRef = useRef(0);
   const splitLayoutRef = useRef<HTMLDivElement>(null);
@@ -1453,6 +1491,33 @@ export const FusionGrid: React.FC = () => {
       document.removeEventListener("mouseup", handleMouseUp);
     };
   }, [handleMouseMove, handleMouseUp]);
+
+  useEffect(() => {
+    const target = splitLayoutRef.current;
+
+    const syncWidth = () => {
+      const nextWidth = Math.round(
+        target?.getBoundingClientRect().width || window.innerWidth || 1440,
+      );
+      setWorkbenchWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+    };
+
+    syncWidth();
+
+    if (typeof ResizeObserver === "undefined" || !target) {
+      window.addEventListener("resize", syncWidth);
+      return () => window.removeEventListener("resize", syncWidth);
+    }
+
+    const observer = new ResizeObserver(() => syncWidth());
+    observer.observe(target);
+    window.addEventListener("resize", syncWidth);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", syncWidth);
+    };
+  }, []);
 
   const [gridState, setGridState] = useState<FusionGridState>(() =>
     readFusionGridState(),
@@ -1542,10 +1607,42 @@ export const FusionGrid: React.FC = () => {
     !isUploadingDocset &&
     templates.length > 0 &&
     docsets.length > 0;
+  const shouldUseTaskDrawer = workbenchWidth > 0 && workbenchWidth <= MODULE3_TASK_DRAWER_BREAKPOINT;
+  const useDenseTopBar = workbenchWidth > 0 && workbenchWidth <= MODULE3_TOPBAR_DENSE_BREAKPOINT;
+  const useUltraDenseTopBar =
+    workbenchWidth > 0 && workbenchWidth <= MODULE3_TOPBAR_ULTRA_DENSE_BREAKPOINT;
+  const useDenseRightPanel = workbenchWidth > 0 && workbenchWidth <= 1180;
+  const useUltraDenseRightPanel = workbenchWidth > 0 && workbenchWidth <= 940;
+  const showDockedTaskPanel = !shouldUseTaskDrawer;
+  const showTaskDrawer = shouldUseTaskDrawer && isTaskDrawerOpen;
+
+  const closeTaskDrawer = useCallback(() => setIsTaskDrawerOpen(false), []);
+  const toggleTaskDrawer = useCallback(() => {
+    if (!shouldUseTaskDrawer) return;
+    setIsTaskDrawerOpen((prev) => !prev);
+  }, [shouldUseTaskDrawer]);
+  const handleSelectTask = useCallback(
+    (taskId: string) => {
+      setGridState((current) => ({
+        ...current,
+        selectedTaskId: taskId,
+      }));
+      if (showTaskDrawer) {
+        setIsTaskDrawerOpen(false);
+      }
+    },
+    [showTaskDrawer],
+  );
 
   useEffect(() => {
     writeFusionGridState(gridState);
   }, [gridState]);
+
+  useEffect(() => {
+    if (!shouldUseTaskDrawer && isTaskDrawerOpen) {
+      setIsTaskDrawerOpen(false);
+    }
+  }, [isTaskDrawerOpen, shouldUseTaskDrawer]);
 
   useEffect(() => {
     let active = true;
@@ -2097,6 +2194,9 @@ export const FusionGrid: React.FC = () => {
   };
 
   const handlePreviewTaskOutput = async (task: TaskItem) => {
+    if (showTaskDrawer) {
+      setIsTaskDrawerOpen(false);
+    }
     if (previewDocument?.id === task.id) {
       setPreviewDocument(null);
       setPreviewContent("");
@@ -2164,35 +2264,63 @@ export const FusionGrid: React.FC = () => {
     }
   };
 
+  const fusionDropdownPanelClass = cn(
+    "flex flex-col gap-2 max-h-[400px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10",
+    useUltraDenseTopBar
+      ? "w-[min(300px,calc(100vw-24px))] p-2.5"
+      : useDenseTopBar
+        ? "w-[min(320px,calc(100vw-28px))] p-3"
+        : "w-[340px] p-3",
+  );
+  const fusionUploadCardClass = cn(
+    "group w-full rounded-[16px] border border-dashed border-slate-300 text-center transition-all dark:border-white/[0.1] dark:bg-white/[0.02] dark:hover:border-blue-500 dark:hover:bg-blue-500/10",
+    useUltraDenseTopBar
+      ? "px-3 py-5"
+      : "py-6 px-4",
+  );
+  const fusionCompactRecordClass = cn(
+    "flex items-center justify-between gap-1 rounded-[12px] border border-slate-200 text-[11px] text-slate-600 dark:border-white/[0.05] dark:bg-white/[0.02] dark:text-slate-300 shadow-sm bg-white dark:bg-[#0B1120] shrink-0",
+    useUltraDenseTopBar ? "px-2 py-1.5" : "px-2.5 py-2",
+  );
+
   // 模板上传下拉内容
   const templateDropdownContent = (
-    <div className="p-3 w-[340px] flex flex-col gap-2 max-h-[400px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10">
+    <div className={fusionDropdownPanelClass}>
       {templateItems.length === 0 ? (
         <button
           type="button"
           onClick={() => templateInputRef.current?.click()}
-          className="group w-full rounded-[16px] border border-dashed border-slate-300 py-6 px-4 text-center transition-all hover:border-blue-500 hover:bg-blue-50/30 dark:border-white/[0.1] dark:bg-white/[0.02] dark:hover:border-blue-500 dark:hover:bg-blue-500/10"
+          className={cn(
+            fusionUploadCardClass,
+            "hover:border-blue-500 hover:bg-blue-50/30",
+          )}
         >
-          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm border border-slate-200/50 transition-colors group-hover:border-blue-200 dark:bg-white/[0.04] dark:border-white/[0.05] dark:group-hover:border-blue-500/30">
+          <div className={cn(
+            "mx-auto mb-3 flex items-center justify-center rounded-full bg-white shadow-sm border border-slate-200/50 transition-colors group-hover:border-blue-200 dark:bg-white/[0.04] dark:border-white/[0.05] dark:group-hover:border-blue-500/30",
+            useUltraDenseTopBar ? "h-9 w-9" : "h-10 w-10",
+          )}>
             {isUploadingTemplate ? (
               <Loader2
-                size={22}
+                size={useUltraDenseTopBar ? 20 : 22}
                 className="animate-spin text-slate-400 transition-colors group-hover:text-blue-500 dark:text-slate-500 dark:group-hover:text-blue-400"
               />
             ) : (
               <UploadCloud
-                size={22}
+                size={useUltraDenseTopBar ? 20 : 22}
                 className="text-slate-400 transition-colors group-hover:text-blue-500 dark:text-slate-500 dark:group-hover:text-blue-400"
               />
             )}
           </div>
-          <p className="text-[13px] font-medium text-slate-700 transition-colors group-hover:text-blue-600 dark:text-slate-300 dark:group-hover:text-blue-400 mb-1">
+          <p className={cn(
+            "font-medium text-slate-700 transition-colors group-hover:text-blue-600 dark:text-slate-300 dark:group-hover:text-blue-400 mb-1",
+            useUltraDenseTopBar ? "text-[12px]" : "text-[13px]",
+          )}>
             {isUploadingTemplate ? "上传中..." : "点击或拖拽上传模板"}
           </p>
-          <p className="text-[11px] text-slate-400">支持 XLSX, DOCX</p>
+          <p className={cn("text-slate-400", useUltraDenseTopBar ? "text-[10px]" : "text-[11px]")}>支持 XLSX, DOCX</p>
         </button>
       ) : (
-        <div className="flex items-center justify-between gap-1 rounded-[12px] border border-slate-200 px-2.5 py-2 text-[11px] text-slate-600 dark:border-white/[0.05] dark:bg-white/[0.02] dark:text-slate-300 shadow-sm bg-white dark:bg-[#0B1120] shrink-0">
+        <div className={fusionCompactRecordClass}>
           <div className="flex min-w-0 items-center gap-1.5">
             <FileSpreadsheet size={14} className="shrink-0 text-blue-500" />
             <span className="truncate font-medium">模板文件</span>
@@ -2283,7 +2411,7 @@ export const FusionGrid: React.FC = () => {
   };
 
   const docsetDropdownContent = (
-    <div className="p-3 w-[340px] flex flex-col gap-2 max-h-[400px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10">
+    <div className={fusionDropdownPanelClass}>
       {documentItems.length === 0 ? (
         <div
           onClick={() => docsetInputRef.current?.click()}
@@ -2291,7 +2419,8 @@ export const FusionGrid: React.FC = () => {
           onDragLeave={handleDocsetDragLeave}
           onDrop={handleDocsetDrop}
           className={cn(
-            "group w-full rounded-[16px] border border-dashed py-6 px-4 text-center transition-all cursor-pointer",
+            fusionUploadCardClass,
+            "cursor-pointer",
             isDraggingDocset
               ? "border-blue-500 bg-blue-50/50 dark:border-blue-400 dark:bg-blue-500/10"
               : "border-slate-300 hover:border-blue-500 hover:bg-blue-50/30 dark:border-white/[0.1] dark:bg-white/[0.02] dark:hover:border-blue-500 dark:hover:bg-blue-500/10"
@@ -2299,7 +2428,8 @@ export const FusionGrid: React.FC = () => {
         >
           <div
             className={cn(
-              "mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm border border-slate-200/50 transition-colors dark:bg-white/[0.04] dark:border-white/[0.05]",
+              "mx-auto mb-3 flex items-center justify-center rounded-full bg-white shadow-sm border border-slate-200/50 transition-colors dark:bg-white/[0.04] dark:border-white/[0.05]",
+              useUltraDenseTopBar ? "h-9 w-9" : "h-10 w-10",
               isDraggingDocset
                 ? "border-blue-200 dark:border-blue-500/30"
                 : "group-hover:border-blue-200 dark:group-hover:border-blue-500/30"
@@ -2307,7 +2437,7 @@ export const FusionGrid: React.FC = () => {
           >
             {isUploadingDocset ? (
               <Loader2
-                size={22}
+                size={useUltraDenseTopBar ? 20 : 22}
                 className={cn(
                   "animate-spin transition-colors",
                   isDraggingDocset
@@ -2317,7 +2447,7 @@ export const FusionGrid: React.FC = () => {
               />
             ) : (
               <UploadCloud
-                size={22}
+                size={useUltraDenseTopBar ? 20 : 22}
                 className={cn(
                   "transition-colors",
                   isDraggingDocset
@@ -2329,7 +2459,8 @@ export const FusionGrid: React.FC = () => {
           </div>
           <p
             className={cn(
-              "text-[13px] font-medium transition-colors mb-1",
+              "font-medium transition-colors mb-1",
+              useUltraDenseTopBar ? "text-[12px]" : "text-[13px]",
               isDraggingDocset
                 ? "text-blue-600 dark:text-blue-400"
                 : "text-slate-700 group-hover:text-blue-600 dark:text-slate-300 dark:group-hover:text-blue-400"
@@ -2341,14 +2472,14 @@ export const FusionGrid: React.FC = () => {
                 ? "松开以上传"
                 : "点击或拖入上传文档"}
           </p>
-          <p className="text-[11px] text-slate-400">支持 DOCX, XLSX, TXT, MD</p>
-          <p className="text-[10px] text-slate-400/80 mt-0.5">每次最多 5 个文件</p>
+          <p className={cn("text-slate-400", useUltraDenseTopBar ? "text-[10px]" : "text-[11px]")}>支持 DOCX, XLSX, TXT, MD</p>
+          <p className={cn("text-slate-400/80 mt-0.5", useUltraDenseTopBar ? "text-[9px]" : "text-[10px]")}>每次最多 5 个文件</p>
         </div>
       ) : null}
 
       {/* 当有文档时，显示紧凑的头部控制区 */}
       {documentItems.length > 0 && (
-        <div className="flex items-center justify-between gap-1 rounded-[12px] border border-slate-200 px-2.5 py-2 text-[11px] text-slate-600 dark:border-white/[0.05] dark:bg-white/[0.02] dark:text-slate-300 shadow-sm bg-white dark:bg-[#0B1120] shrink-0">
+        <div className={fusionCompactRecordClass}>
           <div className="flex min-w-0 items-center gap-1.5">
             <FolderOpen size={14} className="shrink-0 text-blue-500" />
             <span className="truncate font-medium">
@@ -2419,40 +2550,160 @@ export const FusionGrid: React.FC = () => {
     </div>
   );
 
+  const prepareDropdownContent = (
+    <div
+      className={cn(
+        "flex max-h-[420px] flex-col gap-3 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-white/10",
+        useUltraDenseTopBar
+          ? "w-[min(320px,calc(100vw-24px))] p-2.5"
+          : useDenseTopBar
+            ? "w-[min(360px,calc(100vw-32px))] p-3"
+            : "w-[380px] p-3",
+      )}
+    >
+      <div className="rounded-[16px] border border-slate-200/70 bg-white/90 p-3 shadow-sm dark:border-white/[0.08] dark:bg-white/[0.03]">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <TemplateUploadIcon size={14} className="shrink-0 text-blue-500" />
+            <span className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-200">模板上传</span>
+          </div>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              templateInputRef.current?.click();
+            }}
+            className="inline-flex items-center gap-1 rounded-[6px] bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-300 dark:hover:bg-blue-500/20"
+            title="上传模板"
+          >
+            <UploadCloud size={11} />
+            <span>{templateItems.length > 0 ? '重传' : '上传'}</span>
+          </button>
+        </div>
+        {templateItems.length === 0 ? (
+          <div className="rounded-[12px] border border-dashed border-slate-300 px-3 py-4 text-center text-[11px] text-slate-500 dark:border-white/[0.12] dark:text-slate-400">
+            还没有模板，点击右上角上传 XLSX / DOCX 模板。
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {templateItems.map((tpl) => (
+              <UnifiedFileListItem
+                key={tpl.id}
+                file={tpl}
+                icon={
+                  tpl.name.toLowerCase().endsWith(".docx") || tpl.name.toLowerCase().endsWith(".doc") ? (
+                    <img src={wordIconUrl} alt="Word" className="w-6 h-6 object-contain" />
+                  ) : (
+                    <img src={excelIconUrl} alt="Excel" className="w-6 h-6 object-contain" />
+                  )
+                }
+                isSelected={selectedTemplateId === tpl.id}
+                onClick={() => setGridState((current) => ({ ...current, selectedTemplateId: tpl.id }))}
+                onRemove={() => handleRemoveTemplate(tpl.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-[16px] border border-slate-200/70 bg-white/90 p-3 shadow-sm dark:border-white/[0.08] dark:bg-white/[0.03]">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <FolderOpen size={14} className="shrink-0 text-blue-500" />
+            <span className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-200">文档集管理</span>
+          </div>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              docsetInputRef.current?.click();
+            }}
+            className="inline-flex items-center gap-1 rounded-[6px] bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-300 dark:hover:bg-blue-500/20"
+            title="上传文档"
+          >
+            <UploadCloud size={11} />
+            <span>{documentItems.length > 0 ? '追加' : '上传'}</span>
+          </button>
+        </div>
+        {documentItems.length === 0 ? (
+          <div className="rounded-[12px] border border-dashed border-slate-300 px-3 py-4 text-center text-[11px] text-slate-500 dark:border-white/[0.12] dark:text-slate-400">
+            还没有文档集，点击右上角上传 DOCX / XLSX / TXT / MD 文件。
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {documentItems.map((doc) => (
+              <UnifiedFileListItem
+                key={doc.id}
+                file={doc}
+                icon={getFileIcon(doc.type)}
+                isSelected={selectedDocument === doc.id}
+                onClick={() => setSelectedDocument(doc.id)}
+                onRemove={() => {
+                  if (selectedDocsetId) {
+                    handleRemoveDocument(selectedDocsetId, doc.id);
+                  }
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   const segmentedOptions: SegmentedOption[] = [
-    {
-      icon: TemplateUploadIcon,
-      label: "模板上传",
-      onClick: () => templateInputRef.current?.click(),
-      dropdownContent: templateDropdownContent,
-    },
-    {
-      icon: FolderOpen,
-      label: "文档集管理",
-      onClick: () => docsetInputRef.current?.click(),
-      dropdownContent: docsetDropdownContent,
-    },
+    ...(useDenseTopBar
+      ? [{
+          icon: FolderOpen,
+          label: "准备区",
+          compactLabel: "准备区",
+          onClick: () => templateInputRef.current?.click(),
+          dropdownContent: prepareDropdownContent,
+          dropdownAlign: "right" as const,
+        }]
+      : [
+          {
+            icon: TemplateUploadIcon,
+            label: "模板上传",
+            compactLabel: "模板",
+            onClick: () => templateInputRef.current?.click(),
+            dropdownContent: templateDropdownContent,
+            dropdownAlign: "right" as const,
+          },
+          {
+            icon: FolderOpen,
+            label: "文档集管理",
+            compactLabel: "文档",
+            onClick: () => docsetInputRef.current?.click(),
+            dropdownContent: docsetDropdownContent,
+            dropdownAlign: "right" as const,
+          },
+        ]),
     {
       icon: Download,
       label: "下载结果",
+      compactLabel: "下载",
       onClick: handleDownloadSelected,
       disabled: !selectedTaskRecord || selectedTaskRecord.status !== "done",
     },
     {
       icon: Trash2,
       label: "清空任务",
+      compactLabel: "清空",
       onClick: handleClearTaskHistory,
       disabled: tasks.length === 0,
     },
     {
       icon: RefreshCw,
       label: "刷新任务",
+      compactLabel: "刷新",
       onClick: handleRefreshAll,
       disabled: isRefreshing || tasks.length === 0,
     },
     {
       icon: HelpCircle,
       label: "使用说明",
+      compactLabel: "说明",
       onClick: handleHelp,
     },
   ];
@@ -2582,24 +2833,69 @@ export const FusionGrid: React.FC = () => {
         initial={{ opacity: 0, y: -12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-        className="relative z-10 shrink-0 bg-[#fbfcfd]/90 backdrop-blur-xl border-b border-slate-200/40 shadow-[0_2px_12px_rgba(0,0,0,0.03)] dark:bg-slate-950/95 dark:border-white/5 dark:shadow-[0_4px_16px_rgba(0,0,0,0.4)] pl-4 pr-0 py-2.5"
+        className={cn(
+          "relative z-10 shrink-0 bg-[#fbfcfd]/90 backdrop-blur-xl border-b border-slate-200/40 shadow-[0_2px_12px_rgba(0,0,0,0.03)] dark:bg-slate-950/95 dark:border-white/5 dark:shadow-[0_4px_16px_rgba(0,0,0,0.4)]",
+          useUltraDenseTopBar
+            ? "pl-3 pr-0 py-1.5"
+            : useDenseTopBar
+              ? "pl-4 pr-0 py-2"
+              : "pl-4 pr-0 py-2.5",
+        )}
       >
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <div className="min-w-[210px] flex-1">
-            <div className="flex shrink-0 items-center -ml-5 translate-y-[2px]">
+        <div
+          className={cn(
+            "flex flex-wrap items-center justify-between gap-x-4 gap-y-2",
+            useUltraDenseTopBar ? "gap-x-2.5 gap-y-1" : useDenseTopBar && "gap-x-3 gap-y-1.5",
+          )}
+        >
+          <div className={cn("flex-1", useUltraDenseTopBar ? "min-w-[150px]" : "min-w-[210px]")}>
+            <div className={cn("flex shrink-0 items-center translate-y-[2px]", useUltraDenseTopBar ? "-ml-2.5" : "-ml-5")}>
               <img 
                   src={fusionLogoUrl} 
                   alt="Fusion" 
-                  className="h-[32px] w-auto origin-left scale-[3.0] translate-y-1 object-contain transition-all duration-300 mr-[110px]" 
+                  className={cn(
+                    "w-auto origin-left scale-[3.0] translate-y-1 object-contain transition-all duration-300",
+                    useUltraDenseTopBar ? "h-[24px] mr-[72px]" : useDenseTopBar ? "h-[28px] mr-[96px]" : "h-[32px] mr-[110px]",
+                  )}
               />
-              <h1 className="flex shrink-0 items-center space-x-[1px] font-['Microsoft_YaHei'] text-[20px] font-bold tracking-widest -ml-0.5 translate-y-[2px] whitespace-nowrap">
+              <h1 className={cn(
+                "flex shrink-0 items-center space-x-[1px] font-['Microsoft_YaHei'] font-bold tracking-widest translate-y-[2px] whitespace-nowrap",
+                useUltraDenseTopBar ? "text-[15px] -ml-0.5" : useDenseTopBar ? "text-[18px] -ml-0.5" : "text-[20px] -ml-0.5",
+              )}>
                 <span className="text-[#334155] dark:text-slate-200">自定义</span>
                 <span className="text-[#3b82f6] dark:text-blue-400">智能填表</span>
               </h1>
             </div>
           </div>
-          <div className="flex min-w-0 items-center justify-end overflow-hidden pr-4 sm:pr-5 lg:pr-6">
-            <SegmentedControl options={segmentedOptions} />
+          <div className={cn(
+            "flex min-w-0 items-center justify-end overflow-hidden",
+            useUltraDenseTopBar ? "gap-1 pr-3" : "gap-1.5 pr-4 sm:pr-5 lg:pr-6",
+          )}>
+            {shouldUseTaskDrawer && (
+              <button
+                type="button"
+                onClick={toggleTaskDrawer}
+                className={cn(
+                  "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border font-medium transition-colors duration-200",
+                  useUltraDenseTopBar ? "h-[24px] px-2 text-[11px]" : "h-[26px] px-2.5 text-[12px]",
+                  showTaskDrawer
+                    ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300"
+                    : "border-slate-200/70 bg-white/90 text-slate-600 hover:bg-slate-100/80 hover:text-slate-900 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-slate-300 dark:hover:bg-white/[0.06] dark:hover:text-white",
+                )}
+                title={showTaskDrawer ? "收起任务记录" : "打开任务记录"}
+                aria-label={showTaskDrawer ? "收起任务记录" : "打开任务记录"}
+              >
+                <HistoryIcon size={useUltraDenseTopBar ? 12 : 14} />
+                <span className={cn(useUltraDenseTopBar ? "hidden md:inline" : "hidden sm:inline")}>
+                  {useUltraDenseTopBar ? "任务" : "任务记录"}
+                </span>
+              </button>
+            )}
+            <SegmentedControl
+              options={segmentedOptions}
+              denseMode={useDenseTopBar}
+              ultraDenseMode={useUltraDenseTopBar}
+            />
           </div>
         </div>
       </motion.section>
@@ -2615,31 +2911,49 @@ export const FusionGrid: React.FC = () => {
 
       <div
         ref={splitLayoutRef}
-        className="grid w-full max-w-full flex-1 min-h-0 min-w-0 overflow-x-hidden overflow-y-hidden bg-white dark:bg-[#0B1120]"
-        style={{ gridTemplateColumns: `${leftPanelWidth}% minmax(0, 1fr)` }}
+        className="relative grid w-full max-w-full flex-1 min-h-0 min-w-0 overflow-x-hidden overflow-y-hidden bg-white dark:bg-[#0B1120]"
+        style={{ gridTemplateColumns: showDockedTaskPanel ? `${leftPanelWidth}% minmax(0, 1fr)` : `minmax(0, 1fr)` }}
       >
+        {showTaskDrawer && (
+          <button
+            type="button"
+            onClick={closeTaskDrawer}
+            className="absolute inset-0 z-30 bg-slate-950/16 backdrop-blur-[2px]"
+            aria-label="关闭任务记录抽屉"
+          />
+        )}
         {/* 左侧：任务记录 */}
-        <div className="box-border flex flex-col h-full min-h-0 min-w-0 border-r border-slate-200 dark:border-white/[0.05] bg-white dark:bg-[#0B1120] relative">
+        {(showDockedTaskPanel || showTaskDrawer) && (
+        <div
+          className={cn(
+            "box-border flex flex-col min-h-0 min-w-0 bg-white dark:bg-[#0B1120]",
+            showTaskDrawer
+              ? "absolute inset-y-3 left-3 z-40 h-auto w-[min(360px,calc(100%-24px))] overflow-hidden rounded-[24px] border border-slate-200/70 shadow-[0_24px_60px_-28px_rgba(15,23,42,0.32)] dark:border-white/[0.08] dark:shadow-[0_28px_72px_-34px_rgba(2,6,23,0.9)]"
+              : "relative h-full border-r border-slate-200 dark:border-white/[0.05]",
+          )}
+        >
           {/* 拖拽手柄 */}
-          <div
-            className="absolute -right-1 top-0 bottom-0 w-2 cursor-ew-resize z-10 group"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              isResizingRef.current = true;
+          {showDockedTaskPanel && (
+            <div
+              className="absolute -right-1 top-0 bottom-0 w-2 cursor-ew-resize z-10 group"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                isResizingRef.current = true;
 
-              // 计算当前鼠标位置与侧边栏实际像素宽度的差值作为 offset
-              // 左侧面板的实际宽度 = 分栏容器宽度 * (leftPanelWidth / 100)
-              const currentPixelWidth =
-                getSplitLayoutWidth() * (leftPanelWidth / 100);
-              dragOffsetRef.current = e.clientX - currentPixelWidth;
+                // 计算当前鼠标位置与侧边栏实际像素宽度的差值作为 offset
+                // 左侧面板的实际宽度 = 分栏容器宽度 * (leftPanelWidth / 100)
+                const currentPixelWidth =
+                  getSplitLayoutWidth() * (leftPanelWidth / 100);
+                dragOffsetRef.current = e.clientX - currentPixelWidth;
 
-              document.body.style.cursor = "ew-resize";
-              document.body.style.userSelect = "none"; // Prevent text selection while dragging
-            }}
-          >
-            {/* 仅高亮的分割线 */}
-            <div className="absolute right-[3px] top-0 bottom-0 w-[1px] bg-transparent group-hover:bg-blue-400 dark:group-hover:bg-blue-500 transition-colors" />
-          </div>
+                document.body.style.cursor = "ew-resize";
+                document.body.style.userSelect = "none"; // Prevent text selection while dragging
+              }}
+            >
+              {/* 仅高亮的分割线 */}
+              <div className="absolute right-[3px] top-0 bottom-0 w-[1px] bg-transparent group-hover:bg-blue-400 dark:group-hover:bg-blue-500 transition-colors" />
+            </div>
+          )}
           <div className="flex flex-col h-full min-h-0 w-full">
             {/* 任务记录 */}
             <div className="flex flex-col flex-1 min-h-0 bg-transparent w-full">
@@ -2648,6 +2962,17 @@ export const FusionGrid: React.FC = () => {
                   <HistoryIcon size={14} className="text-blue-500" />
                   任务记录
                 </h3>
+                {showTaskDrawer && (
+                  <button
+                    type="button"
+                    onClick={closeTaskDrawer}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-white/[0.08] dark:hover:text-slate-200"
+                    title="关闭任务记录"
+                    aria-label="关闭任务记录"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
               </div>
               <div className="flex flex-col flex-1 min-h-0">
                 <div className="px-4 py-3 shrink-0 border-b border-slate-200 dark:border-white/[0.05]">
@@ -2690,12 +3015,7 @@ export const FusionGrid: React.FC = () => {
                             ? "bg-blue-50/50 dark:bg-blue-500/10"
                             : "bg-white hover:bg-slate-50 dark:bg-[#0B1120] dark:hover:bg-white/[0.02]",
                         )}
-                        onClick={() =>
-                          setGridState((current) => ({
-                            ...current,
-                            selectedTaskId: task.id,
-                          }))
-                        }
+                        onClick={() => handleSelectTask(task.id)}
                       >
                         <div className="flex items-start justify-between gap-3">
                           {/* 左侧：文件大图标 */}
@@ -2828,26 +3148,58 @@ export const FusionGrid: React.FC = () => {
             </div>
           </div>
         </div>
+        )}
 
         {/* 右侧：用户要求 + 文件预览 */}
         <div className="flex-1 flex min-w-0 flex-col h-full min-h-0 bg-white dark:bg-[#0B1120]">
             {/* 顶部输入与操作区 (内联化) */}
-            <div className="shrink-0 border-b border-slate-200 dark:border-white/[0.05] px-4 py-2 flex flex-col gap-3 bg-slate-50/30 dark:bg-[#0B1120]">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5 shrink-0">
+            <div
+              className={cn(
+                "shrink-0 border-b border-slate-200 bg-slate-50/30 dark:border-white/[0.05] dark:bg-[#0B1120]",
+                useUltraDenseRightPanel
+                  ? "px-3 py-2"
+                  : useDenseRightPanel
+                    ? "px-3.5 py-2"
+                    : "px-4 py-2",
+              )}
+            >
+                <div
+                  className={cn(
+                    "flex",
+                    useUltraDenseRightPanel ? "flex-col gap-2" : "items-center gap-3",
+                  )}
+                >
+                  <div className={cn("flex items-center shrink-0", useUltraDenseRightPanel ? "gap-1" : "gap-1.5")}>
                     <NeedIcon size={14} className="text-slate-500 dark:text-slate-400" />
-                    <h3 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                      用户要求
+                    <h3
+                      className={cn(
+                        "font-semibold uppercase tracking-wider text-slate-800 dark:text-slate-200",
+                        useUltraDenseRightPanel ? "text-[11px]" : "text-[12px]",
+                      )}
+                    >
+                      {useUltraDenseRightPanel ? "要求" : "用户要求"}
                     </h3>
                   </div>
-                  <div className="flex flex-1 items-center gap-3 min-w-0">
+                  <div
+                    className={cn(
+                      "flex flex-1 min-w-0",
+                      useUltraDenseRightPanel ? "items-stretch gap-2" : "items-center gap-3",
+                    )}
+                  >
                 <input
                   type="text"
                   value={draftRequirements}
                   onChange={handleRequirementsChange}
                   maxLength={600}
                   placeholder="请输入你对这次填充的要求（选填）"
-                  className="flex-1 rounded-lg border border-slate-200 dark:border-white/[0.1] bg-slate-50/50 dark:bg-white/[0.02] px-3 h-[36px] text-[13px] text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-blue-500/50 focus:bg-white dark:focus:bg-white/[0.04] focus:ring-4 focus:ring-blue-500/10 dark:focus:ring-blue-500/20 dark:text-slate-200 shadow-sm"
+                  className={cn(
+                    "flex-1 rounded-lg border border-slate-200 bg-slate-50/50 text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-blue-500/50 focus:bg-white focus:ring-4 focus:ring-blue-500/10 dark:border-white/[0.1] dark:bg-white/[0.02] dark:text-slate-200 dark:focus:bg-white/[0.04] dark:focus:ring-blue-500/20 shadow-sm",
+                    useUltraDenseRightPanel
+                      ? "h-[34px] px-2.5 text-[12px]"
+                      : useDenseRightPanel
+                        ? "h-[35px] px-3 text-[12.5px]"
+                        : "h-[36px] px-3 text-[13px]",
+                  )}
                 />
                 <motion.button
                   type="button"
@@ -2855,7 +3207,12 @@ export const FusionGrid: React.FC = () => {
                   onClick={handleStartRun}
                   disabled={!canStartRun}
                   className={cn(
-                    "shrink-0 flex items-center justify-center gap-2 rounded-lg px-6 h-[36px] text-[13px] font-medium transition-all shadow-sm",
+                    "shrink-0 flex items-center justify-center gap-2 rounded-lg font-medium transition-all shadow-sm",
+                    useUltraDenseRightPanel
+                      ? "h-[34px] px-4 text-[12px]"
+                      : useDenseRightPanel
+                        ? "h-[35px] px-5 text-[12.5px]"
+                        : "h-[36px] px-6 text-[13px]",
                     canStartRun
                       ? "bg-gradient-to-b from-blue-500 to-blue-600 text-white hover:from-blue-600 hover:to-blue-700 shadow-blue-500/20 ring-1 ring-inset ring-white/20"
                       : "cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-white/[0.02] dark:text-slate-500 dark:border dark:border-white/[0.05]",
@@ -2864,7 +3221,7 @@ export const FusionGrid: React.FC = () => {
                   {isRunning ? (
                     <Loader2 size={14} className="animate-spin" />
                   ) : null}
-                  开始填充
+                  {useUltraDenseRightPanel ? "开始" : "开始填充"}
                 </motion.button>
               </div>
             </div>
@@ -2872,23 +3229,48 @@ export const FusionGrid: React.FC = () => {
 
           {/* 文件预览区 */}
           <div className="flex-1 min-h-0 flex flex-col">
-            <div className="shrink-0 border-b border-slate-200 dark:border-white/[0.05] px-4 py-2 flex items-center justify-between bg-slate-50/30 dark:bg-[#0B1120]">
-              <div className="flex items-center gap-1.5">
+            <div
+              className={cn(
+                "shrink-0 border-b border-slate-200 bg-slate-50/30 dark:border-white/[0.05] dark:bg-[#0B1120]",
+                useUltraDenseRightPanel
+                  ? "px-3 py-1.5"
+                  : useDenseRightPanel
+                    ? "px-3.5 py-2"
+                    : "px-4 py-2",
+              )}
+            >
+              <div className="flex items-center justify-between">
+              <div className={cn("flex items-center", useUltraDenseRightPanel ? "gap-1" : "gap-1.5")}>
                 <LookIcon size={14} className="text-slate-500 dark:text-slate-400" />
-                <h3 className="text-[12px] font-semibold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  文件预览
+                <h3
+                  className={cn(
+                    "font-semibold uppercase tracking-wider text-slate-800 dark:text-slate-200",
+                    useUltraDenseRightPanel ? "text-[11px]" : "text-[12px]",
+                  )}
+                >
+                  {useUltraDenseRightPanel ? "预览" : "文件预览"}
                 </h3>
-                <div id="preview-header-actions" className="flex items-center ml-2 empty:hidden"></div>
+                <div
+                  id="preview-header-actions"
+                  className={cn(
+                    "flex items-center empty:hidden",
+                    useUltraDenseRightPanel ? "ml-1" : "ml-2",
+                  )}
+                ></div>
               </div>
               <div className="flex items-center gap-2"></div>
+              </div>
             </div>
             <div className="flex-1 min-h-0 bg-white dark:bg-[#0B1120] relative">
               {isPreviewLoading ? (
-                <div className="h-full flex flex-col items-center justify-center space-y-4">
+                <div className={cn(
+                  "h-full flex flex-col items-center justify-center",
+                  useUltraDenseRightPanel ? "space-y-3 px-4" : "space-y-4",
+                )}>
                   <Loader2 size={24} className="animate-spin text-slate-400" />
                   <div className="text-center">
-                    <p className="text-[13px] font-medium text-slate-600 dark:text-slate-300">正在加载预览</p>
-                    <p className="text-[12px] text-slate-400 mt-1">请稍候，正在为您准备文档内容</p>
+                    <p className={cn("font-medium text-slate-600 dark:text-slate-300", useUltraDenseRightPanel ? "text-[12px]" : "text-[13px]")}>正在加载预览</p>
+                    <p className={cn("text-slate-400 mt-1", useUltraDenseRightPanel ? "text-[11px]" : "text-[12px]")}>请稍候，正在为您准备文档内容</p>
                   </div>
                 </div>
               ) : previewDocument ? (
@@ -2921,13 +3303,22 @@ export const FusionGrid: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <div className="h-full flex flex-col items-center justify-center space-y-4 bg-slate-50/30 dark:bg-white/[0.01]">
-                  <div className="flex items-center justify-center w-16 h-16 rounded-full bg-slate-100 dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05] shadow-sm">
-                    <Eye size={32} className="text-slate-400 dark:text-slate-600" />
+                <div className={cn(
+                  "h-full flex flex-col items-center justify-center bg-slate-50/30 dark:bg-white/[0.01]",
+                  useUltraDenseRightPanel ? "space-y-3 px-4" : "space-y-4",
+                )}>
+                  <div className={cn(
+                    "flex items-center justify-center rounded-full bg-slate-100 dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.05] shadow-sm",
+                    useUltraDenseRightPanel ? "w-14 h-14" : "w-16 h-16",
+                  )}>
+                    <Eye size={useUltraDenseRightPanel ? 28 : 32} className="text-slate-400 dark:text-slate-600" />
                   </div>
                   <div className="text-center">
-                    <h4 className="text-[14px] font-medium text-slate-600 dark:text-slate-300">暂无预览内容</h4>
-                    <p className="text-[12px] text-slate-400 dark:text-slate-500 mt-1.5 max-w-[220px] mx-auto leading-relaxed">
+                    <h4 className={cn("font-medium text-slate-600 dark:text-slate-300", useUltraDenseRightPanel ? "text-[13px]" : "text-[14px]")}>暂无预览内容</h4>
+                    <p className={cn(
+                      "text-slate-400 dark:text-slate-500 mt-1.5 mx-auto leading-relaxed",
+                      useUltraDenseRightPanel ? "max-w-[200px] text-[11px]" : "max-w-[220px] text-[12px]",
+                    )}>
                       请在左侧“任务记录”中点击已完成任务的预览按钮查看生成文件
                     </p>
                   </div>

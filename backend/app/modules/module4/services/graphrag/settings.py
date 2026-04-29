@@ -153,20 +153,20 @@ class GraphRAGRuntimeSettings:
                 os.getenv("MODULE4_GRAPHRAG_CHAT_API_KEY", os.getenv("GRAPHRAG_CHAT_API_KEY", "")) or ""
             ).strip(),
             chat_model=str(
-                os.getenv("MODULE4_GRAPHRAG_CHAT_MODEL", os.getenv("GRAPHRAG_CHAT_MODEL", "qwen-turbo")) or "qwen-turbo"
+                os.getenv("MODULE4_GRAPHRAG_CHAT_MODEL", os.getenv("GRAPHRAG_CHAT_MODEL", "qwen-max")) or "qwen-max"
             ).strip()
-            or "qwen-turbo",
+            or "qwen-max",
             embedding_api_key=str(
                 os.getenv("MODULE4_GRAPHRAG_EMBEDDING_API_KEY", os.getenv("GRAPHRAG_EMBEDDING_API_KEY", "")) or ""
             ).strip(),
             embedding_model=str(
                 os.getenv(
                     "MODULE4_GRAPHRAG_EMBEDDING_MODEL",
-                    os.getenv("GRAPHRAG_EMBEDDING_MODEL", "text-embedding-v1"),
+                    os.getenv("GRAPHRAG_EMBEDDING_MODEL", "Embedding-V1"),
                 )
-                or "text-embedding-v1"
+                or "Embedding-V1"
             ).strip()
-            or "text-embedding-v1",
+            or "Embedding-V1",
             input_dir=str(os.getenv("MODULE4_GRAPHRAG_INPUT_DIR", "input") or "input").strip() or "input",
             cache_dir=str(os.getenv("MODULE4_GRAPHRAG_CACHE_DIR", "cache") or "cache").strip() or "cache",
             storage_dir=str(

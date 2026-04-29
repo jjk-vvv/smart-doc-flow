@@ -74,7 +74,7 @@ class Settings:
             "MODULE1_LLM_MODEL",
             "MODULE1_MODEL",
             "OPENAI_MODEL",
-            default="glm-4.6",
+            default="qwen-plus",
         )
         llm_vision_model = _env_first(
             "MODULE1_LLM_VISION_MODEL",

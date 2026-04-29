@@ -84,16 +84,8 @@ class ExtractionGraph:
         self._table_system_prompt = str(prompt_map.get("extract_table_fields", {}).get("content") or "")
         self._json_repair_system_prompt = str(prompt_map.get("json_repair", {}).get("content") or "")
         temperature = float(os.getenv("MODULE2_LLM_TEMPERATURE", "0"))
-        primary_model = resolve_llm_model(default="gemini-3.1-pro")
-        fallback_models = [
-            m.strip()
-            for m in os.getenv(
-                "MODULE2_LLM_MODEL_FALLBACKS",
-                "",
-            ).split(",")
-            if m.strip()
-        ]
-        self._model_candidates = [primary_model] + [m for m in fallback_models if m != primary_model]
+        primary_model = resolve_llm_model(default="qwen-max")
+        self._model_candidates = [primary_model]
         self._temperature = temperature
         self._base_url = resolve_llm_base_url()
         self._api_key = resolve_llm_api_key()
@@ -120,7 +112,6 @@ class ExtractionGraph:
             self.llm = llm
             self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
         else:
-            has_key = bool(self._api_key)
             provider = build_module2_llm_provider(
                 api_key=self._api_key,
                 model=primary_model,
@@ -132,27 +123,16 @@ class ExtractionGraph:
                 self.llm = None
                 self.structured_llm = None
                 self._provider = provider
-            elif has_key:
-                from langchain_google_genai import ChatGoogleGenerativeAI
-
-                self.llm = ChatGoogleGenerativeAI(
-                    model=primary_model,
-                    temperature=temperature,
-                    google_api_key=self._api_key,
-                )
-                self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
             else:
                 self.llm = None
                 self.structured_llm = None
-                self._llm_disabled_reason = "missing_gemini_api_key"
+                self._llm_disabled_reason = "openai_compatible_provider_not_configured"
         self.graph = self._build_graph()
 
     def diagnostics(self) -> Dict[str, Any]:
         provider_mode = "disabled"
         if self._provider is not None:
             provider_mode = "openai_compatible"
-        elif self.llm is not None:
-            provider_mode = "gemini_native"
         return {
             "prompt_version": self._prompt_version,
             "prompt_names": list(self._prompt_names),

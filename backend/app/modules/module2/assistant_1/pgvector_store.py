@@ -31,6 +31,7 @@ class Assistant1PgVectorStore:
         assert self.pool is not None
         async with self.pool.acquire() as conn:
             await conn.execute(self.schema_sql(dimensions=self.settings.embedding_dimensions))
+            await self._ensure_embedding_dimension(conn, dimensions=self.settings.embedding_dimensions)
 
     async def upsert_document(self, bundle: DocumentBundle, raw_markdown: str, clean_markdown: str) -> str:
         await self.connect()
@@ -205,6 +206,29 @@ class Assistant1PgVectorStore:
     @staticmethod
     def _vector_literal(values: list[float]) -> str:
         return "[" + ",".join(f"{float(value):.12f}" for value in values) + "]"
+
+    async def _ensure_embedding_dimension(self, conn: asyncpg.Connection, *, dimensions: int) -> None:
+        expected_type = f"vector({int(dimensions)})"
+        row = await conn.fetchrow(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod) AS type_name
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = current_schema()
+              AND c.relname = 'doc_knowledge_unit'
+              AND a.attname = 'embedding'
+              AND NOT a.attisdropped
+            """
+        )
+        current_type = str(row["type_name"] or "").strip() if row else ""
+        if not current_type or current_type == expected_type:
+            return
+
+        # Embeddings are derived cache data. When the configured model dimension changes,
+        # old vectors are mathematically incompatible, so reset units and let ingest rebuild.
+        await conn.execute("DELETE FROM doc_knowledge_unit")
+        await conn.execute(f"ALTER TABLE doc_knowledge_unit ALTER COLUMN embedding TYPE vector({int(dimensions)})")
 
     @staticmethod
     def schema_sql(*, dimensions: int) -> str:

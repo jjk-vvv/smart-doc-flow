@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends
 from .endpoints import (
     health_router,
     modification_router,
+    office_online_public_router,
+    office_online_router,
     preview_router,
     save_router,
     stream_router,
@@ -15,9 +17,11 @@ from .deps import require_module1_authenticated_user
 def build_router() -> APIRouter:
     router = APIRouter()
     router.include_router(health_router)
+    router.include_router(office_online_public_router)
 
     protected_router = APIRouter(dependencies=[Depends(require_module1_authenticated_user)])
     protected_router.include_router(modification_router)
+    protected_router.include_router(office_online_router)
     protected_router.include_router(preview_router)
     protected_router.include_router(save_router)
     protected_router.include_router(stream_router)

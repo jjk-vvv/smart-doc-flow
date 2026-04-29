@@ -1311,12 +1311,14 @@ def extract_rows_from_word_source(
     api_mode: str,
     max_images: int,
     max_image_bytes: int,
+    vision_model: str | None = None,
     logger: Callable[[str], None] | None = None,
 ) -> list[dict[str, str]]:
     if word_path.suffix.lower() != ".docx":
         raise ValueError("Word source files must use the .docx extension")
 
     image_inputs = extract_docx_images(word_path, max_images=max_images, max_image_bytes=max_image_bytes)
+    effective_vision_model = str(vision_model or model or "").strip() or model
     try:
         doc_text = read_docx_content(word_path)
     except ValueError as exc:
@@ -1341,7 +1343,7 @@ def extract_rows_from_word_source(
             model_text = request_responses(
                 base_url=base_url,
                 api_key=api_key,
-                model=model,
+                model=effective_vision_model if image_inputs else model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 word_path=word_path,
@@ -1355,7 +1357,7 @@ def extract_rows_from_word_source(
                 model_text = request_responses(
                     base_url=base_url,
                     api_key=api_key,
-                    model=model,
+                    model=effective_vision_model if image_inputs else model,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     word_path=word_path,
@@ -1386,7 +1388,7 @@ def extract_rows_from_word_source(
                             model_text = request_chat_completions(
                                 base_url=base_url,
                                 api_key=api_key,
-                                model=model,
+                                model=effective_vision_model,
                                 system_prompt=system_prompt,
                                 user_prompt=user_prompt,
                                 image_inputs=image_inputs,
@@ -1411,7 +1413,7 @@ def extract_rows_from_word_source(
             model_text = request_chat_completions(
                 base_url=base_url,
                 api_key=api_key,
-                model=model,
+                model=effective_vision_model if image_inputs else model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 image_inputs=image_inputs,
@@ -1507,6 +1509,7 @@ def extract_rows_from_source(
             base_url=settings["base_url"],
             api_key=settings["api_key"],
             model=settings["model"],
+            vision_model=settings.get("vision_model", settings["model"]),
             api_mode=settings["api_mode"],
             max_images=settings["max_images"],
             max_image_bytes=settings["max_image_bytes"],

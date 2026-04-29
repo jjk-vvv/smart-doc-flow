@@ -157,7 +157,7 @@ class Assistant1ResponsesProvider:
         self.endpoint_path = str(self.settings.chat_endpoint_path or "/v1/responses").strip() or "/v1/responses"
         self.endpoint_style = str(self.settings.chat_endpoint_style or "openai_responses").strip().lower()
         self.api_key = str(self.settings.chat_api_key or "").strip()
-        self.model = str(self.settings.chat_model or "gpt-4.1-mini").strip() or "gpt-4.1-mini"
+        self.model = str(self.settings.chat_model or "qwen-plus").strip() or "qwen-plus"
         self.temperature = float(self.settings.chat_temperature)
         self.timeout_sec = float(self.settings.chat_timeout_sec)
         self.max_output_tokens = int(self.settings.chat_max_output_tokens)

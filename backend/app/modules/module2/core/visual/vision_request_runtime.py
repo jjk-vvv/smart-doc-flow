@@ -22,6 +22,8 @@ class VisionRequestRuntime:
         gemini_vision_dpi: int,
         gemini_vision_max_side_px: int,
         gemini_vision_model: str,
+        gemini_vision_base_url: str,
+        gemini_vision_endpoint_style: str,
         gemini_vision_timeout_sec: float,
         gemini_vision_max_output_tokens: int,
         gemini_native_fallback_enabled: bool,
@@ -38,6 +40,8 @@ class VisionRequestRuntime:
         self.gemini_vision_dpi = max(96, int(gemini_vision_dpi or 96))
         self.gemini_vision_max_side_px = max(768, int(gemini_vision_max_side_px or 768))
         self.gemini_vision_model = str(gemini_vision_model or "").strip()
+        self.gemini_vision_base_url = str(gemini_vision_base_url or "").strip()
+        self.gemini_vision_endpoint_style = self._normalize_endpoint_style(gemini_vision_endpoint_style)
         self.gemini_vision_timeout_sec = max(1.0, float(gemini_vision_timeout_sec or 1.0))
         self.gemini_vision_max_output_tokens = max(1, int(gemini_vision_max_output_tokens or 1))
         self.gemini_native_fallback_enabled = bool(gemini_native_fallback_enabled)
@@ -87,7 +91,15 @@ class VisionRequestRuntime:
             focus_key = "mixed"
 
         prompt = self._build_prompt(focus_key)
-        model = self.gemini_vision_model or "gemini-3.1-pro-preview"
+        model = self.gemini_vision_model or "qwen3-vl-plus"
+        if self.gemini_vision_endpoint_style == "openai_chat_completions":
+            return self._generate_openai_chat(
+                image_png=image_png,
+                prompt=prompt,
+                model=model,
+                api_key=api_key,
+            )
+
         request_candidates: list[tuple[str, str]] = []
         primary_url = self._resolve_native_url(model)
         if primary_url and api_key:
@@ -137,6 +149,116 @@ class VisionRequestRuntime:
         if not raw:
             return ""
         return self._extract_candidate_text(raw)
+
+    def _generate_openai_chat(self, *, image_png: bytes, prompt: str, model: str, api_key: str) -> str:
+        url = self._resolve_openai_chat_url()
+        if not url or not api_key:
+            return ""
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{base64.b64encode(image_png).decode('ascii')}",
+                            },
+                        },
+                    ],
+                }
+            ],
+            "temperature": 0.0,
+            "max_tokens": self.gemini_vision_max_output_tokens,
+            "stream": False,
+        }
+        try:
+            request = self._request_factory(
+                url=url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "smart-doc-flow-module2-parser/1.0",
+                },
+                method="POST",
+            )
+            with self._urlopen(request, timeout=self.gemini_vision_timeout_sec) as response:
+                raw = response.read().decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+        return self._extract_openai_choice_text(raw)
+
+    def _resolve_openai_chat_url(self) -> str:
+        raw = str(self.gemini_vision_base_url or "").strip().rstrip("/")
+        if not raw:
+            return ""
+        for suffix in ("/v1/chat/completions", "/chat/completions"):
+            if raw.endswith(suffix):
+                return raw
+        for suffix in ("/v1/responses", "/responses"):
+            if raw.endswith(suffix):
+                raw = raw[: -len(suffix)].rstrip("/")
+                break
+        if raw.endswith("/v1"):
+            return f"{raw}/chat/completions"
+        return f"{raw}/v1/chat/completions"
+
+    @classmethod
+    def _extract_openai_choice_text(cls, raw: str) -> str:
+        if not raw:
+            return ""
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+        choices = obj.get("choices") if isinstance(obj.get("choices"), list) else []
+        texts: list[str] = []
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+            text = cls._coerce_openai_content(message.get("content"))
+            if text.strip():
+                texts.append(text.strip())
+        return "\n".join(texts).strip()
+
+    @staticmethod
+    def _coerce_openai_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            pieces: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    pieces.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str):
+                    pieces.append(text)
+                    continue
+                if isinstance(text, dict):
+                    value = text.get("value")
+                    if isinstance(value, str):
+                        pieces.append(value)
+            return "".join(pieces)
+        return ""
+
+    @staticmethod
+    def _normalize_endpoint_style(raw_style: str) -> str:
+        raw = str(raw_style or "").strip().lower()
+        if raw in {"openai", "openai_chat", "chat_completions", "openai_chat_completions"}:
+            return "openai_chat_completions"
+        if raw in {"native", "google_native", "gemini_native"}:
+            raise RuntimeError(
+                "Native Gemini/Google vision endpoint style is disabled; use openai_chat_completions."
+            )
+        return "openai_chat_completions"
 
     @staticmethod
     def _build_prompt(focus_key: str) -> str:

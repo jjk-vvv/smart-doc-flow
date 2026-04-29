@@ -1880,6 +1880,36 @@ const normalizeExtractBase = (raw: string): string => {
     return base.endsWith('/extract') ? base.slice(0, -8) : base;
 };
 
+const isLoopbackExtractHost = (hostname: string): boolean => {
+    const normalized = String(hostname || '').trim().toLowerCase();
+    return (
+        normalized === 'localhost'
+        || normalized === '127.0.0.1'
+        || normalized === '0.0.0.0'
+        || normalized === '::1'
+        || normalized === '[::1]'
+        || normalized.endsWith('.localhost')
+    );
+};
+
+const buildLoopbackGatewayBaseCandidate = (): string => {
+    if (typeof window === 'undefined') return '';
+    try {
+        const hostname = window.location.hostname;
+        const port = window.location.port;
+        if (!isLoopbackExtractHost(hostname) || port === '3001') return '';
+
+        const url = new URL(window.location.href);
+        url.pathname = '';
+        url.search = '';
+        url.hash = '';
+        url.port = '3001';
+        return normalizeExtractBase(`${url.protocol}//${url.host}`);
+    } catch {
+        return '';
+    }
+};
+
 const getLocalStorageExtractBase = (): string => {
     if (typeof window === 'undefined') return '';
     try {
@@ -1900,17 +1930,9 @@ const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
     push(preferredBase);
     push(getViteExtractBase());
     push(getLocalStorageExtractBase());
-
-    if (typeof window !== 'undefined') {
-        const protocol = window.location.protocol;
-        const hostname = window.location.hostname;
-        const port = window.location.port;
-        if (hostname) {
-            // Keep extraction traffic on the current host so auth cookies and
-            // session-scoped artifacts do not drift across localhost/127.0.0.1.
-            if (port !== '3001') push(`${protocol}//${hostname}:3001`);
-        }
-    }
+    // Only synthesize :3001 for loopback dev servers. Public/frp origins must
+    // stay same-origin so browsers do not hit an unreachable cross-port API.
+    push(buildLoopbackGatewayBaseCandidate());
 
     return out;
 };

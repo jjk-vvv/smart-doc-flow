@@ -99,8 +99,8 @@ export const MobileProfilePage: React.FC<MobileProfilePageProps> = ({
       : 'U';
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] pb-[calc(56px+env(safe-area-inset-bottom)+40px)] dark:bg-[#0B1120]">
-      <div className="relative overflow-hidden px-6 pb-6 pt-[max(3.5rem,env(safe-area-inset-top))]">
+    <div className="min-h-[var(--app-visual-height,100dvh)] bg-[#F8FAFC] pb-[calc(var(--mobile-content-bottom)+24px)] dark:bg-[#0B1120]">
+      <div className="relative overflow-hidden px-6 pb-6 pt-[max(3.5rem,var(--mobile-safe-top))]">
         <div className="absolute inset-0 bg-white dark:bg-[#0B1120]" />
         <div className="pointer-events-none absolute right-0 top-0 h-64 w-64 -translate-y-1/3 translate-x-1/3 rounded-full bg-cyan-100/20 blur-3xl dark:bg-cyan-900/10" />
 
@@ -112,19 +112,19 @@ export const MobileProfilePage: React.FC<MobileProfilePageProps> = ({
             ) : null}
           </div>
 
-          <div className="flex flex-1 flex-col justify-center">
+          <div className="flex min-w-0 flex-1 flex-col justify-center">
             {user ? (
               <>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-[20px] font-bold tracking-tight text-slate-900 dark:text-white">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h1 className="min-w-0 truncate text-[20px] font-bold tracking-tight text-slate-900 dark:text-white">
                     {user.name || 'DocFlow 用户'}
                   </h1>
-                  <div className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">
+                  <div className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">
                     <Shield size={10} strokeWidth={2.5} />
                     已认证
                   </div>
                 </div>
-                <p className="mt-1 text-[13px] text-slate-500 dark:text-slate-400">
+                <p className="mt-1 truncate text-[13px] text-slate-500 dark:text-slate-400">
                   {user.email || '完善个人信息可获取更多能力'}
                 </p>
               </>

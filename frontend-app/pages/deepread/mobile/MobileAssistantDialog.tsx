@@ -10,6 +10,7 @@ import {
   requestExtractionSummary,
   resolveExtractBase,
 } from '../../../shared/api/extraction';
+import { useMobileOverlayRegistration } from '../../../shared/hooks/useMobileOverlayPresence';
 import type { ExtractionDocument, ExtractionEntity, TraceHit } from '../../../shared/state/extractionDocuments';
 import { AssistantActionPreviewCard } from '../assistant/AssistantActionPreviewCard';
 import { AssistantCitationList } from '../assistant/AssistantCitationList';
@@ -91,6 +92,8 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
   onClose,
   onSelectCitation,
 }) => {
+  useMobileOverlayRegistration(open);
+
   const [assistantSummaryLoading, setAssistantSummaryLoading] = useState(false);
   const [assistantSummaryText, setAssistantSummaryText] = useState('');
   const [assistantInput, setAssistantInput] = useState('');
@@ -369,6 +372,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
       {open && (
         <motion.div
           className="fixed inset-0 z-[80]"
+          data-mobile-overlay="true"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -390,7 +394,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
             transition={{ type: 'spring', stiffness: 260, damping: 28 }}
             className="absolute inset-0 flex flex-col overflow-hidden bg-[#F6F8FB] shadow-2xl dark:bg-[#0B1120]"
           >
-            <div className="sticky top-0 z-10 border-b border-slate-200/80 bg-white/92 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl dark:border-white/[0.05] dark:bg-[#0B1120]/92">
+            <div className="sticky top-0 z-10 border-b border-slate-200/80 bg-white/92 px-4 pb-3 pt-[max(0.75rem,var(--mobile-safe-top))] backdrop-blur-xl dark:border-white/[0.05] dark:bg-[#0B1120]/92">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <img
@@ -520,7 +524,7 @@ export const MobileAssistantDialog: React.FC<MobileAssistantDialogProps> = ({
                   </div>
                 )}
 
-                <div className="px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-2">
+                <div className="px-4 pb-[calc(var(--mobile-safe-bottom)+1rem)] pt-2">
                   <div className="rounded-[26px] border border-slate-200/80 bg-white py-[6px] pl-4 pr-1.5 shadow-[0_2px_12px_rgba(15,23,42,0.04)] transition-all focus-within:border-slate-300 focus-within:shadow-[0_4px_16px_rgba(15,23,42,0.08)] dark:border-white/[0.08] dark:bg-[#1A1D24] dark:shadow-none">
                     <AssistantComposerStatus
                       isLoading={assistantQueryLoading}

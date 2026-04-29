@@ -46,10 +46,12 @@ import {
   type FusionGridTemplateRecord,
 } from "../../lib/fusionGridStore";
 import { getCurrentUser } from "../../shared/api/auth";
+import { useMobileOverlayRegistration } from "../../shared/hooks/useMobileOverlayPresence";
 import {
   describeMobileDownloadResult,
   downloadUrlToMobileDevice,
 } from "../../shared/mobileDownload";
+import { MobilePageShell } from "../../components/mobile/MobilePageShell";
 import { Module3ExcelPreview } from "./Module3ExcelPreview";
 import { Module3WordPreview } from "./Module3WordPreview";
 import excelIconUrl from "../../assets/xlsx.png";
@@ -251,8 +253,8 @@ const BottomSheet = ({
   onClose: () => void;
   children: React.ReactNode;
 }) => (
-  <div className="fixed inset-0 z-[55] flex items-end sm:items-center justify-center bg-black/40 sm:p-4">
-    <div className="flex max-h-[min(84vh,760px)] w-full max-w-md flex-col overflow-hidden rounded-t-[32px] sm:rounded-[32px] bg-white shadow-2xl dark:bg-[#1A1D24] pb-[env(safe-area-inset-bottom)]">
+  <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center bg-black/32 sm:p-4" data-mobile-overlay="true">
+    <div className="flex max-h-[var(--mobile-sheet-max-height)] w-full max-w-md flex-col overflow-hidden rounded-t-[32px] sm:rounded-[32px] bg-white shadow-2xl dark:bg-[#1A1D24] pb-[var(--mobile-safe-bottom)]">
       <div className="flex items-start justify-between gap-3 px-6 pb-4 pt-6 relative">
         <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1.5 rounded-full bg-slate-200 sm:hidden dark:bg-white/10" />
         <div className="min-w-0">
@@ -330,6 +332,25 @@ export const FusionGrid: React.FC = () => {
   );
   const latestTemplate = templates[0] ?? null;
   const latestTask = tasks[0] ?? null;
+  const missingStartRequirements = useMemo(() => {
+    const missing: string[] = [];
+    if (!selectedTemplate) missing.push("模板文件");
+    if (!selectedDocset) missing.push("文档集");
+    return missing;
+  }, [selectedDocset, selectedTemplate]);
+  const canStartRun = !isRunning && missingStartRequirements.length === 0;
+
+  useMobileOverlayRegistration(
+    Boolean(
+      previewDocument ||
+        isSidebarOpen ||
+        isHelpOpen ||
+        isTemplatePanelOpen ||
+        isDocsetPanelOpen ||
+        isCurrentDocsetOpen ||
+        isTaskPanelOpen,
+    ),
+  );
 
   const latestOutput =
     latestTask?.status === "done"
@@ -873,7 +894,11 @@ export const FusionGrid: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] pb-[env(safe-area-inset-bottom)] dark:from-slate-900 dark:via-slate-900 dark:to-slate-950">
+    <MobilePageShell
+      withBottomNav={false}
+      constrain="none"
+      className="overflow-x-hidden bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] dark:from-slate-900 dark:via-slate-900 dark:to-slate-950"
+    >
       <input
         ref={templateInputRef}
         type="file"
@@ -1147,7 +1172,7 @@ export const FusionGrid: React.FC = () => {
       ) : null}
 
       {previewDocument ? (
-        <div className="fixed inset-0 z-[70] flex flex-col bg-[#f6f9fc]">
+        <div className="fixed inset-0 z-[70] flex flex-col bg-[#f6f9fc]" data-mobile-overlay="true">
           <div className="flex-1 overflow-y-auto">
             <div className="h-full overflow-hidden bg-neutral-50 dark:bg-slate-950">
               {isPreviewLoading ? (
@@ -1183,7 +1208,7 @@ export const FusionGrid: React.FC = () => {
                 />
               ) : (
                 <div className="flex flex-col h-full">
-                  <div className="sticky top-0 z-10 border-b border-slate-100 bg-white/80 px-4 pb-3 pt-[max(12px,env(safe-area-inset-top))] backdrop-blur-md shadow-sm dark:border-white/5 dark:bg-slate-900/80">
+                  <div className="sticky top-0 z-10 border-b border-slate-100 bg-white/80 px-4 pb-3 pt-[max(12px,var(--mobile-safe-top))] backdrop-blur-md shadow-sm dark:border-white/5 dark:bg-slate-900/80">
                     <div className="flex items-center justify-between gap-3 pt-2">
                       <button
                         type="button"
@@ -1395,19 +1420,25 @@ export const FusionGrid: React.FC = () => {
         </BottomSheet>
       ) : null}
 
-      <div className="mx-auto flex h-[100dvh] w-full max-w-[375px] flex-col bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] overflow-hidden dark:from-slate-900 dark:via-slate-900 dark:to-slate-950 relative shadow-2xl ring-1 ring-slate-900/5 sm:rounded-[32px] sm:my-8 sm:h-[667px]">
-        <div className="flex-1 overflow-y-auto px-4 pb-[120px] pt-[max(16px,env(safe-area-inset-top))]">
-          <header className="relative z-20 flex items-center justify-between gap-3 pb-6 pt-1">
+      <div className="mx-auto flex min-h-[var(--app-visual-height,100dvh)] w-full max-w-none flex-col overflow-hidden bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] shadow-2xl ring-1 ring-slate-900/5 dark:from-slate-900 dark:via-slate-900 dark:to-slate-950 min-[480px]:max-w-[430px] min-[600px]:my-6 min-[600px]:min-h-[min(var(--app-visual-height,100dvh),860px)] min-[600px]:max-w-[560px] min-[600px]:rounded-[32px] lg:my-8 lg:h-[667px] lg:min-h-0 lg:max-w-[375px] relative">
+        <div className="flex-1 overflow-y-auto px-[var(--mobile-page-x)] pb-[var(--mobile-content-bottom)] pt-[max(16px,var(--mobile-safe-top))] lg:pb-[120px]">
+          <header className="relative z-20 flex items-center justify-between gap-2 pb-6 pt-1 min-[390px]:gap-3">
             <div className="min-w-0 flex flex-col gap-1">
-              <h1 className="text-[26px] font-bold tracking-tight text-slate-900 dark:text-white flex items-center">
+              <h1 className="flex items-center text-[var(--mobile-title-size)] font-bold tracking-tight text-slate-900 dark:text-white">
                 自定义
                 <span className="relative ml-1 inline-block">
                   <span className="relative z-10 text-transparent bg-clip-text bg-gradient-to-r from-[#3B82F6] via-[#6366F1] to-[#D946EF] dark:from-[#60A5FA] dark:via-[#818CF8] dark:to-[#E879F9]">
                     智能填表
                   </span>
+                  <img
+                    src={colorCursorUrl}
+                    alt=""
+                    aria-hidden="true"
+                    className="pointer-events-none absolute -right-[14px] -top-[7px] z-20 h-7 w-7 select-none object-contain drop-shadow-[0_1px_2px_rgba(15,23,42,0.32)] max-[359px]:-right-[10px] max-[359px]:-top-[6px] max-[359px]:h-6 max-[359px]:w-6"
+                  />
                 </span>
               </h1>
-              <p className="text-[13px] text-slate-500/90 dark:text-slate-400">
+              <p className="text-[clamp(12px,3.5vw,14px)] text-slate-500/90 dark:text-slate-400">
                 多源文档数据融合与结构化提取
               </p>
             </div>
@@ -1415,7 +1446,7 @@ export const FusionGrid: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsHelpOpen(true)}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/60 text-slate-600 shadow-sm backdrop-blur-md transition-all active:scale-95 dark:bg-white/10 dark:text-slate-300 dark:shadow-none"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/60 text-slate-600 shadow-sm backdrop-blur-md transition-all active:scale-95 dark:bg-white/10 dark:text-slate-300 dark:shadow-none max-[359px]:h-9 max-[359px]:w-9"
                 aria-label="打开使用说明"
                 title="打开使用说明"
               >
@@ -1427,7 +1458,7 @@ export const FusionGrid: React.FC = () => {
                   setIsSidebarFullWidth(false);
                   setIsSidebarOpen(true);
                 }}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/60 text-slate-600 shadow-sm backdrop-blur-md transition-all active:scale-95 dark:bg-white/10 dark:text-slate-300 dark:shadow-none"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/60 text-slate-600 shadow-sm backdrop-blur-md transition-all active:scale-95 dark:bg-white/10 dark:text-slate-300 dark:shadow-none max-[359px]:h-9 max-[359px]:w-9"
                 aria-label="打开任务中心"
                 title="打开任务中心"
               >
@@ -1439,15 +1470,15 @@ export const FusionGrid: React.FC = () => {
         <div className="space-y-4">
           <section className="mb-8">
             <div className="mb-4">
-              <h2 className="text-[20px] font-bold text-slate-900 dark:text-slate-100">
+              <h2 className="text-[var(--mobile-section-title-size)] font-bold text-slate-900 dark:text-slate-100">
                 资源准备
               </h2>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
               <button
                 type="button"
                 onClick={() => setIsTemplatePanelOpen(true)}
-                className="group relative flex h-[68px] w-full items-center overflow-hidden rounded-[20px] bg-white/60 p-3 text-left backdrop-blur-xl ring-1 ring-white/50 transition-all active:scale-[0.98] dark:bg-white/5 dark:ring-white/10"
+                className="group relative flex min-h-[64px] w-full items-center overflow-hidden rounded-[20px] bg-white/60 p-3 text-left backdrop-blur-xl ring-1 ring-white/50 transition-all active:scale-[0.98] dark:bg-white/5 dark:ring-white/10 min-[390px]:min-h-[68px]"
               >
                 <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-cyan-400/10 blur-2xl transition-colors group-hover:bg-cyan-400/20 dark:bg-cyan-900/20" />
                 <div className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white shadow-[0_2px_8px_rgba(15,23,42,0.04)] text-cyan-600 transition-colors group-hover:text-cyan-500 dark:bg-cyan-500/20 dark:text-cyan-300 dark:group-hover:bg-cyan-500/30">
@@ -1458,7 +1489,7 @@ export const FusionGrid: React.FC = () => {
                   )}
                 </div>
                 <div className="relative z-10 ml-3 min-w-0 flex-1">
-                  <p className="truncate text-[15px] font-bold text-slate-800 dark:text-slate-100">        
+                  <p className="truncate text-[clamp(14px,3.8vw,15px)] font-bold text-slate-800 dark:text-slate-100">
                     模板管理
                   </p>
                 </div>
@@ -1467,7 +1498,7 @@ export const FusionGrid: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsDocsetPanelOpen(true)}
-                className="group relative flex h-[68px] w-full items-center overflow-hidden rounded-[20px] bg-white/60 p-3 text-left backdrop-blur-xl ring-1 ring-white/50 transition-all active:scale-[0.98] dark:bg-white/5 dark:ring-white/10"
+                className="group relative flex min-h-[64px] w-full items-center overflow-hidden rounded-[20px] bg-white/60 p-3 text-left backdrop-blur-xl ring-1 ring-white/50 transition-all active:scale-[0.98] dark:bg-white/5 dark:ring-white/10 min-[390px]:min-h-[68px]"
               >
                 <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-indigo-400/10 blur-2xl transition-colors group-hover:bg-indigo-400/20 dark:bg-indigo-900/20" />
                 <div className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white shadow-[0_2px_8px_rgba(15,23,42,0.04)] text-indigo-600 transition-colors group-hover:text-indigo-500 dark:bg-indigo-500/20 dark:text-indigo-300 dark:group-hover:bg-indigo-500/30">
@@ -1478,7 +1509,7 @@ export const FusionGrid: React.FC = () => {
                   )}
                 </div>
                 <div className="relative z-10 ml-3 min-w-0 flex-1">
-                  <p className="truncate text-[15px] font-bold text-slate-800 dark:text-slate-100">        
+                  <p className="truncate text-[clamp(14px,3.8vw,15px)] font-bold text-slate-800 dark:text-slate-100">
                     文档集管理
                   </p>
                 </div>
@@ -1560,11 +1591,11 @@ export const FusionGrid: React.FC = () => {
 
           <section className="mt-8">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-[20px] font-bold text-slate-900 dark:text-slate-100">用户要求</h2>
+              <h2 className="text-[var(--mobile-section-title-size)] font-bold text-slate-900 dark:text-slate-100">用户要求</h2>
               <button
                 type="button"
                 onClick={handleStartRun}
-                disabled={isRunning || !selectedTemplate || !selectedDocset}
+                disabled={!canStartRun}
                 className="group relative flex h-[36px] items-center justify-center gap-1.5 overflow-hidden rounded-full bg-cyan-50 px-4 text-[13px] font-bold text-cyan-600 transition-all hover:bg-cyan-100 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:bg-slate-50 disabled:text-slate-400 dark:bg-cyan-500/10 dark:text-cyan-400 dark:hover:bg-cyan-500/20 dark:disabled:bg-slate-900 dark:disabled:text-slate-500"
               >
                 {isRunning ? (
@@ -1599,6 +1630,28 @@ export const FusionGrid: React.FC = () => {
                 </span>
               </div>
             </div>
+            <div
+              className={cn(
+                "mt-3 rounded-[18px] px-4 py-3 text-[12px] leading-5",
+                missingStartRequirements.length > 0
+                  ? "bg-white/58 text-slate-500 ring-1 ring-white/70 dark:bg-white/5 dark:text-slate-400 dark:ring-white/10"
+                  : "bg-cyan-50/80 text-cyan-700 ring-1 ring-cyan-100/80 dark:bg-cyan-500/10 dark:text-cyan-300 dark:ring-cyan-500/20",
+              )}
+            >
+              {missingStartRequirements.length > 0 ? (
+                <>
+                  开始填充前还需要：
+                  <span className="font-semibold text-slate-700 dark:text-slate-200">
+                    {missingStartRequirements.join("、")}
+                  </span>
+                  。用户要求可以为空，但填写得越具体，填表结果越稳定。
+                </>
+              ) : gridState.draftRequirements.trim() ? (
+                "资源已就绪，可以开始填充；系统会按当前用户要求生成结果。"
+              ) : (
+                "模板和文档集已就绪。建议补充筛选、格式或填充规则，让结果更符合预期。"
+              )}
+            </div>
             {errorMessage ? (
               <p className="mt-2 rounded-2xl bg-red-50 px-3 py-2 text-xs text-red-600">
                 {errorMessage}
@@ -1608,6 +1661,6 @@ export const FusionGrid: React.FC = () => {
         </div>
       </div>
     </div>
-  </div>
-);
+    </MobilePageShell>
+  );
 };

@@ -1011,7 +1011,7 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
     const [activeIndex, setActiveIndex] = useState(0);
 
     useEffect(() => {
-      return scrollYProgress.onChange((latest) => {
+      return scrollYProgress.on('change', (latest) => {
         const nextIndex = Math.min(
           featureCount - 1,
           Math.max(0, Math.floor(latest * featureCount)),
@@ -1026,7 +1026,13 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
       <div className="w-full relative bg-white z-20 flex flex-col items-center my-36">
         {/* 背景：点阵底纹 */}
         <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(#dfe4e8_1px,transparent_1.2px)] [background-size:24px_24px] [mask-image:radial-gradient(ellipse_60%_60%_at_50%_50%,#000_70%,transparent_100%)] opacity-70" />
+          <div
+            className="absolute inset-0 bg-[radial-gradient(#dfe4e8_1px,transparent_1.2px)] [background-size:24px_24px] opacity-70"
+            style={{
+              WebkitMaskImage: 'radial-gradient(ellipse 60% 60% at 50% 50%, #000 70%, transparent 100%)',
+              maskImage: 'radial-gradient(ellipse 60% 60% at 50% 50%, #000 70%, transparent 100%)',
+            }}
+          />
         </div>
 
         {/* 标题部分 */}

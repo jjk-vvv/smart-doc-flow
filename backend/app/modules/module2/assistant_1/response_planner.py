@@ -54,6 +54,9 @@ class Assistant1ResponsePlan:
 
 
 class Assistant1ResponsePlanner:
+    def __init__(self, *, web_search_enabled: bool = False) -> None:
+        self.web_search_enabled = bool(web_search_enabled)
+
     def plan(self, *, user_message: str, default_file_hash: str) -> Assistant1ResponsePlan:
         question = str(user_message or "").strip()
         has_default_file = bool(str(default_file_hash or "").strip())
@@ -127,6 +130,15 @@ class Assistant1ResponsePlanner:
             )
 
         if signals.web_search:
+            if not self.web_search_enabled:
+                return self._plan_free_text(
+                    intent="web_search_disabled",
+                    signals=signals,
+                    low_tokens=220,
+                    medium_tokens=420,
+                    high_tokens=640,
+                    prefer_low_verbosity=True,
+                )
             return self._plan_tool_call(
                 intent="web_search",
                 signals=signals,
@@ -285,8 +297,9 @@ class Assistant1ResponsePlanner:
         low_tokens: int,
         medium_tokens: int,
         high_tokens: int,
+        prefer_low_verbosity: bool = False,
     ) -> Assistant1ResponsePlan:
-        low_mode = signals.strict_minimal or signals.brief
+        low_mode = signals.strict_minimal or signals.brief or prefer_low_verbosity
         high_mode = signals.detailed and not low_mode
         return Assistant1ResponsePlan(
             use_tools=False,

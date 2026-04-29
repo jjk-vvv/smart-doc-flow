@@ -25,7 +25,9 @@ class GeminiVisionExtractor:
         *,
         api_key: str,
         native_api_key: str = "",
-        model: str = "gemini-2.5-flash",
+        model: str = "qwen3-vl-plus",
+        base_url: str = "",
+        endpoint_style: str = "openai_chat_completions",
         timeout_sec: float = 25.0,
         max_output_tokens: int = 4096,
         retry_count: int = 1,
@@ -36,7 +38,9 @@ class GeminiVisionExtractor:
     ) -> None:
         self.api_key = (api_key or "").strip()
         self.native_api_key = (native_api_key or "").strip()
-        self.model = (model or "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+        self.model = (model or "qwen3-vl-plus").strip() or "qwen3-vl-plus"
+        self.base_url = (base_url or "").strip()
+        self.endpoint_style = self._normalize_endpoint_style(endpoint_style)
         self.timeout_sec = max(5.0, float(timeout_sec))
         self.max_output_tokens = max(512, int(max_output_tokens))
         self.retry_count = max(0, int(retry_count))
@@ -53,7 +57,7 @@ class GeminiVisionExtractor:
         effort = str(reasoning_effort or "minimal").strip().lower()
         self.reasoning_effort = effort if effort in {"minimal", "low", "medium", "high"} else "minimal"
         self.native_fallback_enabled = bool(native_fallback_enabled)
-        self.prompt_version = "v6_visual_full_chart_json_gemini_native"
+        self.prompt_version = f"v7_visual_full_chart_json_{self.endpoint_style}"
         self._native_transport_runtime = GeminiNativeTransportRuntime(
             resolve_native_api_url=resolve_llm_native_api_url,
             user_agent="smart-doc-flow-module2-vision/1.0",
@@ -66,7 +70,7 @@ class GeminiVisionExtractor:
 
     @property
     def ready(self) -> bool:
-        return bool(self.api_key or self.native_api_key)
+        return bool(self.api_key and self.endpoint_style == "openai_chat_completions")
 
     def reset_stats(self) -> None:
         with self._state_lock:
@@ -311,7 +315,7 @@ class GeminiVisionExtractor:
             raw_content = str(response.get("content", "") or "").strip()
             finish_reason = str(response.get("finish_reason", "") or "").strip()
             model_name = str(response.get("model", "") or self.model)
-            request_source = str(response.get("request_source", "") or "gemini_native")
+            request_source = str(response.get("request_source", "") or "openai_chat_completions")
         except Exception as exc:
             last_exc_text = f"{type(exc).__name__}: {exc}"
 
@@ -326,7 +330,7 @@ class GeminiVisionExtractor:
                 self._set_debug(
                     mode=mode,
                     status="ok",
-                    request_source=request_source or "gemini_native",
+                    request_source=request_source or "openai_chat_completions",
                     finish_reason=finish_reason,
                     model=model_name,
                     parse_mode=self._infer_parse_mode(payload_value),
@@ -339,7 +343,7 @@ class GeminiVisionExtractor:
             self._set_debug(
                 mode=mode,
                 status="parse_failed",
-                request_source=request_source or "gemini_native",
+                request_source=request_source or "openai_chat_completions",
                 finish_reason=finish_reason,
                 model=model_name,
                 parse_mode="unrecognized",
@@ -359,7 +363,7 @@ class GeminiVisionExtractor:
         self._set_debug(
             mode=mode,
             status="request_failed",
-            request_source=request_source or "gemini_native",
+            request_source=request_source or "openai_chat_completions",
             error=(last_exc_text or "no_usable_vision_provider")[:1200],
         )
         return None
@@ -371,6 +375,14 @@ class GeminiVisionExtractor:
         image_bytes: bytes,
         mime_type: str,
     ) -> Dict[str, str]:
+        if self.endpoint_style == "openai_chat_completions":
+            return self._request_openai_multimodal(
+                prompt=prompt,
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+            )
+        raise RuntimeError("Native Gemini/Google vision endpoints are disabled; use openai_chat_completions.")
+
         last_exc: Optional[Exception] = None
         request_candidates: list[tuple[str, str, str]] = []
         primary_url = self._resolve_primary_native_url()
@@ -470,6 +482,118 @@ class GeminiVisionExtractor:
             "request_source": source,
         }
 
+    def _request_openai_multimodal(
+        self,
+        *,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str,
+    ) -> Dict[str, str]:
+        url = self._resolve_openai_chat_url()
+        api_key = self._resolve_primary_api_key()
+        if not url or not api_key:
+            raise RuntimeError("no_usable_openai_vision_provider")
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, self.request_retry_attempts + 1):
+            try:
+                return self._post_openai_multimodal(
+                    url=url,
+                    api_key=api_key,
+                    prompt=prompt,
+                    image_bytes=image_bytes,
+                    mime_type=mime_type,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if not self._should_retry_transport_exception(exc) or attempt >= self.request_retry_attempts:
+                    break
+                self._bump_stat("request_retries")
+                time.sleep(self._retry_sleep_seconds(attempt))
+        raise last_exc or RuntimeError("vision provider returned empty response")
+
+    def _post_openai_multimodal(
+        self,
+        *,
+        url: str,
+        api_key: str,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str,
+    ) -> Dict[str, str]:
+        image_data = base64.b64encode(image_bytes).decode("ascii")
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type or 'image/png'};base64,{image_data}",
+                            },
+                        },
+                    ],
+                }
+            ],
+            "temperature": 0.0,
+            "max_tokens": self.max_output_tokens,
+            "stream": False,
+        }
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "smart-doc-flow-module2-vision/1.0",
+                "Connection": "close",
+            },
+            timeout=self.timeout_sec,
+        )
+        resp.raise_for_status()
+        try:
+            obj = resp.json()
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("vision provider returned invalid JSON") from exc
+        choices = obj.get("choices") if isinstance(obj.get("choices"), list) else []
+        first = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first.get("message"), dict) else {}
+        raw_content = self._coerce_openai_content(message.get("content")).strip()
+        if not raw_content:
+            raise RuntimeError("vision provider returned empty content")
+        return {
+            "content": raw_content,
+            "finish_reason": self._normalize_finish_reason(first.get("finish_reason")),
+            "model": str(obj.get("model", "") or self.model),
+            "request_source": "openai_chat_completions",
+        }
+
+    def _resolve_openai_chat_url(self) -> str:
+        raw = str(
+            self.base_url
+            or os.getenv("MODULE2_GEMINI_VISION_BASE_URL", "")
+            or os.getenv("MODULE2_LLM_BASE_URL", "")
+            or os.getenv("MODULE2_LLM_API_BASE", "")
+            or os.getenv("OPENAI_BASE_URL", "")
+            or ""
+        ).strip().rstrip("/")
+        if not raw:
+            return ""
+        for suffix in ("/v1/chat/completions", "/chat/completions"):
+            if raw.endswith(suffix):
+                return raw
+        for suffix in ("/v1/responses", "/responses"):
+            if raw.endswith(suffix):
+                raw = raw[: -len(suffix)].rstrip("/")
+                break
+        if raw.endswith("/v1"):
+            return f"{raw}/chat/completions"
+        return f"{raw}/v1/chat/completions"
+
     def _resolve_primary_native_url(self) -> str:
         raw = self._native_transport_runtime.resolve_native_url(self.model)
         if raw:
@@ -519,14 +643,48 @@ class GeminiVisionExtractor:
     @staticmethod
     def _normalize_finish_reason(raw_reason: Any) -> str:
         reason = str(raw_reason or "").strip().upper()
-        if reason == "MAX_TOKENS":
+        if reason in {"MAX_TOKENS", "LENGTH"}:
             return "length"
         if reason == "STOP":
             return "stop"
         return reason.lower()
 
+    @staticmethod
+    def _normalize_endpoint_style(raw_style: str) -> str:
+        raw = str(raw_style or "").strip().lower()
+        if raw in {"openai", "openai_chat", "chat_completions", "openai_chat_completions"}:
+            return "openai_chat_completions"
+        if raw in {"native", "google_native", "gemini_native"}:
+            raise RuntimeError(
+                "Native Gemini/Google vision endpoint style is disabled; use openai_chat_completions."
+            )
+        return "openai_chat_completions"
+
+    @staticmethod
+    def _coerce_openai_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            pieces: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    pieces.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str):
+                    pieces.append(text)
+                    continue
+                if isinstance(text, dict):
+                    value = text.get("value")
+                    if isinstance(value, str):
+                        pieces.append(value)
+            return "".join(pieces)
+        return ""
+
     def _allow_google_native_fallback(self) -> bool:
-        return bool(self.native_fallback_enabled and self.native_api_key.startswith("AIza"))
+        return False
 
     @staticmethod
     def _unique_texts(values: Any, *, limit: int, max_len: int = 180) -> list[str]:

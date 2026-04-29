@@ -8,6 +8,7 @@ import assistantOrbWebm from '../../../assets/assistant-orb.webm';
 import GuideImage from '../../../assets/使用说明插图.png';
 import QuestionImage from '../../../assets/问号插图.png';
 import ContextImage from '../../../assets/上下文插图.png';
+import { cn } from '../../../lib/utils';
 import {
   requestPlatformAssistantCatalog,
   requestPlatformAssistantBootstrap,
@@ -22,6 +23,7 @@ import {
   subscribeAssistantExtractionSnapshot,
   type ContextDocument,
 } from '../lib/assistantContext';
+import { useMobileOverlayPresence } from '../../../shared/hooks/useMobileOverlayPresence';
 import {
   buildAssistantPageCatalog,
   buildUsageFallbackCard,
@@ -50,7 +52,7 @@ type PlatformAssistantProps = {
 };
 
 const DEFAULT_LAUNCHER_OFFSET =
-  'bottom-[calc(96px+env(safe-area-inset-bottom))] left-3 md:bottom-[140px] md:left-0';
+  'bottom-[calc(var(--mobile-content-bottom)+18px)] left-[var(--mobile-page-x)] lg:bottom-[140px] lg:left-0';
 const STREAM_DONE = '__done__';
 
 const normalizeStreamChunk = (value: string): string =>
@@ -126,6 +128,7 @@ export function PlatformAssistant({
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isCompactViewport, setIsCompactViewport] = useState(false);
+  const externalMobileOverlayActive = useMobileOverlayPresence();
   const [documents, setDocuments] = useState<ContextDocument[]>(
     () => readAssistantExtractionSnapshot().documents,
   );
@@ -147,7 +150,7 @@ export function PlatformAssistant({
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
 
-    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const mediaQuery = window.matchMedia('(max-width: 1023px)');
     const syncViewport = () => setIsCompactViewport(mediaQuery.matches);
     syncViewport();
 
@@ -206,6 +209,24 @@ export function PlatformAssistant({
       requestAbortRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isCompactViewport || !externalMobileOverlayActive || !isOpen) return;
+    setIsOpen(false);
+  }, [externalMobileOverlayActive, isCompactViewport, isOpen]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+
+    const shouldDimNavigation = isCompactViewport && isOpen;
+    document.documentElement.classList.toggle('platform-assistant-open', shouldDimNavigation);
+    document.body.classList.toggle('platform-assistant-open', shouldDimNavigation);
+
+    return () => {
+      document.documentElement.classList.remove('platform-assistant-open');
+      document.body.classList.remove('platform-assistant-open');
+    };
+  }, [isCompactViewport, isOpen]);
 
   const nextMessageId = () => {
     messageSeqRef.current += 1;
@@ -338,6 +359,7 @@ export function PlatformAssistant({
 
   const closedLauncherX = isCompactViewport ? 0 : -31;
   const openLauncherX = isCompactViewport ? 0 : 16;
+  const shouldHideLauncher = isCompactViewport && externalMobileOverlayActive && !isOpen;
   const launcherHoverAnimation = isCompactViewport
     ? { scale: 1.02 }
     : { scale: 1.04, x: isOpen ? openLauncherX : 12 };
@@ -351,7 +373,13 @@ export function PlatformAssistant({
         whileHover={launcherHoverAnimation}
         whileTap={{ scale: 0.97 }}
         onClick={() => setIsOpen((current) => !current)}
-        className={`pointer-events-auto fixed ${launcherOffsetClassName || DEFAULT_LAUNCHER_OFFSET} flex h-[58px] w-[58px] items-center justify-center overflow-hidden rounded-full border border-white/80 bg-white shadow-[0_12px_40px_rgba(34,211,238,0.2)] ring-1 ring-cyan-100 dark:border-white/20 dark:bg-slate-900 dark:shadow-[0_12px_40px_rgba(8,15,31,0.5)] dark:ring-cyan-400/20 md:h-[62px] md:w-[62px]`}
+        disabled={shouldHideLauncher}
+        aria-hidden={shouldHideLauncher}
+        className={cn(
+          'pointer-events-auto fixed flex h-[58px] w-[58px] items-center justify-center overflow-hidden rounded-full border border-white/80 bg-white shadow-[0_12px_40px_rgba(34,211,238,0.2)] ring-1 ring-cyan-100 transition-[opacity,transform,filter] duration-200 dark:border-white/20 dark:bg-slate-900 dark:shadow-[0_12px_40px_rgba(8,15,31,0.5)] dark:ring-cyan-400/20 md:h-[62px] md:w-[62px]',
+          launcherOffsetClassName || DEFAULT_LAUNCHER_OFFSET,
+          shouldHideLauncher && 'pointer-events-none scale-90 opacity-0 blur-[1px]',
+        )}
         aria-label={isOpen ? '关闭平台助手' : '打开平台助手'}
       >
         <video
@@ -389,7 +417,7 @@ export function PlatformAssistant({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 18, scale: 0.98 }}
             transition={{ duration: 0.22, ease: 'easeOut' }}
-            className="pointer-events-auto fixed inset-x-3 bottom-20 top-14 overflow-hidden rounded-[30px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(248,251,255,0.98),rgba(255,255,255,0.96))] shadow-[0_32px_90px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(8,15,30,0.96),rgba(10,20,38,0.96))] md:left-6 md:right-auto md:top-auto md:h-[min(78vh,720px)] md:w-[430px]"
+            className="pointer-events-auto fixed inset-x-3 bottom-[calc(var(--mobile-content-bottom)+8px)] top-[max(3.5rem,var(--mobile-safe-top))] overflow-hidden rounded-[30px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(248,251,255,0.98),rgba(255,255,255,0.96))] shadow-[0_32px_90px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(8,15,30,0.96),rgba(10,20,38,0.96))] lg:bottom-20 lg:left-6 lg:right-auto lg:top-auto lg:h-[min(78vh,720px)] lg:w-[430px]"
           >
             <div className="flex h-full flex-col">
               <div className="border-b border-slate-100/50 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.1),transparent_36%),linear-gradient(135deg,rgba(255,255,255,0.9),rgba(248,250,252,0.88))] px-5 py-4 dark:border-white/5 dark:bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_30%),linear-gradient(135deg,rgba(10,20,38,0.98),rgba(12,24,45,0.96))]">

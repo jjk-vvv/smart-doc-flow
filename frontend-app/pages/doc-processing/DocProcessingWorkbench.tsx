@@ -54,6 +54,7 @@ import {
 import {
   saveBlobToMobileDevice,
 } from '../../shared/mobileDownload';
+import { useMobileOverlayRegistration } from '../../shared/hooks/useMobileOverlayPresence';
 
 import PdfIconImage from '../../assets/pdf.png';
 import DialogIllustrationImage from '../../assets/对话框插图.png';
@@ -1630,6 +1631,7 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   const [mobileView, setMobileView] = useState<MobileWorkbenchView>('home');
   const [showUtilityDrawer, setShowUtilityDrawer] = useState(false);
   const [showMobileUploadSheet, setShowMobileUploadSheet] = useState(false);
+  useMobileOverlayRegistration(showUtilityDrawer || showMobileUploadSheet || mobileView !== 'home');
 
   // 计算属性
   const fileList = useMemo(() => Object.values(files), [files]);
@@ -4585,14 +4587,14 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   return (
     <div
       ref={workbenchRootRef}
-      className="relative h-[100dvh] w-full overflow-hidden bg-[#F4FBFB] pb-[env(safe-area-inset-bottom)] dark:bg-slate-950"
+      className="relative h-[var(--app-visual-height,100dvh)] w-full overflow-hidden bg-[#F4FBFB] pb-[var(--mobile-safe-bottom)] dark:bg-slate-950"
       onDragEnter={handleDocumentDragEnter}
       onDragOver={handleDocumentDragOver}
       onDragLeave={handleDocumentDragLeave}
       onDrop={handleDocumentDrop}
     >
       <div className="relative z-10 flex h-full flex-col">
-        <div className="shrink-0 px-4 py-3 pb-2 pt-[max(12px,env(safe-area-inset-top))] transition-all duration-300 bg-transparent">
+        <div className="shrink-0 px-4 py-3 pb-2 pt-[max(12px,var(--mobile-safe-top))] transition-all duration-300 bg-transparent">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
               {onBack && (
@@ -4744,7 +4746,7 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         />
 
         {showMobileUploadSheet ? (
-          <div className="fixed inset-0 z-[65] flex items-end bg-slate-950/28 px-3 pb-[calc(12px+env(safe-area-inset-bottom))] pt-6 backdrop-blur-[2px]">
+          <div className="fixed inset-0 z-[65] flex items-end bg-slate-950/28 px-3 pb-[calc(12px+var(--mobile-safe-bottom))] pt-6 backdrop-blur-[2px]" data-mobile-overlay="true">
             <button
               type="button"
               aria-label="关闭上传方式选择"

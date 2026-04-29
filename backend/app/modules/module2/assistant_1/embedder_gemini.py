@@ -38,7 +38,7 @@ class GeminiEmbeddingClient:
         endpoint_style = self._resolve_endpoint_style()
         if endpoint_style == "openai":
             return self._embed_openai(texts)
-        return [self._embed_native(text, task_type=task_type) for text in texts]
+        raise RuntimeError("Native Gemini embedding endpoints are disabled; use ASSISTANT1_EMBEDDING_ENDPOINT_STYLE=openai.")
 
     def _embed_openai(self, texts: list[str]) -> list[list[float]]:
         url = self._openai_embeddings_url()
@@ -128,20 +128,17 @@ class GeminiEmbeddingClient:
 
     def _resolve_endpoint_style(self) -> str:
         style = self.settings.embedding_endpoint_style
-        if style in {"native", "openai"}:
+        if style == "openai":
             return style
+        if style == "native":
+            raise RuntimeError("Native Gemini embedding endpoints are disabled; use openai endpoint style.")
         parsed = urlparse(self.base_url)
         path = parsed.path.rstrip("/").lower()
-        model_lower = self.model.lower()
         if ":embedcontent" in path or ":generatecontent" in path or "/v1beta/models/" in path:
-            return "native"
-        # Many Gemini-compatible providers publish a provider root ending with /v1.
-        # If model naming already indicates Gemini, default to native endpoint style.
-        if path.endswith("/v1") and "gemini" in model_lower:
-            return "native"
+            raise RuntimeError("Native Gemini embedding URL is disabled; configure provider root ending in /v1.")
         if path.endswith("/v1") or path.endswith("/embeddings") or "/openai" in path:
             return "openai"
-        return "native"
+        return "openai"
 
     def _openai_embeddings_url(self) -> str:
         if self.base_url.endswith("/embeddings"):

@@ -146,6 +146,8 @@ class NativeDocumentParser:
             api_key=self._gemini_api_key(),
             native_api_key=self._gemini_native_api_key(),
             model=self.gemini_vision_model,
+            base_url=self.gemini_vision_base_url,
+            endpoint_style=self.gemini_vision_endpoint_style,
             timeout_sec=self.gemini_vision_timeout_sec,
             max_output_tokens=self.gemini_vision_max_output_tokens,
             retry_count=self.visual_vision_retry_count,

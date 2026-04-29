@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS doc_knowledge_unit (
     page_end integer,
     source_block_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
     unit_meta_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-    embedding vector(1536) NOT NULL,
+    embedding vector(384) NOT NULL,
     created_at timestamptz NOT NULL DEFAULT NOW()
 );
 
