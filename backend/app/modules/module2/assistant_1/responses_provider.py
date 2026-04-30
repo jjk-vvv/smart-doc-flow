@@ -11,6 +11,13 @@ import requests
 from requests import Response
 from requests.exceptions import HTTPError, RequestException
 
+from app.core.ai_api_logging import (
+    AIAPIStreamRecorder,
+    log_ai_api_exception,
+    log_ai_api_request,
+    log_ai_api_response,
+)
+
 from .chat_completions_codec import (
     build_chat_completion_payload,
     clone_json,
@@ -258,7 +265,20 @@ class Assistant1ResponsesProvider:
         retryable_statuses = {429, 500, 502, 503, 504}
         for attempt in range(3):
             emitted_any = False
+            stream_recorder = AIAPIStreamRecorder(
+                logger_name="app.modules.module2.assistant_1.ai_api",
+                config_prefix="MODULE2",
+            )
             try:
+                log_ai_api_request(
+                    api_url=self._request_url(),
+                    request_body=payload,
+                    model=self.model,
+                    attempt=attempt + 1,
+                    max_attempts=3,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 with requests.post(
                     self._request_url(),
                     json=payload,
@@ -274,6 +294,7 @@ class Assistant1ResponsesProvider:
                     for _, data_text in _iter_sse_messages(response):
                         if not data_text:
                             continue
+                        stream_recorder.append(data_text)
                         emitted_any = True
                         if data_text == "[DONE]":
                             yield ResponsesStreamEvent(
@@ -283,6 +304,7 @@ class Assistant1ResponsesProvider:
                                 response_status=latest_status,
                                 raw={"done": True},
                             )
+                            stream_recorder.close()
                             return
                         try:
                             data = json.loads(data_text)
@@ -309,17 +331,38 @@ class Assistant1ResponsesProvider:
                         if event.response_status:
                             latest_status = event.response_status
                         yield event
+                    stream_recorder.close()
                     return
             except HTTPError as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 status = exc.response.status_code if exc.response is not None else None
                 last_error = exc
                 if emitted_any or status not in retryable_statuses or attempt >= 2:
                     detail = exc.response.text if exc.response is not None else str(exc)
                     raise RuntimeError(f"assistant_1 responses http error {status or 'unknown'}: {detail}") from exc
             except RequestException as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 last_error = exc
                 if emitted_any or attempt >= 2:
                     raise RuntimeError(f"assistant_1 responses connection error: {exc}") from exc
+            except Exception as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
+                raise
             time.sleep(0.8 * (attempt + 1))
         if last_error is not None:
             raise RuntimeError(f"assistant_1 responses connection error: {last_error}") from last_error
@@ -373,21 +416,46 @@ class Assistant1ResponsesProvider:
         retryable_statuses = {429, 500, 502, 503, 504}
         for attempt in range(3):
             try:
+                log_ai_api_request(
+                    api_url=self._request_url(),
+                    request_body=payload,
+                    model=self.model,
+                    attempt=attempt + 1,
+                    max_attempts=3,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 response = requests.post(
                     self._request_url(),
                     json=payload,
                     headers=self._build_headers(stream=False),
                     timeout=self.timeout_sec,
                 )
+                log_ai_api_response(
+                    response=response,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 response.raise_for_status()
                 break
             except HTTPError as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    close_call=exc.response is None,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 status = exc.response.status_code if exc.response is not None else None
                 last_error = exc
                 if status not in retryable_statuses or attempt >= 2:
                     detail = exc.response.text if exc.response is not None else str(exc)
                     raise RuntimeError(f"assistant_1 responses http error {status or 'unknown'}: {detail}") from exc
             except RequestException as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 last_error = exc
                 if attempt >= 2:
                     raise RuntimeError(f"assistant_1 responses connection error: {exc}") from exc
@@ -572,7 +640,20 @@ class Assistant1ResponsesProvider:
         retryable_statuses = {429, 500, 502, 503, 504}
         for attempt in range(3):
             emitted_any = False
+            stream_recorder = AIAPIStreamRecorder(
+                logger_name="app.modules.module2.assistant_1.ai_api",
+                config_prefix="MODULE2",
+            )
             try:
+                log_ai_api_request(
+                    api_url=self._request_url(),
+                    request_body=payload,
+                    model=self.model,
+                    attempt=attempt + 1,
+                    max_attempts=3,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 with requests.post(
                     self._request_url(),
                     json=payload,
@@ -591,6 +672,7 @@ class Assistant1ResponsesProvider:
                     for _, data_text in _iter_sse_messages(response):
                         if not data_text:
                             continue
+                        stream_recorder.append(data_text)
                         emitted_any = True
                         if data_text == "[DONE]":
                             break
@@ -725,17 +807,38 @@ class Assistant1ResponsesProvider:
                         response_status=final_status,
                         raw={"done": True},
                     )
+                    stream_recorder.close()
                     return
             except HTTPError as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 status = exc.response.status_code if exc.response is not None else None
                 last_error = exc
                 if emitted_any or status not in retryable_statuses or attempt >= 2:
                     detail = exc.response.text if exc.response is not None else str(exc)
                     raise RuntimeError(f"assistant_1 chat completions http error {status or 'unknown'}: {detail}") from exc
             except RequestException as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
                 last_error = exc
                 if emitted_any or attempt >= 2:
                     raise RuntimeError(f"assistant_1 chat completions connection error: {exc}") from exc
+            except Exception as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.assistant_1.ai_api",
+                    config_prefix="MODULE2",
+                )
+                raise
             time.sleep(0.8 * (attempt + 1))
         if last_error is not None:
             raise RuntimeError(f"assistant_1 chat completions connection error: {last_error}") from last_error

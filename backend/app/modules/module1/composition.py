@@ -3,6 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.logging import configure_app_logging
+
 from .core.config import get_cors_config
 
 LOCALHOST_CORS_ORIGIN_REGEX = (
@@ -19,6 +21,7 @@ def build_router() -> APIRouter:
 
 
 def build_app() -> FastAPI:
+    configure_app_logging()
     app = FastAPI(title="Module 1 - Document Interaction Workbench", version="1.0.0")
     cors_origins, cors_allow_all = get_cors_config()
 

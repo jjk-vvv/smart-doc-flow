@@ -125,6 +125,97 @@ const MOBILE_BOTTOM_TABS: Array<{
   { id: 'mine', label: '我的', icon: UserCircle2 },
 ];
 
+type AiApiBrowserConsoleLogEntry = {
+  id?: number;
+  logger?: string;
+  message?: string;
+};
+
+type AiApiBrowserConsolePayload = {
+  enabled?: boolean;
+  entries?: AiApiBrowserConsoleLogEntry[];
+  next_since?: number;
+  latest_id?: number;
+};
+
+const shouldMirrorAiApiLogsToBrowserConsole = (): boolean => {
+  const flag = String(import.meta.env.VITE_AI_API_BROWSER_CONSOLE_LOGS ?? '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(flag)) return true;
+  if (['0', 'false', 'no', 'off'].includes(flag)) return false;
+  return Boolean(import.meta.env.DEV);
+};
+
+const startAiApiBrowserConsoleMirror = (): (() => void) | undefined => {
+  if (typeof window === 'undefined' || !shouldMirrorAiApiLogsToBrowserConsole()) {
+    return undefined;
+  }
+
+  let stopped = false;
+  let timer: number | undefined;
+  let sinceId = 0;
+
+  const schedule = (delayMs: number) => {
+    if (stopped) return;
+    timer = window.setTimeout(poll, delayMs);
+  };
+
+  const poll = async () => {
+    try {
+      const response = await fetch(
+        `/api/diagnostics/ai-api-logs?since_id=${encodeURIComponent(String(sinceId))}&limit=100`,
+        {
+          cache: 'no-store',
+          credentials: 'include',
+        },
+      );
+
+      if (response.status === 404) {
+        return;
+      }
+      if (response.status === 401 || response.status === 403) {
+        schedule(5000);
+        return;
+      }
+      if (!response.ok) {
+        schedule(5000);
+        return;
+      }
+
+      const payload = (await response.json()) as AiApiBrowserConsolePayload;
+      const entries = Array.isArray(payload.entries) ? payload.entries : [];
+      if (Number.isFinite(payload.next_since)) {
+        sinceId = Number(payload.next_since);
+      } else if (entries.length > 0) {
+        sinceId = Number(entries[entries.length - 1]?.id ?? sinceId);
+      }
+
+      if (payload.enabled !== false) {
+        for (const entry of entries) {
+          console.info(
+            '%c[AI API]',
+            'color:#0891b2;font-weight:700;',
+            entry.message ?? '',
+            { id: entry.id, logger: entry.logger },
+          );
+        }
+      }
+
+      schedule(1500);
+    } catch {
+      schedule(5000);
+    }
+  };
+
+  void poll();
+
+  return () => {
+    stopped = true;
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+    }
+  };
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<NormalizedTab>(() => readInitialTab());
   const [isDark, setIsDark] = useState(() => readInitialTheme());
@@ -176,6 +267,8 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => startAiApiBrowserConsoleMirror(), []);
 
   useEffect(() => {
     if (isMobile && activeTab === 'nexus') {

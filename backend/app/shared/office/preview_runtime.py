@@ -113,7 +113,7 @@ class OfficePreviewRuntime:
 
             now = time.time()
             job = OfficePreviewJob(
-                job_id=f"preview_{hashlib.sha1(f'{file_hash}:{now}'.encode('utf-8', 'ignore')).hexdigest()[:16]}",
+                job_id=f"preview_{file_hash[:16]}",
                 status="queued",
                 created_at=now,
                 updated_at=now,
@@ -137,6 +137,8 @@ class OfficePreviewRuntime:
             self._cleanup_locked()
             job = self._jobs.get(normalized_job_id)
             if job is None:
+                job = self._recover_from_job_id_locked(job_id=normalized_job_id)
+            if job is None:
                 raise FileNotFoundError("Preview job not found")
             return self.serialize(job)
 
@@ -145,6 +147,8 @@ class OfficePreviewRuntime:
         with self._lock:
             self._cleanup_locked()
             job = self._jobs.get(normalized_job_id)
+            if job is None:
+                job = self._recover_from_job_id_locked(job_id=normalized_job_id)
             if job is None:
                 raise FileNotFoundError("Preview job not found")
             if job.status != "completed":
@@ -251,12 +255,92 @@ class OfficePreviewRuntime:
         record = self._load_record_from_disk(file_hash=file_hash)
         if not record:
             return None
+        now = time.time()
         recovered = OfficePreviewJob(
-            job_id=f"preview_disk_{file_hash[:16]}",
+            job_id=f"preview_{file_hash[:16]}",
             status="completed",
-            created_at=float(record.get("updated_at") or time.time()),
-            updated_at=float(record.get("updated_at") or time.time()),
+            created_at=now,
+            updated_at=now,
             file_name=str(record.get("file_name") or file_name or ""),
+            file_hash=file_hash,
+            artifact_path=str(record.get("artifact_path") or ""),
+            error="",
+            converter=str(record.get("converter") or ""),
+            elapsed_ms=int(record.get("elapsed_ms") or 0),
+        )
+        self._jobs[recovered.job_id] = recovered
+        return recovered
+
+    @staticmethod
+    def _hash_prefix_from_job_id(job_id: str) -> str:
+        normalized = str(job_id or "").strip().lower()
+        for prefix in ("preview_disk_", "preview_"):
+            if not normalized.startswith(prefix):
+                continue
+            suffix = normalized[len(prefix):]
+            hash_prefix = []
+            for char in suffix:
+                if char not in "0123456789abcdef":
+                    break
+                hash_prefix.append(char)
+            joined = "".join(hash_prefix)
+            return joined if len(joined) >= 8 else ""
+        return ""
+
+    def _find_file_hash_by_prefix(self, hash_prefix: str) -> str:
+        normalized_prefix = str(hash_prefix or "").strip().lower()
+        if len(normalized_prefix) < 8:
+            return ""
+
+        candidate_roots = []
+        if len(normalized_prefix) >= 2:
+            candidate_roots.append((self.preview_root / normalized_prefix[:2]).resolve())
+        candidate_roots.append(self.preview_root.resolve())
+
+        matches: list[tuple[float, str]] = []
+        seen: set[Path] = set()
+        for root in candidate_roots:
+            if not root.exists() or not root.is_dir() or root in seen:
+                continue
+            seen.add(root)
+            children = root.iterdir() if root != self.preview_root.resolve() else root.glob("*/*")
+            for candidate in children:
+                if not candidate.is_dir():
+                    continue
+                file_hash = candidate.name.strip().lower()
+                if not file_hash.startswith(normalized_prefix):
+                    continue
+                artifact_path = candidate / "artifact.pdf"
+                if not artifact_path.exists() or not artifact_path.is_file():
+                    continue
+                try:
+                    modified_at = artifact_path.stat().st_mtime
+                except OSError:
+                    modified_at = 0.0
+                matches.append((modified_at, file_hash))
+
+        if not matches:
+            return ""
+        matches.sort(reverse=True)
+        return matches[0][1]
+
+    def _recover_from_job_id_locked(self, *, job_id: str) -> OfficePreviewJob | None:
+        hash_prefix = self._hash_prefix_from_job_id(job_id)
+        if not hash_prefix:
+            return None
+        file_hash = self._find_file_hash_by_prefix(hash_prefix)
+        if not file_hash:
+            return None
+        record = self._load_record_from_disk(file_hash=file_hash)
+        if not record:
+            return None
+        now = time.time()
+        recovered = OfficePreviewJob(
+            job_id=str(job_id or "").strip(),
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            file_name=str(record.get("file_name") or ""),
             file_hash=file_hash,
             artifact_path=str(record.get("artifact_path") or ""),
             error="",

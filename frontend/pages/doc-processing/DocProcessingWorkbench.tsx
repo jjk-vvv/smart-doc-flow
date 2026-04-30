@@ -811,6 +811,14 @@ const parseApiErrorMessage = async (response: Response): Promise<string> => {
   try {
     const bodyText = (await response.text()).trim();
     if (!bodyText) return `HTTP ${response.status}`;
+    const normalizedBody = bodyText.toLowerCase();
+    if (
+      normalizedBody.startsWith('<!doctype')
+      || normalizedBody.startsWith('<html')
+      || normalizedBody.includes('server is powered by frp')
+    ) {
+      return `模块一请求没有到达本地后端服务（HTTP ${response.status}）。请检查 API 地址或内网穿透配置。请求地址：${response.url}`;
+    }
 
     try {
       const payload = JSON.parse(bodyText) as { error?: string; detail?: string; message?: string };
@@ -3093,7 +3101,7 @@ export const DocProcessingWorkbench: React.FC = () => {
       });
   
       if (!response.ok) {
-        const errorText = await response.text();
+        const errorText = await parseApiErrorMessage(response);
         throw new Error(`请求失败: ${response.status} - ${errorText}`);
       }
   

@@ -75,6 +75,7 @@ type AuthHealthPayload = {
 
 const AUTH_HEALTH_PATH = '/api/auth/health';
 const AUTH_SESSION_HINT_KEY = 'smart_doc_flow.auth.session_hint';
+const AUTH_BACKEND_FALLBACKS_KEY = 'smart_doc_flow.backend_entry_fallbacks';
 
 let authApiBasePromise: Promise<string> | null = null;
 
@@ -96,7 +97,28 @@ const writeSessionHint = (value: boolean): void => {
   }
 };
 
+const parseBaseCandidates = (raw: string): string[] =>
+  String(raw || '')
+    .split(/[,\n;]/)
+    .map((item) => resolveApiBase(item))
+    .filter(Boolean);
+
+const readStoredBackendFallbacks = (): string[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    return parseBaseCandidates(window.localStorage.getItem(AUTH_BACKEND_FALLBACKS_KEY) || '');
+  } catch {
+    return [];
+  }
+};
+
 const buildAuthApiBaseCandidates = (): string[] => {
+  const buildMode = String(import.meta.env.MODE || '').trim().toLowerCase();
+  const isNativeMode = buildMode === 'native';
+  const explicitBase = resolveApiBase(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
+  const envFallbackBases = parseBaseCandidates(import.meta.env.VITE_BACKEND_ENTRY_URL_FALLBACKS || '');
+  const storedFallbackBases = readStoredBackendFallbacks();
+  const hasConfiguredBase = Boolean(explicitBase) || envFallbackBases.length > 0 || storedFallbackBases.length > 0;
   const candidates: string[] = [];
   const push = (value = '') => {
     const normalized = resolveApiBase(value);
@@ -105,14 +127,25 @@ const buildAuthApiBaseCandidates = (): string[] => {
     }
   };
 
-  push('');
-  push(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
+  if (explicitBase) {
+    push(explicitBase);
+  }
+  envFallbackBases.forEach((item) => push(item));
+  storedFallbackBases.forEach((item) => push(item));
+  if (!isNativeMode || !hasConfiguredBase) {
+    push('');
+  }
+
+  if (candidates.length === 0) {
+    push('');
+  }
 
   return candidates;
 };
 
 const detectAuthApiBase = async (): Promise<string> => {
   const candidates = buildAuthApiBaseCandidates();
+  const explicitBase = resolveApiBase(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
   let firstReachableBase = '';
 
   for (const candidate of candidates) {
@@ -136,6 +169,9 @@ const detectAuthApiBase = async (): Promise<string> => {
     }
   }
 
+  if (explicitBase) {
+    return explicitBase;
+  }
   return firstReachableBase;
 };
 

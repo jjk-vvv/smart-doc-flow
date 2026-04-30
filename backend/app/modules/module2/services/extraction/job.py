@@ -26,6 +26,37 @@ TERMINAL_FILE_STATUSES = {"completed", "failed", "cancelled"}
 SKIPPABLE_FILE_STATUSES = TERMINAL_FILE_STATUSES | {"cancel_requested"}
 
 
+def _sanitize_error_message(message: Any) -> str:
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    normalized = text.lower()
+    if (
+        normalized.startswith("<!doctype")
+        or normalized.startswith("<html")
+        or "<title>not found</title>" in normalized
+        or (
+            "server is powered by" in normalized
+            and "frp" in normalized
+        )
+    ):
+        return "模块二请求没有到达文档解析后端。请检查桌面端 API 地址、内网穿透或网关路由配置。"
+    return text
+
+
+def _sanitize_error_list(errors: Any) -> List[str]:
+    raw_items = errors if isinstance(errors, list) else [errors]
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        message = _sanitize_error_message(item)
+        if not message or message in seen:
+            continue
+        seen.add(message)
+        cleaned.append(message)
+    return cleaned
+
+
 @dataclass
 class ExtractionJobFileState:
     file_name: str
@@ -535,11 +566,12 @@ class ExtractionJobRuntime:
                 file_state.message = "提取完成，但存在错误" if doc.errors else "提取完成"
                 file_state.track = getattr(doc, "track", "") or ""
                 file_state.cached = bool(getattr(doc, "cached", False))
-                file_state.error = " | ".join(getattr(doc, "errors", []) or [])
+                file_state.error = " | ".join(_sanitize_error_list(getattr(doc, "errors", []) or []))
             job.documents.append(doc)
             if getattr(doc, "errors", None):
                 job.failed_files += 1
-                job.errors.append(f"{file_name}: {' | '.join(doc.errors)}")
+                doc_errors = _sanitize_error_list(getattr(doc, "errors", []) or [])
+                job.errors.append(f"{file_name}: {' | '.join(doc_errors)}")
             else:
                 job.completed_files += 1
             job.current_file_index = int(file_index)
@@ -581,10 +613,10 @@ class ExtractionJobRuntime:
                 file_state.progress_ratio = 1.0
                 file_state.status = "failed"
                 file_state.stage = "failed"
-                file_state.error = str(error_message or "")
+                file_state.error = _sanitize_error_message(error_message)
                 file_state.message = str(display_message or "提取失败")
             job.failed_files += 1
-            job.errors.append(f"{file_name}: {error_message}")
+            job.errors.append(f"{file_name}: {_sanitize_error_message(error_message)}")
             job.current_file_index = int(file_index)
             job.current_file_name = str(file_name or "")
             job.current_stage = "failed"
@@ -595,7 +627,7 @@ class ExtractionJobRuntime:
         normalized_job_id = str(job_id or "").strip()
         if not normalized_job_id:
             return False
-        normalized_message = str(message or "").strip()
+        normalized_message = _sanitize_error_message(message)
         if not normalized_message:
             return False
         async with self.lock:
@@ -686,7 +718,7 @@ class ExtractionJobRuntime:
             current_stage=str(progress.get("current_stage") or "queued").strip() or "queued",
             files=file_states,
             documents=documents,
-            errors=[str(item or "").strip() for item in (payload.get("errors") or []) if str(item or "").strip()],
+            errors=_sanitize_error_list(payload.get("errors") or []),
         )
 
     def build_snapshot_payload(self, job: Any) -> Dict[str, Any]:
@@ -824,14 +856,15 @@ class ExtractionJobRuntime:
             job.status = "failed"
             job.updated_at = time.time()
             job.current_stage = "failed"
-            if message and message not in job.errors:
-                job.errors.append(message)
+            normalized_message = _sanitize_error_message(message)
+            if normalized_message and normalized_message not in job.errors:
+                job.errors.append(normalized_message)
             for item in job.files:
                 if item.status not in TERMINAL_FILE_STATUSES:
                     item.status = "failed"
                     item.stage = "failed"
                     item.progress_ratio = 1.0
-                    item.error = message
+                    item.error = normalized_message
                     item.message = "任务恢复失败"
             job.failed_files = sum(1 for item in job.files if item.status == "failed")
         await self.persist_snapshot(normalized_job_id, force=True)

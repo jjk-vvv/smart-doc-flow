@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.core.ai_api_logging import log_ai_api_exception, log_ai_api_request, log_ai_api_response
+
 from ..query.neo4j import Neo4jSettings
 from .settings import GraphRAGRuntimeSettings
 from .prompts import PromptRegistry
@@ -1253,6 +1255,24 @@ class GraphRAGIndexer:
             workspace_dir=workspace_dir,
             workspace_env=workspace_env,
         )
+        api_base = str(workspace_env.get("GRAPHRAG_API_BASE") or os.getenv("MODULE4_GRAPHRAG_API_BASE") or "").strip()
+        chat_model = str(workspace_env.get("GRAPHRAG_CHAT_MODEL") or os.getenv("MODULE4_GRAPHRAG_CHAT_MODEL") or "").strip()
+        embedding_model = str(
+            workspace_env.get("GRAPHRAG_EMBEDDING_MODEL") or os.getenv("MODULE4_GRAPHRAG_EMBEDDING_MODEL") or ""
+        ).strip()
+        log_ai_api_request(
+            api_url=api_base or "module4-graphrag-subprocess",
+            request_body={
+                "operation": "module4_graphrag_index",
+                "model": chat_model,
+                "embedding_model": embedding_model,
+                "workspace_dir": str(workspace_dir),
+                "command": command,
+            },
+            model=", ".join(part for part in (chat_model, embedding_model) if part),
+            logger_name="app.modules.module4.graphrag.ai_api",
+            config_prefix="MODULE4",
+        )
 
         def _execute() -> subprocess.CompletedProcess[str]:
             with log_path.open("a", encoding="utf-8") as log_file:
@@ -1277,7 +1297,23 @@ class GraphRAGIndexer:
                     ) from exc
 
         skipped_workflows: List[str] = []
-        completed = _execute()
+        try:
+            completed = _execute()
+            log_ai_api_response(
+                response_text=(
+                    f"GraphRAG index subprocess finished: exit_code={completed.returncode}, "
+                    f"log_path={log_path}"
+                ),
+                logger_name="app.modules.module4.graphrag.ai_api",
+                config_prefix="MODULE4",
+            )
+        except Exception as exc:
+            log_ai_api_exception(
+                exc=exc,
+                logger_name="app.modules.module4.graphrag.ai_api",
+                config_prefix="MODULE4",
+            )
+            raise
         try:
             log_path.touch(exist_ok=True)
         except Exception:  # pragma: no cover - defensive

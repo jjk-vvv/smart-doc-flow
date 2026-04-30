@@ -8,6 +8,12 @@ import requests
 from requests import Response
 from requests.exceptions import HTTPError, RequestException
 
+from app.core.ai_api_logging import (
+    AIAPIStreamRecorder,
+    log_ai_api_exception,
+    log_ai_api_request,
+    log_ai_api_response,
+)
 from app.core.assistant_config import AssistantSettings
 
 
@@ -222,21 +228,42 @@ class AssistantResponsesProvider:
         response: Response | None = None
         for attempt in range(3):
             try:
+                log_ai_api_request(
+                    api_url=self._request_url(),
+                    request_body=payload,
+                    model=self.model,
+                    attempt=attempt + 1,
+                    max_attempts=3,
+                    logger_name="app.integrations.assistant_provider.ai_api",
+                )
                 response = requests.post(
                     self._request_url(),
                     json=payload,
                     headers=self._build_headers(),
                     timeout=self.timeout_sec,
                 )
+                log_ai_api_response(
+                    response=response,
+                    logger_name="app.integrations.assistant_provider.ai_api",
+                )
                 response.raise_for_status()
                 break
             except HTTPError as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    close_call=exc.response is None,
+                    logger_name="app.integrations.assistant_provider.ai_api",
+                )
                 status_code = exc.response.status_code if exc.response is not None else None
                 last_error = exc
                 if status_code not in retryable_statuses or attempt >= 2:
                     detail = exc.response.text if exc.response is not None else str(exc)
                     raise RuntimeError(f"assistant responses http error {status_code or 'unknown'}: {detail}") from exc
             except RequestException as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.integrations.assistant_provider.ai_api",
+                )
                 last_error = exc
                 if attempt >= 2:
                     raise RuntimeError(f"assistant responses connection error: {exc}") from exc
@@ -260,7 +287,16 @@ class AssistantResponsesProvider:
 
         for attempt in range(3):
             emitted_any = False
+            stream_recorder = AIAPIStreamRecorder(logger_name="app.integrations.assistant_provider.ai_api")
             try:
+                log_ai_api_request(
+                    api_url=self._request_url(),
+                    request_body=payload,
+                    model=self.model,
+                    attempt=attempt + 1,
+                    max_attempts=3,
+                    logger_name="app.integrations.assistant_provider.ai_api",
+                )
                 with requests.post(
                     self._request_url(),
                     json=payload,
@@ -273,8 +309,10 @@ class AssistantResponsesProvider:
                     for _, data_text in _iter_sse_messages(response):
                         if not data_text:
                             continue
+                        stream_recorder.append(data_text)
                         emitted_any = True
                         if data_text == "[DONE]":
+                            stream_recorder.close()
                             return
                         try:
                             data = json.loads(data_text)
@@ -287,17 +325,35 @@ class AssistantResponsesProvider:
                         if event_type in {"response.failed", "error"}:
                             raise RuntimeError(str(data.get("message") or "assistant responses failed"))
                         yield data
+                    stream_recorder.close()
                     return
             except HTTPError as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.integrations.assistant_provider.ai_api",
+                )
                 status_code = exc.response.status_code if exc.response is not None else None
                 last_error = exc
                 if emitted_any or status_code not in retryable_statuses or attempt >= 2:
                     detail = exc.response.text if exc.response is not None else str(exc)
                     raise RuntimeError(f"assistant responses http error {status_code or 'unknown'}: {detail}") from exc
             except RequestException as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.integrations.assistant_provider.ai_api",
+                )
                 last_error = exc
                 if emitted_any or attempt >= 2:
                     raise RuntimeError(f"assistant responses connection error: {exc}") from exc
+            except Exception as exc:
+                stream_recorder.close()
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.integrations.assistant_provider.ai_api",
+                )
+                raise
             time.sleep(0.8 * (attempt + 1))
 
         if last_error is not None:

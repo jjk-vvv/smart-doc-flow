@@ -247,26 +247,185 @@ export type Module3SaveResponse = {
   run_id?: string;
 };
 
+const MODULE3_PREFIX = "/module3";
+const BACKEND_FALLBACKS_KEY = "smart_doc_flow.backend_entry_fallbacks";
+
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
 
-const resolveModule3BaseUrl = (): string => {
-  const envBase =
+const parseBaseCandidates = (raw: string): string[] =>
+  String(raw || "")
+    .split(/[,\n;]/)
+    .map((item) => trimTrailingSlash(String(item || "").trim()))
+    .filter(Boolean);
+
+const readStoredBackendFallbacks = (): string[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    return parseBaseCandidates(window.localStorage.getItem(BACKEND_FALLBACKS_KEY) || "");
+  } catch {
+    return [];
+  }
+};
+
+const isModule3Base = (value: string): boolean => {
+  const normalized = String(value || "").toLowerCase();
+  return (
+    normalized === MODULE3_PREFIX ||
+    normalized.endsWith(MODULE3_PREFIX) ||
+    normalized.includes(`${MODULE3_PREFIX}/`)
+  );
+};
+
+const normalizeModule3Base = (raw: string): string => {
+  const value = trimTrailingSlash(String(raw || "").trim());
+  if (!value || value === ".") return MODULE3_PREFIX;
+
+  const currentOrigin =
+    typeof window !== "undefined" ? trimTrailingSlash(window.location.origin) : "";
+  if (value === "/" || (currentOrigin && value === currentOrigin)) {
+    return value === "/" ? MODULE3_PREFIX : `${value}${MODULE3_PREFIX}`;
+  }
+
+  if (isModule3Base(value)) return value;
+
+  try {
+    const parsed = new URL(value);
+    if (!parsed.pathname || parsed.pathname === "/") {
+      parsed.pathname = MODULE3_PREFIX;
+      return trimTrailingSlash(parsed.toString());
+    }
+  } catch {
+    // Relative non-root overrides such as /api/module3 are handled above.
+  }
+
+  return value;
+};
+
+const appendModule3Prefix = (base: string): string => {
+  const value = trimTrailingSlash(String(base || "").trim());
+  if (!value || value === "." || value === "/") return MODULE3_PREFIX;
+  if (isModule3Base(value)) return value;
+  return `${value}${MODULE3_PREFIX}`;
+};
+
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
+
+const isLoopbackHost = (host: string): boolean =>
+  LOCAL_HOSTNAMES.has(String(host || "").trim().toLowerCase());
+
+const isElectronRuntime = (): boolean =>
+  typeof navigator !== "undefined" && /electron/i.test(String(navigator.userAgent || ""));
+
+const isLocalDesktopRuntime = (): boolean => {
+  if (typeof window === "undefined") return false;
+  return window.location.protocol === "file:" || isLoopbackHost(window.location.hostname) || isElectronRuntime();
+};
+
+const isLoopbackAbsoluteUrl = (value: string): boolean => {
+  try {
+    return isLoopbackHost(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+};
+
+const shouldSkipModule3BaseCandidate = (value: string): boolean =>
+  isLocalDesktopRuntime() && /^https?:\/\//i.test(value) && !isLoopbackAbsoluteUrl(value);
+
+const resolveModule3BaseCandidates = (): string[] => {
+  const module3EnvBase =
     typeof import.meta !== "undefined"
       ? String(import.meta.env?.VITE_MODULE3_API_BASE ?? "").trim()
       : "";
-  if (envBase) return trimTrailingSlash(envBase);
-  return "/module3";
+  const backendEntry =
+    typeof import.meta !== "undefined"
+      ? String(import.meta.env?.VITE_BACKEND_ENTRY_URL ?? "").trim()
+      : "";
+  const envFallbacks =
+    typeof import.meta !== "undefined"
+      ? parseBaseCandidates(String(import.meta.env?.VITE_BACKEND_ENTRY_URL_FALLBACKS ?? ""))
+      : [];
+  const storedFallbacks = readStoredBackendFallbacks();
+  const candidates: string[] = [];
+  const push = (value: string, options?: { allowPublicInLocalDesktop?: boolean }) => {
+    const normalized = trimTrailingSlash(String(value || "").trim());
+    if (!normalized || candidates.includes(normalized)) return;
+    if (!options?.allowPublicInLocalDesktop && shouldSkipModule3BaseCandidate(normalized)) return;
+    candidates.push(normalized);
+  };
+
+  if (module3EnvBase) {
+    push(normalizeModule3Base(module3EnvBase), { allowPublicInLocalDesktop: true });
+  }
+  if (backendEntry) {
+    push(appendModule3Prefix(backendEntry));
+  }
+  envFallbacks.forEach((base) => push(appendModule3Prefix(base)));
+  storedFallbacks.forEach((base) => push(appendModule3Prefix(base)));
+  push(MODULE3_PREFIX);
+
+  return candidates;
 };
 
-const MODULE3_BASE_URL = resolveModule3BaseUrl();
+const module3Url = (path: string): string => `${resolveModule3BaseCandidates()[0]}${path}`;
 
-const module3Url = (path: string): string => `${MODULE3_BASE_URL}${path}`;
+const shouldRetryResponse = async (response: Response): Promise<boolean> => {
+  if (
+    response.status === 405 ||
+    response.status === 502 ||
+    response.status === 503 ||
+    response.status === 504
+  ) {
+    return true;
+  }
+  if (response.status !== 404) {
+    return false;
+  }
 
-const module3Fetch = (path: string, init: RequestInit = {}): Promise<Response> =>
-  fetch(module3Url(path), {
-    credentials: "include",
-    ...init,
-  });
+  try {
+    const detail = (await response.clone().text()).trim();
+    const normalized = detail.toLowerCase();
+    return (
+      !detail ||
+      normalized === "not found" ||
+      normalized === '{"detail":"not found"}' ||
+      normalized.includes("cannot post") ||
+      normalized.includes("cannot get")
+    );
+  } catch {
+    return true;
+  }
+};
+
+const module3Fetch = async (path: string, init: RequestInit = {}): Promise<Response> => {
+  const candidates = resolveModule3BaseCandidates();
+  let lastResponse: Response | null = null;
+  let lastError: unknown = null;
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const base = candidates[index];
+    const isLast = index === candidates.length - 1;
+
+    try {
+      const response = await fetch(`${base}${path}`, {
+        credentials: "include",
+        ...init,
+      });
+      lastResponse = response;
+      if (response.ok || isLast || !(await shouldRetryResponse(response))) {
+        return response;
+      }
+    } catch (error) {
+      lastError = error;
+      if (isLast) {
+        throw error;
+      }
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  throw lastError instanceof Error ? lastError : new Error("Failed to fetch module3 API");
+};
 
 export const fetchModule3Overview = async (limit = 6): Promise<Module3OverviewResponse> => {
   const response = await module3Fetch(`/overview?limit=${encodeURIComponent(String(limit))}`);

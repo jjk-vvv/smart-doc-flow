@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from app.core.config import Settings
 from app.modules.auth.composition import router as auth_router
+from app.modules.diagnostics.composition import router as diagnostics_router
 from app.modules.file_assets.api.router import router as file_assets_router
 from app.modules.frontend_static.api.router import router as frontend_static_router
 from app.modules.module1.composition import router as module1_router
@@ -52,6 +53,7 @@ def _load_module3_router(settings: Settings) -> APIRouter | None:
 
 _MODULE_ROUTE_REGISTRATIONS: tuple[ModuleRouteRegistration, ...] = (
     ModuleRouteRegistration("auth", _constant_router_loader(auth_router)),
+    ModuleRouteRegistration("diagnostics", _constant_router_loader(diagnostics_router)),
     ModuleRouteRegistration("file_assets", _constant_router_loader(file_assets_router)),
     ModuleRouteRegistration("module1", _constant_router_loader(module1_router)),
     ModuleRouteRegistration("module2", _constant_router_loader(module2_router)),

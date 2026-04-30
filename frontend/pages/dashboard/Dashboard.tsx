@@ -14,14 +14,12 @@ import {
   File,
   FileSearch,
   FileSpreadsheet,
-  FileText,
   Filter,
   FolderOpen,
   FolderPlus,
   GitGraph,
   Home,
   Image as ImageIcon,
-  ExternalLink,
   Loader2,
   LayoutGrid,
   MessageSquare,
@@ -89,7 +87,7 @@ type DashboardProps = {
   user?: AuthUser;
 };
 
-type PreviewMode = 'office-online' | 'pdf' | 'text' | 'image' | 'spreadsheet' | 'unsupported';
+type PreviewMode = 'pdf' | 'text' | 'image' | 'spreadsheet' | 'unsupported';
 
 type ToastState = {
   tone: 'info' | 'good' | 'warn' | 'error';
@@ -115,27 +113,6 @@ type OfficePreviewJobPayload = {
   artifact_url?: string;
   error?: string;
   message?: string;
-};
-
-type OfficeOnlinePreviewPayload = {
-  ok?: boolean;
-  iframe_url?: string;
-  source_url?: string;
-  file_name?: string;
-  expires_at?: string;
-  public_url_warning?: string;
-  error?: string;
-  detail?: string;
-  message?: string;
-};
-
-type OfficeOnlinePreviewState = {
-  status: 'loading' | 'ready' | 'error';
-  iframeUrl?: string;
-  sourceUrl?: string;
-  expiresAt?: string;
-  warning?: string;
-  errorMessage?: string;
 };
 
 const MODULE1_QUICK_PROMPTS = [
@@ -225,8 +202,7 @@ const isImageFile = (item: Pick<HomeWorkbenchItem, 'ext' | 'mime'>): boolean =>
 
 const resolvePreviewMode = (item: HomeWorkbenchItem | null | undefined): PreviewMode => {
   if (!item) return 'unsupported';
-  if (isWordFile(item)) return 'office-online';
-  if (isPdfFile(item)) return 'pdf';
+  if (isPdfFile(item) || isWordFile(item)) return 'pdf';
   if (isTextFile(item)) return 'text';
   if (isImageFile(item)) return 'image';
   if (isSpreadsheetFile(item)) return 'spreadsheet';
@@ -237,6 +213,14 @@ const parseApiErrorMessage = async (response: Response): Promise<string> => {
   try {
     const bodyText = (await response.text()).trim();
     if (!bodyText) return `HTTP ${response.status}`;
+    const normalizedBody = bodyText.toLowerCase();
+    if (
+      normalizedBody.startsWith('<!doctype')
+      || normalizedBody.startsWith('<html')
+      || normalizedBody.includes('server is powered by frp')
+    ) {
+      return `模块一请求没有到达本地后端服务（HTTP ${response.status}）。请检查 API 地址或内网穿透配置。请求地址：${response.url}`;
+    }
     try {
       const payload = JSON.parse(bodyText) as { error?: string; detail?: string; message?: string };
       return String(payload.error || payload.detail || payload.message || bodyText).trim();
@@ -372,43 +356,6 @@ const getOfficePreviewErrorMessage = (payload: OfficePreviewJobPayload, fallback
   return message || fallback;
 };
 
-const parseOfficeOnlinePreviewPayload = async (response: Response): Promise<OfficeOnlinePreviewPayload> => {
-  const raw = await response.text();
-  if (!raw.trim()) return {};
-  try {
-    return JSON.parse(raw) as OfficeOnlinePreviewPayload;
-  } catch {
-    return { message: raw.trim() };
-  }
-};
-
-const getOfficeOnlinePreviewErrorMessage = (payload: OfficeOnlinePreviewPayload, fallback: string): string => {
-  const message = String(payload.error || payload.detail || payload.message || '').trim();
-  return message || fallback;
-};
-
-const startOfficeOnlinePreview = async (file: File): Promise<OfficeOnlinePreviewPayload> => {
-  const formData = new FormData();
-  formData.append('file', file, file.name || 'document.docx');
-
-  const response = await fetch(buildModule1ApiUrl('/office-online/preview/start'), {
-    method: 'POST',
-    body: formData,
-    credentials: 'include',
-  });
-
-  const payload = await parseOfficeOnlinePreviewPayload(response);
-  if (!response.ok) {
-    throw new Error(`Office 在线预览准备失败：${getOfficeOnlinePreviewErrorMessage(payload, `HTTP ${response.status}`)}`);
-  }
-
-  const iframeUrl = String(payload.iframe_url || '').trim();
-  if (!iframeUrl) {
-    throw new Error('Office 在线预览准备失败：后端未返回 iframe_url。');
-  }
-  return payload;
-};
-
 const startWordPreviewJob = async (file: File): Promise<OfficePreviewJobPayload> => {
   const formData = new FormData();
   formData.append('file', file, file.name || 'document.docx');
@@ -479,6 +426,44 @@ const fetchWordPreviewArtifact = async (jobId: string): Promise<Blob> => {
   return pdfBlob;
 };
 
+const convertWordToPdfDirect = async (file: File): Promise<Blob> => {
+  const formData = new FormData();
+  formData.append('file', file, file.name || 'document.docx');
+
+  const response = await fetch(buildModule1ApiUrl('/convert/docx-to-pdf'), {
+    method: 'POST',
+    body: formData,
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const errorMessage = await parseApiErrorMessage(response);
+    throw new Error(`同步 Word 转 PDF 失败：${errorMessage}`);
+  }
+
+  const contentType = response.headers.get('content-type');
+  if (!contentType?.includes('application/pdf')) {
+    throw new Error(`同步转换返回内容不是 PDF：${contentType || 'unknown'}`);
+  }
+
+  const pdfBlob = await response.blob();
+  if (pdfBlob.size === 0) {
+    throw new Error('同步转换返回的 PDF 内容为空。');
+  }
+
+  const looksLikePdf = await isLikelyPdfBlob(pdfBlob);
+  if (!looksLikePdf) {
+    throw new Error('同步转换返回内容不是有效 PDF。');
+  }
+
+  return pdfBlob;
+};
+
+const shouldFallbackToDirectWordPreview = (message: string): boolean =>
+  /HTTP\s*404|404\s*\(Not Found\)|Preview job not found|Preview artifact not found|预览任务不存在|预览产物不存在/i.test(
+    String(message || '')
+  );
+
 const convertWordToPdf = async (file: File): Promise<WordToPdfConversionResult> => {
   try {
     const startedPayload = await startWordPreviewJob(file);
@@ -508,6 +493,18 @@ const convertWordToPdf = async (file: File): Promise<WordToPdfConversionResult> 
     return { ok: false, errorMessage: 'Word 转 PDF 失败：预览转换超时。' };
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : 'Word 转 PDF 失败。';
+    if (shouldFallbackToDirectWordPreview(rawMessage)) {
+      try {
+        const pdfBlob = await convertWordToPdfDirect(file);
+        return { ok: true, pdfBlob };
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : '同步 Word 转 PDF 失败。';
+        return {
+          ok: false,
+          errorMessage: `${rawMessage}；同步转换兜底也失败：${fallbackMessage}`,
+        };
+      }
+    }
     const normalizedMessage = /Failed to fetch|NetworkError|Load failed/i.test(rawMessage)
       ? 'Word 转 PDF 失败：后端服务不可用或请求被代理中断。'
       : rawMessage;
@@ -730,8 +727,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
   const [previewRotation, setPreviewRotation] = useState(0);
   const [pdfViewMode, setPdfViewMode] = useState<PdfViewMode>('fit-width');
   const [previewTextMap, setPreviewTextMap] = useState<Record<string, string>>({});
-  const [officeOnlinePreviewMap, setOfficeOnlinePreviewMap] = useState<Record<string, OfficeOnlinePreviewState>>({});
-  const [wordPdfFallbackIds, setWordPdfFallbackIds] = useState<string[]>([]);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [dragTarget, setDragTarget] = useState<ModuleTarget | null>(null);
   const [module3Requirements, setModule3Requirements] = useState(() => readInitialModule3Requirements());
@@ -748,7 +743,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
   const module3SourceInputRef = useRef<HTMLInputElement>(null);
   const objectUrlMapRef = useRef<Map<string, string>>(new Map());
   const activePreviewConversionIdsRef = useRef<Set<string>>(new Set());
-  const activeOfficeOnlinePreviewIdsRef = useRef<Set<string>>(new Set());
   const [binaryStoreReady, setBinaryStoreReady] = useState(() => isHomeWorkbenchPersistenceReady());
   const [binaryStoreRevision, setBinaryStoreRevision] = useState(0);
   const [filterType, setFilterType] = useState<string | null>(null);
@@ -827,7 +821,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
     () => session.items.find((item) => item.id === previewItemId) ?? null,
     [previewItemId, session.items]
   );
-  const wordPdfFallbackSet = useMemo(() => new Set(wordPdfFallbackIds), [wordPdfFallbackIds]);
 
   const rootFolder = useMemo(
     () => session.folders.find((folder) => folder.id === HOME_WORKBENCH_ROOT_FOLDER_ID) ?? session.folders[0] ?? null,
@@ -1123,42 +1116,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
 
   const handleRetryPreviewConversion = useCallback(() => {
     if (!previewItem || !isWordFile(previewItem)) return;
-    setWordPdfFallbackIds((current) => (
-      current.includes(previewItem.id) ? current : [...current, previewItem.id]
-    ));
     updateItem(previewItem.id, (item) => ({
       ...item,
       status: 'ready',
       convertedPdfReady: Boolean(getHomeWorkbenchConvertedPdf(item.id)),
-      errorMessage: null,
-      updatedAt: new Date().toISOString(),
-    }));
-  }, [previewItem, updateItem]);
-
-  const handleUseWordPdfFallback = useCallback(() => {
-    if (!previewItem || !isWordFile(previewItem)) return;
-    setWordPdfFallbackIds((current) => (
-      current.includes(previewItem.id) ? current : [...current, previewItem.id]
-    ));
-    updateItem(previewItem.id, (item) => ({
-      ...item,
-      status: item.convertedPdfReady ? 'converted' : 'ready',
-      errorMessage: null,
-      updatedAt: new Date().toISOString(),
-    }));
-  }, [previewItem, updateItem]);
-
-  const handleRetryOfficeOnlinePreview = useCallback(() => {
-    if (!previewItem || !isWordFile(previewItem)) return;
-    setWordPdfFallbackIds((current) => current.filter((itemId) => itemId !== previewItem.id));
-    setOfficeOnlinePreviewMap((current) => {
-      const next = { ...current };
-      delete next[previewItem.id];
-      return next;
-    });
-    updateItem(previewItem.id, (item) => ({
-      ...item,
-      status: 'ready',
       errorMessage: null,
       updatedAt: new Date().toISOString(),
     }));
@@ -1186,71 +1147,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
 
   useEffect(() => {
     if (!previewItem || !isWordFile(previewItem)) return;
-    if (wordPdfFallbackSet.has(previewItem.id)) return;
-    const targetItemId = previewItem.id;
-    const currentState = officeOnlinePreviewMap[targetItemId];
-    const expiresAtMs = currentState?.expiresAt ? new Date(currentState.expiresAt).getTime() : 0;
-    const stillValid = currentState?.status === 'ready' && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now() + 60_000;
-    if (stillValid || currentState?.status === 'loading' || currentState?.status === 'error') return;
-    if (activeOfficeOnlinePreviewIdsRef.current.has(targetItemId)) return;
-
-    const file = getHomeWorkbenchFile(targetItemId);
-    if (!file) return;
-
-    activeOfficeOnlinePreviewIdsRef.current.add(targetItemId);
-    setOfficeOnlinePreviewMap((current) => ({
-      ...current,
-      [targetItemId]: { status: 'loading' },
-    }));
-    if (previewItem.status === 'error') {
-      updateItem(targetItemId, (item) => ({
-        ...item,
-        status: 'ready',
-        errorMessage: null,
-        updatedAt: new Date().toISOString(),
-      }));
-    }
-
-    void startOfficeOnlinePreview(file)
-      .then((payload) => {
-        const iframeUrl = String(payload.iframe_url || '').trim();
-        setOfficeOnlinePreviewMap((current) => ({
-          ...current,
-          [targetItemId]: {
-            status: 'ready',
-            iframeUrl,
-            sourceUrl: String(payload.source_url || '').trim(),
-            expiresAt: String(payload.expires_at || '').trim(),
-            warning: String(payload.public_url_warning || '').trim(),
-          },
-        }));
-        updateItem(targetItemId, (item) => ({
-          ...item,
-          status: 'ready',
-          errorMessage: null,
-          updatedAt: new Date().toISOString(),
-        }));
-      })
-      .catch((error) => {
-        const rawMessage = error instanceof Error ? error.message : 'Office 在线预览准备失败。';
-        const normalizedMessage = /Failed to fetch|NetworkError|Load failed/i.test(rawMessage)
-          ? 'Office 在线预览准备失败：后端服务不可用或请求被代理中断。'
-          : rawMessage;
-        setOfficeOnlinePreviewMap((current) => ({
-          ...current,
-          [targetItemId]: {
-            status: 'error',
-            errorMessage: normalizedMessage,
-          },
-        }));
-      })
-      .finally(() => {
-        activeOfficeOnlinePreviewIdsRef.current.delete(targetItemId);
-      });
-  }, [binaryStoreRevision, officeOnlinePreviewMap, previewItem, updateItem, wordPdfFallbackSet]);
-
-  useEffect(() => {
-    if (!previewItem || !isWordFile(previewItem) || !wordPdfFallbackSet.has(previewItem.id)) return;
     const targetItemId = previewItem.id;
     if (getHomeWorkbenchConvertedPdf(targetItemId)) return;
     const file = getHomeWorkbenchFile(targetItemId);
@@ -1294,7 +1190,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
       .finally(() => {
         activePreviewConversionIdsRef.current.delete(targetItemId);
       });
-  }, [binaryStoreRevision, previewItem, updateItem, wordPdfFallbackSet]);
+  }, [binaryStoreRevision, previewItem, updateItem]);
 
   const previewSource = useMemo(() => {
     if (!previewItem) return null;
@@ -1316,7 +1212,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
   const handleDownloadItem = useCallback((item: HomeWorkbenchItem) => {
     const converted = isWordFile(item) ? getHomeWorkbenchConvertedPdf(item.id) : null;
     const file = getHomeWorkbenchFile(item.id);
-    const blob = file || converted;
+    const blob = converted || file;
     if (!blob) {
       pushToast('warn', '当前会话中已找不到这个文件，请重新上传后再下载。');
       return;
@@ -1324,7 +1220,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = file ? item.name : item.name.replace(/\.[^.]+$/, '.pdf');
+    anchor.download = converted ? item.name.replace(/\.[^.]+$/, '.pdf') : item.name;
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
@@ -1603,12 +1499,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
   };
 
   const previewMode = resolvePreviewMode(previewItem);
-  const activeOfficeOnlinePreview = previewItem ? officeOnlinePreviewMap[previewItem.id] : null;
-  const isWordPdfFallbackActive = previewItem ? wordPdfFallbackSet.has(previewItem.id) : false;
-  const previewHasOriginalFile = previewItem ? Boolean(getHomeWorkbenchFile(previewItem.id)) : false;
-  const previewHasConvertedPdf = previewItem ? Boolean(getHomeWorkbenchConvertedPdf(previewItem.id)) : false;
   const previewHasLiveSource = previewItem
-    ? Boolean(previewHasOriginalFile || previewHasConvertedPdf)
+    ? Boolean(getHomeWorkbenchFile(previewItem.id) || getHomeWorkbenchConvertedPdf(previewItem.id))
     : false;
 
   const renderToolbox = (mode: 'dock' | 'drawer') => {
@@ -2219,7 +2111,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {previewMode === 'pdf' || (previewMode === 'office-online' && isWordPdfFallbackActive) ? (
+                  {previewMode === 'pdf' ? (
                     <>
                       <button
                         type="button"
@@ -2273,109 +2165,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
                         这个队列条目仍保留元数据，但用于预览和拖入模块的原始文件已经不在当前浏览器会话中。请重新上传它，以恢复完整操作能力。
                       </div>
                     </div>
-                  ) : previewMode === 'office-online' && !isWordPdfFallbackActive ? (
-                    !previewHasOriginalFile ? (
-                      <div className="flex h-full flex-col items-center justify-center rounded-none border-0 bg-white dark:bg-[#0B1120] px-8 text-center">
-                        <div className="flex h-16 w-16 items-center justify-center rounded-[24px] border border-[#dbe5f0] dark:border-white/[0.05] bg-[#f7fbff] dark:bg-white/[0.02] text-[#2d64aa] dark:text-slate-400">
-                          <AlertTriangle size={28} />
-                        </div>
-                        <div className="mt-5 text-xl font-semibold text-[#1d2d43] dark:text-slate-200">缺少 Word 原始文件</div>
-                        <div className="mt-2 max-w-xl text-sm leading-7 text-[#6c7d92] dark:text-slate-400">
-                          Microsoft Office 在线预览需要可重新上传的 Word 原文。如果当前会话只保留了已转换的 PDF 缓存，可以先使用 PDF 兜底预览；否则请重新上传原文件。
-                        </div>
-                        {previewHasConvertedPdf ? (
-                          <button
-                            type="button"
-                            onClick={handleUseWordPdfFallback}
-                            className="mt-5 inline-flex items-center rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-                          >
-                            使用 PDF 预览兜底
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : activeOfficeOnlinePreview?.status === 'ready' && activeOfficeOnlinePreview.iframeUrl ? (
-                      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white dark:bg-[#0B1120]">
-                        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 dark:border-white/[0.05] bg-white/96 dark:bg-[#0B1120]/96 px-5 py-3">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 text-[13px] font-semibold text-[#1f3047] dark:text-slate-100">
-                              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300">
-                                <FileText size={15} />
-                              </span>
-                              <span className="truncate">Microsoft Office 在线预览</span>
-                            </div>
-                            <div className="mt-1 truncate text-[12px] text-[#6b7d92] dark:text-slate-400">
-                              使用短期安全链接渲染 Word 原文，链接过期后可重新生成。
-                            </div>
-                          </div>
-                          <div className="ml-4 flex shrink-0 items-center gap-2">
-                            {activeOfficeOnlinePreview.warning ? (
-                              <span className="hidden max-w-[300px] truncate rounded-full bg-amber-50 px-3 py-1 text-[11px] font-medium text-amber-700 xl:inline dark:bg-amber-500/10 dark:text-amber-300">
-                                {activeOfficeOnlinePreview.warning}
-                              </span>
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={() => window.open(activeOfficeOnlinePreview.iframeUrl, '_blank', 'noopener,noreferrer')}
-                              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-slate-300 dark:hover:bg-white/[0.06]"
-                            >
-                              <ExternalLink size={13} />
-                              新窗口打开
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleUseWordPdfFallback}
-                              className="inline-flex items-center rounded-md bg-[#eef4ff] px-3 py-1.5 text-[12px] font-semibold text-blue-700 transition hover:bg-[#e2ecff] dark:bg-blue-500/10 dark:text-blue-300 dark:hover:bg-blue-500/15"
-                            >
-                              使用 PDF 预览
-                            </button>
-                          </div>
-                        </div>
-                        <iframe
-                          title={`${previewItem.name} - Microsoft Office Online Preview`}
-                          src={activeOfficeOnlinePreview.iframeUrl}
-                          className="h-full min-h-0 w-full flex-1 border-0 bg-white"
-                          allow="fullscreen"
-                        />
-                      </div>
-                    ) : activeOfficeOnlinePreview?.status === 'error' ? (
-                      <div className="flex h-full flex-col items-center justify-center rounded-none border-0 bg-white dark:bg-[#0B1120] px-8 text-center">
-                        <AlertTriangle size={32} className="text-[#bb5b4f] dark:text-red-400" />
-                        <div className="mt-4 text-xl font-semibold text-[#1f3047] dark:text-slate-200">Office 在线预览准备失败</div>
-                        <div className="mt-2 max-w-xl text-sm leading-7 text-[#6b7d92] dark:text-slate-400">
-                          {activeOfficeOnlinePreview.errorMessage || 'Microsoft Office 在线服务暂时无法预览该文件。'}
-                        </div>
-                        <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-                          <button
-                            type="button"
-                            onClick={handleRetryOfficeOnlinePreview}
-                            className="inline-flex items-center rounded-md border border-slate-200 dark:border-white/[0.05] bg-white dark:bg-white/[0.02] px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-white/[0.05]"
-                          >
-                            重新生成在线预览
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleUseWordPdfFallback}
-                            className="inline-flex items-center rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-                          >
-                            使用 PDF 预览兜底
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex h-full flex-col items-center justify-center rounded-none border-0 bg-white dark:bg-[#0B1120] px-8 text-center">
-                        <Loader2 size={34} className="animate-spin text-[#3267ad] dark:text-blue-400" />
-                        <div className="mt-4 text-xl font-semibold text-[#1f3047] dark:text-slate-200">正在准备 Microsoft Office 在线预览</div>
-                        <div className="mt-2 max-w-lg text-sm leading-7 text-[#6b7d92] dark:text-slate-400">
-                          正在为 Word 文件生成短期安全链接，Office Online 拉取成功后会在这里显示原文预览。
-                        </div>
-                      </div>
-                    )
-                  ) : previewMode === 'pdf' || (previewMode === 'office-online' && isWordPdfFallbackActive) ? (
+                  ) : previewMode === 'pdf' ? (
                     previewItem.status === 'converting' && !previewSource ? (
                       <div className="flex h-full flex-col items-center justify-center rounded-none border-0 bg-white dark:bg-[#0B1120]">
                         <Loader2 size={34} className="animate-spin text-[#3267ad] dark:text-blue-400" />
                         <div className="mt-4 text-xl font-semibold text-[#1f3047] dark:text-slate-200">
-                          {previewMode === 'office-online' ? '正在准备 PDF 兜底预览' : '正在把 Word 转为 PDF 预览'}
+                          正在把 Word 转为 PDF 预览
                         </div>
                         <div className="mt-2 text-sm text-[#6b7d92] dark:text-slate-400">转换完成后会直接进入全屏 PDF 预览。</div>
                       </div>

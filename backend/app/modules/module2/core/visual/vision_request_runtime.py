@@ -5,6 +5,12 @@ import json
 import urllib.request
 from typing import Any, Callable, Dict, Optional
 
+from app.core.ai_api_logging import (
+    log_ai_api_exception,
+    log_ai_api_request,
+    log_ai_api_response,
+)
+
 
 ResolveText = Callable[[], str]
 ResolveUrl = Callable[[str], str]
@@ -134,6 +140,13 @@ class VisionRequestRuntime:
         raw = ""
         for url, auth_key in request_candidates:
             try:
+                log_ai_api_request(
+                    api_url=url,
+                    request_body=payload,
+                    model=model,
+                    logger_name="app.modules.module2.vision.runtime.ai_api",
+                    config_prefix="MODULE2",
+                )
                 request = self._request_factory(
                     url=url,
                     data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -142,7 +155,17 @@ class VisionRequestRuntime:
                 )
                 with self._urlopen(request, timeout=self.gemini_vision_timeout_sec) as response:
                     raw = response.read().decode("utf-8", errors="ignore")
-            except Exception:
+                log_ai_api_response(
+                    response_text=raw,
+                    logger_name="app.modules.module2.vision.runtime.ai_api",
+                    config_prefix="MODULE2",
+                )
+            except Exception as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.vision.runtime.ai_api",
+                    config_prefix="MODULE2",
+                )
                 continue
             if raw:
                 break
@@ -175,6 +198,13 @@ class VisionRequestRuntime:
             "stream": False,
         }
         try:
+            log_ai_api_request(
+                api_url=url,
+                request_body=payload,
+                model=model,
+                logger_name="app.modules.module2.vision.runtime.ai_api",
+                config_prefix="MODULE2",
+            )
             request = self._request_factory(
                 url=url,
                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -188,7 +218,17 @@ class VisionRequestRuntime:
             )
             with self._urlopen(request, timeout=self.gemini_vision_timeout_sec) as response:
                 raw = response.read().decode("utf-8", errors="ignore")
-        except Exception:
+            log_ai_api_response(
+                response_text=raw,
+                logger_name="app.modules.module2.vision.runtime.ai_api",
+                config_prefix="MODULE2",
+            )
+        except Exception as exc:
+            log_ai_api_exception(
+                exc=exc,
+                logger_name="app.modules.module2.vision.runtime.ai_api",
+                config_prefix="MODULE2",
+            )
             return ""
         return self._extract_openai_choice_text(raw)
 

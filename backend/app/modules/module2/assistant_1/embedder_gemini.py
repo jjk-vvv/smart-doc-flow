@@ -6,6 +6,12 @@ from urllib.parse import urlparse
 import requests
 from requests.exceptions import HTTPError, RequestException
 
+from app.core.ai_api_logging import (
+    log_ai_api_exception,
+    log_ai_api_request,
+    log_ai_api_response,
+)
+
 from .config import Assistant1Settings
 
 
@@ -60,9 +66,27 @@ class GeminiEmbeddingClient:
                 "dimensions": self.dimensions,
             }
             try:
+                log_ai_api_request(
+                    api_url=url,
+                    request_body=payload,
+                    model=self.model,
+                    logger_name="app.modules.module2.assistant_1.embedding.ai_api",
+                    config_prefix="MODULE2",
+                )
                 response = requests.post(url, headers=headers, json=payload, timeout=self.timeout_sec)
+                log_ai_api_response(
+                    response=response,
+                    logger_name="app.modules.module2.assistant_1.embedding.ai_api",
+                    config_prefix="MODULE2",
+                )
                 response.raise_for_status()
             except (HTTPError, RequestException) as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    close_call=not (isinstance(exc, HTTPError) and exc.response is not None),
+                    logger_name="app.modules.module2.assistant_1.embedding.ai_api",
+                    config_prefix="MODULE2",
+                )
                 self._raise_embedding_request_error(mode="openai", url=url, exc=exc)
             try:
                 data = response.json()
@@ -100,9 +124,27 @@ class GeminiEmbeddingClient:
             "outputDimensionality": self.dimensions,
         }
         try:
+            log_ai_api_request(
+                api_url=url,
+                request_body=payload,
+                model=self.model,
+                logger_name="app.modules.module2.assistant_1.embedding.ai_api",
+                config_prefix="MODULE2",
+            )
             response = requests.post(url, headers=headers, json=payload, timeout=self.timeout_sec)
+            log_ai_api_response(
+                response=response,
+                logger_name="app.modules.module2.assistant_1.embedding.ai_api",
+                config_prefix="MODULE2",
+            )
             response.raise_for_status()
         except (HTTPError, RequestException) as exc:
+            log_ai_api_exception(
+                exc=exc,
+                close_call=not (isinstance(exc, HTTPError) and exc.response is not None),
+                logger_name="app.modules.module2.assistant_1.embedding.ai_api",
+                config_prefix="MODULE2",
+            )
             self._raise_embedding_request_error(mode="native", url=url, exc=exc)
         try:
             data = response.json()

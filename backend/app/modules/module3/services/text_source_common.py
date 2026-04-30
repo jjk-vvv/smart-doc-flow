@@ -6,6 +6,8 @@ from typing import Any, Callable
 
 import requests
 
+from .llm_service import _log_ai_api_exception, _log_ai_api_request, _log_ai_api_response
+
 
 def log_event(logger: Callable[[str], None] | None, message: str) -> None:
     if logger:
@@ -37,16 +39,29 @@ def request_chat_completions(
             {"role": "user", "content": user_prompt},
         ],
     }
-    resp = requests.post(
-        f"{base_url}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=180,
-    )
-    resp.raise_for_status()
+    api_url = f"{base_url}/chat/completions"
+    try:
+        _log_ai_api_request(api_url, payload, attempt=1, max_attempts=1)
+        resp = requests.post(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=180,
+        )
+        _log_ai_api_response(resp)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        _log_ai_api_exception(
+            exc,
+            close_call=not (
+                isinstance(exc, requests.exceptions.HTTPError)
+                and exc.response is not None
+            ),
+        )
+        raise
     data = resp.json()
 
     choices = data.get("choices") or []

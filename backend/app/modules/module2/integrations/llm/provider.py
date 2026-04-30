@@ -12,6 +12,12 @@ import requests
 from dotenv import dotenv_values, load_dotenv
 from requests.exceptions import HTTPError, RequestException
 
+from app.core.ai_api_logging import (
+    log_ai_api_exception,
+    log_ai_api_request,
+    log_ai_api_response,
+)
+
 
 MODULE2_ROOT = Path(__file__).resolve().parents[2]
 CUSTOM_MODULE2_ENV_FILE = str(os.getenv("MODULE2_ENV_FILE", "") or "").strip()
@@ -433,15 +439,35 @@ class OpenAICompatibleChatProvider:
         resolved_timeout = self.timeout_sec if timeout_sec is None else max(5.0, float(timeout_sec))
         for attempt in range(1, self.retry_attempts + 1):
             try:
+                log_ai_api_request(
+                    api_url=self._request_url(),
+                    request_body=payload,
+                    model=self.model,
+                    attempt=attempt,
+                    max_attempts=self.retry_attempts,
+                    logger_name="app.modules.module2.llm.ai_api",
+                    config_prefix="MODULE2",
+                )
                 resp = requests.post(
                     self._request_url(),
                     json=payload,
                     headers=self._build_headers(),
                     timeout=resolved_timeout,
                 )
+                log_ai_api_response(
+                    response=resp,
+                    logger_name="app.modules.module2.llm.ai_api",
+                    config_prefix="MODULE2",
+                )
                 resp.raise_for_status()
                 break
             except HTTPError as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    close_call=exc.response is None,
+                    logger_name="app.modules.module2.llm.ai_api",
+                    config_prefix="MODULE2",
+                )
                 last_error = exc
                 if not self._should_retry_http_error(exc) or attempt >= self.retry_attempts:
                     response = exc.response
@@ -450,6 +476,11 @@ class OpenAICompatibleChatProvider:
                     raise RuntimeError(f"llm provider http error {status}: {detail}") from exc
                 time.sleep(self._retry_sleep_seconds(attempt))
             except RequestException as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.llm.ai_api",
+                    config_prefix="MODULE2",
+                )
                 last_error = exc
                 if not self._should_retry_request_exception(exc) or attempt >= self.retry_attempts:
                     raise RuntimeError(f"llm provider connection error: {exc}") from exc
@@ -640,15 +671,35 @@ class GeminiNativeChatProvider(OpenAICompatibleChatProvider):
         resolved_timeout = self.timeout_sec if timeout_sec is None else max(5.0, float(timeout_sec))
         for attempt in range(1, self.retry_attempts + 1):
             try:
+                log_ai_api_request(
+                    api_url=self._request_url(),
+                    request_body=payload,
+                    model=self.model,
+                    attempt=attempt,
+                    max_attempts=self.retry_attempts,
+                    logger_name="app.modules.module2.llm.ai_api",
+                    config_prefix="MODULE2",
+                )
                 resp = requests.post(
                     self._request_url(),
                     json=payload,
                     headers=self._build_headers(),
                     timeout=resolved_timeout,
                 )
+                log_ai_api_response(
+                    response=resp,
+                    logger_name="app.modules.module2.llm.ai_api",
+                    config_prefix="MODULE2",
+                )
                 resp.raise_for_status()
                 break
             except HTTPError as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    close_call=exc.response is None,
+                    logger_name="app.modules.module2.llm.ai_api",
+                    config_prefix="MODULE2",
+                )
                 last_error = exc
                 if not self._should_retry_http_error(exc) or attempt >= self.retry_attempts:
                     response = exc.response
@@ -657,6 +708,11 @@ class GeminiNativeChatProvider(OpenAICompatibleChatProvider):
                     raise RuntimeError(f"llm provider http error {status}: {detail}") from exc
                 time.sleep(self._retry_sleep_seconds(attempt))
             except RequestException as exc:
+                log_ai_api_exception(
+                    exc=exc,
+                    logger_name="app.modules.module2.llm.ai_api",
+                    config_prefix="MODULE2",
+                )
                 last_error = exc
                 if not self._should_retry_request_exception(exc) or attempt >= self.retry_attempts:
                     raise RuntimeError(f"llm provider connection error: {exc}") from exc

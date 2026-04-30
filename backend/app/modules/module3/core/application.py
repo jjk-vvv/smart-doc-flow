@@ -3,11 +3,14 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.logging import configure_app_logging
+
 from ..api.router import router as module3_router
 from .bootstrap import ensure_module3_storage
 
 
 def create_app() -> FastAPI:
+    configure_app_logging()
     application = FastAPI(
         title="Module3 Fusion API",
         version="1.0.0",

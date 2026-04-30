@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Dict, Iterable, Literal, Optional
 
+from app.core.ai_api_logging import log_ai_api_exception, log_ai_api_request, log_ai_api_response
+
 from .prompts import PromptRegistry
 from .query_adapter import load_artifact_graph_snapshot
 from .runtime_selection import choose_graphrag_python_bin
@@ -1641,6 +1643,35 @@ async def _execute_query_runtime_via_subprocess(
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
+    model_overrides = _query_model_cli_overrides()
+    completion_model = (
+        model_overrides.get("completion_models", {})
+        .get("default_completion_model", {})
+        .get("model", "")
+    )
+    embedding_model = (
+        model_overrides.get("embedding_models", {})
+        .get("default_embedding_model", {})
+        .get("model", "")
+    )
+    api_base = (
+        model_overrides.get("completion_models", {})
+        .get("default_completion_model", {})
+        .get("api_base", "")
+    )
+    log_ai_api_request(
+        api_url=str(api_base or "module4-graphrag-query-subprocess"),
+        request_body={
+            "operation": "module4_graphrag_query",
+            "model": completion_model,
+            "embedding_model": embedding_model,
+            "payload": payload,
+            "model_overrides": model_overrides,
+        },
+        model=", ".join(str(part) for part in (completion_model, embedding_model) if str(part or "").strip()),
+        logger_name="app.modules.module4.graphrag.ai_api",
+        config_prefix="MODULE4",
+    )
 
     def _run_subprocess() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -1656,21 +1687,45 @@ async def _execute_query_runtime_via_subprocess(
     try:
         completed = await asyncio.to_thread(_run_subprocess)
     except subprocess.TimeoutExpired as exc:
+        log_ai_api_exception(
+            exc=exc,
+            logger_name="app.modules.module4.graphrag.ai_api",
+            config_prefix="MODULE4",
+        )
         raise GraphRAGQueryServiceError(
             f"GraphRAG subprocess query timed out after {float(timeout_sec):.1f}s.",
             status_code=504,
         ) from exc
     except FileNotFoundError as exc:
+        log_ai_api_exception(
+            exc=exc,
+            logger_name="app.modules.module4.graphrag.ai_api",
+            config_prefix="MODULE4",
+        )
         raise GraphRAGQueryServiceError(
             f"GraphRAG query python runtime not found: {python_bin}",
             status_code=503,
         ) from exc
     except Exception as exc:
+        log_ai_api_exception(
+            exc=exc,
+            logger_name="app.modules.module4.graphrag.ai_api",
+            config_prefix="MODULE4",
+        )
         raise GraphRAGQueryServiceError(
             f"GraphRAG subprocess query failed to start: {type(exc).__name__}: {exc}",
             status_code=503,
         ) from exc
 
+    log_ai_api_response(
+        response_text=(
+            f"exit_code={completed.returncode}\n"
+            f"stdout={str(completed.stdout or '').strip()}\n"
+            f"stderr={str(completed.stderr or '').strip()}"
+        ),
+        logger_name="app.modules.module4.graphrag.ai_api",
+        config_prefix="MODULE4",
+    )
     if completed.returncode != 0:
         stderr_text = str(completed.stderr or "").strip()
         stdout_text = str(completed.stdout or "").strip()

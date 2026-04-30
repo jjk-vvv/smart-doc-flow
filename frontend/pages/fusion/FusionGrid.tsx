@@ -84,6 +84,17 @@ const resolveModule3OwnerScope = async (): Promise<string> => {
   }
 };
 
+const isMissingRunError = (error: unknown, runId: string): boolean => {
+  const missingResource = parseModule3MissingResource(error);
+  return (
+    missingResource?.kind === "run" &&
+    (!runId || missingResource.id === runId)
+  );
+};
+
+const staleRunMessage = (runId: string): string =>
+  `任务 ${runId} 的后端状态记录已失效或不属于当前登录账号，已停止自动轮询。请重新上传模板和资料后再运行。`;
+
 type TaskStatus = Module3TaskStatus;
 type DocumentType = "xlsx" | "docx" | "txt" | "md" | "other";
 
@@ -1522,6 +1533,8 @@ export const FusionGrid: React.FC = () => {
   const [gridState, setGridState] = useState<FusionGridState>(() =>
     readFusionGridState(),
   );
+  const [isOwnerScopeReady, setIsOwnerScopeReady] = useState(false);
+  const hasValidatedCachedTasksRef = useRef(false);
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null);
   const [previewDocument, setPreviewDocument] = useState<DocumentItem | null>(
     null,
@@ -1634,9 +1647,29 @@ export const FusionGrid: React.FC = () => {
     [showTaskDrawer],
   );
 
+  const markRunAsStale = useCallback((taskId: string) => {
+    setGridState((current) => ({
+      ...current,
+      tasks: current.tasks.map((item) =>
+        item.id === taskId
+          ? {
+              ...item,
+              status: "failed",
+              outputFileId: null,
+              error: staleRunMessage(taskId),
+            }
+          : item,
+      ),
+    }));
+    setPreviewDocument((current) => (current?.id === taskId ? null : current));
+    setPreviewContent("");
+    setPreviewSheets(null);
+  }, []);
+
   useEffect(() => {
+    if (!isOwnerScopeReady) return;
     writeFusionGridState(gridState);
-  }, [gridState]);
+  }, [gridState, isOwnerScopeReady]);
 
   useEffect(() => {
     if (!shouldUseTaskDrawer && isTaskDrawerOpen) {
@@ -1657,12 +1690,58 @@ export const FusionGrid: React.FC = () => {
         setInfoMessage("已切换到当前账号对应的填表工作区。");
       }
       writeFusionGridOwnerScope(ownerScope);
+      setIsOwnerScopeReady(true);
     });
 
     return () => {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isOwnerScopeReady || hasValidatedCachedTasksRef.current) return;
+    hasValidatedCachedTasksRef.current = true;
+    const taskIds = tasks
+      .filter((task) =>
+        ["running", "pending", "cancel_requested", "done"].includes(task.status),
+      )
+      .map((task) => task.id);
+    if (taskIds.length === 0) return;
+    let cancelled = false;
+
+    const validateCachedTasks = async () => {
+      const staleTaskIds: string[] = [];
+      for (const taskId of taskIds) {
+        if (cancelled) return;
+        try {
+          await fetchModule3RunStatus(taskId);
+        } catch (error) {
+          if (isMissingRunError(error, taskId)) {
+            staleTaskIds.push(taskId);
+          }
+        }
+      }
+      if (cancelled || staleTaskIds.length === 0) return;
+      setGridState((current) => ({
+        ...current,
+        tasks: current.tasks.map((task) =>
+          staleTaskIds.includes(task.id)
+            ? {
+                ...task,
+                status: "failed",
+                outputFileId: null,
+                error: staleRunMessage(task.id),
+              }
+            : task,
+        ),
+      }));
+    };
+
+    validateCachedTasks();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOwnerScopeReady, tasks]);
 
   useEffect(() => {
     setGridState((current) => {
@@ -1734,6 +1813,7 @@ export const FusionGrid: React.FC = () => {
   }, [documentItems, selectedDocument]);
 
   useEffect(() => {
+    if (!isOwnerScopeReady) return;
     const runningTaskIds = tasks
       .filter((item) => item.status === "running")
       .map((item) => item.id);
@@ -1750,12 +1830,15 @@ export const FusionGrid: React.FC = () => {
               ),
             }));
           })
-          .catch(() => undefined);
+          .catch((error) => {
+            if (!isMissingRunError(error, taskId)) return;
+            markRunAsStale(taskId);
+          });
       });
     }, 3000);
 
     return () => window.clearInterval(timer);
-  }, [tasks]);
+  }, [isOwnerScopeReady, markRunAsStale, tasks]);
 
   useEffect(() => {
     setCancellingTaskIds((current) =>
@@ -1903,6 +1986,10 @@ export const FusionGrid: React.FC = () => {
   };
 
   const handleStartRun = async () => {
+    if (!isOwnerScopeReady) {
+      setErrorMessage("正在确认当前账号的填表工作区，请稍候再试。");
+      return;
+    }
     const templateForRun = selectedTemplateRecord ?? templates[0] ?? null;
     const docsetForRun = selectedDocsetRecord ?? docsets[0] ?? null;
 
@@ -1942,7 +2029,10 @@ export const FusionGrid: React.FC = () => {
       let status: Module3RunStatusResponse;
       try {
         status = await fetchModule3RunStatus(run.run_id);
-      } catch {
+      } catch (error) {
+        if (isMissingRunError(error, run.run_id)) {
+          throw error;
+        }
         status = {
           run_id: run.run_id,
           status: run.status,
@@ -1999,6 +2089,9 @@ export const FusionGrid: React.FC = () => {
         dropMissingRunDependency("docset", missingResource.id);
         setInfoMessage("检测到失效文档集缓存，已自动从当前列表中移除。");
         setErrorMessage("当前文档集已失效或不属于当前登录账号，请重新上传文档后再试。");
+      } else if (missingResource?.kind === "run") {
+        setInfoMessage("后端已返回任务号，但当前账号无法读取该任务状态，已停止写入本地运行缓存。");
+        setErrorMessage(staleRunMessage(missingResource.id));
       } else {
         setErrorMessage(error instanceof Error ? error.message : "启动任务失败");
       }
@@ -2008,6 +2101,10 @@ export const FusionGrid: React.FC = () => {
   };
 
   const handleRefreshAll = async () => {
+    if (!isOwnerScopeReady) {
+      setErrorMessage("正在确认当前账号的填表工作区，请稍候再试。");
+      return;
+    }
     if (tasks.length === 0) {
       setInfoMessage("当前还没有任务记录。");
       return;
@@ -2020,25 +2117,48 @@ export const FusionGrid: React.FC = () => {
     try {
       const results = await Promise.all(
         tasks.map(async (task) => {
-          const status = await fetchModule3RunStatus(task.id);
-          return { taskId: task.id, status };
+          try {
+            const status = await fetchModule3RunStatus(task.id);
+            return { taskId: task.id, status, stale: false };
+          } catch (error) {
+            if (isMissingRunError(error, task.id)) {
+              return { taskId: task.id, status: null, stale: true };
+            }
+            throw error;
+          }
         }),
       );
       const statusMap = new Map<string, Module3RunStatusResponse>(
-        results.map(
-          (item) =>
-            [item.taskId, item.status] as [string, Module3RunStatusResponse],
-        ),
+        results
+          .filter((item) => item.status)
+          .map(
+            (item) =>
+              [item.taskId, item.status] as [string, Module3RunStatusResponse],
+          ),
+      );
+      const staleTaskIds = new Set(
+        results.filter((item) => item.stale).map((item) => item.taskId),
       );
 
       setGridState((current) => ({
         ...current,
         tasks: current.tasks.map((task) => {
           const status = statusMap.get(task.id);
+          if (staleTaskIds.has(task.id)) {
+            return {
+              ...task,
+              status: "failed",
+              error: staleRunMessage(task.id),
+            };
+          }
           return status ? updateTaskFromStatus(task, status) : task;
         }),
       }));
-      setInfoMessage("任务状态已刷新。");
+      setInfoMessage(
+        staleTaskIds.size > 0
+          ? "任务状态已刷新，失效或跨账号的任务已停止轮询。"
+          : "任务状态已刷新。",
+      );
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : "刷新任务状态失败",
@@ -2048,12 +2168,35 @@ export const FusionGrid: React.FC = () => {
     }
   };
 
+  const handleDownloadTask = async (task: { id: string; status: TaskStatus }) => {
+    if (!isOwnerScopeReady) {
+      setErrorMessage("正在确认当前账号的填表工作区，请稍候再试。");
+      return;
+    }
+    if (task.status !== "done") {
+      setErrorMessage("请选择一个已完成的任务后再下载结果。");
+      return;
+    }
+    try {
+      await fetchModule3RunStatus(task.id);
+    } catch (error) {
+      if (isMissingRunError(error, task.id)) {
+        markRunAsStale(task.id);
+        setErrorMessage(staleRunMessage(task.id));
+        return;
+      }
+      setErrorMessage(error instanceof Error ? error.message : "下载前校验任务失败");
+      return;
+    }
+    window.location.assign(module3RunDownloadUrl(task.id));
+  };
+
   const handleDownloadSelected = () => {
     if (!selectedTaskRecord || selectedTaskRecord.status !== "done") {
       setErrorMessage("请选择一个已完成的任务后再下载结果。");
       return;
     }
-    window.location.assign(module3RunDownloadUrl(selectedTaskRecord.id));
+    void handleDownloadTask(selectedTaskRecord);
   };
 
   const handleClearTaskHistory = () => {
@@ -2194,6 +2337,10 @@ export const FusionGrid: React.FC = () => {
   };
 
   const handlePreviewTaskOutput = async (task: TaskItem) => {
+    if (!isOwnerScopeReady) {
+      setErrorMessage("正在确认当前账号的填表工作区，请稍候再试。");
+      return;
+    }
     if (showTaskDrawer) {
       setIsTaskDrawerOpen(false);
     }
@@ -2207,20 +2354,23 @@ export const FusionGrid: React.FC = () => {
     let outputFileId = task.outputFileId ?? null;
     let outputNameFromStatus = task.outputName ?? null;
 
-    if (!outputFileId) {
-      try {
-        const latestStatus = await fetchModule3RunStatus(task.id);
-        outputFileId = latestStatus.output_file_id ?? null;
-        outputNameFromStatus = latestStatus.output_name ?? outputNameFromStatus;
-        setGridState((current) => ({
-          ...current,
-          tasks: current.tasks.map((item) =>
-            item.id === task.id ? updateTaskFromStatus(item, latestStatus) : item,
-          ),
-        }));
-      } catch {
-        // Keep local values and show explicit error below if file_id remains missing.
+    try {
+      const latestStatus = await fetchModule3RunStatus(task.id);
+      outputFileId = latestStatus.output_file_id ?? outputFileId;
+      outputNameFromStatus = latestStatus.output_name ?? outputNameFromStatus;
+      setGridState((current) => ({
+        ...current,
+        tasks: current.tasks.map((item) =>
+          item.id === task.id ? updateTaskFromStatus(item, latestStatus) : item,
+        ),
+      }));
+    } catch (error) {
+      if (isMissingRunError(error, task.id)) {
+        markRunAsStale(task.id);
+        setErrorMessage(staleRunMessage(task.id));
+        return;
       }
+      // Keep local values and show explicit error below if file_id remains missing.
     }
 
     if (!outputFileId) {
@@ -3115,9 +3265,7 @@ export const FusionGrid: React.FC = () => {
                                     type="button"
                                     onClick={(event) => {
                                       event.stopPropagation();
-                                      window.location.assign(
-                                        module3RunDownloadUrl(task.id),
-                                      );
+                                      void handleDownloadTask(task);
                                     }}
                                     className="p-1.5 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 rounded-md text-slate-400 hover:text-emerald-600 transition-colors"
                                     title="下载"

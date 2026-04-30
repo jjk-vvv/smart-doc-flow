@@ -286,10 +286,36 @@ export type Module4SimulateResponse = {
 };
 
 const resolveModule4ApiBase = (): string => {
-  if (typeof window === 'undefined') {
-    return resolveApiBase(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
+  const envBase = resolveApiBase(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
+  if (!envBase || typeof window === 'undefined') {
+    return envBase;
   }
-  return resolveApiBase(import.meta.env.VITE_BACKEND_ENTRY_URL || '');
+
+  const localHostnames = new Set(['localhost', '127.0.0.1', '::1']);
+  const isElectron = typeof navigator !== 'undefined' && /electron/i.test(String(navigator.userAgent || ''));
+  const isLoopbackHost = (host: string) => localHostnames.has(String(host || '').trim().toLowerCase());
+  const isLoopbackBase = (value: string) => {
+    try {
+      return isLoopbackHost(new URL(value).hostname);
+    } catch {
+      return false;
+    }
+  };
+
+  // Desktop/local renderers should use the co-located gateway or Vite proxy.
+  // Otherwise a stale public FRP URL can return HTML/502 and pollute graph UI.
+  if (isElectron && !isLoopbackHost(window.location.hostname)) {
+    return 'http://127.0.0.1:3001';
+  }
+  if (
+    (window.location.protocol === 'file:' || isLoopbackHost(window.location.hostname))
+    && /^https?:\/\//i.test(envBase)
+    && !isLoopbackBase(envBase)
+  ) {
+    return '';
+  }
+
+  return envBase;
 };
 
 type Module4AuthHeaders = Record<string, string>;

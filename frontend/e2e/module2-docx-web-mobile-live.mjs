@@ -257,56 +257,76 @@ async function readMobileArtifactPanel(page, targetFileName) {
   await openProtectedTab(page, mobileAppUrl, "deepread_extraction", { waitUntil: "domcontentloaded", attempts: 5 });
   await page.waitForLoadState("networkidle", { timeout: 35_000 }).catch(() => {});
   await page.waitForTimeout(1200);
+  await page.locator('[data-testid="mobile-extraction-document-card"]').first().waitFor({
+    state: "visible",
+    timeout: 45_000,
+  }).catch(() => {});
 
   const selected = await page.evaluate((fileName) => {
     const norm = (v) => String(v || "").replace(/\s+/g, " ").trim();
-    const sections = Array.from(document.querySelectorAll("section"));
-    const listSection = sections.find((section) => section.querySelectorAll("button").length > 0) || sections[0] || null;
-    if (!listSection) return false;
-    const buttons = Array.from(listSection.querySelectorAll("button"));
     const target = norm(fileName || "");
     const targetNoExt = target.includes(".") ? target.slice(0, target.lastIndexOf(".")) : target;
-    const matched = buttons.find((btn) => {
-      const t = norm(btn.textContent);
-      return (target && t.includes(target)) || (targetNoExt && t.includes(targetNoExt));
+    const cards = Array.from(document.querySelectorAll('[data-testid="mobile-extraction-document-card"]'));
+    const matchedCard = cards.find((card) => {
+      const cardName = norm(card.getAttribute("data-file-name"));
+      const cardText = norm(card.textContent);
+      return (
+        (target && (cardName.includes(target) || cardText.includes(target))) ||
+        (targetNoExt && (cardName.includes(targetNoExt) || cardText.includes(targetNoExt)))
+      );
     });
-    const picked = matched || buttons[0] || null;
-    if (!picked) return false;
+    const pickedCard = matchedCard || cards[0] || null;
+    const picked = pickedCard?.querySelector('[data-testid="mobile-document-artifacts-button"]') || null;
+    if (!(picked instanceof HTMLButtonElement)) return false;
     picked.click();
     return true;
   }, targetFileName);
-  await page.waitForTimeout(400);
+  await page.locator("#mobile-artifact-detail").waitFor({ state: "visible", timeout: 30_000 }).catch(() => {});
+  await page.waitForFunction(
+    () => {
+      const detail = document.getElementById("mobile-artifact-detail");
+      if (!detail) return false;
+      const counts = ["field", "table", "chart", "image"].map((name) =>
+        Number(detail.getAttribute(`data-${name}-count`) || 0),
+      );
+      return counts.some((count) => count > 0) || !detail.textContent?.includes("正在恢复并定位产物");
+    },
+    { timeout: 45_000 },
+  ).catch(() => {});
 
   const tabLabels = await page.evaluate(() => {
     const detail = document.getElementById("mobile-artifact-detail");
     if (!detail) return [];
-    return Array.from(detail.querySelectorAll("button"))
+    return Array.from(detail.querySelectorAll('[data-testid^="mobile-artifact-tab-"]'))
       .map((btn) => String(btn.textContent || "").replace(/\s+/g, " ").trim())
       .filter(Boolean);
   });
 
-  async function clickByIndexAndCount(index) {
+  async function clickAndCount(tabName) {
     const clicked = await page.evaluate((idx) => {
       const detail = document.getElementById("mobile-artifact-detail");
       if (!detail) return false;
-      const buttons = Array.from(detail.querySelectorAll("button"));
-      const target = buttons[Math.max(0, Math.min(buttons.length - 1, Number(idx)))] || null;
+      const target = detail.querySelector(`[data-testid="mobile-artifact-tab-${idx}"]`);
       if (!(target instanceof HTMLButtonElement)) return false;
       target.click();
       return true;
-    }, index);
+    }, tabName);
     await page.waitForTimeout(280);
-    const count = await page.evaluate(() => {
+    const count = await page.evaluate((idx) => {
       const detail = document.getElementById("mobile-artifact-detail");
-      return detail ? detail.querySelectorAll("article").length : 0;
-    });
+      if (!detail) return 0;
+      const attrName = idx === "fields" ? "field" : idx === "tables" ? "table" : idx === "charts" ? "chart" : "image";
+      const attrCount = Number(detail.getAttribute(`data-${attrName}-count`) || 0);
+      if (Number.isFinite(attrCount) && attrCount > 0) return attrCount;
+      return detail.querySelectorAll(`[data-testid="mobile-artifact-${attrName}-card"]`).length;
+    }, tabName);
     return { clicked, count };
   }
 
-  const field = await clickByIndexAndCount(0);
-  const table = await clickByIndexAndCount(1);
-  const chart = await clickByIndexAndCount(2);
-  const image = await clickByIndexAndCount(3);
+  const field = await clickAndCount("fields");
+  const table = await clickAndCount("tables");
+  const chart = await clickAndCount("charts");
+  const image = await clickAndCount("images");
 
   return {
     selected,

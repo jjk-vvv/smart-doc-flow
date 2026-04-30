@@ -11,6 +11,13 @@ from typing import Iterator, List, Optional
 
 from dotenv import load_dotenv
 
+from app.core.ai_api_logging import (
+    AIAPIStreamRecorder,
+    log_ai_api_exception,
+    log_ai_api_request,
+    log_ai_api_response,
+)
+
 from ..core.config import Settings, get_settings
 
 
@@ -84,6 +91,12 @@ class LayoutExpertAgent:
     def available(self) -> bool:
         return self.client is not None
 
+    def _chat_completions_url(self) -> str:
+        base_url = self.base_url.rstrip("/")
+        if base_url.endswith("/chat/completions"):
+            return base_url
+        return f"{base_url}/chat/completions"
+
     def _build_messages(
         self,
         system_prompt: str,
@@ -110,25 +123,47 @@ class LayoutExpertAgent:
         with open(image_path, "rb") as image_file:
             image_base64 = base64.b64encode(image_file.read()).decode("utf-8")
 
-        response = self.client.chat.completions.create(
-            model=self.vision_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{self._guess_image_mime(image_path)};base64,{image_base64}"
-                            },
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{self._guess_image_mime(image_path)};base64,{image_base64}"
                         },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
-            temperature=0.2,
-            max_tokens=max_tokens,
-        )
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        payload = {
+            "model": self.vision_model,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+        }
+        try:
+            log_ai_api_request(
+                api_url=self._chat_completions_url(),
+                request_body=payload,
+                model=self.vision_model,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+            response = self.client.chat.completions.create(**payload)
+            log_ai_api_response(
+                response=response,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+        except Exception as exc:
+            log_ai_api_exception(
+                exc=exc,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+            raise
         return str(response.choices[0].message.content or "").strip()
 
     def describe_images(self, image_paths: List[str], max_images: int = 3) -> str:
@@ -188,18 +223,41 @@ class LayoutExpertAgent:
             "若内容较短，也必须保持规范标题层级和正式排版。"
         )
 
-        response = self.client.chat.completions.create(
-            model=self.text_model,
-            messages=self._build_messages(system_prompt, user_prompt, conversation_context),
-            temperature=0.45,
-            max_tokens=3600,
-            stream=True,
+        payload = {
+            "model": self.text_model,
+            "messages": self._build_messages(system_prompt, user_prompt, conversation_context),
+            "temperature": 0.45,
+            "max_tokens": 3600,
+            "stream": True,
+        }
+        stream_recorder = AIAPIStreamRecorder(
+            logger_name="app.modules.module1.ai_api",
+            config_prefix="MODULE1",
         )
-
-        for chunk in response:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        try:
+            log_ai_api_request(
+                api_url=self._chat_completions_url(),
+                request_body=payload,
+                model=self.text_model,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+            response = self.client.chat.completions.create(**payload)
+            for chunk in response:
+                stream_recorder.append(chunk)
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except Exception as exc:
+            stream_recorder.close()
+            log_ai_api_exception(
+                exc=exc,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+            raise
+        else:
+            stream_recorder.close()
 
     def stream_analysis_with_first_token_timeout(
         self,
@@ -287,18 +345,41 @@ class LayoutExpertAgent:
         )
         user_prompt = instruction
 
-        response = self.client.chat.completions.create(
-            model=self.text_model,
-            messages=self._build_messages(system_prompt, user_prompt, conversation_context),
-            temperature=0.5,
-            max_tokens=2000,
-            stream=True,
+        payload = {
+            "model": self.text_model,
+            "messages": self._build_messages(system_prompt, user_prompt, conversation_context),
+            "temperature": 0.5,
+            "max_tokens": 2000,
+            "stream": True,
+        }
+        stream_recorder = AIAPIStreamRecorder(
+            logger_name="app.modules.module1.ai_api",
+            config_prefix="MODULE1",
         )
-
-        for chunk in response:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        try:
+            log_ai_api_request(
+                api_url=self._chat_completions_url(),
+                request_body=payload,
+                model=self.text_model,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+            response = self.client.chat.completions.create(**payload)
+            for chunk in response:
+                stream_recorder.append(chunk)
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except Exception as exc:
+            stream_recorder.close()
+            log_ai_api_exception(
+                exc=exc,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+            raise
+        else:
+            stream_recorder.close()
 
     def plan_modifications(
         self,
@@ -340,11 +421,32 @@ class LayoutExpertAgent:
             "请生成修改方案。"
         )
 
-        response = self.client.chat.completions.create(
-            model=self.text_model,
-            messages=self._build_messages(system_prompt, user_prompt, conversation_context),
-            temperature=0.3,
-            max_tokens=4000,
-            stream=False,
-        )
+        payload = {
+            "model": self.text_model,
+            "messages": self._build_messages(system_prompt, user_prompt, conversation_context),
+            "temperature": 0.3,
+            "max_tokens": 4000,
+            "stream": False,
+        }
+        try:
+            log_ai_api_request(
+                api_url=self._chat_completions_url(),
+                request_body=payload,
+                model=self.text_model,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+            response = self.client.chat.completions.create(**payload)
+            log_ai_api_response(
+                response=response,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+        except Exception as exc:
+            log_ai_api_exception(
+                exc=exc,
+                logger_name="app.modules.module1.ai_api",
+                config_prefix="MODULE1",
+            )
+            raise
         return str(response.choices[0].message.content or "")

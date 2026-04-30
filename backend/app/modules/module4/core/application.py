@@ -9,6 +9,8 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.logging import configure_app_logging
+
 from ..api.deps import Module4RouterDeps
 from ..api.v1.router import build_api_v1_router
 from ..db.storage import Module4Storage
@@ -157,6 +159,7 @@ async def _submit_ingest_job(payload: IngestRequest, request: Request) -> Ingest
 
 
 def create_app() -> FastAPI:
+    configure_app_logging()
     app = FastAPI(title="A23 Module 4 - Global Knowledge Graph & Risk Intelligence", version="1.1.0", lifespan=lifespan)
     cors_origins_list, cors_allow_all = module4_app_runtime.cors_origins()
     app.add_middleware(

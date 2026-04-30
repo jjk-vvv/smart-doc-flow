@@ -13,6 +13,12 @@ from typing import Any, Dict, Optional
 import requests
 from requests.exceptions import HTTPError, RequestException
 
+from app.core.ai_api_logging import (
+    log_ai_api_exception,
+    log_ai_api_request,
+    log_ai_api_response,
+)
+
 from ...integrations.llm.provider import resolve_llm_native_api_url
 from ..integration.gemini_native_transport_runtime import GeminiNativeTransportRuntime
 
@@ -446,13 +452,34 @@ class GeminiVisionExtractor:
                 "maxOutputTokens": self.max_output_tokens,
             },
         }
-        resp = requests.post(
-            request_url,
-            json=payload,
-            headers=self._native_transport_runtime.build_headers(request_url, api_key),
-            timeout=self.timeout_sec,
-        )
-        resp.raise_for_status()
+        try:
+            log_ai_api_request(
+                api_url=request_url,
+                request_body=payload,
+                model=self.model,
+                logger_name="app.modules.module2.vision.ai_api",
+                config_prefix="MODULE2",
+            )
+            resp = requests.post(
+                request_url,
+                json=payload,
+                headers=self._native_transport_runtime.build_headers(request_url, api_key),
+                timeout=self.timeout_sec,
+            )
+            log_ai_api_response(
+                response=resp,
+                logger_name="app.modules.module2.vision.ai_api",
+                config_prefix="MODULE2",
+            )
+            resp.raise_for_status()
+        except (HTTPError, RequestException) as exc:
+            log_ai_api_exception(
+                exc=exc,
+                close_call=not (isinstance(exc, HTTPError) and exc.response is not None),
+                logger_name="app.modules.module2.vision.ai_api",
+                config_prefix="MODULE2",
+            )
+            raise
         raw = resp.text
         try:
             obj = json.loads(raw)
@@ -542,19 +569,40 @@ class GeminiVisionExtractor:
             "max_tokens": self.max_output_tokens,
             "stream": False,
         }
-        resp = requests.post(
-            url,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "smart-doc-flow-module2-vision/1.0",
-                "Connection": "close",
-            },
-            timeout=self.timeout_sec,
-        )
-        resp.raise_for_status()
+        try:
+            log_ai_api_request(
+                api_url=url,
+                request_body=payload,
+                model=self.model,
+                logger_name="app.modules.module2.vision.ai_api",
+                config_prefix="MODULE2",
+            )
+            resp = requests.post(
+                url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "smart-doc-flow-module2-vision/1.0",
+                    "Connection": "close",
+                },
+                timeout=self.timeout_sec,
+            )
+            log_ai_api_response(
+                response=resp,
+                logger_name="app.modules.module2.vision.ai_api",
+                config_prefix="MODULE2",
+            )
+            resp.raise_for_status()
+        except (HTTPError, RequestException) as exc:
+            log_ai_api_exception(
+                exc=exc,
+                close_call=not (isinstance(exc, HTTPError) and exc.response is not None),
+                logger_name="app.modules.module2.vision.ai_api",
+                config_prefix="MODULE2",
+            )
+            raise
         try:
             obj = resp.json()
         except json.JSONDecodeError as exc:

@@ -1605,12 +1605,12 @@ const toPersistedExtractionJob = (job: ExtractionJobState | null): PersistedExtr
                 artifact_by_file_url: item.artifact_by_file_url ?? null,
                 artifact_path: null,
                 artifact_url: item.artifact_url ?? null,
-                error: String(item.error || '').trim(),
+                error: sanitizeExtractUiErrorMessage(item.error),
                 track: String(item.track || '').trim(),
                 cached: Boolean(item.cached),
             }))
             : [],
-        errors: Array.isArray(job.errors) ? job.errors.map((item) => String(item || '').trim()).filter(Boolean) : [],
+        errors: sanitizeExtractUiErrorList(job.errors),
     };
 };
 
@@ -1668,6 +1668,7 @@ const normalizeExtractionJobPayload = (
                 artifact_file_id: String(item.artifact_file_id || '').trim() || undefined,
                 artifact_url: normalizedByFileUrl || normalizedArtifactUrl || undefined,
                 artifact_path: undefined,
+                error: sanitizeExtractUiErrorMessage(item.error),
                 __syncedAtMs: syncedAtMs,
             };
         })
@@ -1730,7 +1731,7 @@ const normalizeExtractionJobPayload = (
             ),
         },
         files: normalizedFiles,
-        errors: Array.isArray(payload.errors) ? payload.errors : [],
+        errors: sanitizeExtractUiErrorList(payload.errors),
         __syncedAtMs: syncedAtMs,
     };
 };
@@ -1923,16 +1924,35 @@ type ExtractFetchResult = {
 
 type ExtractFetchFallbackOptions = {
     retryNotFound?: boolean;
+    routeMissRetryAttempts?: number;
 };
+
+const DEFAULT_EXTRACT_ROUTE_MISS_RETRY_ATTEMPTS = 2;
+const EXTRACT_ROUTE_MISS_RETRY_DELAY_MS = 450;
+const BACKEND_FALLBACKS_KEY = 'smart_doc_flow.backend_entry_fallbacks';
+
+const waitForExtractRetry = (ms: number): Promise<void> =>
+    new Promise((resolve) => window.setTimeout(resolve, ms));
 
 const getViteExtractBase = (): string => {
     try {
         const envObj = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-        return String(envObj?.VITE_MODULE2_API_BASE || envObj?.VITE_EXTRACT_API_BASE || '').trim();
+        return String(
+            envObj?.VITE_MODULE2_API_BASE
+            || envObj?.VITE_EXTRACT_API_BASE
+            || envObj?.VITE_BACKEND_ENTRY_URL
+            || '',
+        ).trim();
     } catch {
         return '';
     }
 };
+
+const parseExtractBaseCandidates = (raw = ''): string[] =>
+    String(raw || '')
+        .split(/[,\n;]/)
+        .map((item) => String(item || '').trim())
+        .filter(Boolean);
 
 const trimTrailingSlash = (value: string) => String(value || '').replace(/\/+$/, '');
 
@@ -1954,11 +1974,48 @@ const isLoopbackExtractHost = (hostname: string): boolean => {
     );
 };
 
+const isElectronExtractRuntime = (): boolean => {
+    if (typeof navigator === 'undefined') return false;
+    return /electron/i.test(String(navigator.userAgent || ''));
+};
+
+const isLocalExtractRuntime = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    return (
+        window.location.protocol === 'file:'
+        || isLoopbackExtractHost(window.location.hostname)
+        || isElectronExtractRuntime()
+    );
+};
+
+const isLoopbackExtractBase = (value: string): boolean => {
+    try {
+        const parsed = new URL(value);
+        return isLoopbackExtractHost(parsed.hostname);
+    } catch {
+        return false;
+    }
+};
+
+const shouldSkipExtractBaseCandidate = (value: string): boolean => {
+    const normalized = normalizeExtractBase(value);
+    if (!normalized || !/^https?:\/\//i.test(normalized)) return false;
+    return isLocalExtractRuntime() && !isLoopbackExtractBase(normalized);
+};
+
+const shouldSkipRelativeExtractCandidate = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    return isElectronExtractRuntime() && !isLoopbackExtractHost(window.location.hostname);
+};
+
 const buildLoopbackGatewayBaseCandidate = (): string => {
     if (typeof window === 'undefined') return '';
     try {
         const hostname = window.location.hostname;
         const port = window.location.port;
+        if (isElectronExtractRuntime() && !isLoopbackExtractHost(hostname)) {
+            return 'http://127.0.0.1:3001';
+        }
         if (!isLoopbackExtractHost(hostname) || port === '3001') return '';
 
         const url = new URL(window.location.href);
@@ -1981,17 +2038,53 @@ const getLocalStorageExtractBase = (): string => {
     }
 };
 
+const getViteExtractFallbackBases = (): string[] => {
+    try {
+        const envObj = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+        return parseExtractBaseCandidates(String(envObj?.VITE_BACKEND_ENTRY_URL_FALLBACKS || ''));
+    } catch {
+        return [];
+    }
+};
+
+const getLocalStorageBackendFallbackBases = (): string[] => {
+    if (typeof window === 'undefined') return [];
+    try {
+        return parseExtractBaseCandidates(window.localStorage.getItem(BACKEND_FALLBACKS_KEY) || '');
+    } catch {
+        return [];
+    }
+};
+
+const hasConfiguredExtractBaseCandidates = (preferredBase = ''): boolean => {
+    if (normalizeExtractBase(preferredBase)) return true;
+    if (normalizeExtractBase(getLocalStorageExtractBase())) return true;
+    if (normalizeExtractBase(getViteExtractBase())) return true;
+    if (getViteExtractFallbackBases().some((item) => normalizeExtractBase(item))) return true;
+    if (getLocalStorageBackendFallbackBases().some((item) => normalizeExtractBase(item))) return true;
+    return false;
+};
+
+const shouldPreferRelativeExtractCandidate = (preferredBase = ''): boolean => {
+    if (typeof window === 'undefined') return true;
+    if (isLocalExtractRuntime()) return true;
+    return !hasConfiguredExtractBaseCandidates(preferredBase);
+};
+
 const buildExtractBaseCandidates = (preferredBase = ''): string[] => {
     const out: string[] = [];
     const push = (raw: string) => {
         const base = normalizeExtractBase(raw);
         if (!base) return;
+        if (shouldSkipExtractBaseCandidate(base)) return;
         if (!out.includes(base)) out.push(base);
     };
 
     push(preferredBase);
-    push(getViteExtractBase());
     push(getLocalStorageExtractBase());
+    push(getViteExtractBase());
+    getViteExtractFallbackBases().forEach((item) => push(item));
+    getLocalStorageBackendFallbackBases().forEach((item) => push(item));
     // Only synthesize :3001 for loopback dev servers. Public/frp origins must
     // stay same-origin so browsers do not hit an unreachable cross-port API.
     push(buildLoopbackGatewayBaseCandidate());
@@ -2089,6 +2182,13 @@ const withExtractAuthHeaders = async (init?: RequestInit): Promise<RequestInit> 
 const isMissingExtractionJobMessage = (messageRaw: unknown): boolean => {
     const message = String(messageRaw || '').trim().toLowerCase();
     if (!message) return false;
+    if (
+        message.includes('没有到达文档解析后端')
+        || message.includes('内网穿透')
+        || message.includes('frp')
+    ) {
+        return false;
+    }
     return (
         message.includes('not found')
         || message.includes('job not found')
@@ -2103,7 +2203,61 @@ const normalizeExtractionJobId = (value: unknown): string => {
     return /^extract_job_[A-Za-z0-9]+$/.test(jobId) ? jobId : '';
 };
 
-const readResponseErrorMessage = async (response: Response): Promise<string> => {
+type ResponseErrorInfo = {
+    message: string;
+    upstreamRouteMiss: boolean;
+};
+
+const isHtmlLikeErrorPayload = (value: string): boolean => {
+    const normalized = String(value || '').trim().toLowerCase();
+    return (
+        normalized.startsWith('<!doctype')
+        || normalized.startsWith('<html')
+        || normalized.includes('<title>not found</title>')
+        || normalized.includes('<body>')
+    );
+};
+
+const isFrpRouteMissPayload = (value: string): boolean => {
+    const normalized = String(value || '').toLowerCase();
+    return normalized.includes('server is powered by') && normalized.includes('frp');
+};
+
+const isExtractHtmlRouteMissResponse = (response: Response, contentType: string, payload: string): boolean => {
+    const normalizedType = String(contentType || '').toLowerCase();
+    if (!normalizedType.includes('text/html')) return false;
+    if (isHtmlLikeErrorPayload(payload)) return true;
+    if (response.status === 404 || response.status >= 500) return true;
+    return false;
+};
+
+const buildExtractRouteMissMessage = (response: Response): string => (
+    `模块二请求没有到达文档解析后端（HTTP ${response.status}）。`
+    + `请检查桌面端 API 地址、内网穿透或网关路由配置。请求地址：${response.url}`
+);
+
+const sanitizeExtractUiErrorMessage = (messageRaw: unknown): string => {
+    const message = String(messageRaw || '').trim();
+    if (!message) return '';
+    if (isFrpRouteMissPayload(message) || isHtmlLikeErrorPayload(message)) {
+        return '模块二请求没有到达文档解析后端。请检查桌面端 API 地址、内网穿透或网关路由配置。';
+    }
+    return message;
+};
+
+const sanitizeExtractUiErrorList = (errorsRaw: unknown): string[] => {
+    const errors = Array.isArray(errorsRaw) ? errorsRaw : [errorsRaw];
+    const messages = errors
+        .map((item) => sanitizeExtractUiErrorMessage(item))
+        .filter(Boolean);
+    return Array.from(new Set(messages));
+};
+
+const formatExtractUiErrors = (errorsRaw: unknown): string => {
+    return sanitizeExtractUiErrorList(errorsRaw).join(' | ');
+};
+
+const readResponseErrorInfo = async (response: Response): Promise<ResponseErrorInfo> => {
     let text = '';
     try {
         text = await response.text();
@@ -2111,15 +2265,40 @@ const readResponseErrorMessage = async (response: Response): Promise<string> => 
         text = '';
     }
     const trimmed = String(text || '').trim();
-    if (!trimmed) return `状态码 ${response.status}`;
+    if (!trimmed) {
+        return { message: `状态码 ${response.status}`, upstreamRouteMiss: false };
+    }
+
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (
+        isFrpRouteMissPayload(trimmed)
+        || isExtractHtmlRouteMissResponse(response, contentType, trimmed)
+        || isHtmlLikeErrorPayload(trimmed)
+    ) {
+        return {
+            message: buildExtractRouteMissMessage(response),
+            upstreamRouteMiss: true,
+        };
+    }
+
     try {
         const parsed = JSON.parse(trimmed);
         const detail = parsed?.detail || parsed?.message || parsed?.error;
-        if (typeof detail === 'string' && detail.trim()) return detail.trim();
+        if (typeof detail === 'string' && detail.trim()) {
+            return { message: detail.trim(), upstreamRouteMiss: false };
+        }
     } catch {
         // non-json payload
     }
-    return trimmed.length > 1800 ? `${trimmed.slice(0, 1800)}...` : trimmed;
+    return {
+        message: trimmed.length > 1800 ? `${trimmed.slice(0, 1800)}...` : trimmed,
+        upstreamRouteMiss: false,
+    };
+};
+
+const readResponseErrorMessage = async (response: Response): Promise<string> => {
+    const info = await readResponseErrorInfo(response);
+    return info.message;
 };
 
 const fetchExtractWithFallback = async (
@@ -2132,14 +2311,30 @@ const fetchExtractWithFallback = async (
     const tried: string[] = [];
     let lastError = '';
     const retryNotFound = options?.retryNotFound !== false;
-    const preferredCandidate = normalizeExtractBase(preferredBase);
+    const routeMissRetryAttempts = Math.max(
+        0,
+        Number.isFinite(Number(options?.routeMissRetryAttempts))
+            ? Number(options?.routeMissRetryAttempts)
+            : DEFAULT_EXTRACT_ROUTE_MISS_RETRY_ATTEMPTS,
+    );
+    const preferredCandidateRaw = normalizeExtractBase(preferredBase);
+    const preferredCandidate = shouldSkipExtractBaseCandidate(preferredCandidateRaw) ? '' : preferredCandidateRaw;
+    const relativeCandidate = shouldSkipRelativeExtractCandidate() ? null : '';
+    const configuredCandidates = buildExtractBaseCandidates(preferredBase);
+    const candidateOrder = shouldPreferRelativeExtractCandidate(preferredBase)
+        ? [
+            ...(preferredCandidate ? [preferredCandidate] : []),
+            ...(relativeCandidate === null ? [] : [relativeCandidate]),
+            ...configuredCandidates,
+        ]
+        : [
+            ...(preferredCandidate ? [preferredCandidate] : []),
+            ...configuredCandidates,
+            ...(relativeCandidate === null ? [] : [relativeCandidate]),
+        ];
     const candidates = Array.from(
         new Set(
-            [
-                preferredCandidate || '',
-                '',
-                ...buildExtractBaseCandidates(preferredBase),
-            ].filter((item) => item !== undefined && item !== null),
+            candidateOrder.filter((item): item is string => typeof item === 'string'),
         ),
     );
 
@@ -2148,32 +2343,49 @@ const fetchExtractWithFallback = async (
         tried.push(base);
         const url = joinExtractUrl(base, path);
         try {
-            const response = await fetch(url, {
-                credentials: initWithHeaders.credentials ?? 'include',
-                ...initWithHeaders,
-            });
-            if (response.ok) {
-                return { response, usedBase: base };
-            }
+            for (let routeMissAttempt = 0; routeMissAttempt <= routeMissRetryAttempts; routeMissAttempt += 1) {
+                const response = await fetch(url, {
+                    credentials: initWithHeaders.credentials ?? 'include',
+                    ...initWithHeaders,
+                });
+                if (response.ok) {
+                    return { response, usedBase: base };
+                }
 
-            const msg = await readResponseErrorMessage(response);
-            const retryableStatus =
-                response.status >= 500 ||
-                response.status === 401 ||
-                response.status === 403 ||
-                response.status === 410 ||
-                (retryNotFound && response.status === 404);
-            const retryable = retryableStatus;
-            if (!retryable) {
-                throw new Error(msg);
+                const errorInfo = await readResponseErrorInfo(response);
+                const msg = sanitizeExtractUiErrorMessage(errorInfo.message);
+                if (errorInfo.upstreamRouteMiss && routeMissAttempt < routeMissRetryAttempts) {
+                    lastError = msg || `状态码 ${response.status}`;
+                    console.warn('module2 extract route miss, retrying request', {
+                        path,
+                        url,
+                        status: response.status,
+                        attempt: routeMissAttempt + 1,
+                        maxAttempts: routeMissRetryAttempts,
+                    });
+                    await waitForExtractRetry(EXTRACT_ROUTE_MISS_RETRY_DELAY_MS * (routeMissAttempt + 1));
+                    continue;
+                }
+
+                const retryableStatus =
+                    response.status >= 500 ||
+                    response.status === 401 ||
+                    response.status === 403 ||
+                    response.status === 410 ||
+                    (retryNotFound && response.status === 404);
+                const retryable = retryableStatus || errorInfo.upstreamRouteMiss;
+                if (!retryable) {
+                    throw new Error(msg);
+                }
+                lastError = msg || `状态码 ${response.status}`;
+                break;
             }
-            lastError = msg || `状态码 ${response.status}`;
         } catch (error) {
-            lastError = parseFetchErrorMessage(error);
+            lastError = sanitizeExtractUiErrorMessage(parseFetchErrorMessage(error));
         }
     }
 
-    throw new Error(lastError || '文档解析后端请求失败。');
+    throw new Error(sanitizeExtractUiErrorMessage(lastError) || '文档解析后端请求失败。');
 };
 
 const fetchExtractAtBase = async (
@@ -2424,6 +2636,8 @@ const normalizeDocumentArtifactLinks = (doc: DocumentResult, usedBase: string): 
 
     return {
         ...doc,
+        errors: sanitizeExtractUiErrorList(doc.errors),
+        soft_warnings: sanitizeExtractUiErrorList(doc.soft_warnings),
         trace_hits: normalizedTraceHits,
         diagnostics: normalizedDiagnostics,
     };
@@ -3326,12 +3540,15 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
     useEffect(() => {
         let active = true;
         const cached = readExtractionDocuments();
-        const safeCached = filterAutoRestorableExtractionDocuments(cached);
-        if (safeCached.length !== cached.length) {
+        const sanitizedCached = cached.map((doc) => normalizeDocumentArtifactLinks(doc, ''));
+        const safeCached = filterAutoRestorableExtractionDocuments(sanitizedCached);
+        if (JSON.stringify(safeCached) !== JSON.stringify(cached)) {
             writeExtractionDocuments(safeCached);
         }
         const session = readWorkbenchSession();
-        const sessionDocuments = safeCached.length === 0 ? getSessionPersistedDocuments(session) : [];
+        const sessionDocuments = safeCached.length === 0
+            ? getSessionPersistedDocuments(session).map((doc) => normalizeDocumentArtifactLinks(doc, ''))
+            : [];
         const restoredDocuments = safeCached.length > 0 ? safeCached : sessionDocuments;
         if (restoredDocuments.length > 0) {
             setDocuments(restoredDocuments);
@@ -3655,10 +3872,12 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             }
             const payload = (await response.json()) as SummarizeResponse;
             if (seq !== summaryRequestSeqRef.current) return;
-            setActiveSummaryText((payload.summary || "").trim() || "暂无摘要。");
+            setActiveSummaryText(
+                sanitizeExtractUiErrorMessage(payload.summary) || "暂无摘要。",
+            );
         } catch (error) {
             if (seq !== summaryRequestSeqRef.current) return;
-            const fallback = String(doc.errors?.[0] ?? '').trim();
+            const fallback = sanitizeExtractUiErrorMessage(doc.errors?.[0]);
             setActiveSummaryText(fallback || "暂时无法生成摘要，请稍后重试。");
         } finally {
             if (seq === summaryRequestSeqRef.current) {
@@ -4443,7 +4662,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
 
         const firstErrorDoc = documentsWithPreview.find((doc) => doc.errors && doc.errors.length > 0);
         if (firstErrorDoc) {
-            setErrorMessage(firstErrorDoc.errors.join(' | '));
+            setErrorMessage(formatExtractUiErrors(firstErrorDoc.errors));
             return;
         }
 
@@ -4638,7 +4857,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                             clearFailedExtractionDocuments(terminalVisibleJob?.files || []);
                         }
                         if (Array.isArray(terminalPayload.errors) && terminalPayload.errors.length > 0) {
-                            setErrorMessage(terminalPayload.errors.join(' | '));
+                            setErrorMessage(formatExtractUiErrors(terminalPayload.errors));
                         } else {
                         setInfoMessage('抽取任务已结束，暂无可展示结果。');
                     }
@@ -5056,7 +5275,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
             extractionJobApiBaseRef.current = usedBase;
 
             if (!response.ok) {
-                const message = await response.text();
+                const message = await readResponseErrorMessage(response);
                 throw new Error(message || '抽取请求失败');
             }
 
@@ -5099,14 +5318,14 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     applyExtractionDocuments(visibleDocuments, { apiBase: usedBase });
                 } else if (visibleJob.errors.length > 0) {
                     clearFailedExtractionDocuments(visibleJob.files || []);
-                    setErrorMessage(visibleJob.errors.join(' | '));
+                    setErrorMessage(formatExtractUiErrors(visibleJob.errors));
                 }
             } else {
                 void pollExtractionJob(visibleJob?.job_id || normalizedJob.job_id, usedBase);
             }
         } catch (error) {
             console.error(error);
-            setErrorMessage(error instanceof Error ? error.message : '抽取失败');
+            setErrorMessage(sanitizeExtractUiErrorMessage(error instanceof Error ? error.message : '抽取失败') || '抽取失败');
             setActiveSummaryLoading(false);
             setActiveSummaryText("抽取失败，无法生成摘要。");
             setIsProcessing(false);
@@ -6255,7 +6474,7 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         };
     }, [documents, extractionJob, selectedFiles]);
     const activeErrorMessages = useMemo(
-        () => (activeDoc?.errors ?? []).map((item) => String(item || '').trim()).filter(Boolean),
+        () => sanitizeExtractUiErrorList(activeDoc?.errors ?? []),
         [activeDoc?.errors],
     );
     const activeSoftWarningLabels = useMemo(
@@ -6346,16 +6565,17 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
         traceLoading,
     ]);
     const resultsStateCardMeta = useMemo(() => {
-        const firstDocError = String(activeDoc?.errors?.[0] || '').trim();
+        const firstDocError = sanitizeExtractUiErrorMessage(activeDoc?.errors?.[0]);
         const firstDocWarning = String(activeSoftWarningLabels[0] || '').trim();
         const primaryDocName = activeDoc?.file_name || activeSourceFile?.name || selectedFiles[0]?.name || '';
         const activeDocFieldCount = countExtractionDocumentFields(activeDoc);
         const activeDocQuality = getExtractionDocumentQualityStatus(activeDoc);
 
-        if (String(errorMessage || '').trim()) {
+        const visibleErrorMessage = sanitizeExtractUiErrorMessage(errorMessage);
+        if (visibleErrorMessage) {
             return {
                 title: '当前结果需要核验',
-                detail: String(errorMessage || '').trim(),
+                detail: visibleErrorMessage,
                 context: primaryDocName ? `当前文档：${primaryDocName}` : '请检查本批次解析状态',
             };
         }
@@ -6928,7 +7148,8 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                     }
                                                 } else if (jobFile) {
                                                     if (jobFile.status === 'failed') {
-                                                        statusText = jobFile.error ? `解析失败：${jobFile.error}` : '解析失败';
+                                                        const visibleJobFileError = sanitizeExtractUiErrorMessage(jobFile.error);
+                                                        statusText = visibleJobFileError ? `解析失败：${visibleJobFileError}` : '解析失败';
                                                         statusColor = "text-red-500";
                                                         StatusIndicator = <div className="h-2 w-2 rounded-full bg-red-500" />;
                                                     } else if (jobFile.status === 'completed') {

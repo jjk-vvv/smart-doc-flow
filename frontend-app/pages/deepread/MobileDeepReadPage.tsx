@@ -1287,15 +1287,30 @@ export const MobileDeepReadPage: React.FC = () => {
     if (!activeDoc) return null;
 
     const baseName = toFileBaseName(activeDoc.file_name || 'document');
+    const artifactCounts = {
+      fields: fieldEntries.length,
+      tables: tableItems.length,
+      charts: chartItems.length,
+      images: imageItems.length,
+    };
     const tabDefs = [
-      { id: 'fields' as const, label: '字段', icon: LayoutList },
-      { id: 'tables' as const, label: '表格', icon: Table2 },
-      { id: 'charts' as const, label: '图表', icon: BarChart3 },
-      { id: 'images' as const, label: '图片', icon: ImageIcon },
+      { id: 'fields' as const, label: '字段', icon: LayoutList, count: artifactCounts.fields },
+      { id: 'tables' as const, label: '表格', icon: Table2, count: artifactCounts.tables },
+      { id: 'charts' as const, label: '图表', icon: BarChart3, count: artifactCounts.charts },
+      { id: 'images' as const, label: '图片', icon: ImageIcon, count: artifactCounts.images },
     ];
 
     return (
-      <section id="mobile-artifact-detail" className="flex flex-col min-h-full">
+      <section
+        id="mobile-artifact-detail"
+        data-testid="mobile-artifact-detail"
+        data-active-tab={activeTab}
+        data-field-count={artifactCounts.fields}
+        data-table-count={artifactCounts.tables}
+        data-chart-count={artifactCounts.charts}
+        data-image-count={artifactCounts.images}
+        className="flex flex-col min-h-full"
+      >
         <div className="flex-1 rounded-[24px] bg-white p-3 shadow-[0_8px_32px_rgba(0,0,0,0.03)] dark:bg-slate-800/60 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)]">
           <div className="sticky top-0 z-10 -mx-1 mb-4 flex items-center gap-2 bg-white/95 py-1 backdrop-blur-md dark:bg-slate-800/95">
             <div className="flex flex-1 gap-1.5 rounded-[14px] bg-slate-50/80 p-1 ring-1 ring-slate-100/50 dark:bg-slate-900/50 dark:ring-slate-700/50">
@@ -1306,16 +1321,28 @@ export const MobileDeepReadPage: React.FC = () => {
                   <button
                     key={tab.id}
                     type="button"
+                    data-testid={`mobile-artifact-tab-${tab.id}`}
+                    data-count={tab.count}
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      'flex flex-1 items-center justify-center gap-1.5 rounded-[12px] py-2 text-[13px] font-semibold transition-all',
+                      'flex flex-1 items-center justify-center gap-1 rounded-[12px] py-2 text-[12px] font-semibold transition-all min-[380px]:gap-1.5 min-[380px]:text-[13px]',
                       active
                         ? 'bg-white text-slate-800 shadow-[0_2px_10px_rgba(0,0,0,0.04)] dark:bg-slate-700 dark:text-white'
                         : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200',
                     )}
                   >
                     <Icon size={15} strokeWidth={active ? 2.5 : 2} />
-                    {tab.label}
+                    <span>{tab.label}</span>
+                    <span
+                      className={cn(
+                        'min-w-[18px] rounded-full px-1 text-center text-[10px] leading-4',
+                        active
+                          ? 'bg-slate-100 text-slate-600 dark:bg-slate-600 dark:text-slate-100'
+                          : 'bg-white/80 text-slate-400 dark:bg-slate-800 dark:text-slate-500',
+                      )}
+                    >
+                      {tab.count}
+                    </span>
                   </button>
                 );
               })}
@@ -1329,6 +1356,22 @@ export const MobileDeepReadPage: React.FC = () => {
             >
               {traceLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCcw size={16} />}
             </button>
+          </div>
+
+          <div
+            data-testid="mobile-artifact-summary"
+            className="mb-3 rounded-[16px] border border-cyan-100/70 bg-cyan-50/60 px-3 py-2 text-[12px] leading-relaxed text-cyan-800 dark:border-cyan-500/15 dark:bg-cyan-500/10 dark:text-cyan-200"
+          >
+            {traceLoading ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Loader2 size={13} className="animate-spin" />
+                正在恢复并定位产物，已先展示本地缓存结果。
+              </span>
+            ) : (
+              <span>
+                已恢复 {artifactCounts.fields} 个字段、{artifactCounts.tables} 个表格、{artifactCounts.charts} 个图表、{artifactCounts.images} 个图片产物。
+              </span>
+            )}
           </div>
 
           {traceError && (
@@ -1350,7 +1393,7 @@ export const MobileDeepReadPage: React.FC = () => {
                 <div className="py-14 text-center text-[13px] text-slate-500 dark:text-slate-400">暂无字段产物</div>
               ) : (
                 fieldEntries.map((item) => (
-                  <article key={item.fieldName} className="rounded-[16px] border border-slate-100 bg-white px-3.5 py-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                  <article key={item.fieldName} data-testid="mobile-artifact-field-card" className="rounded-[16px] border border-slate-100 bg-white px-3.5 py-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
                     <p className="text-[12px] font-medium text-slate-500 dark:text-slate-400">{item.fieldName}</p>
                     <p className="mt-0.5 whitespace-pre-wrap break-words text-[14px] font-semibold text-slate-900 dark:text-slate-100">{item.value}</p>
                   </article>
@@ -1369,7 +1412,7 @@ export const MobileDeepReadPage: React.FC = () => {
                   const previewRows = expanded ? item.dataframe.rows : item.dataframe.rows.slice(0, 8);
                   const hasDataframe = item.dataframe.headers.length > 0 || item.dataframe.rows.length > 0;
                   return (
-                    <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                    <article key={item.key} data-testid="mobile-artifact-table-card" className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
                       <div className="p-3.5">
                         <div className="mb-2 flex items-start justify-between gap-3">
                           <div className="flex-1">
@@ -1496,7 +1539,7 @@ export const MobileDeepReadPage: React.FC = () => {
                 <div className="py-14 text-center text-[13px] text-slate-500 dark:text-slate-400">暂无图表产物</div>
               ) : (
                 chartItems.map((item) => (
-                  <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                  <article key={item.key} data-testid="mobile-artifact-chart-card" className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
                     <div className="p-3.5">
                       <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '图表'}</p>
                       {item.summary && <p className="mt-2 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400"><span className="font-medium text-slate-700 dark:text-slate-200">趋势解读：</span>{item.summary}</p>}
@@ -1516,7 +1559,7 @@ export const MobileDeepReadPage: React.FC = () => {
                 <div className="py-14 text-center text-[13px] text-slate-500 dark:text-slate-400">暂无图片产物</div>
               ) : (
                 imageItems.map((item) => (
-                  <article key={item.key} className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
+                  <article key={item.key} data-testid="mobile-artifact-image-card" className="overflow-hidden rounded-[16px] border border-slate-100 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)] dark:border-slate-700/40 dark:bg-slate-800/40">
                     <div className="p-3.5">
                       <div className="mb-2 flex items-start justify-between gap-2">
                         <div className="flex-1">
@@ -2302,6 +2345,9 @@ export const MobileDeepReadPage: React.FC = () => {
                 return (
                   <article
                     key={doc.file_hash}
+                    data-testid="mobile-extraction-document-card"
+                    data-file-name={doc.file_name}
+                    data-file-hash={doc.file_hash}
                     title={`字段 ${fieldCount} · 待核验 ${reviewCount}`}
                     className={cn(
                       'group relative flex w-full flex-col gap-3 rounded-[16px] p-3 text-left transition-colors active:bg-slate-50 dark:active:bg-white/[0.05]',
@@ -2334,6 +2380,7 @@ export const MobileDeepReadPage: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => openDocumentPreview(doc)}
+                        data-testid="mobile-document-preview-button"
                         className="inline-flex h-[28px] flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-slate-50 px-2 text-[12px] font-medium text-slate-600 transition-colors active:bg-slate-100 dark:bg-white/[0.04] dark:text-slate-300 dark:active:bg-white/[0.08]"
                       >
                         <MonitorPlay size={13} />
@@ -2342,6 +2389,7 @@ export const MobileDeepReadPage: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => openDocumentArtifacts(doc)}
+                        data-testid="mobile-document-artifacts-button"
                         className="inline-flex h-[28px] flex-1 items-center justify-center gap-1.5 rounded-[10px] bg-slate-50 px-2 text-[12px] font-medium text-slate-600 transition-colors active:bg-slate-100 dark:bg-white/[0.04] dark:text-slate-300 dark:active:bg-white/[0.08]"
                       >
                         <LayoutList size={13} />

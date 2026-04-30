@@ -7,12 +7,46 @@ from typing import Any
 
 import requests
 
+from app.core.ai_api_logging import (
+    log_ai_api_exception as _shared_log_ai_api_exception,
+    log_ai_api_request as _shared_log_ai_api_request,
+    log_ai_api_response as _shared_log_ai_api_response,
+)
+
 from .word_processor import get_word_data_url, squish
 
 
 _RETRYABLE_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _MAX_REQUEST_ATTEMPTS = 3
 _BASE_RETRY_DELAY_SECONDS = 1.0
+
+
+def _log_ai_api_request(url: str, payload: dict[str, Any], *, attempt: int, max_attempts: int) -> None:
+    _shared_log_ai_api_request(
+        api_url=url,
+        request_body=payload,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        logger_name="app.modules.module3.ai_api",
+        config_prefix="MODULE3",
+    )
+
+
+def _log_ai_api_response(response: requests.Response) -> None:
+    _shared_log_ai_api_response(
+        response=response,
+        logger_name="app.modules.module3.ai_api",
+        config_prefix="MODULE3",
+    )
+
+
+def _log_ai_api_exception(exc: BaseException, *, close_call: bool = True) -> None:
+    _shared_log_ai_api_exception(
+        exc=exc,
+        close_call=close_call,
+        logger_name="app.modules.module3.ai_api",
+        config_prefix="MODULE3",
+    )
 
 
 def _is_retryable_request_error(exc: requests.exceptions.RequestException) -> bool:
@@ -41,10 +75,19 @@ def _post_json_with_retry(
     last_error: requests.exceptions.RequestException | None = None
     for attempt in range(1, max_attempts + 1):
         try:
+            _log_ai_api_request(url, payload, attempt=attempt, max_attempts=max_attempts)
             response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            _log_ai_api_response(response)
             response.raise_for_status()
             return response
         except requests.exceptions.RequestException as exc:
+            _log_ai_api_exception(
+                exc,
+                close_call=not (
+                    isinstance(exc, requests.exceptions.HTTPError)
+                    and exc.response is not None
+                ),
+            )
             last_error = exc
             if attempt >= max_attempts or not _is_retryable_request_error(exc):
                 raise

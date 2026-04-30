@@ -22,6 +22,14 @@ export const parseErrorMessage = async (response: Response): Promise<string> => 
   try {
     const text = (await response.text()).trim();
     if (!text) return fallback;
+    const normalizedText = text.toLowerCase();
+    if (
+      normalizedText.startsWith('<!doctype')
+      || normalizedText.startsWith('<html')
+      || normalizedText.includes('server is powered by frp')
+    ) {
+      return `请求没有到达后端服务（HTTP ${response.status}）。请检查 API 地址或内网穿透配置。请求地址：${response.url}`;
+    }
     try {
       const parsed = JSON.parse(text) as { error?: string; detail?: string; message?: string };
       return String(parsed.error || parsed.detail || parsed.message || text).trim() || fallback;
