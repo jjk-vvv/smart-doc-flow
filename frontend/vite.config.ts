@@ -37,6 +37,7 @@ export default defineConfig(({ mode }) => {
   const gatewayPort = parsePort(process.env.GATEWAY_PORT, 3001);
   const frontendPort = parsePort(process.env.FRONTEND_PORT, 3000);
   const backendEntryUrl = process.env.VITE_BACKEND_ENTRY_URL || `http://localhost:${gatewayPort}`;
+  const allowedHosts = ['www.smart-doc-flow.cn'];
   const devProxyTimeoutMs = Math.max(
     180_000,
     Number.parseInt(process.env.VITE_DEV_PROXY_TIMEOUT_MS || '600000', 10) || 600_000,
@@ -46,6 +47,7 @@ export default defineConfig(({ mode }) => {
       port: frontendPort,
       strictPort: true,
       host: '0.0.0.0',
+      allowedHosts,
       proxy: {
         '/api': {
           target: backendEntryUrl,
@@ -95,6 +97,7 @@ export default defineConfig(({ mode }) => {
       port: frontendPort,
       strictPort: true,
       host: '0.0.0.0',
+      allowedHosts,
     },
     plugins: [react()],
     resolve: {
