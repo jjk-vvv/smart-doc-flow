@@ -19,7 +19,7 @@ npm run dev:module4      # Module 4 knowledge graph service only
 npm run start            # Production FastAPI startup
 ```
 
-`npm run dev` defaults `MODULE2_ENABLED=0` and `MODULE4_ENABLED=0` — extraction and graph routes attach through managed sidecars, not separate processes.
+`npm run dev` starts one unified FastAPI backend and the Web frontend. Extraction and graph runtimes are mounted inside the unified app; the canonical `backend/run_service.py backend` entry disables their standalone sidecars.
 
 ### Desktop App
 
@@ -61,7 +61,7 @@ python backend/run_service.py module4   # Knowledge graph sidecar (port 8100)
 python backend/run_service.py backend --reload   # With hot reload
 ```
 
-`run_service.py` auto-selects the correct Python venv: `.venv-module4-py311` for module4, `.venv-module2-py311` or `.venv` for everything else.
+`run_service.py` prefers the repo-root `.venv` for all services, then checks legacy service-specific environments as fallbacks.
 
 ### Frontend Build
 
@@ -76,18 +76,18 @@ npm run build            # Build frontend to frontend/dist/
 ```
 Frontend (React/Vite :3000)
     ↓ HTTP/JSON
-Backend Gateway (FastAPI :3001)  ← Primary unified entry point
-    ↓ HTTP/Subprocess (managed sidecars)
-  Module 2 (Extraction :8010)
-  Module 4 (Knowledge Graph :8100)
-  Auth Compat Proxy :3003 (legacy, optional)
+Unified Backend (FastAPI :3001)
+    ├── Auth and Module 1
+    ├── Module 2 extraction and assistant runtime
+    ├── Module 3 document generation
+    └── Module 4 knowledge graph runtime
 ```
 
-Frontend code should always target `:3001`. Ports `3003`, `8010`, and `8100` are internal sidecar ports — not for direct frontend use.
+Frontend code should target the configured unified gateway, normally `:3001`. Standalone module ports such as `8010` and `8100` are optional debugging entries, not required by standard startup.
 
 ### Backend (`backend/app/`)
 
-The FastAPI application is created in `create_app.py` and mounts six feature modules as routers:
+The FastAPI application is created in `app/factory.py` and exposed by `app/main.py`. The following compatibility and frontend routers remain part of the app alongside the canonical business modules:
 
 | Module path | Responsibility |
 |---|---|
@@ -98,14 +98,13 @@ The FastAPI application is created in `create_app.py` and mounts six feature mod
 | `modules/module1_placeholder/` | Extensible module shell page |
 | `modules/frontend_static/` | Serves `frontend/dist/` in production |
 
-**Sidecar management**: Module 2 and Module 4 run as managed sidecars — spawned and monitored by the gateway. Controlled via env vars:
+**Sidecar compatibility**: The normal `run_service.py backend` entry mounts Module 2 and Module 4 in-process and forces both sidecar modes to `disabled`. Alternate legacy/test entrypoints retain these controls:
 - `UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE` — `auto` (default), `managed`, `disabled`
 - `UNIFIED_GATEWAY_MODULE4_SIDECAR_MODE` — `auto` (default), `managed`, `disabled`
 
-**Legacy directories** — do not treat as primary:
-- `backend/auth/` — compatibility proxy only, keeps historical entrypoints alive on port `3003`
-- `backend/app/modules/module2/` — specialized extraction upstream (attached via sidecar in normal mode)
-- `backend/module4/` — specialized graph upstream (attached via sidecar in normal mode); preferred venv is repo-root `.venv-module4-py311`
+**Current and historical layouts**:
+- `backend/auth/` and `backend/module4/` — old layouts; do not recreate these as primary source directories
+- `backend/app/modules/module2/` and `backend/app/modules/module4/` — current business-module roots mounted in the unified app; both prefer the repo-root `.venv`
 
 ### Frontend (`frontend/`)
 

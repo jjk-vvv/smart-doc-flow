@@ -1,0 +1,16 @@
+# Safe FRP client template. From the repository root, copy this file to
+# frpc.toml and fill in values locally. Never commit the resulting frpc.toml.
+serverAddr = "your-frp-server.example.com"
+serverPort = 7000
+user = "replace_with_your_user"
+loginFailExit = false
+
+# Optional authentication when required by the FRP server.
+# auth.token = "replace_with_your_token"
+
+[[proxies]]
+type = "http"
+name = "smartdoc"
+localIP = "127.0.0.1"
+localPort = 3000
+customDomains = ["www.example.com"]

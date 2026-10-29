@@ -1,20 +1,22 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Smart Doc Flow Web 工作台
 
-# Run and deploy your AI Studio app
+React、TypeScript 和 Vite 构建的 Web 前端。完整环境准备见[项目说明](../README.md)。
 
-This contains everything you need to run your app locally.
+在仓库根目录执行：
 
-View your app in AI Studio: https://ai.studio/apps/drive/1hEY7sZg_5mx3Au1DUux9uZMQMa0ErGmR
+```powershell
+npm --prefix frontend ci
+npm run dev:frontend
+npm run build:frontend
+```
 
-## Run Locally
+默认监听 `3000`，通过 Vite 将 `/api`、`/extract`、`/module1`、`/module3`、`/module4` 和 `/gateway` 请求转发到 `3001`。使用 `npm run dev` 可以同时启动统一后端。
 
-**Prerequisites:**  Node.js
+- `pages/`：页面及工作台。
+- `features/`：跨页面业务功能。
+- `components/`：通用组件。
+- `shared/`：API、状态和共享代码。
+- `assets/`：被应用引用的图片、视频等资源。
+- `e2e/`：浏览器回归和诊断脚本；执行结果进入忽略目录。
 
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+开发服务器和预览服务器允许的公网域名为 `www.smart-doc-flow.cn`。FRP 配置仍需指向实际前端端口。运行数据、构建产物和真实密钥不纳入版本管理。
