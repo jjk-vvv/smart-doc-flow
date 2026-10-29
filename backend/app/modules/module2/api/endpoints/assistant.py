@@ -48,9 +48,10 @@ def build_router() -> APIRouter:
         limit: int = Query(default=40, ge=1, le=200),
         settings: Settings = Depends(get_settings),
         extraction_service: ExtractionService = Depends(get_extraction_service),
-        _current_user: AuthenticatedUser = Depends(require_authenticated_user),
+        current_user: AuthenticatedUser = Depends(require_authenticated_user),
     ):
-        return extraction_service.get_assistant1_session(
+        request.state.authenticated_user = current_user
+        return await extraction_service.get_assistant1_session_async(
             settings,
             request,
             session_id,

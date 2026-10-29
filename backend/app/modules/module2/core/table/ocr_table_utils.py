@@ -4,7 +4,7 @@ import re
 from typing import Any, Callable, Dict, List, Tuple
 
 try:
-    from app.core.format.plain_text_parser import normalize_text
+    from app.modules.module2.core.format.plain_text_parser import normalize_text
 except ModuleNotFoundError:
     def normalize_text(text: str) -> str:
         text = text.replace("\x00", " ")
@@ -13,7 +13,7 @@ except ModuleNotFoundError:
         return text.strip()
 
 try:
-    from app.core.table.table_metadata import normalize_token_for_compare
+    from app.modules.module2.core.table.table_metadata import normalize_token_for_compare
 except ModuleNotFoundError:
     def normalize_token_for_compare(text: str) -> str:
         token = str(text or "").strip().lower()

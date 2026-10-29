@@ -144,7 +144,7 @@ class ExtractionJobExecutionService:
             if updated:
                 await self._persist_snapshot(job_id, True)
 
-        final_documents = await self._extraction_job_runtime.finalize_job(job_id)
+        _final_documents = await self._extraction_job_runtime.finalize_job(job_id)
         await self._persist_snapshot(job_id, True)
 
 __all__ = ["ExtractionJobExecutionService"]

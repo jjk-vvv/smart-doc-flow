@@ -9,7 +9,7 @@ NormalizeText = Callable[[str], str]
 
 
 class VisionResponseRuntime:
-    """Parse Gemini vision responses and normalize small insight payloads."""
+    """Parse vision responses and normalize small insight payloads."""
 
     def __init__(self, *, normalize_text: NormalizeText) -> None:
         self._normalize_text = normalize_text
@@ -76,25 +76,6 @@ class VisionResponseRuntime:
                     continue
         return None
 
-    @staticmethod
-    def extract_candidate_text(raw: str) -> str:
-        if not raw:
-            return ""
-        try:
-            obj = json.loads(raw)
-        except json.JSONDecodeError:
-            return ""
-
-        texts: List[str] = []
-        for candidate in obj.get("candidates", []):
-            content = candidate.get("content", {}) if isinstance(candidate.get("content"), dict) else {}
-            for part in content.get("parts", []):
-                if not isinstance(part, dict):
-                    continue
-                text = str(part.get("text", "") or "").strip()
-                if text:
-                    texts.append(text)
-        return "\n".join(texts)
 
     def extract_vision_insights(
         self,

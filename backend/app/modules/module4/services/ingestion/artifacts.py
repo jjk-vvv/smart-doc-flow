@@ -66,8 +66,8 @@ def _strip_artifact_noise(
     if not text:
         return ""
     text = re.sub(r"^(chart|table|figure|image)\s*:\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"[\uff08(](?:pdf|mineru|gemini|vision|roi)[^\uff09)]*[\uff09)]", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b(?:pdf_mineru|gemini_vision_[a-z_]+|pdf_roi_crop|mineru_out)\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[\uff08(](?:pdf|mineru|vision|vision|roi)[^\uff09)]*[\uff09)]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:pdf_mineru|vision_[a-z_]+|pdf_roi_crop|mineru_out)\b", "", text, flags=re.IGNORECASE)
     if object_id:
         text = re.sub(rf"\b{re.escape(object_id)}\b", "", text, flags=re.IGNORECASE)
     if object_type == "table":
@@ -160,7 +160,7 @@ def _looks_low_signal_artifact_text(text: str, object_type: str, object_id: str 
     object_id_lower = _normalize_text(object_id).lower()
     if object_id_lower and object_id_lower in lower:
         return True
-    if re.search(r"\b(?:pdf|mineru|gemini|vision|roi)\b", lower):
+    if re.search(r"\b(?:pdf|mineru|vision|vision|roi)\b", lower):
         return True
     return _looks_generic_artifact_name(cleaned, object_type, object_id)
 

@@ -36,7 +36,7 @@ def test_parser_image_bundle_runtime_builds_image_ocr_and_document_kwargs() -> N
         normalize_box=normalize_box,
     )
     image_document_kwargs = runtime.build_image_document_kwargs(
-        enable_gemini_vision_enhance=True,
+        vision_enhance_enabled=True,
         visual_backend_available=visual_backend_available,
         resolve_api_key=resolve_api_key,
         get_ocr_engine=get_ocr_engine,
@@ -48,7 +48,7 @@ def test_parser_image_bundle_runtime_builds_image_ocr_and_document_kwargs() -> N
     assert image_ocr_kwargs["set_runtime_page_count"](5) == 5
     assert image_ocr_kwargs["normalize_text"]("  v  ") == "v"
     assert image_ocr_kwargs["normalize_box"](None, 100, 200) == (0.1, 0.2, 0.3, 0.4)
-    assert image_document_kwargs["enable_gemini_vision_enhance"] is True
+    assert image_document_kwargs["vision_enhance_enabled"] is True
     assert image_document_kwargs["visual_backend_available"]() == (True, "")
     assert image_document_kwargs["resolve_api_key"]() == "api-key"
     assert image_document_kwargs["get_ocr_engine"]() is not None
@@ -75,7 +75,7 @@ def test_parser_image_bundle_runtime_builds_image_vision_and_parse_kwargs() -> N
     infer_tables_from_ocr_cells = lambda page_cells: [{"table_id": "ocr"}]
     infer_tables_from_page_lines = lambda page_lines, parts, bbox_map, source: [{"table_id": "lines"}]
     infer_figures_from_page_lines = lambda page_lines, parts, bbox_map, source, last: [{"figure_id": "line_fig"}]
-    enhance_low_quality_pages_with_gemini_vision = lambda **kwargs: (
+    enhance_low_quality_pages_with_vision = lambda **kwargs: (
         [{"table_id": "vision"}],
         [{"figure_id": "vision_fig"}],
     )
@@ -83,8 +83,8 @@ def test_parser_image_bundle_runtime_builds_image_vision_and_parse_kwargs() -> N
 
     image_vision_kwargs = runtime.build_image_vision_kwargs(
         enabled=True,
-        gemini_vision_max_pages=6,
-        gemini_vision_consecutive_fail_stop=2,
+        vision_max_pages=6,
+        vision_consecutive_fail_stop=2,
         resolve_api_key=resolve_api_key,
         select_low_quality_pages_for_vision=select_low_quality_pages_for_vision,
         vision_focus_from_page_lines=vision_focus_from_page_lines,
@@ -103,14 +103,14 @@ def test_parser_image_bundle_runtime_builds_image_vision_and_parse_kwargs() -> N
         infer_tables_from_ocr_cells=infer_tables_from_ocr_cells,
         infer_tables_from_page_lines=infer_tables_from_page_lines,
         infer_figures_from_page_lines=infer_figures_from_page_lines,
-        enhance_low_quality_pages_with_gemini_vision=enhance_low_quality_pages_with_gemini_vision,
+        enhance_low_quality_pages_with_vision=enhance_low_quality_pages_with_vision,
         merge_figure_blocks=merge_figure_blocks,
         prune_fragment_tables=prune_fragment_tables,
     )
 
     assert image_vision_kwargs["enabled"] is True
-    assert image_vision_kwargs["gemini_vision_max_pages"] == 6
-    assert image_vision_kwargs["gemini_vision_consecutive_fail_stop"] == 2
+    assert image_vision_kwargs["vision_max_pages"] == 6
+    assert image_vision_kwargs["vision_consecutive_fail_stop"] == 2
     assert image_vision_kwargs["resolve_api_key"]() == "api-key"
     assert image_vision_kwargs["select_low_quality_pages_for_vision"]({1: ["line"]}, []) == [1]
     assert image_vision_kwargs["vision_focus_from_page_lines"](["a", "b"]) == "table"
@@ -132,7 +132,7 @@ def test_parser_image_bundle_runtime_builds_image_vision_and_parse_kwargs() -> N
     assert image_parse_kwargs["infer_tables_from_ocr_cells"]({1: []}) == [{"table_id": "ocr"}]
     assert image_parse_kwargs["infer_tables_from_page_lines"]({}, [], {}, "image") == [{"table_id": "lines"}]
     assert image_parse_kwargs["infer_figures_from_page_lines"]({}, [], {}, "image", []) == [{"figure_id": "line_fig"}]
-    assert image_parse_kwargs["enhance_low_quality_pages_with_gemini_vision"]() == (
+    assert image_parse_kwargs["enhance_low_quality_pages_with_vision"]() == (
         [{"table_id": "vision"}],
         [{"figure_id": "vision_fig"}],
     )

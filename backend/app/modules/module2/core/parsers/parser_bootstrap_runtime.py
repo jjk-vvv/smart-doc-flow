@@ -104,7 +104,6 @@ class ParserProviderBundleRuntime:
         self,
         *,
         api_key: str,
-        native_api_key: str,
         model: str,
         base_url: str,
         endpoint_style: str,
@@ -114,11 +113,9 @@ class ParserProviderBundleRuntime:
         cache_dir: str,
         enable_cache: bool,
         reasoning_effort: str,
-        native_fallback_enabled: bool,
     ) -> Dict[str, Any]:
         return {
             "api_key": api_key,
-            "native_api_key": native_api_key,
             "model": model,
             "base_url": base_url,
             "endpoint_style": endpoint_style,
@@ -128,23 +125,8 @@ class ParserProviderBundleRuntime:
             "cache_dir": cache_dir,
             "enable_cache": enable_cache,
             "reasoning_effort": reasoning_effort,
-            "native_fallback_enabled": native_fallback_enabled,
         }
 
-    def resolve_native_api_key(
-        self,
-        *,
-        getenv: Callable[[str, str], str],
-    ) -> str:
-        for raw in (
-            getenv("MODULE2_GEMINI_NATIVE_API_KEY", ""),
-            getenv("GOOGLE_API_KEY", ""),
-            getenv("GEMINI_API_KEY", ""),
-        ):
-            key = str(raw or "").strip()
-            if key.startswith("AIza"):
-                return key
-        return ""
 
     def visual_backend_available(
         self,
@@ -265,7 +247,7 @@ class ParserDependencyBundleRuntime:
         select_uncovered_table_like_pages: Callable[..., Any],
         infer_figures_from_page_lines: Callable[..., Any],
         get_last_figure_blocks: Callable[..., Any],
-        enhance_low_quality_pages_with_gemini_vision: Callable[..., Any],
+        enhance_low_quality_pages_with_vision: Callable[..., Any],
         merge_figure_blocks: Callable[..., Any],
         prune_fragment_tables: Callable[..., Any],
     ) -> ParserKwargBundle:
@@ -320,7 +302,7 @@ class ParserDependencyBundleRuntime:
                         get_last_figure_blocks(),
                     )
                 ),
-                "enhance_low_quality_pages_with_gemini_vision": enhance_low_quality_pages_with_gemini_vision,
+                "enhance_low_quality_pages_with_vision": enhance_low_quality_pages_with_vision,
                 "merge_figure_blocks": merge_figure_blocks,
                 "prune_fragment_tables": prune_fragment_tables,
             },
@@ -337,7 +319,7 @@ class ParserDependencyBundleRuntime:
         enable_fitz_table: bool,
         table_merge_enable: bool,
         visual_force_ocr_on_weak_native: bool,
-        gemini_vision_enable_figures: bool,
+        vision_enable_figures: bool,
         normalize_text: Callable[..., Any],
         split_page_text: Callable[..., Any],
         append_ref: Callable[..., Any],
@@ -351,7 +333,7 @@ class ParserDependencyBundleRuntime:
         merge_cross_page_tables: Callable[..., Any],
         infer_figures_from_page_lines: Callable[..., Any],
         figure_blocks_need_vision: Callable[..., Any],
-        enhance_low_quality_pages_with_gemini_vision: Callable[..., Any],
+        enhance_low_quality_pages_with_vision: Callable[..., Any],
         merge_figure_blocks: Callable[..., Any],
         prune_fragment_tables: Callable[..., Any],
     ) -> ParserKwargBundle:
@@ -365,7 +347,7 @@ class ParserDependencyBundleRuntime:
                 "enable_fitz_table": enable_fitz_table,
                 "table_merge_enable": table_merge_enable,
                 "visual_force_ocr_on_weak_native": visual_force_ocr_on_weak_native,
-                "gemini_vision_enable_figures": gemini_vision_enable_figures,
+                "vision_enable_figures": vision_enable_figures,
             },
             callback_kwargs={
                 "normalize_text": normalize_text,
@@ -381,7 +363,7 @@ class ParserDependencyBundleRuntime:
                 "merge_cross_page_tables": merge_cross_page_tables,
                 "infer_figures_from_page_lines": infer_figures_from_page_lines,
                 "figure_blocks_need_vision": figure_blocks_need_vision,
-                "enhance_low_quality_pages_with_gemini_vision": enhance_low_quality_pages_with_gemini_vision,
+                "enhance_low_quality_pages_with_vision": enhance_low_quality_pages_with_vision,
                 "merge_figure_blocks": merge_figure_blocks,
                 "prune_fragment_tables": prune_fragment_tables,
             },
@@ -396,7 +378,7 @@ class ParserDependencyBundleRuntime:
         docx_media_probe_enable: bool,
         docx_media_max_assets: int,
         docx_media_vision_enable: bool,
-        docx_media_nested_gemini_enhance_enable: bool,
+        docx_media_nested_vision_enhance_enable: bool,
         docx_media_max_assets_unbounded: bool,
         docx_media_vision_max_assets: int,
         docx_media_vision_max_assets_unbounded: bool,
@@ -423,7 +405,7 @@ class ParserDependencyBundleRuntime:
                 "docx_media_probe_enable": docx_media_probe_enable,
                 "docx_media_max_assets": docx_media_max_assets,
                 "docx_media_vision_enable": docx_media_vision_enable,
-                "docx_media_nested_gemini_enhance_enable": docx_media_nested_gemini_enhance_enable,
+                "docx_media_nested_vision_enhance_enable": docx_media_nested_vision_enhance_enable,
                 "docx_media_max_assets_unbounded": docx_media_max_assets_unbounded,
                 "docx_media_vision_max_assets": docx_media_vision_max_assets,
                 "docx_media_vision_max_assets_unbounded": docx_media_vision_max_assets_unbounded,
@@ -510,13 +492,13 @@ class ParserNonPdfEntryRuntime:
         last_figure_blocks: FigureBlocks,
         build_named_runtime_state: BuildNamedRuntimeStateFn,
         apply_state_update: ApplyStateUpdateFn,
-        enable_gemini_enhance: bool | None = None,
+        enable_vision_enhance: bool | None = None,
     ) -> ParseResult:
         runtime_result = image_document_runtime.parse_image(
             file_name=file_name,
             file_bytes=file_bytes,
             last_figure_blocks=last_figure_blocks,
-            enable_gemini_enhance=enable_gemini_enhance,
+            enable_vision_enhance=enable_vision_enhance,
         )
         result = apply_state_update(
             build_named_runtime_state(

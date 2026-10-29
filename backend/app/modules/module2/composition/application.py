@@ -71,7 +71,7 @@ async def extract_cache_clear(scope: str = "results", tenant_id: str = "") -> An
 def create_app() -> FastAPI:
     configure_app_logging()
     app = FastAPI(
-        title="A23 Module 2 - Unstructured Document Extraction",
+        title="Smart Doc Flow - Document Extraction",
         version="1.0.0",
         lifespan=_module2_main_entry_bundle.lifespan(),
     )

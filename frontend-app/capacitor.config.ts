@@ -4,7 +4,6 @@ const config: CapacitorConfig = {
   appId: 'cn.smartdocflow.mobile',
   appName: '文枢智动',
   webDir: 'dist-native',
-  bundledWebRuntime: false,
   server: {
     // Capacitor Android defaults to https://localhost. When backend endpoint is
     // plain http (for example FRP on :82), WebView can throw `Failed to fetch`.

@@ -1,0 +1,6 @@
+target-version = "py311"
+
+[lint]
+# Detect undefined names, invalid imports, expressions, and unused code without imposing
+# a whole-repository formatting rewrite on existing callback/bootstrap code.
+select = ["F"]

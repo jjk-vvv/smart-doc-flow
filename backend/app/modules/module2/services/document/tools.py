@@ -200,7 +200,7 @@ class TraceLocatorTextRuntime:
             flags=re.IGNORECASE,
         )
         text = re.sub(
-            r"\b(?:pdf_mineru|gemini_vision_[a-z_]+|pdf_roi_crop|mineru_out)\b",
+            r"\b(?:pdf_mineru|vision_[a-z_]+|pdf_roi_crop|mineru_out)\b",
             "",
             text,
             flags=re.IGNORECASE,
@@ -724,15 +724,15 @@ class TraceLocatorPayloadRuntime:
                 return source
             if source.startswith("docx_chart"):
                 return source
-            if source in {"pdf_fitz", "pdf_mineru", "pdf_mineru_gemini"} or source.startswith("pdf_fitz_"):
+            if source in {"pdf_fitz", "pdf_mineru", "pdf_mineru_vision"} or source.startswith("pdf_fitz_"):
                 return "pdf_roi_crop"
             return source or "artifact_output"
         return ""
 
     def table_dataframe_source_key(self, table: Dict[str, Any]) -> str:
         source = str(table.get("source") or "").strip().lower()
-        if "gemini" in source or "vision" in source:
-            return "gemini_vision_table"
+        if "vision" in source or "vision" in source:
+            return "vision_table"
         return "table_structured"
 
     def figure_dataframe_source_key(self, figure: Dict[str, Any]) -> str:
@@ -740,8 +740,8 @@ class TraceLocatorPayloadRuntime:
         if dataframe_source:
             return dataframe_source
         source = str(figure.get("source") or "").strip().lower()
-        if "gemini" in source or "vision" in source:
-            return "gemini_vision_figure"
+        if "vision" in source or "vision" in source:
+            return "vision_figure"
         return "none"
 
 

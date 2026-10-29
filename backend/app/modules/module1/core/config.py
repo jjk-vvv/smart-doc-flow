@@ -20,7 +20,7 @@ def _env_first(*names: str, default: str = "") -> str:
 def _normalize_base_url(raw_url: str) -> str:
     cleaned = str(raw_url or "").strip().rstrip("/")
     if not cleaned:
-        return "https://jeniya.cn/v1"
+        return "https://quanzil.com/v1"
 
     for suffix in ("/v1/responses", "/v1/chat/completions", "/chat/completions", "/responses"):
         if cleaned.endswith(suffix):
@@ -97,7 +97,7 @@ class Settings:
                     "MODULE1_BASE_URL",
                     "OPENAI_BASE_URL",
                     "BASE_URL",
-                    default="https://jeniya.cn/v1",
+                    default="https://quanzil.com/v1",
                 )
             ),
             llm_model=llm_model,
@@ -118,9 +118,6 @@ class Settings:
             ),
         )
 
-    @property
-    def zhipu_api_key(self) -> str:
-        return self.llm_api_key
 
 
 _settings = Settings.load()

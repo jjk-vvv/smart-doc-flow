@@ -138,7 +138,7 @@ def test_trace_locator_text_runtime_builds_table_and_figure_locator_summaries() 
     table_locator = runtime.table_locator_texts(
         {
             "table_id": "docx_t2",
-            "caption": "付款计划（gemini_vision_table）",
+            "caption": "付款计划（vision_table）",
             "headers": ["日期", "金额", "备注"],
             "rows": [
                 {
@@ -191,7 +191,7 @@ def test_trace_locator_payload_runtime_builds_nonpdf_hints_and_payloads() -> Non
                 "headers": ["阶段", "时长"],
                 "rows": [["审批", "1天"]],
             },
-            "source": "gemini_vision_figure",
+            "source": "vision_figure",
         }
     )
 

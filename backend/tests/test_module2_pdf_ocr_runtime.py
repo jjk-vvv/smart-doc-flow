@@ -144,9 +144,9 @@ def _build_runtime(state: dict[str, Any], *, engine_outputs: list[Any], **overri
         infer_figures_from_page_lines=lambda **kwargs: [
             {"figure_id": "pdf_ocr_caption_f1", "caption": "Figure 1", "source": "pdf_ocr_caption", "page": 1}
         ],
-        enhance_low_quality_pages_with_gemini_vision=lambda **kwargs: (
+        enhance_low_quality_pages_with_vision=lambda **kwargs: (
             kwargs["table_blocks"],
-            [{"figure_id": "pdf_gemini_vision_f1", "caption": "Vision Figure", "source": "pdf_gemini_vision", "page": 1}],
+            [{"figure_id": "pdf_vision_f1", "caption": "Vision Figure", "source": "pdf_vision", "page": 1}],
         ),
         merge_figure_blocks=lambda left, right: left + right,
         prune_fragment_tables=lambda table_blocks: table_blocks,
@@ -187,7 +187,7 @@ def test_pdf_ocr_runtime_parses_pages_and_merges_vision_figures(monkeypatch) -> 
     assert table_blocks[0]["table_id"] == "ocr_t1"
     assert len(figure_blocks) == 2
     assert figure_blocks[0]["figure_id"] == "pdf_ocr_caption_f1"
-    assert figure_blocks[1]["figure_id"] == "pdf_gemini_vision_f1"
+    assert figure_blocks[1]["figure_id"] == "pdf_vision_f1"
 
 
 def test_pdf_ocr_runtime_raises_when_ocr_extracts_no_text(monkeypatch) -> None:

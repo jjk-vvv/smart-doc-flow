@@ -110,7 +110,7 @@ def _build_header_meta(headers: list[str]) -> list[dict[str, Any]]:
 
 def _build_runtime() -> TableVisionPayloadRuntime:
     return TableVisionPayloadRuntime(
-        gemini_vision_max_tables_per_page=3,
+        vision_max_tables_per_page=3,
         table_max_rows=6,
         table_max_cols=6,
         ocr_table_min_rows=2,
@@ -151,17 +151,17 @@ def test_table_vision_payload_runtime_builds_tables_and_emits_refs() -> None:
         table_idx=4,
         parts=parts,
         bbox_map=bbox_map,
-        source_prefix="pdf_gemini_vision",
+        source_prefix="pdf_vision",
     )
 
     assert next_idx == 5
     assert len(tables) == 1
-    assert tables[0]["table_id"] == "pdf_gemini_vision_t4"
+    assert tables[0]["table_id"] == "pdf_vision_t4"
     assert tables[0]["headers"] == ["季度", "营收"]
     assert tables[0]["row_count"] == 2
     assert tables[0]["quality"] == 0.83
     assert tables[0]["rows"][0]["cells"][1]["numeric_value"] == 10.0
-    assert "pdf_gemini_vision_t4_r1_c1" in bbox_map
+    assert "pdf_vision_t4_r1_c1" in bbox_map
     assert parts
 
 
@@ -190,7 +190,7 @@ def test_table_vision_payload_runtime_skips_false_or_sparse_tables() -> None:
         table_idx=1,
         parts=[],
         bbox_map={},
-        source_prefix="pdf_gemini_vision",
+        source_prefix="pdf_vision",
     )
 
     assert tables == []

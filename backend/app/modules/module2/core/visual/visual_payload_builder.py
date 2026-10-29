@@ -105,7 +105,7 @@ class VisualBboxRuntime:
 
 
 class VisualTableBuilderRuntime:
-    """Build table blocks for visual-first MinerU/Gemini payloads."""
+    """Build table blocks for visual-first MinerU/Vision payloads."""
 
     def __init__(
         self,
@@ -192,7 +192,7 @@ class VisualTableBuilderRuntime:
         bbox_map: Dict[str, List[float]],
         page_dims: Dict[int, Tuple[float, float]],
         emitted_cells: int,
-        source: str = "pdf_mineru_gemini",
+        source: str = "pdf_mineru_vision",
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         headers = self._extract_headers_from_table_payload(payload)
         rows = self._extract_rows_from_table_payload(payload)
@@ -371,7 +371,7 @@ class VisualTableBuilderRuntime:
 
 
 class VisualFigureBuilderRuntime:
-    """Build figure blocks for visual-first MinerU/Gemini payloads."""
+    """Build figure blocks for visual-first MinerU/Vision payloads."""
 
     def __init__(
         self,
@@ -414,7 +414,7 @@ class VisualFigureBuilderRuntime:
         parts: List[str],
         bbox_map: Dict[str, List[float]],
         page_dims: Dict[int, Tuple[float, float]],
-        source: str = "pdf_mineru_gemini",
+        source: str = "pdf_mineru_vision",
     ) -> Optional[Dict[str, Any]]:
         title = self._normalize_text(str(payload.get("title") or ""))
         caption = self._normalize_text(

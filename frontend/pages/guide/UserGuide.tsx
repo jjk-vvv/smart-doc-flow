@@ -1,4 +1,4 @@
-﻿import React, {
+import React, {
   useState,
   useEffect,
   useRef,
@@ -324,6 +324,7 @@ type GuideNavItem = {
 
 interface UserGuideProps {
   onBackToDashboard?: () => void;
+  onOpenLogin?: () => void;
 }
 
 const GuideSectiondemonstration: React.FC<{
@@ -617,7 +618,7 @@ const GuideSectiondemonstration: React.FC<{
   );
 };
 
-export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
+export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard, onOpenLogin }) => {
   const [currentSection, setCurrentSection] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeNavId, setActiveNavId] = useState<GuideNavId>("overview");
@@ -773,7 +774,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
         ref={ref}
         className="w-full bg-[#fcfcfc] relative overflow-hidden pt-32 pb-24 lg:pt-48 lg:pb-40 z-10 flex justify-center min-h-screen items-center font-['Inter',sans-serif]"
       >
-        {/* Abstract Dot Pattern Background */}
         <div
           className="absolute inset-0 z-0 opacity-[0.15] pointer-events-none"
           style={{
@@ -781,7 +781,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             backgroundSize: "32px 32px",
           }}
         ></div>
-        {/* Blue Glow */}
         <div className="absolute top-1/2 right-1/4 w-[600px] h-[600px] z-0 pointer-events-none translate-x-1/4 -translate-y-1/2">
           <motion.div
             className="w-full h-full bg-[#60a5fa] rounded-full blur-[120px]"
@@ -797,7 +796,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
           />
         </div>
         <div className="relative max-w-[1440px] mx-auto px-6 lg:px-16 w-full grid grid-cols-1 lg:grid-cols-2 gap-16 lg:gap-24 items-center z-10">
-          {/* Left Content */}
           <motion.div
             variants={staggerContainerVariants}
             initial="hidden"
@@ -866,7 +864,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             </motion.div>
           </motion.div>
 
-          {/* Right Card */}
           <motion.div
             variants={rightVariants}
             initial="hidden"
@@ -887,7 +884,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             </div>
           </motion.div>
         </div>
-        {/* Bottom Text */}
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 w-full flex justify-center pointer-events-none">
           <motion.div
             variants={bottomVariants}
@@ -1024,7 +1020,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
 
     return (
       <div className="w-full relative bg-white z-20 flex flex-col items-center my-36">
-        {/* 背景：点阵底纹 */}
         <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
           <div
             className="absolute inset-0 bg-[radial-gradient(#dfe4e8_1px,transparent_1.2px)] [background-size:24px_24px] opacity-70"
@@ -1035,7 +1030,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
           />
         </div>
 
-        {/* 标题部分 */}
         <motion.h1
           initial="hidden"
           whileInView="visible"
@@ -1302,13 +1296,9 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
         ref={ref}
         className="relative z-30 flex w-full flex-col items-center gap-16 overflow-hidden bg-white px-0 py-16 lg:gap-24 lg:pb-36 lg:pt-24"
       >
-        {/* Diffused Halo Background */}
         <div className="absolute inset-x-0 top-0 h-[30%] z-0 pointer-events-none">
-          {/* Top-left soft blue glow */}
           <div className="absolute top-[-10%] left-[20%] w-[60%] h-[50%] bg-[#dbe8ff] rounded-[100%] mix-blend-multiply filter blur-[140px] opacity-70 transform rotate-12" />
-          {/* Top-right soft purple glow */}
           <div className="absolute top-[0%] right-[20%] w-[50%] h-[40%] bg-[#efe8ff] rounded-[100%] mix-blend-multiply filter blur-[140px] opacity-70 transform -rotate-12" />
-          {/* Diagonal light from top-center */}
           <div className="absolute top-[5%] left-[20%] w-[60%] h-[50%] bg-[#f4f8ff] rounded-[100%] filter blur-[120px] opacity-80 transform -rotate-12" />
         </div>
 
@@ -1421,13 +1411,9 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             <span className="bg-gradient-to-r from-[#9497ff] to-[#e995f8] bg-clip-text text-transparent">
               问题
             </span>
-            {/* 高光装饰容器 */}
             <div className="absolute top-[-8px] right-[4px] md:top-[-10px] md:right-[4px] lg:top-[-14px] lg:right-[6px] pointer-events-none scale-90 md:scale-110 lg:scale-150 origin-bottom rotate-[45deg]">
-              {/* 线条 1 (最左) */}
               <div className="w-[3px] h-2.5 bg-gradient-to-b from-[#6366F1] to-[#D946EF] -rotate-[30deg] rounded-full origin-bottom-left" />
-              {/* 线条 2 (中间，稍长) */}
               <div className="absolute top-[-5px] left-2 w-[3px] h-3 bg-gradient-to-b from-[#6366F1] to-[#D946EF] rounded-full" />
-              {/* 线条 3 (最右) */}
               <div className="absolute top-[-2px] left-4 w-[3px] h-2.5 bg-gradient-to-b from-[#6366F1] to-[#D946EF] rotate-[40deg] rounded-full origin-bottom-left" />
             </div>
           </span>
@@ -1435,7 +1421,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
 
         {/* Feature 1: Search */}
         <div className="relative z-10 grid w-full max-w-[1480px] grid-cols-1 gap-10 px-6 lg:min-h-[620px] lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)] lg:items-center lg:gap-14 lg:px-16">
-          {/* Image Left */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -1445,7 +1430,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
           >
             <FeatureBusinessConclusionMockup />
           </motion.div>
-          {/* Text Right */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -1468,7 +1452,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
 
         {/* Feature 2: Share */}
         <div className="relative z-10 grid w-full max-w-[1480px] grid-cols-1 gap-10 px-6 lg:min-h-[640px] lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:items-center lg:gap-14 lg:px-16">
-          {/* Text Left */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -1487,7 +1470,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
               自动识别用户导入的非结构化文档，利用人工智能技术提取文件中的关键信息、实体数据或用户指定内容，并进行规范的数据库存储操作。
             </p>
           </motion.div>
-          {/* Image Right */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -1523,7 +1505,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
 
         {/* Feature 3: Self Service */}
         <div className="relative z-10 w-full max-w-[1440px] px-6 lg:px-16 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-          {/* Image Left */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -1537,7 +1518,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
               alt="知识图谱"
             />
           </motion.div>
-          {/* Text Right */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -1560,7 +1540,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
 
         {/* Feature 4: Assistant */}
         <div className="relative z-10 w-full max-w-[1440px] px-6 lg:px-16 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-          {/* Text Left */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -1579,7 +1558,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
               自动抽取文档中的关键信息与关联关系，构建企业知识图谱，打破各部门信息孤岛；同时实现图谱动态更新与清晰可视化展示，方便直观查询、分析和利用数据。
             </p>
           </motion.div>
-          {/* Image Right */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -1669,7 +1647,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
           variants={gatherBottomVariants}
           className="relative w-full bg-gradient-to-b from-[#f2f6ff] via-[#f9fbff] to-white overflow-hidden flex flex-col items-center justify-center text-center pt-16 md:pt-24 px-6 border border-[#f0f4f8] pb-[100px] md:pb-[160px] xl:pb-[180px] 2xl:pb-[220px] cursor-default"
         >
-          {/* Floating Document Icons */}
           {[
             {
               Icon: FileText,
@@ -1758,7 +1735,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             </motion.div>
           ))}
 
-          {/* Background Text Watermark (Flashlight Effect) */}
           <div
             ref={backgroundTextRef}
             onMouseMove={handleMouseMove}
@@ -1766,7 +1742,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             className="absolute inset-x-0 bottom-0 translate-y-[45%] md:translate-y-[35%] flex items-center justify-center select-none z-0 overflow-hidden w-full pointer-events-auto h-[40vw] max-h-[600px]"
           >
             <h1 className="relative text-[20vw] leading-none font-bold tracking-tighter whitespace-nowrap cursor-default origin-bottom w-full h-full flex items-center justify-center">
-              {/* 底层文字：只有轮廓，浅灰色 */}
               <span className="inline-block text-[#cdcdcd53]">SmartDoc</span>
 
               <AnimatePresence mode="wait">
@@ -1830,7 +1805,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             </h1>
           </div>
 
-          {/* Content */}
           <div className="relative z-10 flex flex-col items-center pt-0 md:pt-4">
             <motion.h2
               className="text-4xl md:text-5xl lg:text-6xl font-bold text-[#0d1c2e] mb-8 tracking-tight font-['Inter',sans-serif] min-h-[1.5em] flex items-center justify-center"
@@ -1939,7 +1913,10 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
             </div>
 
             <div className="flex items-center gap-4">
-              <button className="px-6 py-2.5 rounded-full bg-white text-[#0d1c2e] font-semibold border border-[#e2e8f0] shadow-sm hover:bg-gray-50 transition-all text-sm h-[44px]">
+              <button
+                onClick={() => onOpenLogin?.()}
+                className="px-6 py-2.5 rounded-full bg-white text-[#0d1c2e] font-semibold border border-[#e2e8f0] shadow-sm hover:bg-gray-50 transition-all text-sm h-[44px]"
+              >
                 登录账号
               </button>
               <button
@@ -1972,7 +1949,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
 
   return (
     <div className="relative h-screen w-full overflow-hidden bg-white">
-      {/* 导航栏 */}
       <motion.nav
         className="fixed left-0 right-0 z-50 bg-[#f8f9ff]/70 backdrop-blur-md shadow-sm border-b border-[#d5e3fc] overflow-hidden font-['Inter',sans-serif]"
         initial={{ top: 0, height: 72 }}
@@ -2075,7 +2051,6 @@ export const UserGuide: React.FC<UserGuideProps> = ({ onBackToDashboard }) => {
         </AnimatePresence>
       </motion.nav>
 
-      {/* 页面内容 */}
       <div
         ref={containerRef}
         className="relative h-full w-full overflow-y-auto overflow-x-hidden"

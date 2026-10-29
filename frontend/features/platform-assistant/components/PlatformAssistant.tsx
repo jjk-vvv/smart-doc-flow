@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowRight, ArrowUp, Route, FileStack, RotateCcw, Sparkles, X } from 'lucide-react';
+import { ArrowRight, ArrowUp, RotateCcw, Sparkles, X } from 'lucide-react';
 
 import assistantOrb from '../../../assets/assistant-orb.mp4';
 import assistantOrbPoster from '../../../assets/assistant-orb-poster.png';

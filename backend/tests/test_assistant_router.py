@@ -24,7 +24,7 @@ class FakeProvider:
             "baseUrl": "https://example.test",
             "endpointPath": "/v1/responses",
             "endpointStyle": "openai_responses",
-            "model": "gpt-5-mini",
+            "model": "test-chat-model",
         }
 
     def stream_text(self, *, messages, instructions):
@@ -39,7 +39,7 @@ def _assistant_settings(*, smoke_test_enabled: bool = False) -> AssistantSetting
         chat_base_url="https://example.test",
         chat_endpoint_path="/v1/responses",
         chat_endpoint_style="openai_responses",
-        chat_model="gpt-5-mini",
+        chat_model="test-chat-model",
         chat_temperature=0.2,
         chat_timeout_sec=120.0,
         chat_max_output_tokens=2400,
@@ -78,7 +78,7 @@ def test_platform_assistant_health_endpoint_returns_unified_payload() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["model"] == "gpt-5-mini"
+    assert payload["model"] == "test-chat-model"
     assert payload["config"]["canonicalPrefix"] == "PLATFORM_ASSISTANT"
     assert payload["config"]["supportsLegacyFallback"] is False
     assert payload["config"]["legacyConfigFallbackEnabled"] is False
@@ -105,7 +105,7 @@ def test_platform_assistant_diagnostics_endpoint_returns_detailed_payload_for_au
     payload = response.json()
     assert payload["ok"] is True
     assert payload["service"] == "platform_assistant"
-    assert payload["model"] == "gpt-5-mini"
+    assert payload["model"] == "test-chat-model"
     assert payload["config"]["canonicalPrefix"] == "PLATFORM_ASSISTANT"
     assert payload["unicodeSmoke"]["enabled"] is False
     assert payload["route"] == "/api/platform-assistant/diagnostics"

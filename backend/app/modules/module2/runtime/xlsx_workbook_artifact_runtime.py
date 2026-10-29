@@ -5,7 +5,7 @@ import os
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 from xml.etree import ElementTree as ET
 
 from ..core.format.xlsx_artifact_io import load_xlsx_sheet_rows_artifact

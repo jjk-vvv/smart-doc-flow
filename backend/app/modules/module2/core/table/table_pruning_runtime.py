@@ -91,8 +91,8 @@ class TablePruningRuntime:
                 continue
 
             keep_long_single_column = rows >= 6 and cell_count >= 6 and numeric_cells >= 2
-            keep_gemini_signal = source.startswith("pdf_gemini_vision") and rows >= 3 and cell_count >= 3
-            if keep_long_single_column or keep_gemini_signal:
+            keep_vision_signal = source.startswith("pdf_vision") and rows >= 3 and cell_count >= 3
+            if keep_long_single_column or keep_vision_signal:
                 pruned.append(table)
                 continue
 
@@ -104,7 +104,7 @@ class TablePruningRuntime:
 
         out = pruned if pruned else table_blocks
         out = self.prune_ocr_layout_density(out)
-        return self.prune_gemini_native_tables_per_page(out)
+        return self.prune_vision_native_tables_per_page(out)
 
     def prune_ocr_layout_density(self, table_blocks: TableBlocks) -> TableBlocks:
         if not table_blocks:
@@ -162,7 +162,7 @@ class TablePruningRuntime:
         pruned.sort(key=lambda item: (int(item.get("page", 0) or 0), str(item.get("table_id", ""))))
         return pruned if pruned else table_blocks
 
-    def prune_gemini_native_tables_per_page(self, table_blocks: TableBlocks) -> TableBlocks:
+    def prune_vision_native_tables_per_page(self, table_blocks: TableBlocks) -> TableBlocks:
         if not table_blocks:
             return table_blocks
         by_page: Dict[int, List[Dict[str, Any]]] = {}
@@ -173,8 +173,8 @@ class TablePruningRuntime:
         out: TableBlocks = []
         for page_no in sorted(by_page.keys()):
             tables = by_page.get(page_no, [])
-            native_vision = [table for table in tables if str(table.get("source", "")) == "pdf_gemini_vision_native"]
-            others = [table for table in tables if str(table.get("source", "")) != "pdf_gemini_vision_native"]
+            native_vision = [table for table in tables if str(table.get("source", "")) == "pdf_vision_native"]
+            others = [table for table in tables if str(table.get("source", "")) != "pdf_vision_native"]
             out.extend(others)
             if not native_vision:
                 continue

@@ -2,3 +2,4 @@
 httpx>=0.28.0
 pytest>=9.0.0
 starlette
+ruff>=0.6

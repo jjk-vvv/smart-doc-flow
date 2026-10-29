@@ -45,7 +45,7 @@ def _settings(*, endpoint_path: str, endpoint_style: str) -> AssistantSettings:
         chat_base_url="https://provider.example",
         chat_endpoint_path=endpoint_path,
         chat_endpoint_style=endpoint_style,
-        chat_model="glm-test",
+        chat_model="test-module1-model",
         chat_temperature=0.2,
         chat_timeout_sec=30.0,
         chat_max_output_tokens=512,
@@ -98,7 +98,7 @@ def test_provider_complete_text_supports_openai_responses_payload(monkeypatch) -
     assert captured["url"] == "https://provider.example/v1/responses"
     payload = captured["json"]
     assert isinstance(payload, dict)
-    assert payload["model"] == "glm-test"
+    assert payload["model"] == "test-module1-model"
     assert payload["instructions"] == "仅返回四个字"
     assert payload["max_output_tokens"] == 512
     assert isinstance(payload["input"], list)
@@ -144,7 +144,7 @@ def test_provider_complete_text_supports_chat_completions_payload(monkeypatch) -
     assert captured["url"] == "https://provider.example/chat/completions"
     payload = captured["json"]
     assert isinstance(payload, dict)
-    assert payload["model"] == "glm-test"
+    assert payload["model"] == "test-module1-model"
     assert payload["max_tokens"] == 512
     assert "stream" not in payload
     assert payload["messages"][0] == {"role": "system", "content": "请直接回答"}

@@ -1,40 +1,35 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import {
-    AlertCircle,
-    CheckCircle2,
-    Copy,
-    Download,
-    ExternalLink,
-    FileText,
-    Loader2,
-    PlayCircle,
-    ScanLine,
-    Trash2,
-    UploadCloud,
-    Upload,
-    File,
-    ChevronRight,
-    ZoomIn,
-    ZoomOut,
-    RotateCw,
-    RefreshCcw,
-    Maximize,
-    X,
-    Search,
-    LocateFixed,
-    Bot,
-    Sparkles,
-    Send,
-    HelpCircle,
-    FolderOpen,
-    Layout,
-    FileSpreadsheet,
-    FileImage,
-    Plus,
-    Paperclip,
-    ArrowUp,
-    BarChart3,
+  AlertCircle,
+  CheckCircle2,
+  Copy,
+  Download,
+  ExternalLink,
+  FileText,
+  Loader2,
+  PlayCircle,
+  ScanLine,
+  Trash2,
+  Upload,
+  File,
+  ChevronRight,
+  ZoomIn,
+  ZoomOut,
+  Maximize,
+  X,
+  Search,
+  LocateFixed,
+  Bot,
+  Sparkles,
+  HelpCircle,
+  FolderOpen,
+  Layout,
+  FileSpreadsheet,
+  FileImage,
+  Plus,
+  ArrowUp,
+  BarChart3,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import module2Svg from '../../assets/deepread-workbench.svg';
@@ -46,26 +41,26 @@ import iconDocumentQueue from '../../assets/文档.png';
 import iconErnieBot from '../../assets/文心智能体-copy.png';
 import iconAssistant from '../../assets/智能助手.png';
 import {
-    readExtractionDocuments,
-    clearExtractionDocuments,
-    writeExtractionDocuments,
-    countExtractionDocumentFields,
-    filterAutoRestorableExtractionDocuments,
-    getExtractionDocumentQualityStatus,
-    type ExtractionDocument,
-    type ExtractionEntity,
-    type TraceHit,
-    isRetryableExtractionWarning,
-    isStaleRetryableExtractionDocument,
+  readExtractionDocuments,
+  clearExtractionDocuments,
+  writeExtractionDocuments,
+  countExtractionDocumentFields,
+  filterAutoRestorableExtractionDocuments,
+  getExtractionDocumentQualityStatus,
+  type ExtractionDocument,
+  type ExtractionEntity,
+  type TraceHit,
+  isRetryableExtractionWarning,
+  isStaleRetryableExtractionDocument,
 } from '../../shared/state/extractionDocuments';
 import {
-    clearWorkbenchSession,
-    readWorkbenchSession,
-    writeWorkbenchSession,
-    type PersistedExtractionJob,
-    type PersistedExtractionJobFile,
-    type PersistedWorkbenchFile,
-    type WorkbenchSessionSnapshot,
+  clearWorkbenchSession,
+  readWorkbenchSession,
+  writeWorkbenchSession,
+  type PersistedExtractionJob,
+  type PersistedExtractionJobFile,
+  type PersistedWorkbenchFile,
+  type WorkbenchSessionSnapshot,
 } from '../../shared/state/workbenchSession';
 import { consumeModule2DraftFromHomeWorkbench } from '../../shared/state/homeWorkbench';
 import { getCurrentUser } from '../../shared/api/auth';
@@ -82,16 +77,16 @@ import { isRenderableAssistantDialogMessage } from './assistant/helpers';
 import { AssistantLockBanner } from './assistant/AssistantLockBanner';
 import { AssistantMessageBubble } from './assistant/AssistantMessageBubble';
 import {
-    GENERIC_ASSISTANT_SESSION_KEY,
-    persistAssistantSessionForFile,
-    readAssistantSessionMap,
+  GENERIC_ASSISTANT_SESSION_KEY,
+  persistAssistantSessionForFile,
+  readAssistantSessionMap,
 } from './assistant/sessionStore';
 import type {
-    AssistantActionPreview,
-    AssistantCitation,
-    AssistantDialogMessage,
-    AssistantObjectLock,
-    AssistantToolEvent,
+  AssistantActionPreview,
+  AssistantCitation,
+  AssistantDialogMessage,
+  AssistantObjectLock,
+  AssistantToolEvent,
 } from './assistant/types';
 import { useAssistantStream } from './assistant/useAssistantStream';
 import { DeepReadWelcomeScreen } from './DeepReadWelcomeScreen';
@@ -829,8 +824,6 @@ const DEFAULT_SCHEMA = {
     prefer_llm: true,
     max_auto_fields: 20,
 };
-
-
 
 type OfficePreviewState = {
     status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
@@ -2708,14 +2701,14 @@ const TRACE_SOURCE_LABELS: Record<string, string> = {
     docx_chart_xml: 'DOCX 图表结构产物',
     docx_media: 'DOCX 媒体产物',
     docx_media_vision: 'DOCX 媒体视觉解析产物',
-    gemini_vision: 'Gemini Vision',
-    gemini_vision_figure: 'Gemini Vision 图表解析',
-    gemini_vision_table: 'Gemini Vision 表格解析',
+    vision: 'Vision',
+    vision_figure: 'Vision 图表解析',
+    vision_table: 'Vision 表格解析',
     table_structured: '结构化表格抽取',
     xlsx_chart_spec: '工作表可视化规格',
-    model: 'Gemini Vision 数据恢复',
-    key_values: 'Gemini Vision 关键值恢复',
-    text_blocks: 'Gemini Vision 文本恢复',
+    model: 'Vision 数据恢复',
+    key_values: 'Vision 关键值恢复',
+    text_blocks: 'Vision 文本恢复',
     docx_chart_xml_merge: 'DOCX 图表结构合并',
 };
 
@@ -5850,7 +5843,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                     </div>
                 )}
 
-
                 {displayKind === 'table' && tableRows.length > 0 && (
                     <div className="mt-3 flex flex-wrap gap-2">
                         <button
@@ -7298,7 +7290,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                 streamingMessage={latestStreamingAssistantMessage}
                                             />
 
-
                                             <div
                                                 className="relative flex flex-col rounded-[24px] border-0 bg-white shadow-[0_2px_16px_rgba(0,0,0,0.04)] ring-1 ring-slate-200/50 transition-all focus-within:shadow-[0_8px_30px_rgba(0,0,0,0.08)] focus-within:ring-slate-300 dark:bg-[#1A1D24] dark:ring-white/[0.05] dark:focus-within:shadow-[0_8px_30px_rgba(0,0,0,0.3)] dark:focus-within:ring-white/[0.1]"
                                                 onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -7735,8 +7726,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                 </div>
                                             )}
 
-
-
                                             {/* Bounding Boxes (hidden by default for cleaner trace view) */}
                                             {showTraceOverlay && overlayItems.map((item) => {
                                                 const box = toPercentBox(item.bbox);
@@ -7814,7 +7803,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                 )}
                             </div>
                         </div>
-
 
                     </div>
 
@@ -8389,8 +8377,6 @@ export const DeepReadWorkbench: React.FC<{ isSidebarCollapsed?: boolean }> = ({ 
                                                                                     </div>
                                                                                 </div>
                                                                             )}
-
-
 
                                                                             {displayKind === 'table' && tableRows.length > 0 && (
                                                                                 <div className="mt-2 flex flex-wrap gap-1.5">

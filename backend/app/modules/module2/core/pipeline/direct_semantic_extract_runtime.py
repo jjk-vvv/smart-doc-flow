@@ -32,7 +32,7 @@ class DirectSemanticExtractOutcome:
 
 
 class DirectSemanticExtractRuntime:
-    """Run a lightweight Gemini-first extraction path for txt/md/xlsx inputs."""
+    """Run a lightweight LLM-first extraction path for txt/md/xlsx inputs."""
 
     _TEXT_EXTS = {".txt", ".md", ".markdown"}
     _SPREADSHEET_EXTS = {".xlsx"}

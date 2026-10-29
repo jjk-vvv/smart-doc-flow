@@ -128,14 +128,14 @@ def test_extraction_summary_runtime_trace_locate_enriches_sparse_hits_from_assis
         "file_hash": file_hash,
         "tables": [
             {
-                "table_id": "pdf_mineru_gemini_t1",
+                "table_id": "pdf_mineru_vision_t1",
                 "page": 2,
                 "headers": ["A", "B"],
                 "rows": [
                     {
                         "cells": [
-                            {"text": "r1c1", "ref_id": "pdf_mineru_gemini_t1_r1_c1"},
-                            {"text": "r1c2", "ref_id": "pdf_mineru_gemini_t1_r1_c2"},
+                            {"text": "r1c1", "ref_id": "pdf_mineru_vision_t1_r1_c1"},
+                            {"text": "r1c2", "ref_id": "pdf_mineru_vision_t1_r1_c2"},
                         ]
                     }
                 ],
@@ -146,11 +146,11 @@ def test_extraction_summary_runtime_trace_locate_enriches_sparse_hits_from_assis
         ],
         "figures": [
             {
-                "figure_id": "pdf_mineru_gemini_f1",
+                "figure_id": "pdf_mineru_vision_f1",
                 "page": 3,
                 "figure_type": "chart",
                 "caption": "示例图像",
-                "ref_ids": ["pdf_mineru_gemini_f1_caption"],
+                "ref_ids": ["pdf_mineru_vision_f1_caption"],
                 "quality": 0.92,
                 "image_path": str(image_path),
                 "dataframe": {"headers": ["x", "y"], "rows": [["1", "2"]]},
@@ -184,7 +184,7 @@ def test_extraction_summary_runtime_trace_locate_enriches_sparse_hits_from_assis
                     "file_name": "demo.docx",
                     "file_hash": file_hash,
                     "object_type": "table",
-                    "ref_id": "pdf_mineru_gemini_t1_r1_c1",
+                    "ref_id": "pdf_mineru_vision_t1_r1_c1",
                     "page": 2,
                     "snippet": "sparse-table-hit",
                     "confidence": 0.8,
@@ -193,7 +193,7 @@ def test_extraction_summary_runtime_trace_locate_enriches_sparse_hits_from_assis
                     "file_name": "demo.docx",
                     "file_hash": file_hash,
                     "object_type": "figure",
-                    "ref_id": "pdf_mineru_gemini_f1_caption",
+                    "ref_id": "pdf_mineru_vision_f1_caption",
                     "page": 3,
                     "snippet": "sparse-figure-hit",
                     "confidence": 0.8,
@@ -209,14 +209,14 @@ def test_extraction_summary_runtime_trace_locate_enriches_sparse_hits_from_assis
     assert response.hit_count >= 2
     table_hit = next((hit for hit in response.hits if hit.object_type == "table"), None)
     assert table_hit is not None
-    assert table_hit.object_id == "pdf_mineru_gemini_t1"
+    assert table_hit.object_id == "pdf_mineru_vision_t1"
     assert str(table_hit.artifact_url or "").startswith("/extract/artifact/linked/")
     assert isinstance(table_hit.locator.get("dataframe"), dict)
     assert table_hit.locator.get("dataframe", {}).get("rows")
 
     figure_hit = next((hit for hit in response.hits if hit.object_type == "figure"), None)
     assert figure_hit is not None
-    assert figure_hit.object_id == "pdf_mineru_gemini_f1"
+    assert figure_hit.object_id == "pdf_mineru_vision_f1"
     assert str(figure_hit.artifact_url or "").startswith("/extract/artifact/linked/")
     assert isinstance(figure_hit.locator.get("dataframe"), dict)
     assert figure_hit.locator.get("dataframe", {}).get("rows")

@@ -268,11 +268,11 @@ export const getCurrentUser = async (): Promise<AuthUserPayload | null> => {
   }
 };
 
-export const sendForgotCode = async (contact: string): Promise<SendCodePayload> =>
+export const sendForgotCode = async (email: string): Promise<SendCodePayload> =>
   requestAuthJson<SendCodePayload>('/api/forgot/send-code', {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify({ contact }),
+    body: JSON.stringify({ contact: email }),
   });
 
 export const resetForgotPassword = async (payload: {
@@ -286,11 +286,11 @@ export const resetForgotPassword = async (payload: {
     body: JSON.stringify(payload),
   });
 
-export const sendRegisterCode = async (contact: string): Promise<SendCodePayload> =>
+export const sendRegisterCode = async (email: string): Promise<SendCodePayload> =>
   requestAuthJson<SendCodePayload>('/api/register/send-code', {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify({ contact }),
+    body: JSON.stringify({ contact: email }),
   });
 
 export const listAuthSessions = async (): Promise<AuthSessionListPayload> =>

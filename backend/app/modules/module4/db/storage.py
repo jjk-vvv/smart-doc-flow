@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
 
 logger = logging.getLogger("uvicorn.error")

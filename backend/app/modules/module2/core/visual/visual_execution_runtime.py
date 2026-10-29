@@ -270,7 +270,7 @@ class VisualResultMaterializerRuntime:
                 if emitted_cells >= self.table_cell_cap:
                     break
 
-                table_id = f"pdf_mineru_gemini_t{table_idx}"
+                table_id = f"pdf_mineru_vision_t{table_idx}"
                 built_table, emitted_cells = self._build_table_from_visual_payload(
                     table_id=table_id,
                     page_no=page_no,
@@ -309,7 +309,7 @@ class VisualResultMaterializerRuntime:
                 figure_count_by_page[page_no] = figure_count_by_page.get(page_no, 0)
                 if figure_count_by_page[page_no] >= runtime_figure_max_per_page:
                     continue
-                figure_id = f"pdf_mineru_gemini_f{figure_idx}"
+                figure_id = f"pdf_mineru_vision_f{figure_idx}"
                 built_figure = self._build_figure_from_visual_payload(
                     figure_id=figure_id,
                     page_no=page_no,
@@ -401,8 +401,8 @@ class VisualExecutionRuntime:
         vision: Any,
         vision_ready: bool,
     ) -> Dict[str, Any]:
-        visual_table_source = "pdf_mineru_gemini" if vision_ready else "pdf_mineru"
-        figure_source = "pdf_mineru_gemini" if vision_ready else "pdf_mineru"
+        visual_table_source = "pdf_mineru_vision" if vision_ready else "pdf_mineru"
+        figure_source = "pdf_mineru_vision" if vision_ready else "pdf_mineru"
         selected_table_candidates = int(object_selection_stats.get("visual_selected_table_candidates", 0) or 0)
         selected_figure_candidates = int(object_selection_stats.get("visual_selected_figure_candidates", 0) or 0)
         runtime_table_max_per_page = max(

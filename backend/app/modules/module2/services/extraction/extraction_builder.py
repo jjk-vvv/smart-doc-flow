@@ -184,7 +184,7 @@ def build_module2_main_extraction_bundle(
 
     def _parse_track_uses_visual_budget(track: Any) -> bool:
         normalized = str(track or "").strip().lower()
-        return "visualtrack" in normalized or "gemini_vision" in normalized or "mineru" in normalized
+        return "visualtrack" in normalized or "vision" in normalized or "mineru" in normalized
 
     @asynccontextmanager
     async def _acquire_parse_execution_slots(track: Any):

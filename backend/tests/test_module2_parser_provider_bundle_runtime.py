@@ -66,43 +66,31 @@ def test_parser_provider_bundle_runtime_builds_visual_vision_kwargs() -> None:
 
     kwargs = runtime.build_visual_vision_kwargs(
         api_key="openai-key",
-        native_api_key="AIza-native-key",
-        model="gemini-2.5-flash",
+        model="test-vision-model",
+        base_url="https://provider.test/v1",
+        endpoint_style="openai_chat_completions",
         timeout_sec=25.0,
         max_output_tokens=4096,
         retry_count=2,
-        cache_dir="cache/gemini",
+        cache_dir="cache/vision",
         enable_cache=True,
         reasoning_effort="medium",
-        native_fallback_enabled=True,
     )
 
     assert kwargs == {
         "api_key": "openai-key",
-        "native_api_key": "AIza-native-key",
-        "model": "gemini-2.5-flash",
+        "model": "test-vision-model",
+        "base_url": "https://provider.test/v1",
+        "endpoint_style": "openai_chat_completions",
         "timeout_sec": 25.0,
         "max_output_tokens": 4096,
         "retry_count": 2,
-        "cache_dir": "cache/gemini",
+        "cache_dir": "cache/vision",
         "enable_cache": True,
         "reasoning_effort": "medium",
-        "native_fallback_enabled": True,
     }
 
 
-def test_parser_provider_bundle_runtime_resolves_native_api_key_in_expected_priority_order() -> None:
-    runtime = ParserProviderBundleRuntime()
-
-    key = runtime.resolve_native_api_key(
-        getenv=lambda name, default="": {
-            "MODULE2_GEMINI_NATIVE_API_KEY": "",
-            "GOOGLE_API_KEY": "AIza-google-priority",
-            "GEMINI_API_KEY": "AIza-fallback",
-        }.get(name, default),
-    )
-
-    assert key == "AIza-google-priority"
 
 
 def test_parser_provider_bundle_runtime_reports_visual_backend_missing_packages() -> None:

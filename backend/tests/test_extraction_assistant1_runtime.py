@@ -79,7 +79,7 @@ class StubProvider(ExtractionAssistant1Provider):
 
     @property
     def model(self) -> str:
-        return "gpt-5-mini"
+        return "test-chat-model"
 
     @property
     def base_url(self) -> str:

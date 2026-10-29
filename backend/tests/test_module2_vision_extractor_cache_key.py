@@ -5,7 +5,7 @@ from importlib import import_module
 
 vision_extractor_module = import_module("app.modules.module2.core.visual.vision_extractor")
 
-GeminiVisionExtractor = vision_extractor_module.GeminiVisionExtractor
+VisionExtractor = vision_extractor_module.VisionExtractor
 
 
 def _build_figure_prompt(extractor, context: dict[str, object]) -> str:
@@ -16,7 +16,7 @@ def _build_figure_prompt(extractor, context: dict[str, object]) -> str:
 
 
 def test_vision_cache_key_is_stable_across_upload_file_names() -> None:
-    extractor = GeminiVisionExtractor(
+    extractor = VisionExtractor(
         api_key="test-key",
         cache_dir=None,
         enable_cache=True,
@@ -60,7 +60,7 @@ def test_vision_cache_key_is_stable_across_upload_file_names() -> None:
 
 
 def test_vision_cache_key_still_changes_when_visible_context_changes() -> None:
-    extractor = GeminiVisionExtractor(
+    extractor = VisionExtractor(
         api_key="test-key",
         cache_dir=None,
         enable_cache=True,

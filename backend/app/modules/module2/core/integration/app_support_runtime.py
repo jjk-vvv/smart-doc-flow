@@ -194,7 +194,7 @@ class ProviderPreflightRuntime:
                 "error": f"{type(exc).__name__}: {exc}",
             }
         resolved_base_url = str(
-            getattr(provider, "native_api_url", "") or getattr(provider, "base_url", "") or ""
+            getattr(provider, "base_url", "") or ""
         )
         return {
             "configured": bool(getattr(provider, "configured", False)),

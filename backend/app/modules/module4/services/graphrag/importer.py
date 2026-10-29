@@ -79,7 +79,7 @@ _METRIC_ONLY_RE = re.compile(
 )
 _NOISY_ENTITY_TERMS = (
     "assistant",
-    "gemini",
+    "vision",
     "payload",
     "markdown",
     "worksheet",

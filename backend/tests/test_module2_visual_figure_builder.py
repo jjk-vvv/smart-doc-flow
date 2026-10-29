@@ -178,7 +178,7 @@ def test_visual_figure_builder_runtime_builds_visual_first_figure_block() -> Non
     bbox_map: dict[str, list[float]] = {}
 
     figure = runtime.build_figure_from_visual_payload(
-        figure_id="pdf_mineru_gemini_f3",
+        figure_id="pdf_mineru_vision_f3",
         page_no=2,
         payload={
             "title": "",
@@ -211,7 +211,7 @@ def test_visual_figure_builder_runtime_builds_visual_first_figure_block() -> Non
         parts=parts,
         bbox_map=bbox_map,
         page_dims={2: (1000.0, 800.0)},
-        source="pdf_mineru_gemini",
+        source="pdf_mineru_vision",
     )
 
     assert figure is not None
@@ -225,9 +225,9 @@ def test_visual_figure_builder_runtime_builds_visual_first_figure_block() -> Non
     assert "dataframe" in figure["content_modes"]
     assert "topology" in figure["content_modes"]
     assert "text" in figure["content_modes"]
-    assert figure["ref_ids"][0] == "pdf_mineru_gemini_f3_caption"
+    assert figure["ref_ids"][0] == "pdf_mineru_vision_f3_caption"
     assert any("Quarterly revenue increases" in item for item in figure["insights"])
-    assert "pdf_mineru_gemini_f3_caption" in bbox_map
+    assert "pdf_mineru_vision_f3_caption" in bbox_map
     assert parts
 
 
@@ -235,7 +235,7 @@ def test_visual_figure_builder_runtime_skips_ambiguous_low_signal_figure() -> No
     runtime = _build_runtime()
 
     figure = runtime.build_figure_from_visual_payload(
-        figure_id="pdf_mineru_gemini_f9",
+        figure_id="pdf_mineru_vision_f9",
         page_no=1,
         payload={
             "caption": "Figure 1 Figure 2",

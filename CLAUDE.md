@@ -87,16 +87,19 @@ Frontend code should target the configured unified gateway, normally `:3001`. St
 
 ### Backend (`backend/app/`)
 
-The FastAPI application is created in `app/factory.py` and exposed by `app/main.py`. The following compatibility and frontend routers remain part of the app alongside the canonical business modules:
+The FastAPI application is created in `app/factory.py` and exposed by `app/main.py`. Module routers are registered in `app/modules/registry.py`:
 
 | Module path | Responsibility |
 |---|---|
-| `modules/auth/` | Register, login, logout, JWT validation |
-| `modules/assistant/` | Streaming AI chat (configurable LLM provider) |
-| `modules/extraction/` | Document parse jobs, artifact storage, summaries |
-| `modules/gateway/` | Health/readiness checks, upstream proxy routing |
-| `modules/module1_placeholder/` | Extensible module shell page |
-| `modules/frontend_static/` | Serves `frontend/dist/` in production |
+| `modules/auth/` | Register, login, logout, JWT validation, sessions |
+| `modules/diagnostics/` | AI API log polling for the browser console |
+| `modules/file_assets/` | Owner-scoped file assets: metadata, download, text preview |
+| `modules/module1/` | AI document processing: streaming edits, preview conversion, save |
+| `modules/module2/` | Extraction jobs, parsing, assistant runtime, artifact/trace |
+| `modules/module3/` | Template-driven data fusion (fill-in) runs |
+| `modules/module4/` | GraphRAG ingestion, graph queries, rules/alerts/evidence |
+| `modules/platform_assistant/` | Platform-wide assistant: catalog, bootstrap, chat |
+| `modules/frontend_static/` | Serves `frontend/dist/` and `frontend-app/dist/` |
 
 **Sidecar compatibility**: The normal `run_service.py backend` entry mounts Module 2 and Module 4 in-process and forces both sidecar modes to `disabled`. Alternate legacy/test entrypoints retain these controls:
 - `UNIFIED_EXTRACT_MODULE2_SIDECAR_MODE` — `auto` (default), `managed`, `disabled`
@@ -112,13 +115,14 @@ The FastAPI application is created in `app/factory.py` and exposed by `app/main.
 
 | Component | Purpose |
 |---|---|
-| `Dashboard` | Upload hub, extraction job status |
-| `DeepReadWorkbench` | Document viewer + extracted results |
-| `PlatformAssistant` | Streaming multi-turn chat |
-| `KnowledgeNexus` | Neo4j graph visualization |
-| `FusionGrid` | Multi-document analysis |
+| `Dashboard` | Document center: overview metrics, upload hub, module entries |
+| `DocProcessingWorkbench` | Module 1 AI document processing (streaming edits, preview, save) |
+| `DeepReadWorkbench` | Module 2 extraction workbench (parse, fields, trace, assistant) |
+| `FusionGrid` | Module 3 template-driven fill-in (upload, run, edit, download) |
+| `KnowledgeNexus` | Module 4 GraphRAG knowledge graph workbench |
+| `PlatformAssistant` | Streaming platform assistant with page context |
 
-Vite proxies `/api`, `/extract`, `/module4`, `/gateway` to the backend (default `http://localhost:3001`). Override with `VITE_BACKEND_ENTRY_URL`.
+Vite proxies `/api`, `/extract`, `/module1`, `/module3`, `/module4`, `/gateway` to the backend (default `http://localhost:3001`). Override with `VITE_BACKEND_ENTRY_URL`.
 
 ### Electron (`electron/main.cjs`)
 
@@ -129,11 +133,10 @@ Spawns the FastAPI process, resolves the gateway URL, creates a `BrowserWindow`,
 Copy `backend/.env.example` to `backend/.env` and set values. Key variable groups:
 
 - `GATEWAY_HOST/PORT/CORS_ORIGINS` — Server binding
-- `AUTH_*` — JWT secret, token expiry, bcrypt rounds, SMS/SMTP
-- `ASSISTANT1_*` — LLM provider, model, temperature, streaming
-- `MODULE2_*` — Upstream URL, file size limits, job TTLs, LibreOffice path
-- `MODULE4_*` — Graph upstream URL
-- `AUTH_COMPAT_ENABLED` — Set `0` (default) unless legacy compat needed
+- `AUTH_*` — JWT secret, token expiry, bcrypt rounds, session policy, SMTP for email codes
+- `ASSISTANT1_*` — Module 2 document assistant: chat, embedding, retrieval
+- `MODULE2_*` — Extraction limits, concurrency, Office conversion, vision model, Module 4 sync
+- `MODULE4_*` — GraphRAG runtime, database, Neo4j projection, tenant guard
 
 ## Test Layout
 
@@ -158,7 +161,8 @@ Smart Doc Flow is a professional document-intelligence workspace for human opera
 
 ## Tech Stack Summary
 
-- **Backend**: FastAPI 0.116+, Pydantic 2, Uvicorn, PyJWT, bcrypt
-- **Frontend**: React 19, TypeScript 5.8, Vite 6, Tailwind CSS 4, Vercel AI SDK, Three.js, Neo4j NVL, PDF.js, Recharts
+- **Backend**: FastAPI 0.116+, Pydantic 2, Uvicorn, PyJWT, bcrypt, asyncpg, LangGraph
+- **Frontend**: React 19, TypeScript 5.8, Vite 6, Tailwind CSS 4, AntV G6, ECharts, PDF.js, Recharts, Luckysheet
 - **Desktop**: Electron 41, electron-builder (Windows NSIS target)
+- **Mobile**: Capacitor (Android), dedicated mobile pages under `frontend-app/`
 - **Tests**: pytest + httpx (backend), Playwright (frontend E2E)

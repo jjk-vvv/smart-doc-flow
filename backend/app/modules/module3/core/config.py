@@ -219,8 +219,8 @@ def read_runtime_settings(api_mode_override: str | None = None) -> dict[str, Any
     if not api_key:
         raise ValueError("请在 .env 中配置 OPENAI_API_KEY")
 
-    base_url = normalize_base_url(os.getenv("OPENAI_BASE_URL", "https://jeniya.cn/v1"))
-    model = os.getenv("OPENAI_MODEL", "qwen-max-latest").strip() or "qwen-max-latest"
+    base_url = normalize_base_url(os.getenv("OPENAI_BASE_URL", "https://quanzil.com/v1"))
+    model = os.getenv("OPENAI_MODEL", "qwen-max").strip() or "qwen-max"
     vision_model = (
         os.getenv("OPENAI_VISION_MODEL", "").strip()
         or os.getenv("MODULE3_VISION_MODEL", "").strip()

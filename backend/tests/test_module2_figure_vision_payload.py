@@ -150,9 +150,9 @@ def _count_figure_markers_in_text(text: str) -> int:
 
 def _build_runtime() -> FigureVisionPayloadRuntime:
     return FigureVisionPayloadRuntime(
-        gemini_vision_enable_figures=True,
-        gemini_vision_max_figures_per_page=4,
-        gemini_vision_min_figure_quality=0.5,
+        vision_enable_figures=True,
+        vision_max_figures_per_page=4,
+        vision_min_figure_quality=0.5,
         normalize_text=_normalize_text,
         infer_figure_type_from_text=_infer_figure_type_from_text,
         safe_text_list=_safe_text_list,

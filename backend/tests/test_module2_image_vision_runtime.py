@@ -59,8 +59,8 @@ def test_image_vision_runtime_enhances_pages_and_merges_tables(monkeypatch) -> N
 
     runtime = ImageVisionRuntime(
         enabled=True,
-        gemini_vision_max_pages=3,
-        gemini_vision_consecutive_fail_stop=2,
+        vision_max_pages=3,
+        vision_consecutive_fail_stop=2,
         resolve_api_key=lambda: "key",
         select_low_quality_pages_for_vision=lambda page_lines, table_blocks: [1],
         vision_focus_from_page_lines=lambda lines: "table",
@@ -86,7 +86,7 @@ def test_image_vision_runtime_enhances_pages_and_merges_tables(monkeypatch) -> N
     bbox_map: dict[str, list[float]] = {}
     base_tables = [{"table_id": "image_ocr_line_t1", "page": 1}]
 
-    tables, figures = runtime.enhance_low_quality_pages_with_gemini_vision(
+    tables, figures = runtime.enhance_low_quality_pages_with_vision(
         file_bytes=b"fake",
         filetype="png",
         page_lines={1: ["table cue"]},
@@ -94,13 +94,13 @@ def test_image_vision_runtime_enhances_pages_and_merges_tables(monkeypatch) -> N
         last_figure_blocks=[],
         parts=parts,
         bbox_map=bbox_map,
-        source_prefix="image_gemini_vision",
+        source_prefix="image_vision",
     )
 
     assert fake_doc.closed is True
     assert len(tables) == 2
-    assert tables[1]["table_id"] == "image_gemini_vision_t1"
-    assert figures == [{"figure_id": "image_gemini_vision_f1", "page": 1}]
+    assert tables[1]["table_id"] == "image_vision_t1"
+    assert figures == [{"figure_id": "image_vision_f1", "page": 1}]
     assert parts == ['<ref id="vision_insight_1">insight</ref>']
     assert bbox_map["vision_insight_1"] == [1.0, 0.0, 0.0, 1.0, 1.0]
 
@@ -108,8 +108,8 @@ def test_image_vision_runtime_enhances_pages_and_merges_tables(monkeypatch) -> N
 def test_image_vision_runtime_short_circuits_without_api_key() -> None:
     runtime = ImageVisionRuntime(
         enabled=True,
-        gemini_vision_max_pages=3,
-        gemini_vision_consecutive_fail_stop=2,
+        vision_max_pages=3,
+        vision_consecutive_fail_stop=2,
         resolve_api_key=lambda: "",
         select_low_quality_pages_for_vision=lambda page_lines, table_blocks: [1],
         vision_focus_from_page_lines=lambda lines: "table",
@@ -126,7 +126,7 @@ def test_image_vision_runtime_short_circuits_without_api_key() -> None:
     )
 
     base_tables = [{"table_id": "image_ocr_line_t1", "page": 1}]
-    tables, figures = runtime.enhance_low_quality_pages_with_gemini_vision(
+    tables, figures = runtime.enhance_low_quality_pages_with_vision(
         file_bytes=b"fake",
         filetype="png",
         page_lines={1: ["table cue"]},
@@ -134,7 +134,7 @@ def test_image_vision_runtime_short_circuits_without_api_key() -> None:
         last_figure_blocks=[],
         parts=[],
         bbox_map={},
-        source_prefix="image_gemini_vision",
+        source_prefix="image_vision",
     )
 
     assert tables == base_tables

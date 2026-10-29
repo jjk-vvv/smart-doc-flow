@@ -162,11 +162,11 @@ class GraphRAGRuntimeSettings:
             embedding_model=str(
                 os.getenv(
                     "MODULE4_GRAPHRAG_EMBEDDING_MODEL",
-                    os.getenv("GRAPHRAG_EMBEDDING_MODEL", "Embedding-V1"),
+                    os.getenv("GRAPHRAG_EMBEDDING_MODEL", "text-embedding-3-small"),
                 )
-                or "Embedding-V1"
+                or "text-embedding-3-small"
             ).strip()
-            or "Embedding-V1",
+            or "text-embedding-3-small",
             input_dir=str(os.getenv("MODULE4_GRAPHRAG_INPUT_DIR", "input") or "input").strip() or "input",
             cache_dir=str(os.getenv("MODULE4_GRAPHRAG_CACHE_DIR", "cache") or "cache").strip() or "cache",
             storage_dir=str(

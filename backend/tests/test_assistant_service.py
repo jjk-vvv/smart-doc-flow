@@ -37,7 +37,7 @@ class FakeProvider:
             "baseUrl": "https://example.test",
             "endpointPath": "/v1/responses",
             "endpointStyle": "openai_responses",
-            "model": "gpt-5-mini",
+            "model": "test-chat-model",
         }
 
     def complete_text(self, **kwargs) -> str:
@@ -63,7 +63,7 @@ def _assistant_settings(*, smoke_test_enabled: bool = False) -> AssistantSetting
         chat_base_url="https://example.test",
         chat_endpoint_path="/v1/responses",
         chat_endpoint_style="openai_responses",
-        chat_model="gpt-5-mini",
+        chat_model="test-chat-model",
         chat_temperature=0.2,
         chat_timeout_sec=120.0,
         chat_max_output_tokens=2400,
@@ -107,7 +107,7 @@ def test_assistant_health_payload_reports_disabled_smoke() -> None:
     payload = service.health_payload()
 
     assert payload["ok"] is True
-    assert payload["model"] == "gpt-5-mini"
+    assert payload["model"] == "test-chat-model"
     assert payload["keyConfigured"] is False
     assert payload["unicodeSmoke"]["enabled"] is False
 

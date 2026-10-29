@@ -57,7 +57,9 @@ async def _handle_extract_batch(request_payload: dict[str, Any]) -> dict[str, An
         uploads.append(upload)
 
     try:
-        request_stub = SimpleNamespace(headers=dict(request_payload.get("headers") or {}))
+        request_stub = SimpleNamespace(
+            headers=Headers(dict(request_payload.get("headers") or {}))
+        )
         response = await extract_batch(
             request=request_stub,
             files=uploads,

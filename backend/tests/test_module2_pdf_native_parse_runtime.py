@@ -53,7 +53,7 @@ def test_pdf_native_parse_runtime_early_returns_ocr_on_low_probe_chars() -> None
         enable_fitz_table=False,
         table_merge_enable=True,
         visual_force_ocr_on_weak_native=True,
-        gemini_vision_enable_figures=True,
+        vision_enable_figures=True,
         normalize_text=lambda text: " ".join(str(text or "").split()),
         split_page_text=lambda text: [text] if text else [],
         append_ref=_append_ref,
@@ -67,7 +67,7 @@ def test_pdf_native_parse_runtime_early_returns_ocr_on_low_probe_chars() -> None
         merge_cross_page_tables=lambda tables: tables,
         infer_figures_from_page_lines=lambda page_lines, parts, bbox_map, source, last_figure_blocks: [],
         figure_blocks_need_vision=lambda figure_blocks: False,
-        enhance_low_quality_pages_with_gemini_vision=lambda **kwargs: (kwargs["table_blocks"], []),
+        enhance_low_quality_pages_with_vision=lambda **kwargs: (kwargs["table_blocks"], []),
         merge_figure_blocks=lambda left, right: left + right,
         prune_fragment_tables=lambda tables: tables,
     )
@@ -96,7 +96,7 @@ def test_pdf_native_parse_runtime_builds_native_result_and_requests_vision() -> 
         enable_fitz_table=True,
         table_merge_enable=True,
         visual_force_ocr_on_weak_native=False,
-        gemini_vision_enable_figures=True,
+        vision_enable_figures=True,
         normalize_text=lambda text: " ".join(str(text or "").split()),
         split_page_text=lambda text: [chunk for chunk in str(text).split("\n\n") if chunk],
         append_ref=_append_ref,
@@ -112,9 +112,9 @@ def test_pdf_native_parse_runtime_builds_native_result_and_requests_vision() -> 
             {"figure_id": "pdf_caption_f1"}
         ],
         figure_blocks_need_vision=lambda figure_blocks: True,
-        enhance_low_quality_pages_with_gemini_vision=lambda **kwargs: (
-            kwargs["table_blocks"] + [{"table_id": "pdf_gemini_vision_native_t1"}],
-            [{"figure_id": "pdf_gemini_vision_native_f1"}],
+        enhance_low_quality_pages_with_vision=lambda **kwargs: (
+            kwargs["table_blocks"] + [{"table_id": "pdf_vision_native_t1"}],
+            [{"figure_id": "pdf_vision_native_f1"}],
         ),
         merge_figure_blocks=lambda left, right: left + right,
         prune_fragment_tables=lambda tables: tables + [{"table_id": "pruned_marker"}],
@@ -136,12 +136,12 @@ def test_pdf_native_parse_runtime_builds_native_result_and_requests_vision() -> 
     assert [table["table_id"] for table in result["table_blocks"]] == [
         "fitz_t1",
         "pdf_native_t1",
-        "pdf_gemini_vision_native_t1",
+        "pdf_vision_native_t1",
         "pruned_marker",
     ]
     assert [figure["figure_id"] for figure in result["figure_blocks"]] == [
         "pdf_caption_f1",
-        "pdf_gemini_vision_native_f1",
+        "pdf_vision_native_f1",
     ]
     assert result["stats"]["native_vision_requested"] is True
     assert "visual_backend_unavailable" in result["stats"]["native_vision_reasons"]
@@ -159,7 +159,7 @@ def test_pdf_native_parse_runtime_forces_ocr_when_native_tables_stay_weak() -> N
         enable_fitz_table=False,
         table_merge_enable=True,
         visual_force_ocr_on_weak_native=True,
-        gemini_vision_enable_figures=False,
+        vision_enable_figures=False,
         normalize_text=lambda text: " ".join(str(text or "").split()),
         split_page_text=lambda text: [text] if text else [],
         append_ref=_append_ref,
@@ -173,7 +173,7 @@ def test_pdf_native_parse_runtime_forces_ocr_when_native_tables_stay_weak() -> N
         merge_cross_page_tables=lambda tables: tables,
         infer_figures_from_page_lines=lambda page_lines, parts, bbox_map, source, last_figure_blocks: [],
         figure_blocks_need_vision=lambda figure_blocks: False,
-        enhance_low_quality_pages_with_gemini_vision=lambda **kwargs: (kwargs["table_blocks"], []),
+        enhance_low_quality_pages_with_vision=lambda **kwargs: (kwargs["table_blocks"], []),
         merge_figure_blocks=lambda left, right: left + right,
         prune_fragment_tables=lambda tables: tables,
     )

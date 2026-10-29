@@ -18,12 +18,12 @@ ToFloatOrNone = Callable[[Any], Optional[float]]
 
 
 class TableVisionPayloadRuntime:
-    """Build table blocks from Gemini vision payloads while keeping parser signatures stable."""
+    """Build table blocks from vision payloads while keeping parser signatures stable."""
 
     def __init__(
         self,
         *,
-        gemini_vision_max_tables_per_page: int,
+        vision_max_tables_per_page: int,
         table_max_rows: int,
         table_max_cols: int,
         ocr_table_min_rows: int,
@@ -38,7 +38,7 @@ class TableVisionPayloadRuntime:
         build_header_meta: BuildHeaderMeta,
         to_float_or_none: ToFloatOrNone,
     ) -> None:
-        self.gemini_vision_max_tables_per_page = max(0, int(gemini_vision_max_tables_per_page or 0))
+        self.vision_max_tables_per_page = max(0, int(vision_max_tables_per_page or 0))
         self.table_max_rows = max(1, int(table_max_rows or 1))
         self.table_max_cols = max(1, int(table_max_cols or 1))
         self.ocr_table_min_rows = max(1, int(ocr_table_min_rows or 1))
@@ -67,7 +67,7 @@ class TableVisionPayloadRuntime:
             return [], table_idx
 
         built: TableBlocks = []
-        for table_raw in tables_raw[: self.gemini_vision_max_tables_per_page]:
+        for table_raw in tables_raw[: self.vision_max_tables_per_page]:
             matrix = self._vision_table_to_matrix(table_raw)
             if len(matrix) < 2:
                 continue

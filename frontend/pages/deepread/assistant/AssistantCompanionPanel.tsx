@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertCircle, ChevronRight, Loader2, Sparkles } from 'lucide-react';
+import { AlertCircle, ChevronRight } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
 import type { AssistantActionPreview, AssistantCitation, AssistantObjectLock, AssistantToolEvent } from './types';

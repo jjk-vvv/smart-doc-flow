@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.modules.module2.core.table.numeric_statistics import quantile
+
 import os
 import re
 from datetime import datetime
@@ -1031,21 +1033,6 @@ class DocumentTraceHitsRuntime:
             compact = re.sub(r"\s+", "", text)
             return compact in placeholder_tokens
 
-        def quantile(values: List[float], q: float) -> Optional[float]:
-            finite_values = [float(item) for item in values if isinstance(item, (int, float))]
-            if not finite_values:
-                return None
-            ordered = sorted(finite_values)
-            if len(ordered) == 1:
-                return ordered[0]
-            safe_q = max(0.0, min(1.0, float(q)))
-            pos = safe_q * float(len(ordered) - 1)
-            lower_idx = int(pos)
-            upper_idx = min(lower_idx + 1, len(ordered) - 1)
-            frac = pos - float(lower_idx)
-            if upper_idx == lower_idx:
-                return ordered[lower_idx]
-            return ordered[lower_idx] * (1.0 - frac) + ordered[upper_idx] * frac
 
         def build_domain(values: List[float]) -> Optional[List[float]]:
             finite_values = [float(item) for item in values if isinstance(item, (int, float))]

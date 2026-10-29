@@ -102,13 +102,13 @@ def _build_runtime(
 ):
     runtime_state = state if state is not None else {"figures": []}
 
-    def _parse_image(*, file_name: str, file_bytes: bytes, enable_gemini_enhance: bool = True):
+    def _parse_image(*, file_name: str, file_bytes: bytes, enable_vision_enhance: bool = True):
         if parse_image is None:
             return "", {}, []
         return parse_image(
             file_name=file_name,
             file_bytes=file_bytes,
-            enable_gemini_enhance=enable_gemini_enhance,
+            enable_vision_enhance=enable_vision_enhance,
         )
 
     def _get_last_figure_blocks():
@@ -124,7 +124,7 @@ def _build_runtime(
         "docx_media_probe_enable": True,
         "docx_media_max_assets": 8,
         "docx_media_vision_enable": True,
-        "docx_media_nested_gemini_enhance_enable": True,
+        "docx_media_nested_vision_enhance_enable": True,
         "docx_media_max_assets_unbounded": False,
         "docx_media_vision_max_assets": 4,
         "docx_media_vision_max_assets_unbounded": False,
@@ -204,7 +204,7 @@ def test_docx_enrichment_runtime_extracts_chart_xml_table_from_docx_zip(tmp_path
 def test_docx_enrichment_runtime_uses_media_vision_and_restores_parser_figure_state(tmp_path: Path) -> None:
     initial_state = {"figures": [{"figure_id": "seed", "caption": "before"}]}
 
-    def _fake_parse_image(*, file_name: str, file_bytes: bytes, enable_gemini_enhance: bool = True):
+    def _fake_parse_image(*, file_name: str, file_bytes: bytes, enable_vision_enhance: bool = True):
         initial_state["figures"] = [
             {
                 "figure_id": "nested",

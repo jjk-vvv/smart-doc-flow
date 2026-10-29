@@ -18,7 +18,7 @@ class FigureInferenceRuntime:
     def __init__(
         self,
         *,
-        gemini_vision_enable_figures: bool,
+        vision_enable_figures: bool,
         normalize_text: NormalizeText,
         normalize_token_for_compare: NormalizeTokenForCompare,
         contains_figure_marker: BoolTextFn,
@@ -27,7 +27,7 @@ class FigureInferenceRuntime:
         count_figure_markers_in_text: CountFigureMarkers,
         next_figure_index: NextFigureIndex,
     ) -> None:
-        self.gemini_vision_enable_figures = gemini_vision_enable_figures
+        self.vision_enable_figures = vision_enable_figures
         self._normalize_text = normalize_text
         self._normalize_token_for_compare = normalize_token_for_compare
         self._contains_figure_marker = contains_figure_marker
@@ -319,7 +319,7 @@ class FigureInferenceRuntime:
         return score
 
     def figure_blocks_need_vision(self, figure_blocks: FigureBlocks) -> bool:
-        if not self.gemini_vision_enable_figures or not figure_blocks:
+        if not self.vision_enable_figures or not figure_blocks:
             return False
         rich_count = sum(1 for item in figure_blocks if self.figure_deep_score(item) > 0)
         total = len(figure_blocks)

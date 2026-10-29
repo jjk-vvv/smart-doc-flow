@@ -23,9 +23,9 @@ def test_parser_image_bootstrap_runtime_builds_expected_runtime_attrs() -> None:
     attrs = runtime.build_image_runtime_attrs(
         parser_image_bundle_runtime=ParserImageBundleRuntime(),
         max_pages_visual=6,
-        enable_gemini_vision_enhance=True,
-        gemini_vision_max_pages=8,
-        gemini_vision_consecutive_fail_stop=2,
+        vision_enhance_enabled=True,
+        vision_max_pages=8,
+        vision_consecutive_fail_stop=2,
         set_runtime_page_count=lambda count: None,
         visual_backend_available=lambda: (True, ""),
         resolve_api_key=lambda: "test-key",
@@ -41,7 +41,7 @@ def test_parser_image_bootstrap_runtime_builds_expected_runtime_attrs() -> None:
         infer_tables_from_ocr_cells=lambda page_cells: [],
         infer_tables_from_page_lines=lambda page_lines, parts, bbox_map, source_prefix: [],
         infer_figures_from_page_lines=lambda page_lines, parts, bbox_map, source_prefix, last_figure_blocks: [],
-        enhance_low_quality_pages_with_gemini_vision=lambda **kwargs: ([], []),
+        enhance_low_quality_pages_with_vision=lambda **kwargs: ([], []),
         merge_figure_blocks=lambda figure_blocks, vision_figures: list(figure_blocks or []) + list(vision_figures or []),
         augment_with_line_tables=lambda table_blocks, vision_tables: list(table_blocks or []) + list(vision_tables or []),
         prune_fragment_tables=lambda table_blocks: list(table_blocks or []),
@@ -56,7 +56,7 @@ def test_parser_image_bootstrap_runtime_builds_expected_runtime_attrs() -> None:
 
     assert set(attrs) == expected_keys
     assert hasattr(attrs["_image_ocr_runtime"], "collect_page_ocr")
-    assert hasattr(attrs["_image_vision_runtime"], "enhance_low_quality_pages_with_gemini_vision")
+    assert hasattr(attrs["_image_vision_runtime"], "enhance_low_quality_pages_with_vision")
     assert hasattr(attrs["_image_parse_runtime"], "build_parse_result")
     assert hasattr(attrs["_image_document_runtime"], "parse_image")
     assert attrs["_image_ocr_runtime"].max_pages_visual == 6

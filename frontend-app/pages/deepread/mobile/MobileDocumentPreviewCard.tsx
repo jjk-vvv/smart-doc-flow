@@ -2,14 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
-  ExternalLink,
   FileImage,
   FileSpreadsheet,
   FileText,
   Loader2,
   MonitorPlay,
-  ZoomIn,
-  ZoomOut,
 } from 'lucide-react';
 
 import { LuckysheetPreview } from '../../../components/LuckysheetPreview';

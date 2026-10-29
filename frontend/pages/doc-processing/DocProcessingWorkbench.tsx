@@ -1,19 +1,38 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { 
-  Send, Paperclip, 
-  FileText, X, CheckCircle, Plus, Palette, Loader,
-  FileUp, Brain, Download, Eye,
-  ChevronLeft, ChevronRight, Diff,
-  Maximize2, Minimize2, Clock, AlertCircle,
-  ZoomIn, ZoomOut, RotateCw, Layers, ScanLine, Trash2,
-  UploadCloud, Sparkles
+import {
+  Send,
+  Paperclip,
+  FileText,
+  X,
+  CheckCircle,
+  Plus,
+  Palette,
+  Loader,
+  FileUp,
+  Brain,
+  Download,
+  Eye,
+  ChevronLeft,
+  ChevronRight,
+  Diff,
+  Maximize2,
+  Minimize2,
+  Clock,
+  AlertCircle,
+  ZoomIn,
+  ZoomOut,
+  RotateCw,
+  Layers,
+  ScanLine,
+  Trash2,
+  UploadCloud,
+  Sparkles,
 } from 'lucide-react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import { Image } from 'lucide-react';
 
-import AppLogoImage from '../../assets/app-logo.png';
 import SmartDocWordmarkImage from '../../assets/smart-doc-wordmark.svg';
 import RightExpandImage from '../../assets/right-expand.svg';
 import AssistantAvatarImage from '../../assets/文心智能体-copy.png';
@@ -160,7 +179,6 @@ const isFileDragEvent = (dataTransfer: DataTransfer | null) => (
   Array.from(dataTransfer?.types ?? []).includes('Files')
 );
 
-// ---------- 类型定义 ----------
 interface Message {
   id: string;
   type: 'user' | 'assistant' | 'system';
@@ -337,7 +355,6 @@ const INITIAL_LANDING_SUGGESTIONS: PromptSuggestionItem[] = [
   }
 ];
 
-// 布局模式
 type LayoutMode = 'default' | 'compact' | 'expanded';
 type ResponsiveWorkbenchMode = 'wide' | 'medium' | 'narrow';
 type PreviewPaneMode = 'report' | 'current' | 'original' | 'compare';
@@ -579,7 +596,6 @@ const serializeConversationRecord = (conversation: ConversationRecord): Persiste
   showPreviewPanel: conversation.showPreviewPanel,
 });
 
-// 辅助函数
 const formatFileSize = (bytes: number): string => {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -1101,7 +1117,6 @@ const ANALYSIS_KEYWORDS = ['分析', '总结', '摘要', '提取', '查找', '�
 
 const createEntityId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
-
 const createConversationTitle = (index: number) => (index <= 1 ? '新对话' : `新对话 ${index}`);
 
 const createConversationRecord = (index: number): ConversationRecord => ({
@@ -1601,7 +1616,6 @@ const PdfScrollPreview = React.memo(({
   );
 });
 
-// ---------- 智能打字机副标题组件 (Impeccable 设计) ----------
 const TypewriterSubtitle: React.FC = () => {
   const [text, setText] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
@@ -1618,7 +1632,6 @@ const TypewriterSubtitle: React.FC = () => {
     const currentPhrase = phrases[loopNum % 2];
 
     if (isDeleting) {
-      // 退格阶段
       timer = setTimeout(() => {
         setText(currentPhrase.substring(0, text.length - 1));
         setTypingSpeed(40); // 退格速度略快，符合直觉
@@ -1630,7 +1643,6 @@ const TypewriterSubtitle: React.FC = () => {
         setTypingSpeed(100);
       }
     } else {
-      // 打字阶段
       timer = setTimeout(() => {
         setText(currentPhrase.substring(0, text.length + 1));
         setTypingSpeed(80 + Math.random() * 60); // 拟人化随机节奏
@@ -1638,10 +1650,8 @@ const TypewriterSubtitle: React.FC = () => {
 
       if (text === currentPhrase) {
         if (loopNum === 0) {
-          // 第一句写完，停顿供用户阅读
           timer = setTimeout(() => setIsDeleting(true), 1800);
         } else {
-          // 第二句写完，彻底定格
           setLoopNum(2);
         }
       }
@@ -1666,7 +1676,6 @@ const TypewriterSubtitle: React.FC = () => {
   );
 };
 
-// ---------- 主组件 ----------
 export const DocProcessingWorkbench: React.FC = () => {
   const initialConversation = useMemo(() => createConversationRecord(1), []);
   const hydratingConversationRef = useRef(false);
@@ -1680,20 +1689,17 @@ export const DocProcessingWorkbench: React.FC = () => {
   const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
   const [conversationTitleDraft, setConversationTitleDraft] = useState('');
 
-  // 文档存储
   const [files, setFiles] = useState<Record<string, FileInfo>>(initialConversation.files);
   const [composerFileIds, setComposerFileIds] = useState<string[]>(initialConversation.composerFileIds);
   const [rememberedFileBatchIds, setRememberedFileBatchIds] = useState<string[]>(initialConversation.rememberedFileBatchIds);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(initialConversation.selectedFileId);
   
-  // 聊天状态
   const [messages, setMessages] = useState<Message[]>(initialConversation.messages);
   const [inputText, setInputText] = useState(initialConversation.inputText);
   const [isLoading, setIsLoading] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('default');
   const [followUpSuggestionBatchIndex, setFollowUpSuggestionBatchIndex] = useState(0);
   
-  // 预览控制
   const [scale, setScale] = useState(0.9);
   const [rotation, setRotation] = useState(0);
   const [pdfPage, setPdfPage] = useState(1);
@@ -1758,7 +1764,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     setPdfScrollRequest(null);
   }, []);
 
-  // 计算属性
   const fileList = useMemo(() => Object.values(files), [files]);
   const composerFiles = useMemo(() => getFilesByIds(files, composerFileIds), [composerFileIds, files]);
   const activeConversation = useMemo(
@@ -2081,14 +2086,11 @@ export const DocProcessingWorkbench: React.FC = () => {
     };
   }, []);
 
-  // 预览URL管理
   React.useEffect(() => syncPreviewUrl(previewedFile, setPreviewUrl), [previewedFile, syncPreviewUrl]);
   React.useEffect(() => syncPreviewUrl(comparisonFile, setComparisonPreviewUrl), [comparisonFile, syncPreviewUrl]);
 
-  // 文本预览 - 只处理纯文本文件
   React.useEffect(() => {
     let cancelled = false;
-    // 只处理纯文本文件，不处理 Excel
     if (!previewedFile?.file || !['txt', 'md', 'csv'].includes(activeFileExt)) {
       setPreviewText('');
       return;
@@ -2104,7 +2106,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     return () => { cancelled = true; };
   }, [previewedFile, activeFileExt]);
 
-  // 自动滚动
   const lastMessage = useMemo(
     () => messages[messages.length - 1] ?? null,
     [messages]
@@ -2355,7 +2356,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     loadConversation(nextActiveConversation);
   }, [activeConversationId, commitCurrentConversation, conversations, editingConversationId, isLoading, loadConversation]);
 
-  // ---------- Word转PDF转换函数 ----------
   const convertWordToPdf = async (file: File): Promise<WordToPdfConversionResult> => {
     const formData = new FormData();
     formData.append('file', file, file.name || 'document.docx');
@@ -2425,7 +2425,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     }
   };
 
-  // ---------- 文件上传 ----------
   const processUploadedFiles = useCallback(async (incomingFiles: File[]) => {
     if (incomingFiles.length === 0) return;
 
@@ -2718,20 +2717,17 @@ export const DocProcessingWorkbench: React.FC = () => {
     updateComposerCollapseState();
   }, [updateComposerCollapseState]);
 
-  // ---------- API 调用 ----------
   const applyModificationsToFile = useCallback(async (
     operationResult: OperationResult,
     targetFile: FileInfo
   ): Promise<void> => {
     try {
-      // 获取要修改的文件
       const rawTargetFile = targetFile.originalFile || targetFile.file;
       const fileToModify = rawTargetFile ? buildModule1UploadFile(targetFile, rawTargetFile) : null;
       if (!fileToModify) {
         throw new Error('找不到要修改的文件');
       }
       
-      // 准备修改数据
       const formData = new FormData();
       formData.append('file', fileToModify, fileToModify.name || targetFile.name);
       formData.append('modifications', JSON.stringify(operationResult.modifications || []));
@@ -2742,7 +2738,6 @@ export const DocProcessingWorkbench: React.FC = () => {
         modifications: operationResult.modifications
       });
       
-      // 调用应用修改的API
       const response = await fetch(buildModule1ApiUrl('/apply-modifications'), {
         method: 'POST',
         body: formData,
@@ -2758,11 +2753,9 @@ export const DocProcessingWorkbench: React.FC = () => {
         throw new Error(`应用修改失败: ${response.status} - ${errorText}`);
       }
       
-      // 获取修改后的文件
       const modifiedBlob = await response.blob();
       console.log('修改后的文件大小:', modifiedBlob.size, 'bytes');
       
-      // 从响应头获取修改信息（注意：这些头可能不存在）
       const modificationApplied = response.headers.get('X-Modification-Applied');
       const modificationCount = response.headers.get('X-Modification-Count') || 
                                 (operationResult.modifications?.length || 0).toString();
@@ -2780,7 +2773,6 @@ export const DocProcessingWorkbench: React.FC = () => {
       );
       const logicalFileType = resolveFileMimeType(responseContentType || modifiedBlob.type, fileName);
       
-      // 创建File对象
       let modifiedFile;
       try {
         modifiedFile = new File([modifiedBlob], fileName, { type: logicalFileType });
@@ -2793,7 +2785,6 @@ export const DocProcessingWorkbench: React.FC = () => {
         });
       }
       
-      // 生成预览URL
       let modifiedPreviewUrl = URL.createObjectURL(modifiedBlob);
       let modifiedPreviewType = logicalFileType;
       let modifiedPreviewBlob: Blob | undefined = logicalFileType.includes('pdf') ? modifiedBlob : undefined;
@@ -2821,13 +2812,11 @@ export const DocProcessingWorkbench: React.FC = () => {
         }
       }
       
-      // 更新文件列表，添加修改后的文件
       const newFileId = Date.now() + Math.random().toString(36).substr(2, 9);
       
       setFiles(prev => {
         const newFiles = { ...prev };
         
-        // 添加修改后的文件
         newFiles[newFileId] = {
           id: newFileId,
           name: fileName,
@@ -2854,13 +2843,11 @@ export const DocProcessingWorkbench: React.FC = () => {
         return newFiles;
       });
       
-      // 自动选中新文件
       setSelectedFileId(newFileId);
       setPreviewPaneMode('current');
       setShowPreviewPanel(true);
       resetPreviewViewport();
       
-      // 添加成功消息
       const successMessage: Message = {
         id: Date.now().toString(),
         type: 'assistant',
@@ -2873,7 +2860,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     } catch (error) {
       console.error('应用修改失败:', error);
       
-      // 添加错误消息
       const errorMessage: Message = {
         id: Date.now().toString(),
         type: 'assistant',
@@ -2907,7 +2893,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     }
   }, []);
 
-  // Excel预览组件
   const ExcelPreview: React.FC<{ file: FileInfo }> = ({ file }) => {
     const previewFile = file.file || file.originalFile || null;
 
@@ -2953,21 +2938,16 @@ export const DocProcessingWorkbench: React.FC = () => {
     );
   };
 
-  // ---------- 发送消息 ----------
   const sendMessage = useCallback(async (promptOverride?: string) => {
     const instruction = String(promptOverride ?? inputText).trim();
     if (!instruction || isLoading) return;
   
-    // 移除强制文件检查，允许无文件时聊天
-    // if (Object.keys(files).length === 0) { alert('请先上传文档'); return; }
   
-    // 中止之前的请求
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
   
-    // 创建新的 AbortController
     abortControllerRef.current = new AbortController();
     const requestedComposerFileIds = getExistingFileIds(files, composerFileIds);
     const requestedRememberedFileIds = getExistingFileIds(files, rememberedFileBatchIds);
@@ -3019,7 +2999,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     };
   
     try {
-      // 获取当前选中的文件（可能为 null）
       targetFileInfo = selectedFileId && effectiveRequestFileIds.includes(selectedFileId)
         ? files[selectedFileId]
         : effectiveRequestFiles[0] ?? null;
@@ -3027,7 +3006,6 @@ export const DocProcessingWorkbench: React.FC = () => {
         ? [targetFileInfo, ...effectiveRequestFiles.filter((file) => file.id !== targetFileInfo.id)]
         : effectiveRequestFiles;
   
-      // 构建 FormData
       const formData = new FormData();
       const preparedRequestEntries = orderedRequestFiles
         .map((fileInfo) => {
@@ -3051,7 +3029,6 @@ export const DocProcessingWorkbench: React.FC = () => {
         formData.append('selected_file_name', selectedUploadEntry?.uploadFile.name || getCapabilityFileName(targetFileInfo));
       }
   
-      // 报告预览仅在存在文件且指令为分析意图时开启
       shouldOpenReportPreview = targetFileInfo !== null && isReportIntent(instruction);
       if (shouldOpenReportPreview && targetFileInfo) {
         setSelectedFileId(targetFileInfo.id);
@@ -3071,7 +3048,6 @@ export const DocProcessingWorkbench: React.FC = () => {
         setReportProgressState(createReportProgressState());
       }
   
-      // 创建占位消息（流式内容将累加至此）
       const assistantMessageId = (Date.now() + 2).toString();
       setMessages(prev => [
         ...prev,
@@ -3079,7 +3055,6 @@ export const DocProcessingWorkbench: React.FC = () => {
           id: assistantMessageId,
           type: 'assistant',
           content: '',
-          // 有文件时关联文件ID，否则为空
           fileIds: targetFileInfo ? [targetFileInfo.id] : [],
           displayMode: shouldOpenReportPreview ? 'report' : 'chat',
           timestamp: new Date()
@@ -3092,7 +3067,6 @@ export const DocProcessingWorkbench: React.FC = () => {
         }));
       }
   
-      // 调用流式 API
       const response = await fetch(buildModule1ApiUrl('/operate-stream'), {
         method: 'POST',
         body: formData,
@@ -3202,7 +3176,6 @@ export const DocProcessingWorkbench: React.FC = () => {
   
                 case 'modifications':
                   console.log('收到修改方案:', parsed.content);
-                  // 只有在有文件时才处理修改
                   if (targetFileInfo) {
                     let realModifications: Modification[] = Array.isArray(parsed.content)
                       ? parsed.content as Modification[]
@@ -3240,7 +3213,6 @@ export const DocProcessingWorkbench: React.FC = () => {
                   break;
   
                 case 'preview':
-                  // 修改流程改为直接返回聊天结果，不再自动弹出预览
                   break;
   
                 case 'error':
@@ -3288,12 +3260,10 @@ export const DocProcessingWorkbench: React.FC = () => {
   
       flushAssistantMessage(true);
   
-      // 只有在有文件且有修改方案时才应用修改
       if (receivedModifications && targetFileInfo) {
         await applyModificationsToFile(receivedModifications, targetFileInfo);
       }
   
-      // 更新文件状态为已完成（仅当有文件时）
       setFiles(prev => {
         const newFiles = { ...prev };
         for (const fileId of effectiveRequestFileIds) {
@@ -3354,7 +3324,6 @@ export const DocProcessingWorkbench: React.FC = () => {
         }
       ]);
   
-      // 标记现有文件为错误状态（若有）
       setFiles(prev => {
         const newFiles = { ...prev };
         for (const fileId of effectiveRequestFileIds) {
@@ -3381,7 +3350,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     }
   }, [sendMessage]);
 
-  // 预览控制函数
   const handleZoomIn = () => setScale((prev) => Math.min(prev + 0.1, 2.5));
   const handleZoomOut = () => setScale((prev) => Math.max(prev - 0.1, 0.5));
   const handleRotate = () => setRotation((prev) => (prev + 90) % 360);
@@ -3460,7 +3428,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     }
   }, [closeConversationSidebarPanel, closePreviewPanel, showHistoryOverlay, showPreviewOverlay]);
 
-  // 获取指定文件的最新分析报告内容
   const getAnalysisReportForFile = useCallback((fileId: string, reportMessageId?: string): string | null => {
     const reportMessages = reportMessagesByFileId.get(fileId) ?? [];
     if (reportMessages.length === 0) return null;
@@ -4154,7 +4121,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     setPdfPageInput(String(pdfPage));
   }, [pdfPage]);
 
-  // 下载文件
   const downloadFile = useCallback((file: FileInfo) => {
     const fileToDownload = file.file || file.originalFile;
     if (!fileToDownload) return;
@@ -4174,7 +4140,6 @@ export const DocProcessingWorkbench: React.FC = () => {
     }
   }, []);
 
-  // 导出结果
   const exportResults = useCallback(() => {
     if (fileList.length === 0) return;
 
@@ -4925,7 +4890,6 @@ export const DocProcessingWorkbench: React.FC = () => {
                             </div>
                           </div>
 
-                          {/* 插入智能打字机副标题动效 */}
                           <TypewriterSubtitle />
 
                           <div

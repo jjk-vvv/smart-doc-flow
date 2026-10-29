@@ -151,8 +151,8 @@ class TableHeaderRuntime:
             and not self.temporal_text_like(item)
         )
         data_value_ratio = data_value_like_count / float(max(len(normalized), 1))
-        numeric_like_count = sum(1 for item in normalized if self.cell_text_numeric_like(item))
-        temporal_like_count = sum(
+        _numeric_like_count = sum(1 for item in normalized if self.cell_text_numeric_like(item))
+        _temporal_like_count = sum(
             1
             for item in normalized
             if re.fullmatch(r"(?:19|20)\d{2}年?", item)

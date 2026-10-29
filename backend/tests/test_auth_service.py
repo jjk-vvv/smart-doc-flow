@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -272,9 +273,6 @@ def _auth_settings(
         login_lock_ms=login_lock_ms,
         is_prod=False,
         users_file=users_file,
-        sms_provider="",
-        ihuyi_api_id="",
-        ihuyi_api_key="",
         smtp_host="",
         smtp_port=587,
         smtp_secure=False,
@@ -821,3 +819,146 @@ def test_register_generates_uuid_user_id(tmp_path: Path) -> None:
     assert status_code == 201
     assert len(user_id) == 32
     assert all(ch in "0123456789abcdef" for ch in user_id)
+
+
+@pytest.mark.parametrize("database_enabled", [False, True])
+@pytest.mark.parametrize("method", ["send_register_code", "send_forgot_code"])
+@pytest.mark.parametrize("contact", ["13900000000", "not-an-email", "name@@example.com", "name@example..com"])
+def test_code_sending_rejects_non_email_recipients(
+    tmp_path: Path, database_enabled: bool, method: str, contact: str,
+) -> None:
+    settings = _auth_settings(tmp_path / "users.json", database_enabled=database_enabled)
+    repository = FakeAuthRepository(settings, database_enabled=database_enabled)
+    notifier = _DummyNotifier()
+    service = AuthService(settings=settings, repository=repository, notifier=notifier)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(getattr(service, method)(_request(), {"contact": contact}))
+
+    assert exc_info.value.status_code == 400
+    assert "email" in exc_info.value.detail.lower()
+    assert notifier.registration_codes == notifier.forgot_codes == []
+    assert repository.verification_codes == service._verification_codes == {}
+
+
+@pytest.mark.parametrize("database_enabled", [False, True])
+def test_forgot_password_flow_sends_and_verifies_email_code(tmp_path: Path, database_enabled: bool) -> None:
+    settings = _auth_settings(tmp_path / "users.json", database_enabled=database_enabled)
+    repository = FakeAuthRepository(settings, database_enabled=database_enabled, users=[{
+        "id": "email-user", "name": "Email User", "email": "registered@example.com",
+        "phone": "13900000000", "password": "old-password",
+    }])
+    notifier = _DummyNotifier()
+    service = AuthService(settings=settings, repository=repository, notifier=notifier)
+
+    sent = asyncio.run(service.send_forgot_code(_request(), {"contact": "registered@example.com"}))
+    assert sent["maskedContact"] == "re***@example.com"
+    assert notifier.forgot_codes[0]["contact"] == "registered@example.com"
+    code = notifier.forgot_codes[0]["code"]
+    result = asyncio.run(service.reset_forgot_password(_request(), {
+        "contact": "registered@example.com", "code": code, "newPassword": "new-password-123",
+    }))
+
+    assert "successful" in result["message"]
+    assert verify_password("new-password-123", repository.users["email-user"]["password"])
+    assert repository.revoked_user_ids == ["email-user"]
+    assert repository.verification_codes == service._verification_codes == {}
+
+
+def test_forgot_password_unknown_email_preserves_generic_response(tmp_path: Path) -> None:
+    settings = _auth_settings(tmp_path / "users.json")
+    notifier = _DummyNotifier()
+    service = AuthService(settings=settings, repository=FakeAuthRepository(settings), notifier=notifier)
+
+    result = asyncio.run(service.send_forgot_code(_request(), {"contact": "unknown@example.com"}))
+
+    assert "eligible" in result["message"]
+    assert notifier.forgot_codes == []
+    assert service._verification_codes == {}
+
+
+@pytest.mark.parametrize("database_enabled", [False, True])
+def test_password_reset_rejects_preexisting_phone_code(tmp_path: Path, database_enabled: bool) -> None:
+    settings = _auth_settings(tmp_path / "users.json", database_enabled=database_enabled)
+    repository = FakeAuthRepository(settings, database_enabled=database_enabled, users=[{
+        "id": "legacy-user", "name": "Legacy User", "email": "legacy@example.com",
+        "phone": "13900000000", "password": "old-password",
+    }])
+    service = AuthService(settings=settings, repository=repository, notifier=_DummyNotifier())
+    asyncio.run(service._store_verification_record("forgot", "13900000000", "123456", user_id="legacy-user"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.reset_forgot_password(_request(), {
+            "contact": "13900000000", "code": "123456", "newPassword": "new-password-123",
+        }))
+
+    assert exc_info.value.status_code == 400
+    assert "email" in exc_info.value.detail.lower()
+    assert repository.users["legacy-user"]["password"] == "old-password"
+    assert repository.revoked_user_ids == []
+
+
+@pytest.mark.parametrize("database_enabled", [False, True])
+def test_registration_cannot_use_a_phone_verification_code(tmp_path: Path, database_enabled: bool) -> None:
+    settings = _auth_settings(tmp_path / "users.json", database_enabled=database_enabled)
+    repository = FakeAuthRepository(settings, database_enabled=database_enabled)
+    service = AuthService(settings=settings, repository=repository, notifier=_DummyNotifier())
+    asyncio.run(service._store_verification_record("register", "13900000000", "123456"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.register(_request(), Response(), {
+            "name": "New User", "email": "new@example.com", "phone": "13900000000",
+            "password": "new-password-123", "code": "123456",
+        }))
+
+    assert exc_info.value.status_code == 400
+    assert repository.users == {}
+
+
+@pytest.mark.parametrize("database_enabled", [False, True])
+def test_registration_uses_email_code_and_keeps_phone_as_profile_data(tmp_path: Path, database_enabled: bool) -> None:
+    settings = _auth_settings(tmp_path / "users.json", database_enabled=database_enabled)
+    repository = FakeAuthRepository(settings, database_enabled=database_enabled)
+    service = AuthService(settings=settings, repository=repository, notifier=_DummyNotifier())
+    asyncio.run(service._store_verification_record("register", "13900000000", "111111"))
+    asyncio.run(service._store_verification_record("register", "new@example.com", "222222"))
+
+    result, status_code = asyncio.run(service.register(_request(), Response(), {
+        "name": "New User", "email": "new@example.com", "phone": "13900000000",
+        "password": "new-password-123", "code": "222222",
+    }))
+
+    assert status_code == 201
+    assert result["user"]["email"] == "new@example.com"
+    assert result["user"]["phone"] == "13900000000"
+    assert asyncio.run(service._find_verification_record("register", "new@example.com")) == (None, "")
+
+
+def test_registration_rejects_non_email_account_address(tmp_path: Path) -> None:
+    settings = _auth_settings(tmp_path / "users.json")
+    repository = FakeAuthRepository(settings)
+    service = AuthService(settings=settings, repository=repository, notifier=_DummyNotifier())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.register(_request(), Response(), {
+            "name": "New User", "email": "13900000000", "phone": "13900000000",
+            "password": "new-password-123", "code": "123456",
+        }))
+
+    assert exc_info.value.status_code == 400
+    assert "email" in exc_info.value.detail.lower()
+    assert repository.users == {}
+
+
+@pytest.mark.parametrize("smtp_password,expected_mode", [("", "disabled"), ("test-smtp-password", "smtp")])
+def test_health_reports_email_delivery_readiness_with_sender_fallback(
+    tmp_path: Path, smtp_password: str, expected_mode: str,
+) -> None:
+    settings = replace(
+        _auth_settings(tmp_path / "users.json"), smtp_host="smtp.example.com",
+        smtp_user="sender@example.com", smtp_pass=smtp_password, smtp_from="",
+    )
+
+    payload = asyncio.run(AuthService(settings=settings).health_payload())
+
+    assert payload["notifierMode"] == expected_mode

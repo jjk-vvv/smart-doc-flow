@@ -238,10 +238,10 @@ class ParserConfigRuntime:
             "docx_media_max_assets_unbounded": docx_media_max_assets_value <= 0,
             "docx_media_max_assets": docx_media_max_assets,
             "docx_media_vision_enable": self._bool_env("MODULE2_DOCX_MEDIA_VISION_ENABLE", "true"),
-            "docx_media_nested_gemini_enhance_enable": (
+            "docx_media_nested_vision_enhance_enable": (
                 self._getenv(
-                    "MODULE2_DOCX_MEDIA_NESTED_GEMINI_ENHANCE_ENABLE",
-                    self._getenv("MODULE2_ENABLE_GEMINI_VISION_ENHANCE", "true"),
+                    "MODULE2_DOCX_MEDIA_NESTED_VISION_ENHANCE_ENABLE",
+                    self._getenv("MODULE2_VISION_ENHANCE_ENABLED", "true"),
                 ).lower()
                 in {"1", "true", "yes"}
             ),
@@ -270,26 +270,21 @@ class ParserConfigRuntime:
         max_pages_visual: int,
         native_text_threshold: int,
     ) -> Dict[str, Any]:
-        gemini_vision_reasoning_effort = str(
-            self._getenv("MODULE2_GEMINI_VISION_REASONING_EFFORT", "minimal") or "minimal"
+        vision_reasoning_effort = str(
+            self._getenv("MODULE2_VISION_REASONING_EFFORT", "minimal") or "minimal"
         ).strip().lower() or "minimal"
-        if gemini_vision_reasoning_effort not in {"minimal", "low", "medium", "high"}:
-            gemini_vision_reasoning_effort = "minimal"
+        if vision_reasoning_effort not in {"minimal", "low", "medium", "high"}:
+            vision_reasoning_effort = "minimal"
 
         default_vision_endpoint_style = "openai_chat_completions"
-        gemini_vision_endpoint_style = str(
-            self._getenv("MODULE2_GEMINI_VISION_ENDPOINT_STYLE", default_vision_endpoint_style)
+        vision_endpoint_style = str(
+            self._getenv("MODULE2_VISION_ENDPOINT_STYLE", default_vision_endpoint_style)
             or default_vision_endpoint_style
         ).strip().lower()
-        if gemini_vision_endpoint_style in {"openai", "openai_chat", "chat_completions"}:
-            gemini_vision_endpoint_style = "openai_chat_completions"
-        if gemini_vision_endpoint_style in {"native", "google_native", "gemini_native"}:
-            raise RuntimeError(
-                "MODULE2_GEMINI_VISION_ENDPOINT_STYLE no longer supports native Gemini/Google branches; "
-                "set it to openai_chat_completions."
-            )
-        if gemini_vision_endpoint_style != "openai_chat_completions":
-            gemini_vision_endpoint_style = default_vision_endpoint_style
+        if vision_endpoint_style in {"openai", "openai_chat", "chat_completions"}:
+            vision_endpoint_style = "openai_chat_completions"
+        if vision_endpoint_style != "openai_chat_completions":
+            raise RuntimeError("MODULE2_VISION_ENDPOINT_STYLE must be openai_chat_completions.")
 
         pipeline_mode = (self._getenv("MODULE2_PIPELINE_MODE", "visual_first") or "visual_first").strip().lower()
         if pipeline_mode not in {"legacy", "hybrid", "visual_first"}:
@@ -330,55 +325,54 @@ class ParserConfigRuntime:
                 0.3,
                 min(1.0, float(self._getenv("MODULE2_TABLE_MERGE_COL_OVERLAP_THRESHOLD", "0.55"))),
             ),
-            "enable_gemini_vision_enhance": self._bool_env("MODULE2_ENABLE_GEMINI_VISION_ENHANCE", "true"),
-            "gemini_vision_model": self._getenv(
-                "MODULE2_GEMINI_VISION_MODEL",
-                self._getenv("MODULE2_GEMINI_MODEL", "qwen3-vl-plus"),
+            "vision_enhance_enabled": self._bool_env("MODULE2_VISION_ENHANCE_ENABLED", "true"),
+            "vision_model": self._getenv(
+                "MODULE2_VISION_MODEL",
+                "qwen3-vl-plus",
             ),
-            "gemini_vision_base_url": self._getenv(
-                "MODULE2_GEMINI_VISION_BASE_URL",
-                self._getenv("MODULE2_LLM_BASE_URL", self._getenv("MODULE2_LLM_API_BASE_URL", "")),
+            "vision_base_url": self._getenv(
+                "MODULE2_VISION_BASE_URL",
+                self._getenv("MODULE2_LLM_BASE_URL", ""),
             ),
-            "gemini_vision_endpoint_style": gemini_vision_endpoint_style,
-            "gemini_vision_timeout_sec": max(5.0, float(self._getenv("MODULE2_GEMINI_VISION_TIMEOUT_SEC", "25"))),
-            "gemini_vision_dpi": max(96, int(self._getenv("MODULE2_GEMINI_VISION_DPI", "150"))),
-            "gemini_vision_max_side_px": max(768, int(self._getenv("MODULE2_GEMINI_VISION_MAX_SIDE_PX", "1800"))),
-            "gemini_vision_max_pages": self._limit_env_value(
-                "MODULE2_GEMINI_VISION_MAX_PAGES",
+            "vision_endpoint_style": vision_endpoint_style,
+            "vision_timeout_sec": max(5.0, float(self._getenv("MODULE2_VISION_TIMEOUT_SEC", "25"))),
+            "vision_dpi": max(96, int(self._getenv("MODULE2_VISION_DPI", "150"))),
+            "vision_max_side_px": max(768, int(self._getenv("MODULE2_VISION_MAX_SIDE_PX", "1800"))),
+            "vision_max_pages": self._limit_env_value(
+                "MODULE2_VISION_MAX_PAGES",
                 24,
                 minimum=0,
                 unlimited_value=max_pages_visual,
             ),
-            "gemini_vision_max_tables_per_page": self._limit_env_value(
-                "MODULE2_GEMINI_VISION_MAX_TABLES_PER_PAGE",
+            "vision_max_tables_per_page": self._limit_env_value(
+                "MODULE2_VISION_MAX_TABLES_PER_PAGE",
                 5,
                 minimum=1,
                 unlimited_value=512,
             ),
-            "gemini_vision_max_figures_per_page": self._limit_env_value(
-                "MODULE2_GEMINI_VISION_MAX_FIGURES_PER_PAGE",
+            "vision_max_figures_per_page": self._limit_env_value(
+                "MODULE2_VISION_MAX_FIGURES_PER_PAGE",
                 8,
                 minimum=0,
                 unlimited_value=512,
             ),
-            "gemini_vision_enable_figures": self._bool_env("MODULE2_GEMINI_VISION_ENABLE_FIGURES", "true"),
-            "gemini_vision_min_table_quality": max(
+            "vision_enable_figures": self._bool_env("MODULE2_VISION_ENABLE_FIGURES", "true"),
+            "vision_min_table_quality": max(
                 0.1,
-                min(1.0, float(self._getenv("MODULE2_GEMINI_VISION_MIN_TABLE_QUALITY", "0.72"))),
+                min(1.0, float(self._getenv("MODULE2_VISION_MIN_TABLE_QUALITY", "0.72"))),
             ),
-            "gemini_vision_min_figure_quality": max(
+            "vision_min_figure_quality": max(
                 0.1,
-                min(1.0, float(self._getenv("MODULE2_GEMINI_VISION_MIN_FIGURE_QUALITY", "0.56"))),
+                min(1.0, float(self._getenv("MODULE2_VISION_MIN_FIGURE_QUALITY", "0.56"))),
             ),
-            "gemini_vision_max_output_tokens": max(
+            "vision_max_output_tokens": max(
                 512,
-                int(self._getenv("MODULE2_GEMINI_VISION_MAX_OUTPUT_TOKENS", "4096")),
+                int(self._getenv("MODULE2_VISION_MAX_OUTPUT_TOKENS", "4096")),
             ),
-            "gemini_vision_reasoning_effort": gemini_vision_reasoning_effort,
-            "gemini_native_fallback_enabled": self._bool_env("MODULE2_GEMINI_NATIVE_FALLBACK", "false"),
-            "gemini_vision_consecutive_fail_stop": max(
+            "vision_reasoning_effort": vision_reasoning_effort,
+            "vision_consecutive_fail_stop": max(
                 1,
-                int(self._getenv("MODULE2_GEMINI_VISION_CONSECUTIVE_FAIL_STOP", "2")),
+                int(self._getenv("MODULE2_VISION_CONSECUTIVE_FAIL_STOP", "2")),
             ),
             "visual_vision_concurrency": max(
                 1,
@@ -572,11 +566,11 @@ class ParserConfigRuntime:
                 0,
                 int(self._getenv("MODULE2_VISUAL_VISION_RETRY_COUNT", "1")),
             ),
-            "gemini_cache_dir": self.resolve_cache_dir(
-                self._getenv("MODULE2_GEMINI_CACHE_DIR", ""),
-                module2_cache_root / "gemini",
+            "vision_cache_dir": self.resolve_cache_dir(
+                self._getenv("MODULE2_VISION_CACHE_DIR", ""),
+                module2_cache_root / "vision",
             ),
-            "gemini_cache_enable": self._bool_env("MODULE2_GEMINI_CACHE_ENABLE", "true"),
+            "vision_cache_enable": self._bool_env("MODULE2_VISION_CACHE_ENABLE", "true"),
         }
 
     def _bool_env(self, name: str, default: str) -> bool:

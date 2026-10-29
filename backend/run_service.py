@@ -154,6 +154,12 @@ def _build_env(service: str) -> dict[str, str]:
     _load_env_file(env, (MODULE3_MODULE_ROOT / ".env"))
     _load_env_file(env, (MODULE4_ROOT / ".env"))
 
+    # Local loopback traffic must bypass any system HTTP proxy (Windows WinINET
+    # settings are honoured by requests/urllib), otherwise module2 -> module4
+    # sync, health probes and artifact fetches can fail with 502 on dev machines.
+    env.setdefault("NO_PROXY", "127.0.0.1,localhost,::1")
+    env.setdefault("no_proxy", env["NO_PROXY"])
+
     runtime_root = Path(str(env.get("SMART_DOC_FLOW_RUNTIME_ROOT") or REPO_ROOT)).resolve()
     config_root = Path(str(env.get("SMART_DOC_FLOW_CONFIG_ROOT") or runtime_root)).resolve()
     data_root = Path(str(env.get("SMART_DOC_FLOW_DATA_ROOT") or DEFAULT_DATA_ROOT)).resolve()
@@ -176,7 +182,7 @@ def _build_env(service: str) -> dict[str, str]:
     env.setdefault("AUTH_USERS_FILE", str((data_root / "auth" / "users.json").resolve()))
     env.setdefault("MODULE2_ARTIFACT_ROOT_DIR", str((data_root / "module2" / "artifacts").resolve()))
     env.setdefault("MODULE2_MINERU_CACHE_DIR", str((data_root / "module2" / "cache" / "mineru").resolve()))
-    env.setdefault("MODULE2_GEMINI_CACHE_DIR", str((data_root / "module2" / "cache" / "gemini").resolve()))
+    env.setdefault("MODULE2_VISION_CACHE_DIR", str((data_root / "module2" / "cache" / "vision").resolve()))
     env.setdefault("MODULE2_MINERU_WORK_ROOT_DIR", str((data_root / "module2" / "work" / "mineru").resolve()))
     env.setdefault(
         "MODULE2_EXTRACT_JOB_STATE_DIR",

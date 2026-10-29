@@ -136,7 +136,7 @@ def test_visual_execution_runtime_uses_runtime_limits_and_passes_runner_results(
     assert materialize_args["vision_results"][0]["payload"] == {"rows": [["A"]]}
     assert materialize_args["runtime_table_max_per_page"] == 9
     assert materialize_args["runtime_figure_max_per_page"] == 8
-    assert materialize_args["table_source"] == "pdf_mineru_gemini"
+    assert materialize_args["table_source"] == "pdf_mineru_vision"
     assert run_args["runtime_vision_concurrency"] == 1
     assert result["vision_candidate_count"] == 5
     assert result["figure_refine_grants"] == 1

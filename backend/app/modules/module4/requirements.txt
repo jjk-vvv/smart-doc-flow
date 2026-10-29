@@ -7,12 +7,13 @@ python-dotenv>=1.0.0
 bcrypt>=4.1.3
 PyJWT>=2.8.0
 # These pins keep standalone Module 4 aligned with GraphRAG 0.3.0's supported
-# dependency window.
+# dependency window. graphrag-storage is intentionally omitted (its 3.x line
+# requires pandas~=3 and breaks 0.3.x indexing); the query layer falls back to
+# artifact retrieval when graphrag.api is unavailable.
 numpy==1.26.4
 scipy==1.12.0
-pandas>=2.2.2
+pandas>=2.2.2,<3
 graphrag==0.3.0
-graphrag-storage
 lancedb>=0.11,<0.12
 neo4j>=6.1.0
 nltk==3.8.1

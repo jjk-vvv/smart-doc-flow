@@ -113,21 +113,21 @@ class VisualTableCueRuntime:
 
 
 class VisualPageSignalRuntime:
-    """Choose Gemini vision target pages and derive page-level focus hints."""
+    """Choose vision target pages and derive page-level focus hints."""
 
     def __init__(
         self,
         *,
-        gemini_vision_max_pages: int,
-        gemini_vision_min_table_quality: float,
-        gemini_vision_enable_figures: bool,
+        vision_max_pages: int,
+        vision_min_table_quality: float,
+        vision_enable_figures: bool,
         looks_like_table_cue_text: LooksLikeCueText,
         looks_like_figure_cue_text: LooksLikeCueText,
         contains_figure_marker: ContainsMarker,
     ) -> None:
-        self.gemini_vision_max_pages = max(0, int(gemini_vision_max_pages or 0))
-        self.gemini_vision_min_table_quality = float(gemini_vision_min_table_quality or 0.0)
-        self.gemini_vision_enable_figures = bool(gemini_vision_enable_figures)
+        self.vision_max_pages = max(0, int(vision_max_pages or 0))
+        self.vision_min_table_quality = float(vision_min_table_quality or 0.0)
+        self.vision_enable_figures = bool(vision_enable_figures)
         self._looks_like_table_cue_text = looks_like_table_cue_text
         self._looks_like_figure_cue_text = looks_like_figure_cue_text
         self._contains_figure_marker = contains_figure_marker
@@ -149,7 +149,7 @@ class VisualPageSignalRuntime:
         page_lines: PageLines,
         table_blocks: TableBlocks,
     ) -> List[int]:
-        if not page_lines or self.gemini_vision_max_pages <= 0:
+        if not page_lines or self.vision_max_pages <= 0:
             return []
 
         pages = sorted(page_lines.keys())
@@ -170,7 +170,7 @@ class VisualPageSignalRuntime:
             page_signal[page_no] = combined_signal
             qv = quality_by_page.get(page_no)
 
-            if qv is not None and qv < self.gemini_vision_min_table_quality:
+            if qv is not None and qv < self.vision_min_table_quality:
                 ranked.append((0, -combined_signal, page_no))
                 continue
 
@@ -182,7 +182,7 @@ class VisualPageSignalRuntime:
                 ranked.append((2, -combined_signal, page_no))
                 continue
 
-            if qv is not None and qv < (self.gemini_vision_min_table_quality + 0.10) and combined_signal >= 2:
+            if qv is not None and qv < (self.vision_min_table_quality + 0.10) and combined_signal >= 2:
                 ranked.append((3, -combined_signal, page_no))
 
         if not ranked and len(table_blocks) < 2:
@@ -261,7 +261,7 @@ class VisualPageSignalRuntime:
         return selected
 
     def _resolve_vision_cap(self, *, pages: List[int], page_lines: PageLines) -> int:
-        vision_cap = self.gemini_vision_max_pages
+        vision_cap = self.vision_max_pages
         probe_like_pages = 0
         for page_no in pages:
             lines = page_lines.get(page_no, [])
@@ -271,7 +271,7 @@ class VisualPageSignalRuntime:
 
         if pages and (probe_like_pages / float(len(pages))) >= 0.55:
             return min(len(pages), max(vision_cap, min(48, len(pages))))
-        if self.gemini_vision_enable_figures and len(pages) <= 60:
+        if self.vision_enable_figures and len(pages) <= 60:
             return min(len(pages), max(vision_cap, min(36, len(pages))))
         return vision_cap
 

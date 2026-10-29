@@ -140,10 +140,10 @@ def test_parser_config_runtime_builds_docx_and_table_merge_vision_config(tmp_pat
         env={
             "MODULE2_DOCX_MEDIA_MAX_ASSETS": "0",
             "MODULE2_DOCX_MEDIA_VISION_MAX_ASSETS": "0",
-            "MODULE2_DOCX_MEDIA_NESTED_GEMINI_ENHANCE_ENABLE": "false",
+            "MODULE2_DOCX_MEDIA_NESTED_VISION_ENHANCE_ENABLE": "false",
             "MODULE2_PIPELINE_MODE": "unknown",
-            "MODULE2_GEMINI_VISION_REASONING_EFFORT": "invalid",
-            "MODULE2_GEMINI_VISION_MAX_PAGES": "0",
+            "MODULE2_VISION_REASONING_EFFORT": "invalid",
+            "MODULE2_VISION_MAX_PAGES": "0",
             "MODULE2_VISUAL_FIRST_MAX_PAGES": "999",
             "MODULE2_VISUAL_FIRST_MAX_PAGES_SCANNED": "999",
             "MODULE2_VISUAL_FIGURE_CHART_SCORE_MIN": "3",
@@ -163,10 +163,10 @@ def test_parser_config_runtime_builds_docx_and_table_merge_vision_config(tmp_pat
     assert docx_config["docx_media_max_assets"] == 1_000_000
     assert docx_config["docx_media_vision_max_assets_unbounded"] is True
     assert docx_config["docx_media_vision_max_assets"] == 1_000_000
-    assert docx_config["docx_media_nested_gemini_enhance_enable"] is False
+    assert docx_config["docx_media_nested_vision_enhance_enable"] is False
     assert vision_config["pipeline_mode"] == "hybrid"
-    assert vision_config["gemini_vision_reasoning_effort"] == "minimal"
-    assert vision_config["gemini_vision_max_pages"] == 480
+    assert vision_config["vision_reasoning_effort"] == "minimal"
+    assert vision_config["vision_max_pages"] == 480
     assert vision_config["visual_first_max_pages"] == 480
     assert vision_config["visual_first_max_pages_scanned"] == 480
     assert vision_config["visual_runtime_large_doc_chart_score_min"] == 3
@@ -188,12 +188,12 @@ def test_parser_config_runtime_builds_visual_mineru_config_with_resolved_paths(t
             "MODULE2_VISUAL_CROP_EXPAND_RATIO": "0.5",
             "MODULE2_VISUAL_CROP_MAX_SIDE_PX": "800",
             "MODULE2_VISUAL_VISION_RETRY_COUNT": "-1",
-            "MODULE2_GEMINI_CACHE_DIR": "cache/gemini",
-            "MODULE2_GEMINI_CACHE_ENABLE": "false",
+            "MODULE2_VISION_CACHE_DIR": "cache/vision",
+            "MODULE2_VISION_CACHE_ENABLE": "false",
         },
     )
-    repo_gemini_cache = tmp_path / "repo" / "cache" / "gemini"
-    repo_gemini_cache.mkdir(parents=True, exist_ok=True)
+    repo_vision_cache = tmp_path / "repo" / "cache" / "vision"
+    repo_vision_cache.mkdir(parents=True, exist_ok=True)
 
     config = runtime.build_visual_mineru_config(
         module2_cache_root=tmp_path / "repo" / "backend" / "app" / "modules" / "module2" / ".cache",
@@ -210,5 +210,5 @@ def test_parser_config_runtime_builds_visual_mineru_config_with_resolved_paths(t
     assert config["visual_crop_expand_ratio"] == 0.2
     assert config["visual_crop_max_side_px"] == 1200
     assert config["visual_vision_retry_count"] == 0
-    assert config["gemini_cache_dir"] == str(repo_gemini_cache.resolve())
-    assert config["gemini_cache_enable"] is False
+    assert config["vision_cache_dir"] == str(repo_vision_cache.resolve())
+    assert config["vision_cache_enable"] is False

@@ -109,14 +109,14 @@ def test_table_pruning_runtime_keeps_only_strongest_ocr_layout_candidate_per_pag
     assert [table["table_id"] for table in result] == ["native_keep", "ocr_best"]
 
 
-def test_table_pruning_runtime_keeps_only_best_native_gemini_table_per_page() -> None:
+def test_table_pruning_runtime_keeps_only_best_native_vision_table_per_page() -> None:
     runtime = _build_runtime()
 
-    result = runtime.prune_gemini_native_tables_per_page(
+    result = runtime.prune_vision_native_tables_per_page(
         [
             {
                 "table_id": "native_low",
-                "source": "pdf_gemini_vision_native",
+                "source": "pdf_vision_native",
                 "page": 3,
                 "row_count": 2,
                 "col_count": 2,
@@ -124,7 +124,7 @@ def test_table_pruning_runtime_keeps_only_best_native_gemini_table_per_page() ->
             },
             {
                 "table_id": "native_high",
-                "source": "pdf_gemini_vision_native",
+                "source": "pdf_vision_native",
                 "page": 3,
                 "row_count": 3,
                 "col_count": 2,

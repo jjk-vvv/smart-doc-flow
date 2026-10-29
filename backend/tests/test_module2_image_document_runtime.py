@@ -33,9 +33,9 @@ class _FakeDoc:
         self.opened = True
 
 
-def test_image_document_runtime_requires_backend_or_gemini() -> None:
+def test_image_document_runtime_requires_backend_or_vision() -> None:
     runtime = ImageDocumentRuntime(
-        enable_gemini_vision_enhance=True,
+        vision_enhance_enabled=True,
         visual_backend_available=lambda: (False, "pymupdf, rapidocr-onnxruntime"),
         resolve_api_key=lambda: "",
         get_ocr_engine=lambda: object(),
@@ -64,7 +64,7 @@ def test_image_document_runtime_runs_vision_only_path_without_visual_backend(mon
 
     state: dict[str, object] = {}
     runtime = ImageDocumentRuntime(
-        enable_gemini_vision_enhance=True,
+        vision_enhance_enabled=True,
         visual_backend_available=lambda: (False, "rapidocr-onnxruntime"),
         resolve_api_key=lambda: "valid-key",
         get_ocr_engine=lambda: state.update(engine_requested=True) or object(),
@@ -75,8 +75,8 @@ def test_image_document_runtime_runs_vision_only_path_without_visual_backend(mon
             {},
         ),
         build_parse_result=lambda **kwargs: (
-            [{"table_id": "image_gemini_vision_t1"}],
-            [{"figure_id": "image_gemini_vision_f1"}],
+            [{"table_id": "image_vision_t1"}],
+            [{"figure_id": "image_vision_f1"}],
         ),
     )
 
@@ -88,8 +88,8 @@ def test_image_document_runtime_runs_vision_only_path_without_visual_backend(mon
 
     assert "engine_requested" not in state
     assert result["markdown"] == '<ref id="img_p1_vision_probe">probe</ref>'
-    assert result["table_blocks"] == [{"table_id": "image_gemini_vision_t1"}]
-    assert result["figure_blocks"] == [{"figure_id": "image_gemini_vision_f1"}]
+    assert result["table_blocks"] == [{"table_id": "image_vision_t1"}]
+    assert result["figure_blocks"] == [{"figure_id": "image_vision_f1"}]
 
 
 def test_image_document_runtime_raises_when_visual_ocr_extracts_no_text(monkeypatch) -> None:
@@ -105,7 +105,7 @@ def test_image_document_runtime_raises_when_visual_ocr_extracts_no_text(monkeypa
     monkeypatch.setitem(sys.modules, "numpy", types.SimpleNamespace())
 
     runtime = ImageDocumentRuntime(
-        enable_gemini_vision_enhance=True,
+        vision_enhance_enabled=True,
         visual_backend_available=lambda: (True, ""),
         resolve_api_key=lambda: "",
         get_ocr_engine=lambda: object(),

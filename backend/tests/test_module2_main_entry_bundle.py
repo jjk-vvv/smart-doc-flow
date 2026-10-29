@@ -159,7 +159,7 @@ class _RuntimeStub:
 
 
 def test_build_module2_main_entry_bundle_exposes_callback_bundle_and_routers() -> None:
-    logger = logging.getLogger("test.module2.main_entry_bundle")
+    _logger = logging.getLogger("test.module2.main_entry_bundle")
     storage = _StorageStub()
     runtime_stub = _RuntimeStub()
     app_lifecycle_runtime = _AppLifecycleRuntimeStub()

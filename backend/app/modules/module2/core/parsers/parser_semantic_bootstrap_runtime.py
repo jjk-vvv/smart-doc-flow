@@ -135,7 +135,7 @@ class ParserSemanticFoundationBundleRuntime:
     def build_figure_inference_kwargs(
         self,
         *,
-        gemini_vision_enable_figures: bool,
+        vision_enable_figures: bool,
         normalize_text: RuntimeCallback,
         normalize_token_for_compare: RuntimeCallback,
         contains_figure_marker: RuntimeCallback,
@@ -145,7 +145,7 @@ class ParserSemanticFoundationBundleRuntime:
         next_figure_index: RuntimeCallback,
     ) -> Dict[str, Any]:
         return {
-            "gemini_vision_enable_figures": gemini_vision_enable_figures,
+            "vision_enable_figures": vision_enable_figures,
             "normalize_text": normalize_text,
             "normalize_token_for_compare": normalize_token_for_compare,
             "contains_figure_marker": contains_figure_marker,
@@ -187,7 +187,7 @@ class ParserSemanticBootstrapRuntime:
         table_max_cols: int,
         table_cell_cap: int,
         table_merge_enable: bool,
-        gemini_vision_enable_figures: bool,
+        vision_enable_figures: bool,
         runtime_page_count_provider: RuntimeCallback,
         infer_headers_and_data_rows: RuntimeCallback,
         drop_redundant_header_like_rows: RuntimeCallback,
@@ -260,7 +260,7 @@ class ParserSemanticBootstrapRuntime:
         )
         figure_inference = FigureInferenceRuntime(
             **parser_semantic_foundation_bundle_runtime.build_figure_inference_kwargs(
-                gemini_vision_enable_figures=gemini_vision_enable_figures,
+                vision_enable_figures=vision_enable_figures,
                 normalize_text=normalize_text,
                 normalize_token_for_compare=normalize_token_for_compare,
                 contains_figure_marker=OcrTableUtils.contains_figure_marker,

@@ -1087,7 +1087,7 @@ export const Module3WordPreview: React.FC<Module3WordPreviewProps> = ({
   } | null>(null);
   const loadedRunIdRef = useRef<string | null>(null);
   const currentEditingValueRef = useRef<PendingEditingValue | null>(null);
-  const sectionElementRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const sectionElementRefs = useRef<Record<string, HTMLElement | null>>({});
 
   const activeSection = useMemo<LocalWordSection | null>(
     () =>

@@ -7,16 +7,18 @@ Global knowledge graph and risk intelligence service.
 1. Create the preferred repo-root unified virtual environment and install dependencies:
 
 ```powershell
-python -m venv D:\smart_doc_flow\smart-doc-flow\.venv
-D:\smart_doc_flow\smart-doc-flow\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
+python -m venv D:\smart_doc_flow\.venv
+D:\smart_doc_flow\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
 ```
 
 Module 4 GraphRAG execution is aligned to the project `ragtest` baseline and now expects:
 
 - `graphrag==0.3.0`
-- `pandas`
+- `pandas>=2.2.2,<3` (GraphRAG 0.3 fails on pandas 3.x inside `create_base_text_units`)
 - `neo4j`
 - `pyarrow`
+
+The separately published `graphrag-storage` package is not used by graphrag 0.3 and must not be installed: recent releases require `pandas~=3.0`, which breaks indexing.
 
 2. Copy environment file:
 
@@ -31,6 +33,20 @@ Leave `MODULE4_GRAPHRAG_PYTHON_BIN=python` unless you deliberately need a custom
 When the value is generic, Module 4 now resolves to the repo-root `D:\smart_doc_flow\smart-doc-flow\.venv`.
 The historical `backend/module4/.venv` runtime has been removed from the project layout.
 Legacy refactor indexing mode has been physically removed; Module 4 now runs GraphRAG pipeline only.
+
+Query runtime behaviour (2026-10-29):
+
+- Ingestion, artifact import, graph view, evidence, alerts and rebuild run on `graphrag==0.3.0`.
+- `/module4/query/search` detects the installed runtime:
+  - newer graphrag with `graphrag.api` uses the native GraphRAG search engines;
+  - legacy 0.3.x uses `services/graphrag/artifact_query.py`, an artifact-only
+    retrieval + chat-completion fallback. Responses are labelled
+    `graphrag:query:<mode>:artifact_fallback`.
+- The fallback answers from `create_final_text_units` and
+  `create_final_community_reports`, so it needs no LanceDB/embedding store and no
+  optional ML dependencies.
+- Alerts are generated during ingestion (rule engine), including the reused-graph
+  path. Alert severity/status flow is `open -> ack -> resolved`.
 
 Module 4 no longer accepts direct file uploads. The only supported ingest path is:
 

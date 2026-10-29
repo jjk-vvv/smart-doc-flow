@@ -193,7 +193,9 @@ def build_router() -> APIRouter:
             return await extraction_service.clear_cache(settings, scope=scope, request=request)
         return await extraction_service.clear_cache(settings, scope=scope)
 
-    @extract_router.api_route("/layout-preview/{artifact_name}", methods=["GET", "HEAD"])
+    @extract_router.get("/layout-preview/{artifact_name}")
+
+    @extract_router.head("/layout-preview/{artifact_name}", include_in_schema=False)
     async def extract_layout_preview(
         artifact_name: str,
         request: Request,
@@ -215,7 +217,9 @@ def build_router() -> APIRouter:
         )
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @extract_router.api_route("/layout-preview/by-file/{file_id}", methods=["GET", "HEAD"])
+    @extract_router.get("/layout-preview/by-file/{file_id}")
+
+    @extract_router.head("/layout-preview/by-file/{file_id}", include_in_schema=False)
     async def extract_layout_preview_by_file(
         file_id: str,
         request: Request,
@@ -233,7 +237,9 @@ def build_router() -> APIRouter:
         )
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @extract_router.api_route("/artifact/by-file/{file_id}", methods=["GET", "HEAD"])
+    @extract_router.get("/artifact/by-file/{file_id}")
+
+    @extract_router.head("/artifact/by-file/{file_id}", include_in_schema=False)
     async def extract_artifact_by_file(
         file_id: str,
         request: Request,
@@ -251,7 +257,9 @@ def build_router() -> APIRouter:
         )
         return _attach_route_debug_headers(response, resolved_via="by-file")
 
-    @extract_router.api_route("/artifact/{artifact_path:path}", methods=["GET", "HEAD"])
+    @extract_router.get("/artifact/{artifact_path:path}")
+
+    @extract_router.head("/artifact/{artifact_path:path}", include_in_schema=False)
     async def extract_artifact(
         artifact_path: str,
         request: Request,

@@ -15,6 +15,7 @@ from app.core.auth_config import AuthSettings
 
 BCRYPT_HASH_RE = re.compile(r"^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$")
 PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$")
 TOKEN_EXPIRES_RE = re.compile(r"^(?P<count>\d+)\s*(?P<unit>[dhms]?)$", re.IGNORECASE)
 
 
@@ -39,8 +40,7 @@ def is_phone(value: str) -> bool:
 
 
 def is_email(value: str) -> bool:
-    text = normalize_str(value)
-    return "@" in text and "." in text.rsplit("@", 1)[-1]
+    return bool(EMAIL_RE.fullmatch(normalize_str(value)))
 
 
 def public_user_payload(user: dict[str, Any]) -> dict[str, str]:

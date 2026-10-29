@@ -52,9 +52,9 @@ def test_parser_visual_payload_bundle_runtime_builds_figure_kwargs() -> None:
         recover_low_signal_headers=recover_low_signal_headers,
     )
     figure_vision_payload_kwargs = runtime.build_figure_vision_payload_kwargs(
-        gemini_vision_enable_figures=True,
-        gemini_vision_max_figures_per_page=4,
-        gemini_vision_min_figure_quality=0.65,
+        vision_enable_figures=True,
+        vision_max_figures_per_page=4,
+        vision_min_figure_quality=0.65,
         normalize_text=normalize_text,
         infer_figure_type_from_text=infer_figure_type_from_text,
         safe_text_list=safe_text_list,
@@ -95,9 +95,9 @@ def test_parser_visual_payload_bundle_runtime_builds_figure_kwargs() -> None:
         ["A"],
         [{"row_index": 1}],
     )
-    assert figure_vision_payload_kwargs["gemini_vision_enable_figures"] is True
-    assert figure_vision_payload_kwargs["gemini_vision_max_figures_per_page"] == 4
-    assert figure_vision_payload_kwargs["gemini_vision_min_figure_quality"] == 0.65
+    assert figure_vision_payload_kwargs["vision_enable_figures"] is True
+    assert figure_vision_payload_kwargs["vision_max_figures_per_page"] == 4
+    assert figure_vision_payload_kwargs["vision_min_figure_quality"] == 0.65
     assert figure_vision_payload_kwargs["infer_figure_type_from_text"]("sales chart") == "chart"
     assert figure_vision_payload_kwargs["safe_text_list"]([" a ", "", "b"]) == ["a", "b"]
     assert figure_vision_payload_kwargs["normalize_figure_key_values"]([{"name": "x"}]) == [{"name": "x"}]
@@ -139,7 +139,7 @@ def test_parser_visual_payload_bundle_runtime_builds_table_kwargs() -> None:
         headers_need_recovery=headers_need_recovery,
     )
     table_vision_payload_kwargs = runtime.build_table_vision_payload_kwargs(
-        gemini_vision_max_tables_per_page=3,
+        vision_max_tables_per_page=3,
         table_max_rows=80,
         table_max_cols=12,
         ocr_table_min_rows=2,
@@ -180,7 +180,7 @@ def test_parser_visual_payload_bundle_runtime_builds_table_kwargs() -> None:
     assert table_payload_kwargs["safe_text_list"]([" a ", "", "b"]) == ["a", "b"]
     assert table_payload_kwargs["normalize_token_for_compare"]("ABC") == "abc"
     assert table_payload_kwargs["headers_need_recovery"](["A"]) is False
-    assert table_vision_payload_kwargs["gemini_vision_max_tables_per_page"] == 3
+    assert table_vision_payload_kwargs["vision_max_tables_per_page"] == 3
     assert table_vision_payload_kwargs["ocr_table_min_rows"] == 2
     assert table_vision_payload_kwargs["vision_table_to_matrix"]({"headers": ["A", "B"]}) == [["A", "B"], ["1", "2"]]
     assert table_vision_payload_kwargs["infer_headers_and_data_rows"](
@@ -219,9 +219,9 @@ def test_parser_visual_payload_bundle_runtime_builds_visual_signal_kwargs() -> N
         normalize_text=normalize_text,
     )
     page_signal_kwargs = runtime.build_visual_page_signal_kwargs(
-        gemini_vision_max_pages=12,
-        gemini_vision_min_table_quality=0.63,
-        gemini_vision_enable_figures=True,
+        vision_max_pages=12,
+        vision_min_table_quality=0.63,
+        vision_enable_figures=True,
         looks_like_table_cue_text=looks_like_table_cue_text,
         looks_like_figure_cue_text=looks_like_figure_cue_text,
         contains_figure_marker=contains_figure_marker,
@@ -233,9 +233,9 @@ def test_parser_visual_payload_bundle_runtime_builds_visual_signal_kwargs() -> N
         "visual_weak_table_quality": 0.48,
         "normalize_text": normalize_text,
     }
-    assert page_signal_kwargs["gemini_vision_max_pages"] == 12
-    assert page_signal_kwargs["gemini_vision_min_table_quality"] == 0.63
-    assert page_signal_kwargs["gemini_vision_enable_figures"] is True
+    assert page_signal_kwargs["vision_max_pages"] == 12
+    assert page_signal_kwargs["vision_min_table_quality"] == 0.63
+    assert page_signal_kwargs["vision_enable_figures"] is True
     assert page_signal_kwargs["looks_like_table_cue_text"]("table 1") is True
     assert page_signal_kwargs["looks_like_figure_cue_text"]("figure 2") is True
     assert page_signal_kwargs["contains_figure_marker"]("fig 3") is True

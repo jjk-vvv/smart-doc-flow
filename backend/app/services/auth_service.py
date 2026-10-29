@@ -25,7 +25,6 @@ from app.core.auth_security import (
     hash_verification_code,
     is_bcrypt_hash,
     is_email,
-    is_phone,
     mask_contact,
     normalize_str,
     public_user_payload,
@@ -83,9 +82,7 @@ class AuthService:
         storage_state = self.repository.resolve_storage_state()
         storage_path = storage_state.active_path
         notifier_mode = "disabled"
-        if self.settings.sms_provider == "ihuyi":
-            notifier_mode = "sms_ihuyi"
-        elif self.settings.smtp_host and self.settings.smtp_user and self.settings.smtp_from:
+        if self.settings.smtp_host and self.settings.smtp_user and self.settings.smtp_pass:
             notifier_mode = "smtp"
 
         database_error = ""
@@ -132,13 +129,15 @@ class AuthService:
 
         if not name or not email or not phone or not password or not code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing required fields")
+        if not is_email(email):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please enter a valid email address.")
         if len(password) < 6:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Password must be at least 6 characters",
             )
 
-        verification_record, matched_contact = await self._find_verification_record("register", phone, email)
+        verification_record, matched_contact = await self._find_verification_record("register", email)
         if verification_record is None or not matched_contact:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -169,7 +168,7 @@ class AuthService:
             "status": "active",
         }
         await self.repository.create_user(new_user)
-        await self._clear_verification_record("register", phone, email)
+        await self._clear_verification_record("register", email)
         await self.repository.touch_last_login(new_user["id"])
         await self._issue_auth_cookie(response, new_user, request)
         await self._append_audit_log(
@@ -431,10 +430,10 @@ class AuthService:
 
     async def send_forgot_code(self, request: Request, payload: dict[str, Any]) -> dict[str, Any]:
         contact = normalize_str(payload.get("contact"))
-        if not contact:
+        if not is_email(contact):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Please enter phone number or email.",
+                detail="Please enter a valid email address.",
             )
 
         with self._lock:
@@ -486,6 +485,8 @@ class AuthService:
 
         if not contact or not code or not new_password:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please fill in all required fields.")
+        if not is_email(contact):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please enter a valid email address.")
         if len(new_password) < 6:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -531,10 +532,10 @@ class AuthService:
 
     async def send_register_code(self, request: Request, payload: dict[str, Any]) -> dict[str, Any]:
         contact = normalize_str(payload.get("contact"))
-        if not contact or (not is_email(contact) and not is_phone(contact)):
+        if not is_email(contact):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Please enter a valid email address or phone number.",
+                detail="Please enter a valid email address.",
             )
 
         with self._lock:
@@ -548,14 +549,9 @@ class AuthService:
 
         exists = await self.repository.find_user_by_contact(contact)
         if exists is not None:
-            detail = (
-                "This email is already registered. Please sign in or reset your password."
-                if is_email(contact)
-                else "This phone number is already registered. Please sign in or reset your password."
-            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=detail,
+                detail="This email is already registered. Please sign in or reset your password.",
             )
 
         code = self._generate_code()

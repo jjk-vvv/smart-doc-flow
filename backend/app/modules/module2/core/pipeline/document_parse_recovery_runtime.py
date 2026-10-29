@@ -346,7 +346,7 @@ class VisualParsePolicyRuntime:
                 terminal_status_code = 503
                 terminal_detail = (
                     "VisualTrack/MinerU parsing failed in strict mode. "
-                    "Please verify MinerU runtime and Gemini configuration before retrying."
+                    "Please verify MinerU runtime and Vision configuration before retrying."
                 )
             elif profile.unsupported_file_type:
                 terminal_status_code = 400

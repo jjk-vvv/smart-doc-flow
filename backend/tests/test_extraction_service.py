@@ -62,7 +62,7 @@ def test_extraction_service_health_payload_reports_local_routes(monkeypatch, tmp
             "active_mode": "legacy",
             "fallback_to_legacy": True,
             "fallback_active": False,
-            "model": "gpt-5-mini",
+            "model": "test-chat-model",
             "base_url": "https://example.test",
             "endpoint_path": "/v1/responses",
             "tavily_configured": True,

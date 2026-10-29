@@ -51,7 +51,7 @@ def test_parser_semantic_foundation_bundle_runtime_builds_figure_inference_and_c
     next_figure_index = lambda blocks, prefix: 4
 
     figure_inference_kwargs = runtime.build_figure_inference_kwargs(
-        gemini_vision_enable_figures=True,
+        vision_enable_figures=True,
         normalize_text=normalize_text,
         normalize_token_for_compare=normalize_token_for_compare,
         contains_figure_marker=contains_figure_marker,
@@ -64,7 +64,7 @@ def test_parser_semantic_foundation_bundle_runtime_builds_figure_inference_and_c
         normalize_text=normalize_text,
     )
 
-    assert figure_inference_kwargs["gemini_vision_enable_figures"] is True
+    assert figure_inference_kwargs["vision_enable_figures"] is True
     assert figure_inference_kwargs["normalize_text"]("  fig  ") == "fig"
     assert figure_inference_kwargs["normalize_token_for_compare"]("ABC") == "abc"
     assert figure_inference_kwargs["contains_figure_marker"]("Figure 1") is True

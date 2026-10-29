@@ -12,7 +12,7 @@ from app.modules.module1.composition import build_app
 
 def test_build_app_registers_prefixed_module1_routes() -> None:
     app = build_app()
-    route_paths = {route.path for route in app.routes}
+    route_paths = set(app.openapi().get("paths", {}))
 
     assert "/module1/health" in route_paths
     assert "/module1/convert/office/start" in route_paths

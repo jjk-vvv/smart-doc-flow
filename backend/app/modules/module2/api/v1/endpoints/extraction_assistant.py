@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 try:
-    from app.assistant_1.api_models import Assistant1ChatStreamRequest
+    from app.modules.module2.assistant_1.api_models import Assistant1ChatStreamRequest
 except ModuleNotFoundError:  # pragma: no cover - direct file-loading tests can fall back to plain dict
     Assistant1ChatStreamRequest = dict
 

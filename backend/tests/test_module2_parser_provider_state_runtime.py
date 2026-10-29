@@ -40,7 +40,7 @@ def test_parser_provider_state_runtime_lazily_creates_and_reuses_provider_instan
         roi_cropper_factory=_factory("cropper"),
         build_roi_cropper_kwargs=lambda: {"table_dpi": 260},
         visual_vision_extractor_factory=_factory("vision"),
-        build_visual_vision_kwargs=lambda: {"model": "gemini-2.5-flash"},
+        build_visual_vision_kwargs=lambda: {"model": "test-vision-model"},
     )
 
     mineru_first = runtime.get_mineru_layout_extractor()
@@ -55,7 +55,7 @@ def test_parser_provider_state_runtime_lazily_creates_and_reuses_provider_instan
     assert vision_first is vision_second
     assert mineru_first.kwargs == {"kind": "mineru", "backend": "pipeline"}
     assert cropper_first.kwargs == {"kind": "cropper", "table_dpi": 260}
-    assert vision_first.kwargs == {"kind": "vision", "model": "gemini-2.5-flash"}
+    assert vision_first.kwargs == {"kind": "vision", "model": "test-vision-model"}
     assert calls == {
         "mineru": 1,
         "cropper": 1,
@@ -76,7 +76,7 @@ def test_parser_provider_state_runtime_reset_drops_cached_instances() -> None:
         roi_cropper_factory=_factory,
         build_roi_cropper_kwargs=lambda: {"table_dpi": 260},
         visual_vision_extractor_factory=_factory,
-        build_visual_vision_kwargs=lambda: {"model": "gemini-2.5-flash"},
+        build_visual_vision_kwargs=lambda: {"model": "test-vision-model"},
     )
 
     first = runtime.get_mineru_layout_extractor()

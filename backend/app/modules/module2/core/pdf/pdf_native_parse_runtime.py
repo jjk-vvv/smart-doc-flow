@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 
 TableBlocks = List[Dict[str, Any]]
@@ -19,7 +19,7 @@ AugmentWithLineTables = Callable[[TableBlocks, TableBlocks], TableBlocks]
 MergeTables = Callable[[TableBlocks], TableBlocks]
 InferFiguresFromPageLines = Callable[[PageLines, List[str], Dict[str, List[float]], str, FigureBlocks], FigureBlocks]
 FigureBlocksNeedVision = Callable[[FigureBlocks], bool]
-EnhanceLowQualityPagesWithGeminiVision = Callable[..., Tuple[TableBlocks, FigureBlocks]]
+EnhanceLowQualityPagesWithVision = Callable[..., Tuple[TableBlocks, FigureBlocks]]
 MergeFigureBlocks = Callable[[FigureBlocks, FigureBlocks], FigureBlocks]
 PruneFragmentTables = Callable[[TableBlocks], TableBlocks]
 
@@ -38,7 +38,7 @@ class PdfNativeParseRuntime:
         enable_fitz_table: bool,
         table_merge_enable: bool,
         visual_force_ocr_on_weak_native: bool,
-        gemini_vision_enable_figures: bool,
+        vision_enable_figures: bool,
         normalize_text: NormalizeText,
         split_page_text: SplitPageText,
         append_ref: AppendRef,
@@ -52,7 +52,7 @@ class PdfNativeParseRuntime:
         merge_cross_page_tables: MergeTables,
         infer_figures_from_page_lines: InferFiguresFromPageLines,
         figure_blocks_need_vision: FigureBlocksNeedVision,
-        enhance_low_quality_pages_with_gemini_vision: EnhanceLowQualityPagesWithGeminiVision,
+        enhance_low_quality_pages_with_vision: EnhanceLowQualityPagesWithVision,
         merge_figure_blocks: MergeFigureBlocks,
         prune_fragment_tables: PruneFragmentTables,
     ) -> None:
@@ -64,7 +64,7 @@ class PdfNativeParseRuntime:
         self.enable_fitz_table = bool(enable_fitz_table)
         self.table_merge_enable = bool(table_merge_enable)
         self.visual_force_ocr_on_weak_native = bool(visual_force_ocr_on_weak_native)
-        self.gemini_vision_enable_figures = bool(gemini_vision_enable_figures)
+        self.vision_enable_figures = bool(vision_enable_figures)
         self._normalize_text = normalize_text
         self._split_page_text = split_page_text
         self._append_ref = append_ref
@@ -78,7 +78,7 @@ class PdfNativeParseRuntime:
         self._merge_cross_page_tables = merge_cross_page_tables
         self._infer_figures_from_page_lines = infer_figures_from_page_lines
         self._figure_blocks_need_vision = figure_blocks_need_vision
-        self._enhance_low_quality_pages_with_gemini_vision = enhance_low_quality_pages_with_gemini_vision
+        self._enhance_low_quality_pages_with_vision = enhance_low_quality_pages_with_vision
         self._merge_figure_blocks = merge_figure_blocks
         self._prune_fragment_tables = prune_fragment_tables
 
@@ -219,7 +219,7 @@ class PdfNativeParseRuntime:
             native_vision_reasons.append("weak_native_tables")
         if shallow_native_figures:
             native_vision_reasons.append("shallow_native_figures")
-        if self.gemini_vision_enable_figures and page_count >= 20:
+        if self.vision_enable_figures and page_count >= 20:
             native_vision_reasons.append("large_doc_figure_enrichment")
         should_run_native_vision = track == "VisualTrack" and bool(native_vision_reasons)
         if should_run_native_vision:
@@ -227,14 +227,14 @@ class PdfNativeParseRuntime:
             for idx in range(1, page_count + 1):
                 if idx not in vision_page_lines:
                     vision_page_lines[idx] = [f"[Page {idx}] vision probe"]
-            table_blocks, vision_figures = self._enhance_low_quality_pages_with_gemini_vision(
+            table_blocks, vision_figures = self._enhance_low_quality_pages_with_vision(
                 file_bytes=file_bytes,
                 filetype="pdf",
                 page_lines=vision_page_lines,
                 table_blocks=table_blocks,
                 parts=parts,
                 bbox_map=bbox_map,
-                source_prefix="pdf_gemini_vision_native",
+                source_prefix="pdf_vision_native",
             )
             if vision_figures:
                 figure_blocks = self._merge_figure_blocks(figure_blocks, vision_figures)

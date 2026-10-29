@@ -46,9 +46,9 @@ class ParserVisualPayloadBundleRuntime:
     def build_figure_vision_payload_kwargs(
         self,
         *,
-        gemini_vision_enable_figures: bool,
-        gemini_vision_max_figures_per_page: int,
-        gemini_vision_min_figure_quality: float,
+        vision_enable_figures: bool,
+        vision_max_figures_per_page: int,
+        vision_min_figure_quality: float,
         normalize_text: RuntimeCallback,
         infer_figure_type_from_text: RuntimeCallback,
         safe_text_list: RuntimeCallback,
@@ -62,9 +62,9 @@ class ParserVisualPayloadBundleRuntime:
         count_figure_markers_in_text: RuntimeCallback,
     ) -> Dict[str, Any]:
         return {
-            "gemini_vision_enable_figures": gemini_vision_enable_figures,
-            "gemini_vision_max_figures_per_page": gemini_vision_max_figures_per_page,
-            "gemini_vision_min_figure_quality": gemini_vision_min_figure_quality,
+            "vision_enable_figures": vision_enable_figures,
+            "vision_max_figures_per_page": vision_max_figures_per_page,
+            "vision_min_figure_quality": vision_min_figure_quality,
             "normalize_text": normalize_text,
             "infer_figure_type_from_text": infer_figure_type_from_text,
             "safe_text_list": safe_text_list,
@@ -133,7 +133,7 @@ class ParserVisualPayloadBundleRuntime:
     def build_table_vision_payload_kwargs(
         self,
         *,
-        gemini_vision_max_tables_per_page: int,
+        vision_max_tables_per_page: int,
         table_max_rows: int,
         table_max_cols: int,
         ocr_table_min_rows: int,
@@ -149,7 +149,7 @@ class ParserVisualPayloadBundleRuntime:
         to_float_or_none: RuntimeCallback,
     ) -> Dict[str, Any]:
         return {
-            "gemini_vision_max_tables_per_page": gemini_vision_max_tables_per_page,
+            "vision_max_tables_per_page": vision_max_tables_per_page,
             "table_max_rows": table_max_rows,
             "table_max_cols": table_max_cols,
             "ocr_table_min_rows": ocr_table_min_rows,
@@ -224,17 +224,17 @@ class ParserVisualPayloadBundleRuntime:
     def build_visual_page_signal_kwargs(
         self,
         *,
-        gemini_vision_max_pages: int,
-        gemini_vision_min_table_quality: float,
-        gemini_vision_enable_figures: bool,
+        vision_max_pages: int,
+        vision_min_table_quality: float,
+        vision_enable_figures: bool,
         looks_like_table_cue_text: RuntimeCallback,
         looks_like_figure_cue_text: RuntimeCallback,
         contains_figure_marker: RuntimeCallback,
     ) -> Dict[str, Any]:
         return {
-            "gemini_vision_max_pages": gemini_vision_max_pages,
-            "gemini_vision_min_table_quality": gemini_vision_min_table_quality,
-            "gemini_vision_enable_figures": gemini_vision_enable_figures,
+            "vision_max_pages": vision_max_pages,
+            "vision_min_table_quality": vision_min_table_quality,
+            "vision_enable_figures": vision_enable_figures,
             "looks_like_table_cue_text": looks_like_table_cue_text,
             "looks_like_figure_cue_text": looks_like_figure_cue_text,
             "contains_figure_marker": contains_figure_marker,
@@ -256,12 +256,12 @@ class ParserVisualPayloadBootstrapRuntime:
         figure_text_is_low_signal: Callable[..., bool],
         table_header: Any,
         looks_like_false_table: Callable[..., bool],
-        gemini_vision_enable_figures: bool,
-        gemini_vision_max_figures_per_page: int,
-        gemini_vision_min_figure_quality: float,
-        gemini_vision_max_tables_per_page: int,
-        gemini_vision_max_pages: int,
-        gemini_vision_min_table_quality: float,
+        vision_enable_figures: bool,
+        vision_max_figures_per_page: int,
+        vision_min_figure_quality: float,
+        vision_max_tables_per_page: int,
+        vision_max_pages: int,
+        vision_min_table_quality: float,
         table_max_cols: int,
         table_max_rows: int,
         table_cell_cap: int,
@@ -288,9 +288,9 @@ class ParserVisualPayloadBootstrapRuntime:
         )
         figure_vision_payload = FigureVisionPayloadRuntime(
             **parser_visual_payload_bundle_runtime.build_figure_vision_payload_kwargs(
-                gemini_vision_enable_figures=gemini_vision_enable_figures,
-                gemini_vision_max_figures_per_page=gemini_vision_max_figures_per_page,
-                gemini_vision_min_figure_quality=gemini_vision_min_figure_quality,
+                vision_enable_figures=vision_enable_figures,
+                vision_max_figures_per_page=vision_max_figures_per_page,
+                vision_min_figure_quality=vision_min_figure_quality,
                 normalize_text=normalize_text,
                 infer_figure_type_from_text=figure_inference.infer_figure_type_from_text,
                 safe_text_list=content_normalization_runtime.safe_text_list,
@@ -333,7 +333,7 @@ class ParserVisualPayloadBootstrapRuntime:
         )
         table_vision_payload = TableVisionPayloadRuntime(
             **parser_visual_payload_bundle_runtime.build_table_vision_payload_kwargs(
-                gemini_vision_max_tables_per_page=gemini_vision_max_tables_per_page,
+                vision_max_tables_per_page=vision_max_tables_per_page,
                 table_max_rows=table_max_rows,
                 table_max_cols=table_max_cols,
                 ocr_table_min_rows=ocr_table_min_rows,
@@ -380,9 +380,9 @@ class ParserVisualPayloadBootstrapRuntime:
         )
         visual_page_signal_runtime = VisualPageSignalRuntime(
             **parser_visual_payload_bundle_runtime.build_visual_page_signal_kwargs(
-                gemini_vision_max_pages=gemini_vision_max_pages,
-                gemini_vision_min_table_quality=gemini_vision_min_table_quality,
-                gemini_vision_enable_figures=gemini_vision_enable_figures,
+                vision_max_pages=vision_max_pages,
+                vision_min_table_quality=vision_min_table_quality,
+                vision_enable_figures=vision_enable_figures,
                 looks_like_table_cue_text=visual_table_cue_runtime.looks_like_table_cue_text,
                 looks_like_figure_cue_text=figure_inference.looks_like_figure_cue_text,
                 contains_figure_marker=OcrTableUtils.contains_figure_marker,

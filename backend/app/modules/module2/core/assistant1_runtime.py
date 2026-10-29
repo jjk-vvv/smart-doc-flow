@@ -6,9 +6,8 @@ import json
 import re
 import sys
 import threading
-import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -110,7 +109,7 @@ class Assistant1ContextBundle:
     trace_hits: tuple[dict[str, Any], ...] = ()
     evidence_items: tuple[dict[str, Any], ...] = ()
     warnings: tuple[str, ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
 
 
 def has_grounded_context(bundle: Assistant1ContextBundle) -> bool:

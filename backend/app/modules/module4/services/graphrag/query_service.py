@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -166,7 +166,7 @@ def _query_model_cli_overrides() -> Dict[str, Any]:
     embedding_model = str(
         os.getenv("MODULE4_GRAPHRAG_EMBEDDING_MODEL")
         or os.getenv("GRAPHRAG_EMBEDDING_MODEL")
-        or "Embedding-V1"
+        or "text-embedding-3-small"
     ).strip()
     embedding_api_key = str(
         os.getenv("MODULE4_GRAPHRAG_EMBEDDING_API_KEY") or os.getenv("GRAPHRAG_EMBEDDING_API_KEY") or ""
@@ -1590,8 +1590,24 @@ def _subprocess_query_entry(raw_payload: str) -> Dict[str, Any]:
         except Exception:
             community_level_value = None
 
-    import graphrag.api as graphrag_api
-    from graphrag.utils.api import reformat_context_data
+    try:
+        import graphrag.api as graphrag_api
+        from graphrag.utils.api import reformat_context_data
+    except ModuleNotFoundError:
+        # Legacy runtimes (graphrag 0.3.x) have no stable query API and their
+        # index/submodule import chain pulls optional ML dependencies. Answer from
+        # the artifacts directly and label the response as a fallback.
+        from .artifact_query import run_artifact_query
+
+        return asyncio.run(
+            run_artifact_query(
+                workspace_dir=workspace_dir,
+                artifacts_dir=artifacts_dir,
+                mode=mode_value,
+                query=query_text,
+                response_type=response_type_value,
+            )
+        )
 
     return asyncio.run(
         _execute_query_runtime(
@@ -1729,7 +1745,11 @@ async def _execute_query_runtime_via_subprocess(
     if completed.returncode != 0:
         stderr_text = str(completed.stderr or "").strip()
         stdout_text = str(completed.stdout or "").strip()
-        detail = stderr_text or stdout_text or f"exit_code={completed.returncode}"
+        marker = "GraphRAG query API unavailable:"
+        if marker in stderr_text:
+            detail = marker + stderr_text.rsplit(marker, 1)[-1].splitlines()[0]
+        else:
+            detail = stderr_text or stdout_text or f"exit_code={completed.returncode}"
         raise GraphRAGQueryServiceError(
             f"GraphRAG subprocess query failed: {detail}",
             status_code=503,

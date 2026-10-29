@@ -6,14 +6,14 @@ import uuid
 from typing import Any
 
 from .config import Assistant1Settings
-from .embedder_gemini import GeminiEmbeddingClient
+from .embedding_client import EmbeddingClient
 from .pgvector_store import Assistant1PgVectorStore
 
 
 class Assistant1RetrievalPipeline:
     def __init__(self, settings: Assistant1Settings | None = None) -> None:
         self.settings = settings or Assistant1Settings.from_env()
-        self.embedder = GeminiEmbeddingClient(self.settings)
+        self.embedder = EmbeddingClient(self.settings)
 
     def stats(self, file_hash: str) -> dict[str, Any]:
         return asyncio.run(self._file_stats(file_hash=file_hash))
@@ -27,7 +27,7 @@ class Assistant1RetrievalPipeline:
         top_k: int = 8,
     ) -> dict[str, Any]:
         if not self.embedder.ready:
-            raise RuntimeError("Gemini embedding config is missing; cannot query vectors")
+            raise RuntimeError("embedding config is missing; cannot query vectors")
         query_vector = self.embedder.embed_query(text)
         matches = asyncio.run(
             self._query_store(

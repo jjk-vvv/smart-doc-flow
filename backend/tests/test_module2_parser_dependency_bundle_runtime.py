@@ -69,7 +69,7 @@ def test_parser_dependency_bundle_runtime_builds_pdf_ocr_bundle_and_wraps_last_f
         )
         or [{"figure_id": "f1"}],
         get_last_figure_blocks=lambda: [{"figure_id": "seed"}],
-        enhance_low_quality_pages_with_gemini_vision=lambda *args, **kwargs: ([], []),
+        enhance_low_quality_pages_with_vision=lambda *args, **kwargs: ([], []),
         merge_figure_blocks=lambda *args, **kwargs: [],
         prune_fragment_tables=lambda blocks: blocks,
     )
@@ -108,7 +108,7 @@ def test_parser_dependency_bundle_runtime_builds_pdf_native_and_docx_enrichment_
         enable_fitz_table=True,
         table_merge_enable=True,
         visual_force_ocr_on_weak_native=False,
-        gemini_vision_enable_figures=True,
+        vision_enable_figures=True,
         normalize_text=lambda text: text,
         split_page_text=lambda text: [text],
         append_ref=lambda *args, **kwargs: "ref",
@@ -122,7 +122,7 @@ def test_parser_dependency_bundle_runtime_builds_pdf_native_and_docx_enrichment_
         merge_cross_page_tables=lambda blocks: blocks,
         infer_figures_from_page_lines=lambda *args, **kwargs: [],
         figure_blocks_need_vision=lambda *args, **kwargs: False,
-        enhance_low_quality_pages_with_gemini_vision=lambda *args, **kwargs: ([], []),
+        enhance_low_quality_pages_with_vision=lambda *args, **kwargs: ([], []),
         merge_figure_blocks=lambda *args, **kwargs: [],
         prune_fragment_tables=lambda blocks: blocks,
     )
@@ -133,7 +133,7 @@ def test_parser_dependency_bundle_runtime_builds_pdf_native_and_docx_enrichment_
         docx_media_probe_enable=True,
         docx_media_max_assets=10,
         docx_media_vision_enable=True,
-        docx_media_nested_gemini_enhance_enable=False,
+        docx_media_nested_vision_enhance_enable=False,
         docx_media_max_assets_unbounded=False,
         docx_media_vision_max_assets=5,
         docx_media_vision_max_assets_unbounded=False,
@@ -162,7 +162,7 @@ def test_parser_dependency_bundle_runtime_builds_pdf_native_and_docx_enrichment_
         "enable_fitz_table": True,
         "table_merge_enable": True,
         "visual_force_ocr_on_weak_native": False,
-        "gemini_vision_enable_figures": True,
+        "vision_enable_figures": True,
     }
     assert pdf_native_bundle.callback_kwargs["append_ref"]("x") == "ref"
     assert docx_bundle.config_kwargs["artifact_root_dir"] == Path("artifacts")

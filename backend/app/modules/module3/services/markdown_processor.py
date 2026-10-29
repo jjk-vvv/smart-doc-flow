@@ -9,7 +9,6 @@ from .llm_service import (
     normalize_output as _normalize_output,
     normalize_rows_output as _normalize_rows_output,
     parse_model_json as _parse_model_json,
-    request_text_responses as _request_text_responses,
     to_rows_data as _to_rows_data,
 )
 from .text_source_common import (
@@ -126,20 +125,6 @@ def build_repair_messages(headers: list[str], bad_output: str) -> tuple[str, str
     return system_prompt, user_prompt
 
 
-def request_text_responses(
-    base_url: str,
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-) -> str:
-    return _request_text_responses(
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-    )
 
 
 def request_chat_completions(
@@ -190,8 +175,8 @@ def extract_rows_from_markdown_source(
     logger: Callable[[str], None] | None = None,
 ) -> list[dict[str, str]]:
     normalized_mode = api_mode.strip().lower()
-    if normalized_mode not in {"responses", "chat"}:
-        raise ValueError("api_mode 只支持 responses 或 chat")
+    if normalized_mode != "chat":
+        raise ValueError("api_mode 只支持 chat")
 
     log_event(logger, f"[步骤1] 已读取 Markdown 数据文件: {markdown_path.name}")
     markdown_text = read_markdown_source_content(markdown_path)
@@ -206,34 +191,16 @@ def extract_rows_from_markdown_source(
     log_event(logger, f"[步骤1.1] 已读取表头，共 {len(headers)} 个字段。")
     log_event(logger, "[步骤2] 开始调用模型进行数据抽取。")
 
-    if normalized_mode == "responses":
-        try:
-            log_event(logger, "[模型调用] /v1/responses（纯文本）")
-            model_text = request_text_responses(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-        except Exception as exc:
-            log_event(logger, f"[模型调用回退] responses 失败，改用 chat。原因: {exc}")
-            model_text = request_chat_completions(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-    else:
-        log_event(logger, "[模型调用] /v1/chat/completions（纯文本）")
-        model_text = request_chat_completions(
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-        )
+    if normalized_mode != "chat":
+        raise ValueError("Module 3 only supports chat API mode.")
+    log_event(logger, "[模型调用] /v1/chat/completions（纯文本）")
+    model_text = request_chat_completions(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
 
     log_event(logger, "[模型输出-抽取]\n" + model_text)
 
@@ -242,34 +209,16 @@ def extract_rows_from_markdown_source(
     except Exception as exc:
         log_event(logger, f"[解析失败] 首次输出不是可用 JSON，开始修复。原因: {exc}")
         repair_system_prompt, repair_user_prompt = build_repair_messages(headers, model_text)
-        if normalized_mode == "responses":
-            try:
-                log_event(logger, "[模型调用] JSON 修复：/v1/responses")
-                repair_text = request_text_responses(
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=model,
-                    system_prompt=repair_system_prompt,
-                    user_prompt=repair_user_prompt,
-                )
-            except Exception as exc2:
-                log_event(logger, f"[模型调用回退] responses 修复失败，改用 chat。原因: {exc2}")
-                repair_text = request_chat_completions(
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=model,
-                    system_prompt=repair_system_prompt,
-                    user_prompt=repair_user_prompt,
-                )
-        else:
-            log_event(logger, "[模型调用] JSON 修复：/v1/chat/completions")
-            repair_text = request_chat_completions(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                system_prompt=repair_system_prompt,
-                user_prompt=repair_user_prompt,
-            )
+        if normalized_mode != "chat":
+            raise ValueError("Module 3 only supports chat API mode.")
+        log_event(logger, "[模型调用] JSON 修复：/v1/chat/completions")
+        repair_text = request_chat_completions(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            system_prompt=repair_system_prompt,
+            user_prompt=repair_user_prompt,
+        )
         log_event(logger, "[模型输出-修复]\n" + repair_text)
         parsed_data = parse_model_json(repair_text)
 

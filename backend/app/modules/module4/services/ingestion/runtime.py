@@ -1395,6 +1395,99 @@ async def recover_jobs(
             schedule_rebuild_job(job_id, payload)
 
 
+async def _store_document_alerts(
+    *,
+    storage: Any,
+    tenant_id: str,
+    graph_file_id: Optional[str],
+    doc: Dict[str, Any],
+    file_name: str,
+    file_hash: str,
+) -> int:
+    """Evaluate enabled rules against one ingested document and persist alerts.
+
+    Rules were previously stored and editable but never executed, so the alert
+    feed stayed empty. Evaluation is best-effort: a rule failure must never fail
+    graph ingestion.
+    """
+
+    try:
+        rules = await storage.list_rules(tenant_id=tenant_id, enabled_only=True)
+    except Exception:
+        return 0
+    if not rules:
+        return 0
+
+    from .rules import _evaluate_rule_hit, _rule_scope
+
+    result_fields = doc.get("result") if isinstance(doc.get("result"), dict) else {}
+    diagnostics = doc.get("diagnostics") if isinstance(doc.get("diagnostics"), dict) else {}
+    errors = list(doc.get("errors") or [])
+    soft_warnings = list(doc.get("soft_warnings") or [])
+    base_context: Dict[str, Any] = {
+        "file_name": file_name,
+        "file_hash": file_hash,
+        "track": doc.get("track"),
+        "errors": errors,
+        "errors_count": len(errors),
+        "soft_warnings": soft_warnings,
+        "soft_warning_count": len(soft_warnings),
+        "diagnostics": diagnostics,
+        "quality_status": diagnostics.get("quality_status"),
+        "__semantic_business_alert_kind__": (
+            doc.get("__semantic_business_alert_kind__")
+            or diagnostics.get("__semantic_business_alert_kind__")
+        ),
+    }
+
+    hits: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for rule in rules:
+        if _rule_scope(rule) == "field":
+            for field_name, field in result_fields.items():
+                if not isinstance(field, dict):
+                    continue
+                context = {
+                    **base_context,
+                    "field_name": str(field_name),
+                    "value": field.get("value"),
+                    "confidence": field.get("confidence", 0.0),
+                }
+                hit = _evaluate_rule_hit(rule, context)
+                if hit:
+                    hits.append((hit, context))
+        else:
+            hit = _evaluate_rule_hit(rule, base_context)
+            if hit:
+                hits.append((hit, base_context))
+
+    stored = 0
+    for hit, context in hits:
+        try:
+            payload = dict(hit.get("payload") or {})
+            payload.update(
+                {
+                    "file_name": file_name,
+                    "file_hash": file_hash,
+                    "graph_file_id": graph_file_id,
+                    "field_name": context.get("field_name"),
+                }
+            )
+            await storage.insert_alert(
+                tenant_id=tenant_id,
+                rule_id=str(hit.get("rule_id") or ""),
+                severity=str(hit.get("severity") or "yellow"),
+                subject_node_id=None,
+                title=str(hit.get("title") or ""),
+                summary=str(hit.get("summary") or ""),
+                risk_score=float(hit.get("risk_score") or 0.0),
+                payload=payload,
+            )
+            stored += 1
+        except Exception:
+            continue
+    return stored
+
+
 async def process_document(
     *,
     storage: Any,
@@ -1603,6 +1696,14 @@ async def process_document(
         artifact_stage_status=artifact_stage_status,
     )
     summary_dict = summary.as_dict()
+    alert_count = await _store_document_alerts(
+        storage=storage,
+        tenant_id=tenant_id,
+        graph_file_id=graph_file_id,
+        doc=doc,
+        file_name=file_name,
+        file_hash=file_hash,
+    )
     await _report(
         "finalizing_graph",
         97.0,
@@ -1615,7 +1716,7 @@ async def process_document(
     return {
         "nodes": int(summary_dict.get("nodes", 0) or 0),
         "edges": int(summary_dict.get("edges", 0) or 0),
-        "alerts": 0,
+        "alerts": int(alert_count),
         "evidence": int(summary_dict.get("evidence", 0) or 0),
         "workspace": _workspace_result_meta(workspace),
         "index": _index_result_meta(index_result),
@@ -2086,6 +2187,18 @@ async def _submit_reused_ingest_job(
         last_indexed_at=graph_file.get("last_indexed_at") or now,
     )
 
+    reused_documents = [item for item in (payload_data.get("documents") or []) if isinstance(item, dict)]
+    reused_alerts = 0
+    for reused_doc in reused_documents:
+        reused_alerts += await _store_document_alerts(
+            storage=storage,
+            tenant_id=tenant_id,
+            graph_file_id=str(graph_file.get("graph_file_id") or "") or None,
+            doc=reused_doc,
+            file_name=str(reused_doc.get("file_name") or graph_file.get("file_name") or "unknown"),
+            file_hash=str(reused_doc.get("file_hash") or graph_file.get("file_hash") or ""),
+        )
+
     await storage.update_job(
         str(job["job_id"]),
         status="success",
@@ -2094,7 +2207,7 @@ async def _submit_reused_ingest_job(
             "stage": "reused_existing_graph",
             "nodes": node_count,
             "edges": edge_count,
-            "alerts": int(import_summary.get("alerts", 0) or 0),
+            "alerts": int(import_summary.get("alerts", 0) or 0) + reused_alerts,
             "evidence": int(import_summary.get("evidence", 0) or 0),
             "documents": len(payload_data.get("documents") or []),
             "skipped_documents": 0,

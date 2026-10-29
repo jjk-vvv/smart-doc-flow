@@ -1,11 +1,19 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { 
-  FileText, X, CheckCircle, Plus, Palette, Loader,
-  Brain, Download, Eye,
-  ChevronLeft, ChevronRight, Diff,
-  Clock, AlertCircle,
-  ZoomIn, ZoomOut, RotateCw, Layers, ScanLine,
-  UploadCloud, Sparkles, ArrowRight
+import {
+  FileText,
+  CheckCircle,
+  Palette,
+  Loader,
+  Brain,
+  Download,
+  ChevronLeft,
+  Diff,
+  Clock,
+  AlertCircle,
+  Layers,
+  ScanLine,
+  Sparkles,
+  ArrowRight,
 } from 'lucide-react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
@@ -57,7 +65,7 @@ import {
 import { useMobileOverlayRegistration } from '../../shared/hooks/useMobileOverlayPresence';
 
 import PdfIconImage from '../../assets/pdf.png';
-import DialogIllustrationImage from '../../assets/对话框插图.png';
+
 import WordIconImage from '../../assets/WORD.png';
 import TxtIconImage from '../../assets/txt.png';
 import ExcelIconImage from '../../assets/xlsx.png';
@@ -147,7 +155,6 @@ const isFileDragEvent = (dataTransfer: DataTransfer | null) => (
   Array.from(dataTransfer?.types ?? []).includes('Files')
 );
 
-// ---------- 类型定义 ----------
 interface Message {
   id: string;
   type: 'user' | 'assistant' | 'system';
@@ -563,7 +570,6 @@ const serializeConversationRecord = (conversation: ConversationRecord): Persiste
   showPreviewPanel: conversation.showPreviewPanel,
 });
 
-// 辅助函数
 const formatFileSize = (bytes: number): string => {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -958,7 +964,6 @@ const buildConversationContextPayload = (conversationMessages: Message[]): strin
 const ANALYSIS_KEYWORDS = ['分析', '总结', '摘要', '提取', '查找', '统计', '概括', '归纳', '识别', 'ocr'];
 
 const createEntityId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-
 
 const createConversationTitle = (index: number) => (index <= 1 ? '新对话' : `新对话 ${index}`);
 
@@ -1545,7 +1550,6 @@ const PdfScrollPreview = React.memo(({
   );
 });
 
-// ---------- 主组件 ----------
 export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const initialConversation = useMemo(() => createConversationRecord(1), []);
   const hydratingConversationRef = useRef(false);
@@ -1556,19 +1560,16 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   const [conversations, setConversations] = useState<ConversationRecord[]>(() => [initialConversation]);
   const [activeConversationId, setActiveConversationId] = useState(initialConversation.id);
 
-  // 文档存储
   const [files, setFiles] = useState<Record<string, FileInfo>>(initialConversation.files);
   const [composerFileIds, setComposerFileIds] = useState<string[]>(initialConversation.composerFileIds);
   const [rememberedFileBatchIds, setRememberedFileBatchIds] = useState<string[]>(initialConversation.rememberedFileBatchIds);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(initialConversation.selectedFileId);
   
-  // 聊天状态
   const [messages, setMessages] = useState<Message[]>(initialConversation.messages);
   const [inputText, setInputText] = useState(initialConversation.inputText);
   const [isLoading, setIsLoading] = useState(false);
   const [followUpSuggestionBatchIndex, setFollowUpSuggestionBatchIndex] = useState(0);
   
-  // 预览控制
   const [scale, setScale] = useState(0.9);
   const [rotation, setRotation] = useState(0);
   const [pdfPage, setPdfPage] = useState(1);
@@ -1633,7 +1634,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   const [showMobileUploadSheet, setShowMobileUploadSheet] = useState(false);
   useMobileOverlayRegistration(showUtilityDrawer || showMobileUploadSheet || mobileView !== 'home');
 
-  // 计算属性
   const fileList = useMemo(() => Object.values(files), [files]);
   const composerFiles = useMemo(() => getFilesByIds(files, composerFileIds), [composerFileIds, files]);
   const orderedConversations = useMemo(
@@ -1825,14 +1825,11 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     };
   }, []);
 
-  // 预览URL管理
   React.useEffect(() => syncPreviewUrl(previewedFile, setPreviewUrl), [previewedFile, syncPreviewUrl]);
   React.useEffect(() => syncPreviewUrl(comparisonFile, setComparisonPreviewUrl), [comparisonFile, syncPreviewUrl]);
 
-  // 文本预览 - 只处理纯文本文件
   React.useEffect(() => {
     let cancelled = false;
-    // 只处理纯文本文件，不处理 Excel
     if (!previewedFile?.file || !['txt', 'md', 'csv'].includes(activeFileExt)) {
       setPreviewText('');
       return;
@@ -1848,7 +1845,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     return () => { cancelled = true; };
   }, [previewedFile, activeFileExt]);
 
-  // 自动滚动
   const lastMessage = useMemo(
     () => messages[messages.length - 1] ?? null,
     [messages]
@@ -2045,7 +2041,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     loadConversation(nextActiveConversation);
   }, [activeConversationId, commitCurrentConversation, conversations, isLoading, loadConversation]);
 
-  // ---------- Word转PDF转换函数 ----------
   useEffect(() => {
     if (!sessionHydrated) return;
 
@@ -2111,18 +2106,15 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         credentials: 'include',
       });
       
-      // 先检查响应状态
       if (!response.ok) {
         const errorText = await response.text();
         console.error('服务器返回错误:', response.status, errorText);
         throw new Error(`转换失败: ${response.status} - ${errorText}`);
       }
       
-      // 检查响应内容类型
       const contentType = response.headers.get('content-type');
       console.log('响应内容类型:', contentType);
       
-      // 如果不是PDF，可能返回了错误信息
       if (!contentType?.includes('application/pdf')) {
         const errorText = await response.text();
         console.error('返回的不是PDF文件:', errorText);
@@ -2131,7 +2123,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
       
       const pdfBlob = await response.blob();
       
-      // 检查blob是否有效
       if (pdfBlob.size === 0) {
         throw new Error('转换后的PDF文件为空');
       }
@@ -2161,7 +2152,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     }
   };
 
-  // ---------- 文件上传 ----------
   const processUploadedFiles = useCallback(async (incomingFiles: File[]) => {
     if (incomingFiles.length === 0) return;
 
@@ -2412,19 +2402,16 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     updateComposerCollapseState();
   }, [updateComposerCollapseState]);
 
-  // ---------- API 调用 ----------
   const applyModificationsToFile = useCallback(async (
     operationResult: OperationResult,
     targetFile: FileInfo
   ): Promise<void> => {
     try {
-      // 获取要修改的文件
       const fileToModify = targetFile.originalFile || targetFile.file;
       if (!fileToModify) {
         throw new Error('找不到要修改的文件');
       }
       
-      // 准备修改数据
       const formData = new FormData();
       formData.append('file', fileToModify, fileToModify.name || targetFile.name);
       formData.append('modifications', JSON.stringify(operationResult.modifications || []));
@@ -2435,7 +2422,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         modifications: operationResult.modifications
       });
       
-      // 调用应用修改的API
       const response = await fetch(buildModule1ApiUrl('/apply-modifications'), {
         method: 'POST',
         body: formData,
@@ -2451,11 +2437,9 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         throw new Error(`应用修改失败: ${response.status} - ${errorText}`);
       }
       
-      // 获取修改后的文件
       const modifiedBlob = await response.blob();
       console.log('修改后的文件大小:', modifiedBlob.size, 'bytes');
       
-      // 从响应头获取修改信息（注意：这些头可能不存在）
       const modificationApplied = response.headers.get('X-Modification-Applied');
       const modificationCount = response.headers.get('X-Modification-Count') || 
                                 (operationResult.modifications?.length || 0).toString();
@@ -2466,7 +2450,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
       const fileName = prefixModifiedFileName(sourceFileName);
       const logicalFileType = resolveFileMimeType(modifiedBlob.type, sourceFileName);
       
-      // 创建File对象
       let modifiedFile;
       try {
         modifiedFile = new File([modifiedBlob], fileName, { type: logicalFileType });
@@ -2479,7 +2462,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         });
       }
       
-      // 生成预览URL
       let modifiedPreviewUrl = URL.createObjectURL(modifiedBlob);
       let modifiedPreviewType = logicalFileType;
       let modifiedPreviewBlob: Blob | undefined = logicalFileType.includes('pdf') ? modifiedBlob : undefined;
@@ -2498,13 +2480,11 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         }
       }
       
-      // 更新文件列表，添加修改后的文件
       const newFileId = Date.now() + Math.random().toString(36).substr(2, 9);
       
       setFiles(prev => {
         const newFiles = { ...prev };
         
-        // 添加修改后的文件
         newFiles[newFileId] = {
           id: newFileId,
           name: fileName,
@@ -2525,14 +2505,12 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         return newFiles;
       });
       
-      // 自动选中新文件
       setSelectedFileId(newFileId);
       setPreviewPaneMode('current');
       setShowPreviewPanel(true);
       setMobileView('preview');
       resetPreviewViewport();
       
-      // 添加成功消息
       const successMessage: Message = {
         id: Date.now().toString(),
         type: 'assistant',
@@ -2545,7 +2523,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     } catch (error) {
       console.error('应用修改失败:', error);
       
-      // 添加错误消息
       const errorMessage: Message = {
         id: Date.now().toString(),
         type: 'assistant',
@@ -2579,7 +2556,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     }
   }, []);
 
-  // Excel预览组件
   const ExcelPreview: React.FC<{ file: FileInfo }> = ({ file }) => {
     const previewFile = file.file || file.originalFile || null;
 
@@ -2625,21 +2601,16 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     );
   };
 
-  // ---------- 发送消息 ----------
   const sendMessage = useCallback(async (promptOverride?: string) => {
     const instruction = String(promptOverride ?? inputText).trim();
     if (!instruction || isLoading) return;
   
-    // 移除强制文件检查，允许无文件时聊天
-    // if (Object.keys(files).length === 0) { alert('请先上传文档'); return; }
   
-    // 中止之前的请求
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
   
-    // 创建新的 AbortController
     abortControllerRef.current = new AbortController();
     const requestedComposerFileIds = getExistingFileIds(files, composerFileIds);
     const requestedRememberedFileIds = getExistingFileIds(files, rememberedFileBatchIds);
@@ -2691,7 +2662,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     };
   
     try {
-      // 获取当前选中的文件（可能为 null）
       targetFileInfo = selectedFileId && effectiveRequestFileIds.includes(selectedFileId)
         ? files[selectedFileId]
         : effectiveRequestFiles[0] ?? null;
@@ -2699,7 +2669,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         ? [targetFileInfo, ...effectiveRequestFiles.filter((file) => file.id !== targetFileInfo.id)]
         : effectiveRequestFiles;
   
-      // 构建 FormData
       const formData = new FormData();
       if (orderedRequestFiles.length > 0) {
         orderedRequestFiles.forEach((fileInfo, index) => {
@@ -2736,7 +2705,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         setReportProgressState(createReportProgressState());
       }
   
-      // 创建占位消息（流式内容将累加至此）
       const assistantMessageId = (Date.now() + 2).toString();
       setMessages(prev => [
         ...prev,
@@ -2744,14 +2712,12 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
           id: assistantMessageId,
           type: 'assistant',
           content: '',
-          // 有文件时关联文件ID，否则为空
           fileIds: targetFileInfo ? [targetFileInfo.id] : [],
           displayMode: shouldOpenReportPreview ? 'report' : 'chat',
           timestamp: new Date()
         }
       ]);
   
-      // 调用流式 API
       const response = await fetch(buildModule1ApiUrl('/operate-stream'), {
         method: 'POST',
         body: formData,
@@ -2861,7 +2827,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   
                 case 'modifications':
                   console.log('收到修改方案:', parsed.content);
-                  // 只有在有文件时才处理修改
                   if (targetFileInfo) {
                     let realModifications: Modification[] = Array.isArray(parsed.content)
                       ? parsed.content as Modification[]
@@ -2899,7 +2864,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
                   break;
   
                 case 'preview':
-                  // 修改流程改为直接返回聊天结果，不再自动弹出预览
                   break;
   
                 case 'error':
@@ -2947,12 +2911,10 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
   
       flushAssistantMessage(true);
   
-      // 只有在有文件且有修改方案时才应用修改
       if (receivedModifications && targetFileInfo) {
         await applyModificationsToFile(receivedModifications, targetFileInfo);
       }
   
-      // 更新文件状态为已完成（仅当有文件时）
       setFiles(prev => {
         const newFiles = { ...prev };
         for (const fileId of effectiveRequestFileIds) {
@@ -3013,7 +2975,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         }
       ]);
   
-      // 标记现有文件为错误状态（若有）
       setFiles(prev => {
         const newFiles = { ...prev };
         for (const fileId of effectiveRequestFileIds) {
@@ -3040,7 +3001,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     }
   }, [sendMessage]);
 
-  // 预览控制函数
   const handleZoomIn = () => setScale((prev) => Math.min(prev + 0.1, 2.5));
   const handleZoomOut = () => setScale((prev) => Math.max(prev - 0.1, 0.5));
   const handleRotate = () => setRotation((prev) => (prev + 90) % 360);
@@ -3054,7 +3014,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     resetPreviewViewport();
   }, [resetPreviewViewport]);
 
-  // 获取指定文件的最新分析报告内容
   const getAnalysisReportForFile = useCallback((fileId: string): string | null => {
     return latestReportByFileId.get(fileId)?.content ?? null;
   }, [latestReportByFileId]);
@@ -3713,7 +3672,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     setPdfPageInput(String(pdfPage));
   }, [pdfPage]);
 
-  // 下载文件
   const downloadFile = useCallback((file: FileInfo) => {
     const fileToDownload = file.file || file.originalFile;
     if (!fileToDownload) return;
@@ -3733,7 +3691,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
     }
   }, []);
 
-  // 导出结果
   const exportResults = useCallback(() => {
     if (fileList.length === 0) return;
 
@@ -4625,7 +4582,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {isMobileHomeLanding ? (
             <div className="flex min-h-[60vh] w-full flex-col items-center justify-center px-4 pt-12 pb-8">
-              {/* Logo / Ring */}
               <div className="mb-6 flex items-center justify-center relative animate-fade-in-up" style={{ animationDuration: '0.8s', animationFillMode: 'both' }}>
                 <div className="absolute h-[90px] w-[90px] rounded-full bg-white blur-lg dark:bg-white/30 animate-pulse-slow"></div>
                 <div className="relative z-10 flex h-[72px] w-[72px] items-center justify-center">
@@ -4633,7 +4589,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
                 </div>
               </div>
 
-              {/* Title */}
               <div className="mb-4 flex flex-col items-center">
                 <h3 className="text-[22px] font-bold tracking-tight text-slate-800 dark:text-slate-100 overflow-hidden whitespace-nowrap border-r-[3px] border-slate-800/40 dark:border-slate-100/40 animate-typing-text pr-1" style={{ animationDuration: '1.2s', animationDelay: '0.2s', animationFillMode: 'both', width: 'max-content' }}>
                   今天想处理什么文档？
@@ -4643,7 +4598,6 @@ export const DocProcessingWorkbench: React.FC<{ onBack?: () => void }> = ({ onBa
                 </p>
               </div>
 
-              {/* Shortcuts */}
               <div className="w-full max-w-[340px] flex flex-col items-center space-y-3.5 animate-fade-in-up" style={{ animationDuration: '0.8s', animationDelay: '0.6s', animationFillMode: 'both' }}>
                 <button
                   type="button"

@@ -9,7 +9,6 @@ const parsePort = (value: string | undefined, fallback: number): number => {
 };
 
 const GRAPH_RUNTIME_PACKAGES = [
-  '/node_modules/@neo4j-nvl/',
   '/node_modules/d3-force/',
   '/node_modules/d3-dispatch/',
   '/node_modules/d3-quadtree/',

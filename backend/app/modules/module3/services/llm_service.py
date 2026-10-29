@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 import requests
@@ -13,7 +12,7 @@ from app.core.ai_api_logging import (
     log_ai_api_response as _shared_log_ai_api_response,
 )
 
-from .word_processor import get_word_data_url, squish
+from .word_processor import squish
 
 
 _RETRYABLE_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -190,135 +189,8 @@ def build_excel_source_messages(headers: list[str], custom_prompt: str, excel_te
     return system_prompt, user_prompt
 
 
-def request_text_responses(
-    base_url: str,
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-) -> str:
-    payload: dict[str, Any] = {
-        "model": model,
-        "temperature": 0,
-        "input": [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": system_prompt}],
-            },
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": user_prompt}],
-            },
-        ],
-    }
-
-    resp = _post_json_with_retry(
-        f"{base_url}/responses",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        payload=payload,
-        timeout=180,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    if isinstance(data.get("output_text"), str) and data["output_text"].strip():
-        return data["output_text"].strip()
-
-    texts: list[str] = []
-    for item in data.get("output", []):
-        for content_item in item.get("content", []):
-            if not isinstance(content_item, dict):
-                continue
-            if isinstance(content_item.get("text"), str) and content_item["text"].strip():
-                texts.append(content_item["text"].strip())
-            elif isinstance(content_item.get("text"), dict):
-                value = content_item["text"].get("value")
-                if isinstance(value, str) and value.strip():
-                    texts.append(value.strip())
-
-    if texts:
-        return "\n".join(texts)
-
-    raise ValueError(f"responses 接口返回中未找到文本输出: {json.dumps(data, ensure_ascii=False)[:600]}")
 
 
-def request_responses(
-    base_url: str,
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    word_path: Path,
-    include_file: bool,
-    image_inputs: list[dict[str, str]] | None = None,
-) -> str:
-    content: list[dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
-
-    for idx, image in enumerate(image_inputs or [], start=1):
-        caption = squish(str(image.get("caption", "")))
-        if caption:
-            content.append({"type": "input_text", "text": f"Image {idx} caption/context: {caption}"})
-        content.append({"type": "input_image", "image_url": image["data_url"]})
-
-    if include_file:
-        mime, b64_data = get_word_data_url(word_path)
-        content.append(
-            {
-                "type": "input_file",
-                "filename": word_path.name,
-                "file_data": f"data:{mime};base64,{b64_data}",
-            }
-        )
-
-    payload: dict[str, Any] = {
-        "model": model,
-        "temperature": 0,
-        "input": [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": system_prompt}],
-            },
-            {
-                "role": "user",
-                "content": content,
-            },
-        ],
-    }
-
-    resp = _post_json_with_retry(
-        f"{base_url}/responses",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        payload=payload,
-        timeout=180,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    if isinstance(data.get("output_text"), str) and data["output_text"].strip():
-        return data["output_text"].strip()
-
-    texts: list[str] = []
-    for item in data.get("output", []):
-        for content_item in item.get("content", []):
-            if not isinstance(content_item, dict):
-                continue
-            if isinstance(content_item.get("text"), str) and content_item["text"].strip():
-                texts.append(content_item["text"].strip())
-            elif isinstance(content_item.get("text"), dict):
-                value = content_item["text"].get("value")
-                if isinstance(value, str) and value.strip():
-                    texts.append(value.strip())
-
-    if texts:
-        return "\n".join(texts)
-
-    raise ValueError(f"responses 接口返回中未找到文本输出: {json.dumps(data, ensure_ascii=False)[:600]}")
 
 
 def request_chat_completions(
@@ -487,7 +359,5 @@ __all__ = [
     "normalize_rows_output",
     "parse_model_json",
     "request_chat_completions",
-    "request_responses",
-    "request_text_responses",
     "to_rows_data",
 ]

@@ -292,8 +292,8 @@ def build_module2_default_bootstrap_components(
     schema_coverage_profiles = load_schema_coverage_profiles()
     resolved_schema_rule_versions = schema_rule_versions()
     resolved_module2_database_dsn = module2_database_dsn or str(
-        getenv("MODULE2_DATABASE_DSN", "postgresql://postgres@127.0.0.1:5432/a23")
-        or "postgresql://postgres@127.0.0.1:5432/a23"
+        getenv("MODULE2_DATABASE_DSN", "postgresql://postgres@127.0.0.1:5433/Data_Extraction")
+        or "postgresql://postgres@127.0.0.1:5433/Data_Extraction"
     )
 
     document_workflow_runtime: Any = None

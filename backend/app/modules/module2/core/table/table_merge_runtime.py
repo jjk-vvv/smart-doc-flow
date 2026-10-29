@@ -4,10 +4,10 @@ import importlib.util
 import re
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
-    from app.core.table.table_header_runtime import TableHeaderRuntime
+    from app.modules.module2.core.table.table_header_runtime import TableHeaderRuntime
 except ModuleNotFoundError:
     _table_header_runtime_path = Path(__file__).resolve().with_name("table_header_runtime.py")
     _table_header_runtime_spec = importlib.util.spec_from_file_location(
@@ -22,7 +22,7 @@ except ModuleNotFoundError:
     TableHeaderRuntime = _table_header_runtime_module.TableHeaderRuntime
 
 try:
-    from app.core.table.table_metadata import extract_number_meta
+    from app.modules.module2.core.table.table_metadata import extract_number_meta
 except ModuleNotFoundError:
     _table_metadata_path = Path(__file__).resolve().with_name("table_metadata.py")
     _table_metadata_spec = importlib.util.spec_from_file_location(

@@ -37,7 +37,7 @@ def test_module2_health_runtime_builds_expected_health_payload() -> None:
             "ok": True,
             "checked_at": 12.5,
             "base_url": "https://provider-live.example",
-            "model": "gpt-5-mini",
+            "model": "test-chat-model",
             "error": "",
         },
         provider_config={
@@ -90,7 +90,7 @@ def test_module2_health_runtime_builds_expected_health_payload() -> None:
         "llm_provider_configured": "true",
         "llm_provider_type": "openai_compatible",
         "llm_provider_base_url": "https://provider-live.example",
-        "llm_provider_model": "gpt-5-mini",
+        "llm_provider_model": "test-chat-model",
         "llm_provider_last_error": "config-error",
         "mineru_warmup_enabled": "true",
         "mineru_warmup_status": "completed",
@@ -130,9 +130,9 @@ def test_module2_health_runtime_falls_back_to_config_and_defaults() -> None:
         provider_diag={},
         provider_config={
             "configured": False,
-            "provider_type": "gemini",
+            "provider_type": "vision",
             "base_url": "https://config.example",
-            "model": "gemini-model",
+            "model": "test-embedding-model",
             "error": "provider-missing",
         },
         mineru_warmup={},
@@ -147,9 +147,9 @@ def test_module2_health_runtime_falls_back_to_config_and_defaults() -> None:
     assert payload["python_venv_active"] == "false"
     assert payload["llm_provider_preflight_ok"] == "false"
     assert payload["llm_provider_configured"] == "false"
-    assert payload["llm_provider_type"] == "gemini"
+    assert payload["llm_provider_type"] == "vision"
     assert payload["llm_provider_base_url"] == "https://config.example"
-    assert payload["llm_provider_model"] == "gemini-model"
+    assert payload["llm_provider_model"] == "test-embedding-model"
     assert payload["llm_provider_last_error"] == "provider-missing"
     assert payload["mineru_warmup_enabled"] == "false"
     assert payload["module4_sync_enabled"] == "false"

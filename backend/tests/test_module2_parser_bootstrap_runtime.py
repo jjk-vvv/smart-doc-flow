@@ -77,7 +77,7 @@ def test_parser_bootstrap_runtime_builds_provider_state_runtime() -> None:
         roi_cropper_factory=lambda **kwargs: calls.setdefault("roi", kwargs) or {"kind": "roi"},
         build_roi_cropper_kwargs=lambda: {"table_dpi": 144},
         visual_vision_extractor_factory=lambda **kwargs: calls.setdefault("vision", kwargs) or {"kind": "vision"},
-        build_visual_vision_kwargs=lambda: {"model": "gpt-5-mini"},
+        build_visual_vision_kwargs=lambda: {"model": "test-chat-model"},
     )
 
     assert isinstance(provider_state, ParserProviderStateRuntime)
@@ -87,4 +87,4 @@ def test_parser_bootstrap_runtime_builds_provider_state_runtime() -> None:
 
     assert calls["mineru"] == {"backend": "pipeline"}
     assert calls["roi"] == {"table_dpi": 144}
-    assert calls["vision"] == {"model": "gpt-5-mini"}
+    assert calls["vision"] == {"model": "test-chat-model"}

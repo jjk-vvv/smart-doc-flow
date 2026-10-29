@@ -42,9 +42,9 @@ def _contains_figure_marker(text: str) -> bool:
 
 def _build_runtime(*, max_pages: int = 3, min_quality: float = 0.7, enable_figures: bool = True) -> VisualPageSignalRuntime:
     return VisualPageSignalRuntime(
-        gemini_vision_max_pages=max_pages,
-        gemini_vision_min_table_quality=min_quality,
-        gemini_vision_enable_figures=enable_figures,
+        vision_max_pages=max_pages,
+        vision_min_table_quality=min_quality,
+        vision_enable_figures=enable_figures,
         looks_like_table_cue_text=_looks_like_table_cue_text,
         looks_like_figure_cue_text=_looks_like_figure_cue_text,
         contains_figure_marker=_contains_figure_marker,

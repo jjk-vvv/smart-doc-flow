@@ -213,7 +213,7 @@ const packagedChecks = exists(packagedOutputRoot)
       );
       const unexpectedBackendEntries = countMatchingEntries(packagedBackendRoot, {
         dirNames: ['__pycache__', '.runlogs', '.runtime', '.mcache', '.pytest_cache', 'tests', 'trace_rois'],
-        fileNames: ['.env.example', 'auth.runtime.log', 'check_db.py', 'package-lock.json', 'users.json'],
+        fileNames: ['.env', '.env.local', '.env.example', 'auth.runtime.log', 'package-lock.json', 'users.json'],
         fileExtensions: ['.pyc', '.pyo'],
       });
 
@@ -229,16 +229,31 @@ const packagedChecks = exists(packagedOutputRoot)
         ),
         checkItem('packaged_backend_python', packagedUnifiedPythonPath, 'file'),
         checkItem('packaged_graphrag_python', packagedGraphPythonPath, 'file'),
-        checkMissing('packaged_module2_artifacts_absent', path.join(packagedRuntimeRoot, 'backend', 'module2', 'artifacts')),
-        checkMissing('packaged_legacy_backend_tree_absent', path.join(packagedRuntimeRoot, 'backend', 'backend')),
-        checkMissing('packaged_module2_legacy_backend_absent', path.join(packagedRuntimeRoot, 'backend', 'module2', 'backend')),
         checkMissing(
-          'packaged_module2_legacy_trace_rois_absent',
-          path.join(packagedRuntimeRoot, 'backend', 'module2', 'backend', 'module2', 'artifacts', 'trace_rois'),
+          'packaged_module2_artifacts_absent',
+          path.join(packagedRuntimeRoot, 'backend', 'app', 'modules', 'module2', 'artifacts'),
         ),
-        checkMissing('packaged_module2_tools_absent', path.join(packagedRuntimeRoot, 'backend', 'module2', 'tools')),
-        checkMissing('packaged_module2_check_db_absent', path.join(packagedRuntimeRoot, 'backend', 'module2', 'check_db.py')),
-        checkMissing('packaged_module4_workspaces_absent', path.join(packagedRuntimeRoot, 'backend', 'module4', 'workspaces')),
+        checkMissing(
+          'packaged_module2_workspaces_absent',
+          path.join(packagedRuntimeRoot, 'backend', 'app', 'modules', 'module2', 'workspaces'),
+        ),
+        checkMissing(
+          'packaged_module4_workspaces_absent',
+          path.join(packagedRuntimeRoot, 'backend', 'app', 'modules', 'module4', 'workspaces'),
+        ),
+        checkMissing(
+          'packaged_module2_tests_absent',
+          path.join(packagedRuntimeRoot, 'backend', 'app', 'modules', 'module2', 'tests'),
+        ),
+        checkMissing('packaged_backend_env_absent', path.join(packagedRuntimeRoot, 'backend', '.env')),
+        checkMissing(
+          'packaged_module2_env_absent',
+          path.join(packagedRuntimeRoot, 'backend', 'app', 'modules', 'module2', '.env'),
+        ),
+        checkMissing(
+          'packaged_module4_env_absent',
+          path.join(packagedRuntimeRoot, 'backend', 'app', 'modules', 'module4', '.env'),
+        ),
         checkValue(
           'packaged_backend_junk_entries_absent',
           packagedBackendRoot,

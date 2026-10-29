@@ -65,19 +65,10 @@ class _FakeResponse:
 
 def _build_runtime(**overrides: Any) -> VisionRequestRuntime:
     config: dict[str, Any] = {
-        "gemini_vision_dpi": 144,
-        "gemini_vision_max_side_px": 1000,
-        "gemini_vision_model": "gemini-3.1-pro-preview",
-        "gemini_vision_timeout_sec": 25.0,
-        "gemini_vision_max_output_tokens": 4096,
-        "gemini_native_fallback_enabled": True,
-        "resolve_api_key": lambda: "primary-token",
-        "resolve_native_api_key": lambda: "AIza-native-key",
-        "resolve_native_url": lambda model: f"https://proxy.test/v1beta/models/{model}:generateContent",
-        "build_google_native_url": lambda model: f"https://google.test/v1beta/models/{model}:generateContent",
-        "build_headers": lambda url, key: {"Authorization": f"Bearer {key}", "X-Url": url},
-        "extract_json_object": lambda text: json.loads(text),
-        "extract_candidate_text": lambda raw: json.loads(raw)["text"],
+        "vision_dpi": 144, "vision_max_side_px": 1000, "vision_model": "test-vision-model",
+        "vision_base_url": "https://provider.test/v1", "vision_endpoint_style": "openai_chat_completions",
+        "vision_timeout_sec": 25.0, "vision_max_output_tokens": 4096,
+        "resolve_api_key": lambda: "test-key", "extract_json_object": lambda text: json.loads(text),
     }
     config.update(overrides)
     return VisionRequestRuntime(**config)
@@ -101,44 +92,27 @@ def test_vision_request_runtime_renders_and_downscales_large_page(monkeypatch) -
     assert page.calls[0]["alpha"] is False
 
 
-def test_vision_request_runtime_extracts_payload_with_fallback_request() -> None:
+def test_vision_request_runtime_extracts_openai_compatible_payload() -> None:
     requests_seen: list[dict[str, Any]] = []
-
-    def _request_factory(*, url: str, data: bytes, headers: dict[str, str], method: str) -> Any:
-        payload = json.loads(data.decode("utf-8"))
-        requests_seen.append(
-            {
-                "url": url,
-                "headers": dict(headers),
-                "method": method,
-                "prompt": payload["contents"][0]["parts"][0]["text"],
-            }
-        )
-        return types.SimpleNamespace(url=url, data=data, headers=headers, method=method)
-
-    def _urlopen(request: Any, timeout: float) -> _FakeResponse:
-        if "proxy.test" in request.url:
-            raise RuntimeError("primary failed")
-        return _FakeResponse(json.dumps({"text": json.dumps({"insights": ["ok"]}, ensure_ascii=False)}))
-
+    def request_factory(*, url: str, data: bytes, headers: dict[str, str], method: str) -> Any:
+        requests_seen.append({"url": url, "headers": headers, "body": json.loads(data), "method": method})
+        return types.SimpleNamespace(url=url)
     runtime = _build_runtime(
-        request_factory=_request_factory,
-        urlopen=_urlopen,
+        request_factory=request_factory,
+        urlopen=lambda request, timeout: _FakeResponse(json.dumps({"choices": [{"message": {"content": '{"insights":["ok"]}'}}]})),
     )
-
-    payload = runtime.extract_payload(b"fake-png", focus="table")
-
-    assert payload == {"insights": ["ok"]}
-    assert len(requests_seen) == 2
-    assert requests_seen[0]["url"].startswith("https://proxy.test")
-    assert requests_seen[1]["url"].startswith("https://google.test")
-    assert "Extract visible table information" in requests_seen[1]["prompt"]
+    assert runtime.extract_payload(b"fake-png", focus="table") == {"insights": ["ok"]}
+    assert len(requests_seen) == 1
+    request = requests_seen[0]
+    assert request["url"] == "https://provider.test/v1/chat/completions"
+    assert request["headers"]["Authorization"] == "Bearer test-key"
+    assert request["body"]["model"] == "test-vision-model"
+    assert "Extract visible table information" in request["body"]["messages"][0]["content"][0]["text"]
 
 
 def test_vision_request_runtime_returns_empty_when_no_keys_available() -> None:
     runtime = _build_runtime(
         resolve_api_key=lambda: "",
-        resolve_native_api_key=lambda: "",
     )
 
     assert runtime.generate(b"fake-png", focus="mixed") == ""

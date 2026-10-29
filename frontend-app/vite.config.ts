@@ -15,7 +15,6 @@ const normalizeBasePath = (value: string | undefined, fallback: string): string 
 };
 
 const GRAPH_RUNTIME_PACKAGES = [
-  '/node_modules/@neo4j-nvl/',
   '/node_modules/d3-force/',
   '/node_modules/d3-dispatch/',
   '/node_modules/d3-quadtree/',
@@ -121,6 +120,9 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: frontendAppBuildOutDir,
+      // Native builds bundle Luckysheet/G6/PDF.js; gzip size reporting for every
+      // chunk pushes Node close to its heap limit on 4-8 GB machines.
+      reportCompressedSize: false,
       rollupOptions: {
         output: {
           manualChunks(id) {

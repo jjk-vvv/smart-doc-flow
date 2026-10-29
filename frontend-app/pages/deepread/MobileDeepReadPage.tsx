@@ -3,9 +3,7 @@ import { motion } from 'framer-motion';
 import {
   AlertTriangle,
   BarChart3,
-  Bot,
   Download,
-  ExternalLink,
   FileSearch,
   ImageIcon,
   LayoutList,
@@ -1609,347 +1607,6 @@ export const MobileDeepReadPage: React.FC = () => {
         </div>
       </section>
     );
-    /*
-    return (
-      <section id="mobile-artifact-detail">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <h3 className="truncate text-[17px] font-bold text-slate-800 dark:text-slate-100">
-            {activeDoc ? `${activeDoc.file_name} 路 浜х墿璇︽儏` : '浜х墿璇︽儏'}
-          </h3>
-          <button
-            type="button"
-            onClick={() => setTraceRefreshNonce((prev) => prev + 1)}
-            disabled={!activeDoc || traceLoading}
-            className="inline-flex items-center gap-1.5 rounded-full bg-slate-200/50 px-3 py-1.5 text-[13px] font-medium text-slate-600 transition hover:bg-slate-300/50 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
-          >
-            {traceLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
-            鍒锋柊
-          </button>
-        </div>
-
-        <motion.div variants={itemVariants} className="rounded-[26px] bg-white p-4 shadow-[0_8px_32px_rgba(0,0,0,0.03)] dark:bg-slate-800/60 dark:shadow-[0_8px_32px_rgba(0,0,0,0.2)]">
-          <div className="mb-5 flex gap-1.5 rounded-[14px] bg-slate-50/80 p-1 ring-1 ring-slate-100/50 dark:bg-slate-900/50 dark:ring-slate-700/50">
-            {[
-              { id: 'fields' as const, label: '瀛楁', icon: LayoutList },
-              { id: 'tables' as const, label: '琛ㄦ牸', icon: Table2 },
-              { id: 'charts' as const, label: '鍥捐〃', icon: BarChart3 },
-              { id: 'images' as const, label: '鍥剧墖', icon: ImageIcon },
-            ].map((tab) => {
-              const Icon = tab.icon;
-              const active = tab.id === activeTab;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={cn(
-                    'flex flex-1 items-center justify-center gap-1.5 rounded-[12px] py-2 text-[13px] font-semibold transition-all',
-                    active
-                      ? 'bg-white text-slate-800 shadow-[0_2px_10px_rgba(0,0,0,0.04)] dark:bg-slate-700 dark:text-white'
-                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200',
-                  )}
-                >
-                  <Icon size={15} strokeWidth={active ? 2.5 : 2} />
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-
-          {traceError && (
-            <div className="mb-4 flex items-center gap-2 rounded-[16px] bg-rose-50 px-4 py-3 text-[14px] text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
-              <AlertTriangle size={18} strokeWidth={2.5} className="shrink-0" />
-              {traceError}
-            </div>
-          )}
-          {downloadMessage && (
-            <div className="mb-4 flex items-center gap-2 rounded-[16px] bg-rose-50 px-4 py-3 text-[14px] text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
-              <AlertTriangle size={18} strokeWidth={2.5} className="shrink-0" />
-              {downloadMessage}
-            </div>
-          )}
-
-          {activeTab === 'fields' && (
-            <div className="space-y-3">
-              {fieldEntries.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-50 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500">
-                    <LayoutList size={24} strokeWidth={1.5} />
-                  </div>
-                  <p className="text-[14px] font-semibold text-slate-700 dark:text-slate-200">鏆傛棤瀛楁浜х墿</p>
-                  <p className="mt-1 text-[12px] text-slate-400 dark:text-slate-500">璇ユ枃妗ｆ湭瑙ｆ瀽鍑哄瓧娈典俊鎭?/p>
-                </div>
-              ) : (
-                fieldEntries.map((item) => (
-                  <article key={item.fieldName} className="rounded-[20px] bg-white border border-slate-100 shadow-[0_2px_10px_rgba(0,0,0,0.02)] px-4 py-4 transition-colors hover:border-slate-200 dark:bg-slate-800/40 dark:border-slate-700/40 dark:hover:border-slate-600">
-                    <p className="text-[13px] font-medium text-slate-500 dark:text-slate-400">{item.fieldName}</p>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-[15px] font-medium text-slate-800 dark:text-slate-100">
-                      {item.value}
-                    </p>
-                  </article>
-                ))
-              )}
-            </div>
-          )}
-
-          {activeTab === 'tables' && (
-            <div className="space-y-4">
-              {tableItems.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-50 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500">
-                    <Table2 size={24} strokeWidth={1.5} />
-                  </div>
-                  <p className="text-[14px] font-semibold text-slate-700 dark:text-slate-200">鏆傛棤琛ㄦ牸浜х墿</p>
-                  <p className="mt-1 text-[12px] text-slate-400 dark:text-slate-500">璇ユ枃妗ｆ湭瑙ｆ瀽鍑鸿〃鏍间俊鎭?/p>
-                </div>
-              ) : (
-                tableItems.map((item) => {
-                  const expanded = expandedTableKeys.includes(item.key);
-                  const previewRows = expanded ? item.dataframe.rows : item.dataframe.rows.slice(0, 8);
-                  const baseName = toFileBaseName(activeDoc?.file_name || 'document');
-                  return (
-                    <article key={item.key} className="overflow-hidden rounded-[20px] bg-white border border-slate-100 shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition-colors hover:border-slate-200 dark:bg-slate-800/40 dark:border-slate-700/40 dark:hover:border-slate-600">
-                      <div className="p-4">
-                        <div className="mb-3 flex items-start justify-between gap-3">
-                          <div className="flex-1">
-                            <p className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '琛ㄦ牸'}</p>
-                            <div className="mt-1 flex items-center gap-2">
-                              {item.page > 0 && <span className="rounded-md bg-slate-100/80 border border-slate-200/60 px-2 py-0.5 text-[11px] font-bold text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400">绗?{item.page} 椤?/span>}
-                            </div>
-                          </div>
-                          {item.artifactUrl && (
-                            <a
-                              href={item.artifactUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-50 text-slate-600 shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-colors hover:bg-slate-100 hover:text-slate-900 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600 dark:hover:text-white"
-                            >
-                              <ExternalLink size={14} />
-                            </a>
-                          )}
-                        </div>
-
-                        {item.summary && (
-                          <p className="mb-3 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{item.summary}</p>
-                        )}
-
-                        <div className="mb-4 flex flex-wrap gap-2">
-                          {item.tableDownloadUrl ? (
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadRemote(item.tableDownloadUrl, `${baseName}-${item.title || 'table'}.csv`)}
-                              className="inline-flex w-fit items-center gap-1.5 rounded-[10px] bg-emerald-50/80 border border-emerald-100 px-3 py-1.5 text-[12px] font-semibold text-emerald-600 transition hover:bg-emerald-100/80 hover:border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/20 dark:text-emerald-400 dark:hover:bg-emerald-500/20"
-                            >
-                              <Download size={14} />
-                              涓嬭浇鏁版嵁
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => downloadDataframeAsCsv(item.dataframe, `${baseName}-${item.title || 'table'}.csv`)}
-                              disabled={item.dataframe.rows.length === 0 && item.dataframe.headers.length === 0}
-                              className="inline-flex w-fit items-center gap-1.5 rounded-[10px] bg-emerald-50/80 border border-emerald-100 px-3 py-1.5 text-[12px] font-semibold text-emerald-600 transition hover:bg-emerald-100/80 hover:border-emerald-200 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500/10 dark:border-emerald-500/20 dark:text-emerald-400 dark:hover:bg-emerald-500/20"
-                            >
-                              <Download size={14} />
-                              涓嬭浇鏁版嵁
-                            </button>
-                          )}
-                          {item.artifactUrl && (
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadRemote(item.artifactUrl, `${baseName}-${item.title || 'table'}-screenshot.png`)}
-                              className="inline-flex w-fit items-center gap-1.5 rounded-[10px] bg-slate-50 border border-slate-200/60 px-3 py-1.5 text-[12px] font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 dark:bg-slate-800/80 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700"
-                            >
-                              <ImageIcon size={14} />
-                              涓嬭浇鍘熷浘
-                            </button>
-                          )}
-                        </div>
-
-                        {(item.dataframe.headers.length > 0 || item.dataframe.rows.length > 0) && (
-                          <div className="overflow-hidden rounded-[16px] border border-slate-200/60 bg-slate-50/50 dark:border-slate-700/60 dark:bg-slate-900/40">
-                            <div className="overflow-x-auto">
-                              <table className="min-w-full text-[13px]">
-                                {item.dataframe.headers.length > 0 && (
-                                  <thead>
-                                    <tr className="bg-slate-100/50 dark:bg-slate-800/50">
-                                      {item.dataframe.headers.map((header, idx) => (
-                                        <th key={`${item.key}-h-${idx}`} className="whitespace-nowrap border-b border-slate-200/60 px-4 py-2.5 text-left font-semibold text-slate-800 dark:border-slate-700/60 dark:text-slate-200">
-                                          {header || `鍒?${idx + 1}`}
-                                        </th>
-                                      ))}
-                                    </tr>
-                                  </thead>
-                                )}
-                                <tbody>
-                                  {previewRows.map((row, rowIdx) => (
-                                    <tr key={`${item.key}-r-${rowIdx}`} className="border-b border-slate-100/60 last:border-0 hover:bg-slate-100/30 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
-                                      {row.map((cell, cellIdx) => (
-                                        <td key={`${item.key}-c-${rowIdx}-${cellIdx}`} className="whitespace-nowrap px-4 py-2 text-slate-600 dark:text-slate-400">
-                                          {cell}
-                                        </td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                            <div className="flex items-center justify-between border-t border-slate-200/60 bg-slate-100/50 px-4 py-2.5 text-[12px] text-slate-500 dark:border-slate-700/60 dark:bg-slate-800/50 dark:text-slate-400">
-                              <span>鍏?{item.dataframe.rowCount} 琛?/ {item.dataframe.colCount} 鍒?/span>
-                              {item.dataframe.rows.length > 8 && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setExpandedTableKeys((prev) =>
-                                      prev.includes(item.key)
-                                        ? prev.filter((key) => key !== item.key)
-                                        : [...prev, item.key],
-                                    )
-                                  }
-                                  className="font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-                                >
-                                  {expanded ? '鏀惰捣' : '灞曞紑瀹屾暣琛ㄦ牸'}
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })
-              )}
-            </div>
-          )}
-
-          {activeTab === 'charts' && (
-            <div className="space-y-4">
-              {chartItems.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-50 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500">
-                    <BarChart3 size={24} strokeWidth={1.5} />
-                  </div>
-                  <p className="text-[14px] font-semibold text-slate-700 dark:text-slate-200">鏆傛棤鍥捐〃浜х墿</p>
-                  <p className="mt-1 text-[12px] text-slate-400 dark:text-slate-500">璇ユ枃妗ｆ湭瑙ｆ瀽鍑哄浘琛ㄤ俊鎭?/p>
-                </div>
-              ) : (
-                chartItems.map((item) => (
-                  <article key={item.key} className="overflow-hidden rounded-[20px] bg-white border border-slate-100 shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition-colors hover:border-slate-200 dark:bg-slate-800/40 dark:border-slate-700/40 dark:hover:border-slate-600">
-                    <div className="p-4">
-                      <div className="mb-3 flex items-start justify-between gap-3">
-                        <div className="flex-1">
-                          <p className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '鍥捐〃'}</p>
-                          <div className="mt-1 flex flex-wrap items-center gap-2">
-                            {item.page > 0 && <span className="rounded-md bg-slate-100/80 border border-slate-200/60 px-2 py-0.5 text-[11px] font-bold text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400">绗?{item.page} 椤?/span>}
-                            {item.pointCount > 0 && <span className="rounded-md bg-slate-100/80 border border-slate-200/60 px-2 py-0.5 text-[11px] font-bold text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400">{item.pointCount} 涓偣</span>}
-                          </div>
-                        </div>
-                      </div>
-
-                      {(item.xAxisLabel || item.yAxisLabel) && (
-                        <div className="mb-3 rounded-[12px] border border-slate-200/70 bg-slate-50/70 px-3 py-2 dark:border-slate-700/70 dark:bg-slate-900/40">
-                          {item.xAxisLabel && (
-                            <p className="text-[12px] leading-5 text-slate-600 dark:text-slate-300">
-                              X杞达細{item.xAxisLabel}
-                            </p>
-                          )}
-                          {item.yAxisLabel && (
-                            <p className="text-[12px] leading-5 text-slate-600 dark:text-slate-300">
-                              Y杞达細{item.yAxisLabel}
-                            </p>
-                          )}
-                        </div>
-                      )}
-
-                      {item.summary && (
-                        <p className="mb-3 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-                          <span className="mr-1 font-semibold text-slate-700 dark:text-slate-200">瓒嬪娍瑙ｈ锛?/span>
-                          {item.summary}
-                        </p>
-                      )}
-
-                      <TraceChartPreview spec={item.chartSpec} compact />
-                    </div>
-                  </article>
-                ))
-              )}
-            </div>
-          )}
-
-          {activeTab === 'images' && (
-            <div className="space-y-4">
-              {imageItems.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-50 text-slate-400 dark:bg-slate-800/80 dark:text-slate-500">
-                    <ImageIcon size={24} strokeWidth={1.5} />
-                  </div>
-                  <p className="text-[14px] font-semibold text-slate-700 dark:text-slate-200">鏆傛棤鍥剧墖浜х墿</p>
-                  <p className="mt-1 text-[12px] text-slate-400 dark:text-slate-500">璇ユ枃妗ｆ湭瑙ｆ瀽鍑哄浘鐗囦俊鎭?/p>
-                </div>
-              ) : (
-                imageItems.map((item) => {
-                  const baseName = toFileBaseName(activeDoc?.file_name || 'document');
-                  return (
-                    <article key={item.key} className="overflow-hidden rounded-[20px] bg-white border border-slate-100 shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition-colors hover:border-slate-200 dark:bg-slate-800/40 dark:border-slate-700/40 dark:hover:border-slate-600">
-                      <div className="p-4">
-                        <div className="mb-2 flex items-start justify-between gap-3">
-                          <div className="flex-1">
-                            <p className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{item.title || '鍥剧墖'}</p>
-                            {item.page > 0 && <span className="mt-1 inline-block rounded-md bg-slate-100/80 border border-slate-200/60 px-2 py-0.5 text-[11px] font-bold text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400">绗?{item.page} 椤?/span>}
-                          </div>
-                          {item.artifactUrl && (
-                            <a
-                              href={item.artifactUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-50 text-slate-600 shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-colors hover:bg-slate-100 hover:text-slate-900 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600 dark:hover:text-white"
-                            >
-                              <ExternalLink size={14} />
-                            </a>
-                          )}
-                        </div>
-
-                        {item.caption && (
-                          <p className="mb-3 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-                            {item.caption}
-                          </p>
-                        )}
-
-                        {item.artifactUrl && (
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadRemote(item.artifactUrl, `${baseName}-${item.title || 'image'}.png`)}
-                            className="mb-4 inline-flex w-fit items-center gap-1.5 rounded-[10px] bg-slate-50 border border-slate-200/60 px-3 py-1.5 text-[12px] font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 dark:bg-slate-800/80 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700"
-                          >
-                            <Download size={14} />
-                            涓嬭浇鍥剧墖
-                          </button>
-                        )}
-                      </div>
-                      {item.artifactUrl ? (
-                        <div className="bg-slate-50/50 px-4 py-6 border-t border-slate-100 dark:bg-slate-900/50 dark:border-slate-800">
-                          <img
-                            src={item.artifactUrl}
-                            alt={item.title || '鍥剧墖鎴浘'}
-                            className="mx-auto max-h-[240px] rounded-[12px] object-contain shadow-sm border border-slate-200/60 dark:border-slate-700"
-                            loading="lazy"
-                          />
-                        </div>
-                      ) : (
-                        <p className="bg-slate-50/50 px-4 py-12 border-t border-slate-100 text-center text-[13px] text-slate-500 dark:bg-slate-900/50 dark:border-slate-800 dark:text-slate-500">
-                          鏆傛棤鍥剧墖璧勬簮
-                        </p>
-                      )}
-                    </article>
-                  );
-                })
-              )}
-            </div>
-          )}
-        </motion.div>
-      </section>
-    );
-    */
   };
 
   const containerVariants = {
@@ -1988,7 +1645,6 @@ export const MobileDeepReadPage: React.FC = () => {
       animate="show"
       className="flex h-[var(--app-visual-height,100dvh)] flex-col bg-gradient-to-b from-[#C5F1F3] via-[#E6F7F9] to-[#F2F5F8] font-sans overflow-hidden dark:from-slate-900 dark:via-slate-900 dark:to-slate-950"
     >
-      {/* Impeccable 级悬浮搜索背景 (全宽毛玻璃，无生硬边缘，无尴尬留白) */}
       <motion.div
         aria-hidden="true"
         className="pointer-events-none fixed inset-x-0 top-0 z-[58] border-b border-slate-200/40 bg-[#fbfcfd]/90 pb-3 pt-[max(12px,var(--mobile-safe-top))] shadow-[0_2px_12px_rgba(0,0,0,0.03)] backdrop-blur-xl dark:border-white/5 dark:bg-[#0B1120]/95 dark:shadow-none"
@@ -1997,7 +1653,6 @@ export const MobileDeepReadPage: React.FC = () => {
         <div className="h-[46px]" /> {/* 占位撑开高度与搜索框一致 */}
       </motion.div>
 
-      {/* 悬浮搜索框主体 (完全融入毛玻璃背景，放弃生硬的大白块包裹) */}
       <div
         ref={stickySearchShellRef}
         className="pointer-events-none fixed inset-x-0 top-0 z-[65] px-4 pt-[max(12px,var(--mobile-safe-top))]"
@@ -2028,13 +1683,9 @@ export const MobileDeepReadPage: React.FC = () => {
       </div>
 
       <div className="px-4 pt-[max(0rem,var(--mobile-safe-top))] flex-1 flex flex-col min-h-0">
-        {/* 顶部独立导航区 (分离式设计：主标题与副标题) */}
-        {/* 整体上移：将 pt-6 减小为 pt-3，使得页面内容整体向上提升约 12px */}
         <motion.div variants={itemVariants} className="relative z-40 flex items-start justify-between px-3 pt-2 overflow-visible pointer-events-auto">
-          {/* 左侧标题区：通过 -ml-2 抵消部分 px-3，配合下方标题的 px-1，统一向右微调 4px；向下微调 8px 靠近搜索框 */}
           <div className="relative z-50 flex flex-col gap-1 -ml-2 translate-y-3">
             <div className="flex items-center gap-2.5">
-              {/* 主标题缩小至 22px */}
               <h1 className="text-[22px] font-bold tracking-tight text-slate-900 dark:text-white">
                 AI信息提取
               </h1>
@@ -2049,25 +1700,20 @@ export const MobileDeepReadPage: React.FC = () => {
                 className="relative z-50 pointer-events-auto cursor-pointer flex items-center justify-center transition-transform active:scale-[0.92]"
                 aria-label="打开智能助手"
               >
-                {/* 底部白色动态光晕层：加入 pulse 动画效果，使其像呼吸一样闪烁 */}
                 <div className="absolute top-1/2 left-1/2 z-0 h-[24px] w-[24px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/90 blur-[6px] dark:bg-white/40 animate-pulse" aria-hidden="true" />
-                {/* 右上角小星光点缀 */}
                 <Sparkles 
                   size={12} 
                   className="absolute -right-1.5 -top-1.5 z-20 text-amber-400 animate-pulse dark:text-amber-300 drop-shadow-[0_0_2px_rgba(251,191,36,0.8)]" 
                   aria-hidden="true" 
                 />
-                {/* 图标主体：设置 relative z-10 确保完全覆盖在光晕之上 */}
                 <img src={aiAssistantIcon} alt="AI 助手" className="relative z-10 h-[28px] w-[28px] object-contain drop-shadow-sm" />
               </button>
             </div>
-            {/* 副标题缩小至 13px */}
             <p className="text-[13px] bg-gradient-to-r from-slate-500/90 via-slate-700 to-slate-500/90 bg-[length:200%_auto] bg-clip-text text-transparent animate-text-shimmer dark:from-slate-400 dark:via-white dark:to-slate-400">
               智能解析与结构化产物检索
             </p>
           </div>
           
-          {/* 右侧沉浸式悬浮插图：移除透明度遮罩，展示原图 */}
           <div className="absolute right-0 top-0 bottom-0 z-0 pointer-events-none w-[160px] overflow-visible">
             <div className="absolute -right-1 -top-7 h-[120px] w-[160px]">
               <img 
@@ -2080,7 +1726,6 @@ export const MobileDeepReadPage: React.FC = () => {
           </div>
         </motion.div>
 
-        {/* 核心搜索区域：大幅缩减上边距，让出首屏空间 */}
         <div ref={heroSearchAnchorRef} className="pointer-events-none h-0" aria-hidden="true" />
         <motion.div
           variants={itemVariants}
@@ -2440,26 +2085,6 @@ export const MobileDeepReadPage: React.FC = () => {
           </div>
           </div>
         </motion.section>
-
-        {/* Deprecated banner removed: keep single-path upload flow */}
-        {/*
-        <motion.button
-          variants={itemVariants}
-          onClick={() => handleQuickUploadShortcut(QUICK_UPLOAD_SHORTCUTS[0])}
-          data-testid="mobile-upload-workspace-entry"
-          className="flex w-full items-center justify-between rounded-[22px] bg-[#0A2E36] px-4 py-3.5 text-left shadow-xl transition-transform active:scale-[0.98] dark:bg-slate-800"
-        >
-          <div className="flex items-center gap-3">
-            <div className="flex h-[40px] w-[40px] items-center justify-center rounded-[13px] bg-white/10">
-              <FileSearch size={20} className="text-white" strokeWidth={2} />
-            </div>
-            <div>
-              <h3 className="text-[16px] font-semibold text-white tracking-wide">上传后手动开始解析</h3>
-              <p className="mt-0.5 text-[12px] text-slate-300/80">上传仅入队，不会自动解析；请按文件逐个确认</p>
-            </div>
-          </div>
-        </motion.button>
-        */}
 
         
       </div>

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from html import escape
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 
 TableBlocks = List[Dict[str, Any]]
@@ -24,7 +24,7 @@ SelectLineAugmentationPages = Callable[[PageLines, TableBlocks, List[int] | None
 InferTablesFromPageLines = Callable[[PageLines, List[str], Dict[str, List[float]], str], TableBlocks]
 SelectUncoveredTableLikePages = Callable[[PageLines, TableBlocks, bool], PageLines]
 InferFiguresFromPageLines = Callable[..., FigureBlocks]
-EnhanceLowQualityPagesWithGeminiVision = Callable[..., Tuple[TableBlocks, FigureBlocks]]
+EnhanceLowQualityPagesWithVision = Callable[..., Tuple[TableBlocks, FigureBlocks]]
 MergeFigureBlocks = Callable[[FigureBlocks, FigureBlocks], FigureBlocks]
 PruneFragmentTables = Callable[[TableBlocks], TableBlocks]
 
@@ -74,7 +74,7 @@ class PdfOcrRuntime:
         infer_tables_from_page_lines: InferTablesFromPageLines,
         select_uncovered_table_like_pages: SelectUncoveredTableLikePages,
         infer_figures_from_page_lines: InferFiguresFromPageLines,
-        enhance_low_quality_pages_with_gemini_vision: EnhanceLowQualityPagesWithGeminiVision,
+        enhance_low_quality_pages_with_vision: EnhanceLowQualityPagesWithVision,
         merge_figure_blocks: MergeFigureBlocks,
         prune_fragment_tables: PruneFragmentTables,
     ) -> None:
@@ -117,7 +117,7 @@ class PdfOcrRuntime:
         self._infer_tables_from_page_lines = infer_tables_from_page_lines
         self._select_uncovered_table_like_pages = select_uncovered_table_like_pages
         self._infer_figures_from_page_lines = infer_figures_from_page_lines
-        self._enhance_low_quality_pages_with_gemini_vision = enhance_low_quality_pages_with_gemini_vision
+        self._enhance_low_quality_pages_with_vision = enhance_low_quality_pages_with_vision
         self._merge_figure_blocks = merge_figure_blocks
         self._prune_fragment_tables = prune_fragment_tables
 
@@ -406,14 +406,14 @@ class PdfOcrRuntime:
             source_prefix="pdf_ocr_caption",
         )
 
-        table_blocks, vision_figures = self._enhance_low_quality_pages_with_gemini_vision(
+        table_blocks, vision_figures = self._enhance_low_quality_pages_with_vision(
             file_bytes=file_bytes,
             filetype="pdf",
             page_lines=page_lines,
             table_blocks=table_blocks,
             parts=parts,
             bbox_map=bbox_map,
-            source_prefix="pdf_gemini_vision",
+            source_prefix="pdf_vision",
         )
         if vision_figures:
             figure_blocks = self._merge_figure_blocks(figure_blocks, vision_figures)

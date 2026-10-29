@@ -31,23 +31,6 @@ def _build_runtime() -> VisionResponseRuntime:
     )
 
 
-def test_vision_response_runtime_extracts_candidate_text_from_generate_response() -> None:
-    raw = """
-    {
-      "candidates": [
-        {
-          "content": {
-            "parts": [
-              {"text": "first"},
-              {"text": "second"}
-            ]
-          }
-        }
-      ]
-    }
-    """
-
-    assert VisionResponseRuntime.extract_candidate_text(raw) == "first\nsecond"
 
 
 def test_vision_response_runtime_extracts_json_object_from_fenced_or_embedded_text() -> None:

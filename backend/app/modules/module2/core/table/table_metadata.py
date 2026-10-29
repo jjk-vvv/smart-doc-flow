@@ -5,7 +5,7 @@ import re
 from typing import Any, Dict, List, Tuple
 
 try:
-    from app.core.format.plain_text_parser import normalize_text
+    from app.modules.module2.core.format.plain_text_parser import normalize_text
 except ModuleNotFoundError:
     def normalize_text(text: str) -> str:
         text = text.replace("\x00", " ")

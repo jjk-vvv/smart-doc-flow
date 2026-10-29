@@ -42,7 +42,7 @@ def test_post_parse_quality_runtime_handles_quick_fallback_and_recoverable_error
                 "low_conf": {"value": "kept?", "confidence": 0.55},
                 "bad_entity": "oops",
             },
-            "errors": ["table_extract_timeout:gemini"],
+            "errors": ["table_extract_timeout:vision"],
             "soft_warnings": ["seed"],
         },
         file_name="demo.pdf",
@@ -76,7 +76,7 @@ def test_post_parse_quality_runtime_handles_quick_fallback_and_recoverable_error
     assert outcome.business_extraction_status == "nonempty"
     assert "quick_table_fallback_filtered:3" in outcome.soft_warnings
     assert "quick_table_fallback_used:demo.pdf" in outcome.soft_warnings
-    assert "downgraded:table_extract_timeout:gemini" in outcome.soft_warnings
+    assert "downgraded:table_extract_timeout:vision" in outcome.soft_warnings
     assert "nonpdf_budget_exceeded:500" in outcome.soft_warnings
     assert "quality_gate_degraded:low_coverage:0.500|low_confidence:0.820|quick_fallback" in outcome.soft_warnings
 

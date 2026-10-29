@@ -85,8 +85,6 @@ class Assistant1Settings:
     embedding_dimensions: int
     embedding_timeout_sec: float
     embedding_batch_size: int
-    embedding_document_task_type: str
-    embedding_query_task_type: str
     similarity_metric: str
     chat_api_key: str
     chat_base_url: str
@@ -123,12 +121,8 @@ class Assistant1Settings:
             "ASSISTANT1_EMBEDDING_ENDPOINT_STYLE",
             default="openai",
         ).lower()
-        if endpoint_style == "native":
-            raise RuntimeError(
-                "ASSISTANT1_EMBEDDING_ENDPOINT_STYLE=native is disabled; use openai for Embedding-V1."
-            )
-        if endpoint_style not in {"auto", "openai"}:
-            endpoint_style = "openai"
+        if endpoint_style != "openai":
+            raise RuntimeError("ASSISTANT1_EMBEDDING_ENDPOINT_STYLE must be openai.")
 
         similarity_metric = _env(
             "ASSISTANT1_VECTOR_SIMILARITY_METRIC",
@@ -164,13 +158,11 @@ class Assistant1Settings:
         ).strip() or "https://api.tavily.com/search"
         embedding_base_url = _sanitize_embedding_base_url(
             _env(
-                "ASSISTANT1_EMBEDDING_BASE",
                 "ASSISTANT1_EMBEDDING_BASE_URL",
                 "MODULE2_LLM_BASE_URL",
-                "MODULE2_LLM_API_BASE_URL",
-                default="https://jeniya.cn/v1",
+                default="https://quanzil.com/v1",
             )
-        ) or "https://jeniya.cn/v1"
+        ) or "https://quanzil.com/v1"
 
         tavily_api_key = _env(
             "ASSISTANT1_TAVILY_API_KEY",
@@ -194,13 +186,12 @@ class Assistant1Settings:
             embedding_api_key=_env(
                 "ASSISTANT1_EMBEDDING_API_KEY",
                 "MODULE2_LLM_API_KEY",
-                "GOOGLE_API_KEY",
                 default="",
             ),
             embedding_base_url=embedding_base_url,
             embedding_model=_env(
                 "ASSISTANT1_EMBEDDING_MODEL",
-                default="Embedding-V1",
+                default="text-embedding-3-small",
             ),
             embedding_endpoint_style=endpoint_style,
             embedding_dimensions=max(128, int(_env("ASSISTANT1_EMBEDDING_DIMENSIONS", default="384"))),
@@ -212,14 +203,6 @@ class Assistant1Settings:
                 1,
                 int(_env("ASSISTANT1_EMBEDDING_BATCH_SIZE", default="16")),
             ),
-            embedding_document_task_type=_env(
-                "ASSISTANT1_EMBEDDING_DOCUMENT_TASK_TYPE",
-                default="RETRIEVAL_DOCUMENT",
-            ),
-            embedding_query_task_type=_env(
-                "ASSISTANT1_EMBEDDING_QUERY_TASK_TYPE",
-                default="RETRIEVAL_QUERY",
-            ),
             similarity_metric=similarity_metric,
             chat_api_key=_env(
                 "ASSISTANT1_CHAT_API_KEY",
@@ -229,7 +212,7 @@ class Assistant1Settings:
             chat_base_url=_env(
                 "ASSISTANT1_CHAT_BASE_URL",
                 "OPENAI_BASE_URL",
-                default="https://jeniya.cn/v1",
+                default="https://quanzil.com/v1",
             ),
             chat_endpoint_path=chat_endpoint_path,
             chat_endpoint_style=chat_endpoint_style,

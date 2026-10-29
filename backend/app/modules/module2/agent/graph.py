@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from html import unescape
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple, TypedDict
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple, TypedDict
 
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
@@ -23,9 +23,6 @@ from ..integrations.llm.provider import (
 )
 from ..core.schema.prompt_assets import load_prompt_assets, prompt_asset_names, prompt_asset_versions
 from ..core.format.xlsx_artifact_io import load_xlsx_sheet_rows_for_table
-
-if TYPE_CHECKING:
-    from langchain_google_genai import ChatGoogleGenerativeAI
 
 
 MODULE2_ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +71,7 @@ class AgentState(TypedDict):
 
 
 class ExtractionGraph:
-    def __init__(self, llm: Optional["ChatGoogleGenerativeAI"] = None) -> None:
+    def __init__(self, llm: Optional[Any] = None) -> None:
         prompt_assets = load_prompt_assets()
         prompt_map = prompt_assets.get("prompts", {})
         self._prompt_version = str(prompt_assets.get("version") or "")
@@ -351,7 +348,7 @@ class ExtractionGraph:
 
             try:
                 payload = await asyncio.wait_for(
-                    self._invoke_with_model_fallback(
+                    self._invoke_extraction(
                         [
                             {"role": "system", "content": self._table_system_prompt},
                             {"role": "user", "content": user_prompt},
@@ -521,7 +518,7 @@ class ExtractionGraph:
 
             try:
                 payload = await asyncio.wait_for(
-                    self._invoke_with_model_fallback(
+                    self._invoke_extraction(
                         [
                             {"role": "system", "content": self._system_prompt},
                             {"role": "user", "content": user_prompt},
@@ -1797,81 +1794,26 @@ class ExtractionGraph:
             default_size=plain_text_batch_size,
         )
 
-    async def invoke_json_object(
-        self,
-        messages: List[Dict[str, str]],
-        *,
-        max_tokens: Optional[int] = None,
-        purpose: str = "json_object",
-    ) -> Dict[str, Any]:
+    async def invoke_json_object(self, messages: List[Dict[str, str]], *, max_tokens: Optional[int] = None, purpose: str = "json_object") -> Dict[str, Any]:
         if self._provider is not None:
             return await self._invoke_provider_json_object(messages, max_tokens=max_tokens, purpose=purpose)
-
         if self.llm is None:
             reason = self._llm_disabled_reason or "llm_unavailable"
             raise RuntimeError(f"llm_disabled:{reason}")
+        raw_response = await self.llm.ainvoke(messages)
+        payload = extract_json_object(getattr(raw_response, "content", raw_response))
+        if not isinstance(payload, dict):
+            raise RuntimeError("llm returned non-json content")
+        return payload
 
-        last_exc: Exception | None = None
-        for model_index, model_name in enumerate(self._model_candidates):
-            if model_index == 0:
-                llm = self.llm
-            else:
-                llm = ChatGoogleGenerativeAI(
-                    model=model_name,
-                    temperature=self._temperature,
-                    google_api_key=self._api_key,
-                )
-            try:
-                raw_resp = await llm.ainvoke(messages)
-                payload_dict = extract_json_object(getattr(raw_resp, "content", raw_resp))
-                if isinstance(payload_dict, dict):
-                    return payload_dict
-                raise RuntimeError("llm returned non-json content")
-            except Exception as exc:
-                last_exc = exc
-                if self._is_model_not_found_error(exc):
-                    continue
-                raise
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("llm provider unavailable")
-
-    async def _invoke_with_model_fallback(
-        self,
-        messages: List[Dict[str, str]],
-        *,
-        purpose: str = "field_extract",
-    ) -> LLMExtractionPayload:
+    async def _invoke_extraction(self, messages: List[Dict[str, str]], *, purpose: str = "field_extract") -> LLMExtractionPayload:
         if self._provider is not None:
-            payload_dict = await self.invoke_json_object(messages, max_tokens=self._max_tokens, purpose=purpose)
-            return self._payload_from_dict(payload_dict)
-
+            payload = await self.invoke_json_object(messages, max_tokens=self._max_tokens, purpose=purpose)
+            return self._payload_from_dict(payload)
         if self.structured_llm is None:
             reason = self._llm_disabled_reason or "llm_unavailable"
             raise RuntimeError(f"llm_disabled:{reason}")
-        try:
-            return await self.structured_llm.ainvoke(messages)
-        except Exception as exc:
-            if not self._is_model_not_found_error(exc):
-                raise
-            last_exc: Exception = exc
-
-        for model_name in self._model_candidates[1:]:
-            self.llm = ChatGoogleGenerativeAI(
-                model=model_name,
-                temperature=self._temperature,
-                google_api_key=self._api_key,
-            )
-            self.structured_llm = self.llm.with_structured_output(LLMExtractionPayload)
-            try:
-                return await self.structured_llm.ainvoke(messages)
-            except Exception as exc:
-                last_exc = exc
-                if self._is_model_not_found_error(exc):
-                    continue
-                raise
-
-        raise last_exc
+        return await self.structured_llm.ainvoke(messages)
 
     async def _invoke_provider_json_object(
         self,

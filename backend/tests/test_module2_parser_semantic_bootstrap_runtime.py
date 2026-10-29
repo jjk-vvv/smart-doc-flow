@@ -55,7 +55,7 @@ def test_parser_semantic_bootstrap_runtime_builds_expected_runtime_attrs() -> No
         table_max_cols=12,
         table_cell_cap=2000,
         table_merge_enable=True,
-        gemini_vision_enable_figures=True,
+        vision_enable_figures=True,
         runtime_page_count_provider=lambda: 5,
         infer_headers_and_data_rows=table_header.infer_headers_and_data_rows,
         drop_redundant_header_like_rows=table_header.drop_redundant_header_like_rows,
@@ -87,4 +87,4 @@ def test_parser_semantic_bootstrap_runtime_builds_expected_runtime_attrs() -> No
     assert hasattr(attrs["_figure_inference"], "infer_figures_from_page_lines")
     assert hasattr(attrs["_content_normalization_runtime"], "normalize_dataframe_headers")
     assert attrs["_ocr_table_inference"].ocr_table_min_quality == 0.55
-    assert attrs["_figure_inference"].gemini_vision_enable_figures is True
+    assert attrs["_figure_inference"].vision_enable_figures is True

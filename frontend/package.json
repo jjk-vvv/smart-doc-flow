@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js --host 0.0.0.0 --strictPort --force",
     "build": "node ./scripts/build-safe.mjs",
+    "typecheck": "node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "preview": "node ./node_modules/vite/bin/vite.js preview --host 0.0.0.0 --strictPort",
     "module2:realistic": "node ./e2e/deepread-batch-simulation.mjs",
     "module2:frontend-realistic": "node ./e2e/deepread-frontend-regression.mjs",
@@ -17,12 +18,9 @@
   },
   "dependencies": {
     "@antv/g6": "^5.1.0",
-    "@neo4j-nvl/base": "^1.1.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@tailwindcss/typography": "^0.5.19",
-    "@types/d3-force": "^3.0.10",
     "clsx": "^2.1.1",
-    "d3-force": "^3.0.0",
     "echarts": "^5.6.0",
     "framer-motion": "^12.34.0",
     "jquery": "^4.0.0",

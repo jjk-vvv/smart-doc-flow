@@ -38,7 +38,7 @@ class DocxEnrichmentRuntime:
         docx_media_probe_enable: bool,
         docx_media_max_assets: int,
         docx_media_vision_enable: bool,
-        docx_media_nested_gemini_enhance_enable: bool,
+        docx_media_nested_vision_enhance_enable: bool,
         docx_media_max_assets_unbounded: bool,
         docx_media_vision_max_assets: int,
         docx_media_vision_max_assets_unbounded: bool,
@@ -63,7 +63,7 @@ class DocxEnrichmentRuntime:
         self.docx_media_probe_enable = bool(docx_media_probe_enable)
         self.docx_media_max_assets = max(0, int(docx_media_max_assets or 0))
         self.docx_media_vision_enable = bool(docx_media_vision_enable)
-        self.docx_media_nested_gemini_enhance_enable = bool(docx_media_nested_gemini_enhance_enable)
+        self.docx_media_nested_vision_enhance_enable = bool(docx_media_nested_vision_enhance_enable)
         self.docx_media_max_assets_unbounded = bool(docx_media_max_assets_unbounded)
         self.docx_media_vision_max_assets = max(0, int(docx_media_vision_max_assets or 0))
         self.docx_media_vision_max_assets_unbounded = bool(docx_media_vision_max_assets_unbounded)
@@ -323,7 +323,7 @@ class DocxEnrichmentRuntime:
             "docx_media_vision_attempted": 0,
             "docx_media_fallback_count": 0,
             "docx_media_vision_enabled": bool(self.docx_media_vision_enable),
-            "docx_media_nested_gemini_enhance_enabled": bool(self.docx_media_nested_gemini_enhance_enable),
+            "docx_media_nested_vision_enhance_enabled": bool(self.docx_media_nested_vision_enhance_enable),
             "docx_media_max_assets_unbounded": bool(self.docx_media_max_assets_unbounded),
             "docx_media_vision_max_assets_unbounded": bool(self.docx_media_vision_max_assets_unbounded),
         }
@@ -509,7 +509,7 @@ class DocxEnrichmentRuntime:
                             _vision_md, _vision_bbox, _vision_tables = self._parse_image(
                                 file_name=media_name,
                                 file_bytes=media_bytes,
-                                enable_gemini_enhance=self.docx_media_nested_gemini_enhance_enable,
+                                enable_vision_enhance=self.docx_media_nested_vision_enhance_enable,
                             )
                             vision_figures = self._get_last_figure_blocks()
                             if _vision_tables:

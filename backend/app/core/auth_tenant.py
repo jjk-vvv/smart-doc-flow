@@ -147,7 +147,16 @@ def extract_authenticated_user_tenant(
     tenant_id = normalize_str(request_headers.get("x-authenticated-tenant-id"))
     if tenant_id:
         return tenant_id
-    return normalize_str(request_headers.get("x-authenticated-user-id"))
+    user_id = normalize_str(request_headers.get("x-authenticated-user-id"))
+    if user_id:
+        return user_id
+    state_user = getattr(getattr(request, "state", None), "authenticated_user", None)
+    if state_user is not None:
+        tenant_id = normalize_str(getattr(state_user, "tenant_id", ""))
+        if tenant_id:
+            return tenant_id
+        return normalize_str(getattr(state_user, "user_id", ""))
+    return ""
 
 
 def extract_tenant_header(request: Request | None) -> str:

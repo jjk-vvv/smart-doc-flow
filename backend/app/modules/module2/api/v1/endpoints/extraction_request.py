@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, BackgroundTasks, Body, File, Form, Request, UploadFile
 
 try:
-    from app.schemas import BatchExtractionResponse
+    from app.modules.module2.schemas import BatchExtractionResponse
 except ModuleNotFoundError:  # pragma: no cover - direct file-loading tests can fall back to plain dict
     BatchExtractionResponse = dict
 

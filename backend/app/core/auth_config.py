@@ -86,9 +86,6 @@ class AuthSettings:
     login_lock_ms: int
     is_prod: bool
     users_file: Path
-    sms_provider: str
-    ihuyi_api_id: str
-    ihuyi_api_key: str
     smtp_host: str
     smtp_port: int
     smtp_secure: bool
@@ -164,9 +161,6 @@ class AuthSettings:
                     str(runtime_root / "auth" / "users.json"),
                 )
             ).expanduser().resolve(),
-            sms_provider=_env_str("AUTH_SMS_PROVIDER", "").lower(),
-            ihuyi_api_id=_env_str("AUTH_IHUYI_API_ID", ""),
-            ihuyi_api_key=_env_str("AUTH_IHUYI_API_KEY", ""),
             smtp_host=_env_str("AUTH_SMTP_HOST", ""),
             smtp_port=max(1, _env_int("AUTH_SMTP_PORT", 587)),
             smtp_secure=_env_str("AUTH_SMTP_SECURE", "").lower() == "true",

@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 def _normalize_text(value: Any) -> str:
@@ -145,7 +145,7 @@ _METRIC_ONLY_RE = re.compile(
 )
 _NOISY_ENTITY_TERMS = (
     "assistant",
-    "gemini",
+    "vision",
     "payload",
     "markdown",
     "worksheet",

@@ -1,19 +1,14 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  Bot,
   BrainCircuit,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Clock,
   Database,
   Download,
-  Eye,
-  File,
   FileSearch,
-  FileSpreadsheet,
   Filter,
   FolderOpen,
   FolderPlus,
@@ -22,11 +17,9 @@ import {
   Image as ImageIcon,
   Loader2,
   LayoutGrid,
-  MessageSquare,
   PencilLine,
   RotateCw,
   Search,
-  Sparkles,
   Star,
   Trash2,
   UploadCloud,
@@ -1168,23 +1161,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, user }) => {
 
     void convertWordToPdf(file)
       .then((result) => {
-        if (result.ok) {
-          registerHomeWorkbenchConvertedPdf(targetItemId, result.pdfBlob);
+        if (result.ok === false) {
+          const conversionErrorMessage =
+            result.errorMessage || 'Word 转 PDF 失败，请稍后重试。';
           updateItem(targetItemId, (item) => ({
             ...item,
-            status: 'converted',
-            convertedPdfReady: true,
+            status: 'error',
+            convertedPdfReady: false,
             updatedAt: new Date().toISOString(),
-            errorMessage: null,
+            errorMessage: conversionErrorMessage,
           }));
           return;
         }
+        registerHomeWorkbenchConvertedPdf(targetItemId, result.pdfBlob);
         updateItem(targetItemId, (item) => ({
           ...item,
-          status: 'error',
-          convertedPdfReady: false,
+          status: 'converted',
+          convertedPdfReady: true,
           updatedAt: new Date().toISOString(),
-          errorMessage: result.errorMessage || 'Word 转 PDF 失败，请稍后重试。',
+          errorMessage: null,
         }));
       })
       .finally(() => {

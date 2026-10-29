@@ -51,11 +51,11 @@ class _FakeDocumentToolsRuntime:
         self.trace_calls: list[dict[str, object]] = []
 
     def summarize(self, payload):
-        self.summarize_calls.append(dict(payload))
+        self.summarize_calls.append(payload.model_dump(exclude_unset=True))
         return {"summary": "ok"}
 
     def trace_locate(self, payload):
-        self.trace_calls.append(dict(payload))
+        self.trace_calls.append(payload.model_dump(exclude_unset=True))
         return {"hit_count": 0, "truncated": False, "hits": []}
 
 
@@ -148,14 +148,14 @@ def test_extraction_support_router_delegates_tools_routes() -> None:
 
     with TestClient(app) as client:
         summarize_response = client.post("/extract/summarize", json={"file_name": "demo.pdf", "result": {}})
-        trace_response = client.post("/extract/trace/locate", json={"document": {"file_name": "demo.pdf"}})
+        trace_response = client.post("/extract/trace/locate", json={"document": {"file_name": "demo.pdf", "file_hash": "hash-demo", "result": {}}})
 
     assert summarize_response.status_code == 200
     assert summarize_response.json() == {"summary": "ok"}
     assert trace_response.status_code == 200
     assert trace_response.json() == {"hit_count": 0, "truncated": False, "hits": []}
     assert document_tools_runtime.summarize_calls == [{"file_name": "demo.pdf", "result": {}}]
-    assert document_tools_runtime.trace_calls == [{"document": {"file_name": "demo.pdf"}}]
+    assert document_tools_runtime.trace_calls == [{"document": {"file_name": "demo.pdf", "file_hash": "hash-demo", "result": {}}}]
 
 
 def test_extraction_support_router_delegates_cache_and_health_routes() -> None:

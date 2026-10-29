@@ -11,17 +11,25 @@ Current backend topology:
 - `backend/app/`
   - unified FastAPI gateway and business modules
   - this is the long-term primary backend architecture
-- `backend/shared/`
-  - shared contracts and cross-service primitives
-  - contains `contracts`, `tenancy`, `security`, `exceptions`, `logging`, `utils`
+  - `api/` assembles the versioned router, `core/` holds settings, lifecycle,
+    middleware, auth primitives and shared health probes
+- `backend/app/modules/module1/`
+  - AI document processing: streaming edits, modification apply, Office preview
 - `backend/app/modules/module2/`
   - specialized extraction/assistant runtime under the unified FastAPI module tree
   - standard runtime is mounted directly inside the unified FastAPI app
+- `backend/app/modules/module3/`
+  - template-driven data fusion runtime
+  - registered through `UNIFIED_GATEWAY_MODULE3_ROUTER_MODE` (`auto` / `disabled` / `required`)
 - `backend/app/modules/module4/`
   - specialized graph/runtime upstream
   - standard runtime is mounted directly inside the unified FastAPI app
   - preferred Python runtime is now the repo-root `.venv`
   - legacy standalone `backend/module4` layout has been removed from the project layout
+- `backend/app/modules/platform_assistant/`
+  - platform-wide assistant (catalog, bootstrap, streaming chat)
+- `backend/app/modules/file_assets/` and `backend/app/modules/diagnostics/`
+  - owner-scoped artifact download/preview and AI API log polling
 
 Recommended runtime entrypoints:
 
@@ -137,7 +145,7 @@ FastAPI module structure:
   - standardized layering (`api/services/repositories/schemas/domain`) with
     compatibility adapters to existing auth implementation
 - `backend/app/modules/module1/`
-  - standardized layering plus compatibility bridge to current placeholder path
+  - `api/core/domain/schemas/services/utils` layering for the document workbench
 - `backend/app/modules/module2/`
   - standardized layering (`api/services/repositories/schemas/domain/core/integrations/resources`)
     wrapping existing extraction + assistant routes
@@ -148,13 +156,10 @@ FastAPI module structure:
 - `backend/app/modules/module4/`
   - standardized layering (`api/services/repositories/schemas/domain/core/integrations/resources`)
     wrapping current gateway/module4 integration path
+- `backend/app/modules/platform_assistant/`
+  - page catalog, bootstrap payload and streaming chat for the global assistant
 - `backend/app/modules/frontend_static/`
-  - packaged frontend static asset serving
-- legacy adapters retained during migration:
-  - `backend/app/modules/assistant/`
-  - `backend/app/modules/extraction/`
-  - `backend/app/modules/gateway/`
-  - `backend/app/modules/module1_placeholder/`
+  - packaged frontend and mobile static asset serving
 
 Unified route assembly:
 

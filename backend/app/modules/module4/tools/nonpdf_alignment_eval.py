@@ -14,18 +14,19 @@ from typing import Any, Dict, Iterable, List, Optional
 from xml.etree import ElementTree as ET
 
 MODULE4_DIR = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = MODULE4_DIR.parents[1]
+PROJECT_ROOT = MODULE4_DIR.parents[3]
+BACKEND_ROOT = MODULE4_DIR.parents[2]
 
 import sys
 
-if str(MODULE4_DIR) not in sys.path:
-    sys.path.insert(0, str(MODULE4_DIR))
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.db.storage import Module4Storage  # noqa: E402
-from app.composition.application import _get_runtime_ref, _set_runtime_ref  # noqa: E402
-from app.composition.application import _run_document_ingest_job  # noqa: E402
-from app.schemas import IngestRequest  # noqa: E402
-from app.services.graphrag.query_adapter import load_artifact_graph_snapshot  # noqa: E402
+from app.modules.module4.db.storage import Module4Storage  # noqa: E402
+from app.modules.module4.core.application import _get_runtime_ref, _set_runtime_ref  # noqa: E402
+from app.modules.module4.core.application import _run_document_ingest_job  # noqa: E402
+from app.modules.module4.schemas import IngestRequest  # noqa: E402
+from app.modules.module4.services.graphrag.query_adapter import load_artifact_graph_snapshot  # noqa: E402
 
 TEXT_FILE_SUFFIXES = {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".yaml", ".yml"}
 OFFICE_FILE_SUFFIXES = {".docx", ".xlsx"}

@@ -71,8 +71,7 @@ def _looks_like_placeholder(value: Any) -> bool:
     placeholder_markers = (
         "your-provider.example",
         "your_openai_compatible_api_key",
-        "your_gemini_api_key",
-        "your_google_api_key",
+        "your_vision_api_key",
         "your_api_key",
         "replace_me",
         "changeme",
@@ -124,8 +123,6 @@ def _normalize_base_url(raw_url: str) -> str:
     return cleaned
 
 
-def _normalize_native_url(raw_url: str) -> str:
-    return str(raw_url or "").strip()
 
 
 def resolve_llm_provider_mode(explicit: Optional[str] = None) -> str:
@@ -135,11 +132,6 @@ def resolve_llm_provider_mode(explicit: Optional[str] = None) -> str:
     ).strip().lower()
     if raw in {"", "auto", "openai_compatible"}:
         return "openai_compatible"
-    if raw in {"gemini_native", "google_native", "native"}:
-        raise RuntimeError(
-            "MODULE2_LLM_PROVIDER no longer supports native Gemini/Google branches; "
-            "set MODULE2_LLM_PROVIDER=openai_compatible."
-        )
     raise RuntimeError(f"unsupported MODULE2_LLM_PROVIDER={raw!r}; expected openai_compatible")
 
 
@@ -147,43 +139,27 @@ def resolve_llm_base_url(explicit: Optional[str] = None) -> str:
     return _normalize_base_url(
         _first_non_empty(
             explicit,
-            os.getenv("MODULE2_LLM_API_BASE", ""),
             os.getenv("MODULE2_LLM_BASE_URL", ""),
-            os.getenv("MODULE2_GEMINI_API_BASE", ""),
             os.getenv("OPENAI_BASE_URL", ""),
         )
     )
 
 
-def resolve_llm_native_api_url(explicit: Optional[str] = None) -> str:
-    return _normalize_native_url(
-        _first_non_empty(
-            explicit,
-            os.getenv("MODULE2_LLM_NATIVE_API_URL", ""),
-            os.getenv("MODULE2_LLM_API_BASE_URL", ""),
-            os.getenv("MODULE2_GEMINI_NATIVE_API_URL", ""),
-        )
-    )
 
 
 def _normalize_provider_mode(raw_mode: Optional[str]) -> str:
     normalized = str(raw_mode or "").strip().lower()
     if normalized in {"", "auto", "openai_compatible"}:
         return "openai_compatible"
-    if normalized in {"gemini_native", "google_native", "native"}:
-        raise RuntimeError("native Gemini/Google provider mode is disabled")
     raise RuntimeError(f"unsupported provider mode: {normalized!r}")
 
 
 def resolve_llm_api_key(explicit: Optional[str] = None, *, provider_mode: Optional[str] = None) -> str:
-    mode = _normalize_provider_mode(provider_mode or resolve_llm_provider_mode())
+    _normalize_provider_mode(provider_mode or resolve_llm_provider_mode())
     return _first_non_empty(
         explicit,
         os.getenv("MODULE2_LLM_API_KEY", ""),
         os.getenv("OPENAI_API_KEY", ""),
-        os.getenv("MODULE2_GEMINI_API_KEY", ""),
-        os.getenv("GEMINI_API_KEY", ""),
-        os.getenv("GOOGLE_API_KEY", ""),
     )
 
 
@@ -191,7 +167,6 @@ def resolve_llm_model(explicit: Optional[str] = None, *, default: str = "qwen-ma
     return _first_non_empty(
         explicit,
         os.getenv("MODULE2_LLM_MODEL", ""),
-        os.getenv("MODULE2_GEMINI_MODEL", ""),
         default,
     )
 
@@ -199,7 +174,6 @@ def resolve_llm_model(explicit: Optional[str] = None, *, default: str = "qwen-ma
 def build_module2_llm_provider(
     *,
     base_url: Optional[str] = None,
-    native_api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
@@ -536,245 +510,3 @@ class OpenAICompatibleChatProvider:
             "timeout",
         )
         return any(marker in raw for marker in retry_markers) or not raw
-
-
-class GeminiNativeChatProvider(OpenAICompatibleChatProvider):
-    def __init__(
-        self,
-        *,
-        native_api_url: Optional[str] = None,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        timeout_sec: Optional[float] = None,
-    ) -> None:
-        super().__init__(
-            base_url=resolve_llm_native_api_url(native_api_url),
-            api_key=api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout_sec=timeout_sec,
-        )
-        self.native_api_url = _normalize_native_url(self.base_url)
-
-    @property
-    def configured(self) -> bool:
-        return bool(self.native_api_url and self.api_key and self.model)
-
-    def healthcheck(self, *, timeout_sec: Optional[float] = None) -> Dict[str, Any]:
-        result = self.complete(
-            messages=[{"role": "user", "content": "Reply with exactly ok"}],
-            temperature=0.0,
-            max_tokens=128,
-        )
-        content = str(result.content or "").strip().lower()
-        if not content:
-            raise RuntimeError("llm provider healthcheck returned empty response")
-        return {
-            "ok": True,
-            "base_url": self.native_api_url,
-            "model": str(result.model or self.model),
-            "checked_at": time.time(),
-            "content_preview": content[:32],
-        }
-
-    def complete(
-        self,
-        *,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: str = "auto",
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        response_format: Optional[Dict[str, Any]] = None,
-        reasoning_effort: Optional[str] = None,
-    ) -> ChatCompletionResult:
-        if tools:
-            raise RuntimeError("gemini native provider does not support tool calls in module2 main chain")
-        payload = self._build_native_payload(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format=response_format,
-            reasoning_effort=reasoning_effort,
-        )
-        data = self._request_native_json(payload)
-        candidate = self._first_candidate(data)
-        finish_reason = self._normalize_native_finish_reason(candidate.get("finishReason"))
-        content = self._extract_candidate_text(candidate)
-        return ChatCompletionResult(
-            content=content,
-            tool_calls=[],
-            finish_reason=finish_reason,
-            model=str(data.get("modelVersion", "") or self.model),
-            raw=data,
-        )
-
-    def _build_native_payload(
-        self,
-        *,
-        messages: List[Dict[str, Any]],
-        temperature: Optional[float],
-        max_tokens: Optional[int],
-        response_format: Optional[Dict[str, Any]],
-        reasoning_effort: Optional[str],
-    ) -> Dict[str, Any]:
-        generation_config: Dict[str, Any] = {
-            "temperature": self.temperature if temperature is None else temperature,
-            "maxOutputTokens": self.max_tokens if max_tokens is None else max_tokens,
-        }
-        prompt_text = self._messages_to_native_prompt(messages)
-        return {
-            "contents": [{"parts": [{"text": prompt_text}]}],
-            "generationConfig": generation_config,
-        }
-
-    def _messages_to_native_prompt(self, messages: List[Dict[str, Any]]) -> str:
-        sections: List[str] = []
-        for item in messages or []:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "") or "user").strip().lower() or "user"
-            content_text = self._message_content_to_text(item.get("content"))
-            if not content_text:
-                continue
-            label = role.upper()
-            sections.append(f"[{label}]\n{content_text}")
-        return "\n\n".join(sections).strip()
-
-    def _message_content_to_text(self, content: Any) -> str:
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            pieces: List[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    text = item.strip()
-                    if text:
-                        pieces.append(text)
-                    continue
-                if not isinstance(item, dict):
-                    continue
-                item_type = str(item.get("type", "") or "").strip().lower()
-                if item_type == "text":
-                    text = str(item.get("text", "") or "").strip()
-                    if text:
-                        pieces.append(text)
-            return "\n".join(piece for piece in pieces if piece).strip()
-        return _normalize_content(content).strip()
-
-    def _request_native_json(self, payload: Dict[str, Any], *, timeout_sec: Optional[float] = None) -> Dict[str, Any]:
-        resp = None
-        last_error: Optional[BaseException] = None
-        resolved_timeout = self.timeout_sec if timeout_sec is None else max(5.0, float(timeout_sec))
-        for attempt in range(1, self.retry_attempts + 1):
-            try:
-                log_ai_api_request(
-                    api_url=self._request_url(),
-                    request_body=payload,
-                    model=self.model,
-                    attempt=attempt,
-                    max_attempts=self.retry_attempts,
-                    logger_name="app.modules.module2.llm.ai_api",
-                    config_prefix="MODULE2",
-                )
-                resp = requests.post(
-                    self._request_url(),
-                    json=payload,
-                    headers=self._build_headers(),
-                    timeout=resolved_timeout,
-                )
-                log_ai_api_response(
-                    response=resp,
-                    logger_name="app.modules.module2.llm.ai_api",
-                    config_prefix="MODULE2",
-                )
-                resp.raise_for_status()
-                break
-            except HTTPError as exc:
-                log_ai_api_exception(
-                    exc=exc,
-                    close_call=exc.response is None,
-                    logger_name="app.modules.module2.llm.ai_api",
-                    config_prefix="MODULE2",
-                )
-                last_error = exc
-                if not self._should_retry_http_error(exc) or attempt >= self.retry_attempts:
-                    response = exc.response
-                    status = response.status_code if response is not None else "unknown"
-                    detail = response.text if response is not None else str(exc)
-                    raise RuntimeError(f"llm provider http error {status}: {detail}") from exc
-                time.sleep(self._retry_sleep_seconds(attempt))
-            except RequestException as exc:
-                log_ai_api_exception(
-                    exc=exc,
-                    logger_name="app.modules.module2.llm.ai_api",
-                    config_prefix="MODULE2",
-                )
-                last_error = exc
-                if not self._should_retry_request_exception(exc) or attempt >= self.retry_attempts:
-                    raise RuntimeError(f"llm provider connection error: {exc}") from exc
-                time.sleep(self._retry_sleep_seconds(attempt))
-        if resp is None:
-            raise RuntimeError(f"llm provider connection error: {last_error or 'unknown error'}")
-        try:
-            data = resp.json()
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("llm provider returned invalid JSON") from exc
-        if not isinstance(data, dict):
-            raise RuntimeError("llm provider returned invalid JSON")
-        return data
-
-    def _request_url(self) -> str:
-        if not self.configured:
-            raise RuntimeError("llm provider is not configured")
-        return self.native_api_url
-
-    def _build_headers(self) -> Dict[str, str]:
-        if not self.configured:
-            raise RuntimeError("llm provider is not configured")
-        url_lower = self.native_api_url.lower()
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "smart-doc-flow-module2/1.0",
-            "Connection": "close",
-        }
-        if "generativelanguage.googleapis.com" in url_lower and "key=" not in url_lower:
-            headers["x-goog-api-key"] = self.api_key
-        else:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        return headers
-
-    @staticmethod
-    def _first_candidate(data: Dict[str, Any]) -> Dict[str, Any]:
-        candidates = data.get("candidates")
-        if isinstance(candidates, list) and candidates:
-            first = candidates[0]
-            if isinstance(first, dict):
-                return first
-        raise RuntimeError("model returned no candidates")
-
-    @staticmethod
-    def _extract_candidate_text(candidate: Dict[str, Any]) -> str:
-        content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
-        parts = content.get("parts") if isinstance(content.get("parts"), list) else []
-        texts: List[str] = []
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            text = str(part.get("text", "") or "").strip()
-            if text:
-                texts.append(text)
-        return "\n".join(texts).strip()
-
-    @staticmethod
-    def _normalize_native_finish_reason(raw_reason: Any) -> str:
-        reason = str(raw_reason or "").strip().upper()
-        if reason == "MAX_TOKENS":
-            return "length"
-        if reason == "STOP":
-            return "stop"
-        return reason.lower()

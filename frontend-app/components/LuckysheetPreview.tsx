@@ -630,7 +630,7 @@ async function ensureRuntime(): Promise<RuntimeRef> {
     if (!win.luckysheet) {
       const luckysheetExport = resolveLuckysheetExport(luckysheetMod);
       if (luckysheetExport) {
-        win.luckysheet = luckysheetExport;
+        win.luckysheet = luckysheetExport as typeof win.luckysheet;
       }
     }
 

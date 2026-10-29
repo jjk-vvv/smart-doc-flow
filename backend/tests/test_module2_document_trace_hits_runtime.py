@@ -106,7 +106,7 @@ def test_document_trace_hits_runtime_builds_field_table_and_figure_hits() -> Non
                 ],
                 "row_count": 1,
                 "col_count": 3,
-                "source": "gemini_vision_table",
+                "source": "vision_table",
                 "page": 2,
                 "caption": "付款计划",
                 "quality": 0.72,
@@ -120,7 +120,7 @@ def test_document_trace_hits_runtime_builds_field_table_and_figure_hits() -> Non
                 "ref_ids": ["docx_6"],
                 "caption": "流程图",
                 "figure_type": "chart",
-                "source": "gemini_vision_figure",
+                "source": "vision_figure",
                 "quality": 0.83,
                 "bbox": [5, 0.2, 0.2, 0.45, 0.35],
                 "key_points": ["审批", "归档"],
@@ -129,7 +129,7 @@ def test_document_trace_hits_runtime_builds_field_table_and_figure_hits() -> Non
                     "headers": ["阶段", "时长"],
                     "rows": [["审批", "1天"]],
                 },
-                "dataframe_source": "gemini_vision_chart",
+                "dataframe_source": "vision_chart",
                 "topology": {
                     "nodes": [{"id": "n1"}],
                     "edges": [{"from": "n1", "to": "n2"}],
@@ -158,7 +158,7 @@ def test_document_trace_hits_runtime_builds_field_table_and_figure_hits() -> Non
     figure_hit = hits[1]
     assert figure_hit["artifact_url"] == "/extract/artifact/figures/figure-1.png"
     assert figure_hit["locator"]["figure_index"] == 1
-    assert figure_hit["locator"]["dataframe_source"] == "gemini_vision_chart"
+    assert figure_hit["locator"]["dataframe_source"] == "vision_chart"
     assert figure_hit["locator"]["caption"] == "流程图"
     assert figure_hit["locator"]["dataframe"]["headers"] == ["阶段", "时长"]
 
@@ -168,7 +168,7 @@ def test_document_trace_hits_runtime_builds_field_table_and_figure_hits() -> Non
     assert table_hit["locator"]["table_index"] == 2
     assert table_hit["locator"]["row_index"] == 1
     assert table_hit["locator"]["col_index"] == 1
-    assert table_hit["locator"]["dataframe_source"] == "gemini_vision_table"
+    assert table_hit["locator"]["dataframe_source"] == "vision_table"
     assert table_hit["locator"]["table_preview"]["headers"] == ["日期", "金额", "备注"]
     assert "付款计划表首行" in table_hit["snippet"]
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from .bundle_builder import Assistant1BundleBuilder
 from .config import Assistant1Settings
-from .embedder_gemini import GeminiEmbeddingClient
+from .embedding_client import EmbeddingClient
 from .knowledge_units import Assistant1KnowledgeUnitExtractor
 from .markdown_cleaner import Assistant1MarkdownCleaner
 from .markdown_renderer import Assistant1MarkdownRenderer
@@ -26,7 +26,7 @@ class Assistant1IngestPipeline:
         self.renderer = Assistant1MarkdownRenderer()
         self.cleaner = Assistant1MarkdownCleaner()
         self.unit_extractor = Assistant1KnowledgeUnitExtractor()
-        self.embedder = GeminiEmbeddingClient(self.settings)
+        self.embedder = EmbeddingClient(self.settings)
 
     def build_bundle(self, file_hash: str) -> dict[str, Any]:
         source_bundle = self.path_resolver.resolve(file_hash)
@@ -73,7 +73,7 @@ class Assistant1IngestPipeline:
         persisted = False
         if persist:
             if not self.embedder.ready:
-                raise RuntimeError("Gemini embedding config is missing; cannot persist vectors")
+                raise RuntimeError("embedding config is missing; cannot persist vectors")
             vectors = self.embedder.embed_documents([unit.content for unit in units])
             for unit, vector in zip(units, vectors):
                 unit.embedding = vector

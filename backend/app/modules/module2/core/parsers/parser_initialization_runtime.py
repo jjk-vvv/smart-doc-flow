@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, Set
 
 
 class ParserInitializationRuntime:
@@ -26,9 +26,9 @@ class ParserInitializationRuntime:
             roi_cropper_factory = RoiCropper
         visual_vision_extractor_factory = getattr(parser, "_visual_vision_extractor_factory", None)
         if visual_vision_extractor_factory is None:
-            from ..visual.vision_extractor import GeminiVisionExtractor
+            from ..visual.vision_extractor import VisionExtractor
 
-            visual_vision_extractor_factory = GeminiVisionExtractor
+            visual_vision_extractor_factory = VisionExtractor
 
         module2_root = Path(__file__).resolve().parents[2]
         repo_root = module2_root.parents[3]
@@ -182,12 +182,12 @@ class ParserInitializationRuntime:
             figure_text_is_low_signal=parser._figure_text_runtime.figure_text_is_low_signal,
             table_header=parser._table_header,
             looks_like_false_table=parser._looks_like_false_table,
-            gemini_vision_enable_figures=parser.gemini_vision_enable_figures,
-            gemini_vision_max_figures_per_page=parser.gemini_vision_max_figures_per_page,
-            gemini_vision_min_figure_quality=parser.gemini_vision_min_figure_quality,
-            gemini_vision_max_tables_per_page=parser.gemini_vision_max_tables_per_page,
-            gemini_vision_max_pages=parser.gemini_vision_max_pages,
-            gemini_vision_min_table_quality=parser.gemini_vision_min_table_quality,
+            vision_enable_figures=parser.vision_enable_figures,
+            vision_max_figures_per_page=parser.vision_max_figures_per_page,
+            vision_min_figure_quality=parser.vision_min_figure_quality,
+            vision_max_tables_per_page=parser.vision_max_tables_per_page,
+            vision_max_pages=parser.vision_max_pages,
+            vision_min_table_quality=parser.vision_min_table_quality,
             table_max_cols=parser.table_max_cols,
             table_max_rows=parser.table_max_rows,
             table_cell_cap=parser.table_cell_cap,
@@ -221,7 +221,7 @@ class ParserInitializationRuntime:
             table_max_cols=parser.table_max_cols,
             table_cell_cap=parser.table_cell_cap,
             table_merge_enable=parser.table_merge_enable,
-            gemini_vision_enable_figures=parser.gemini_vision_enable_figures,
+            vision_enable_figures=parser.vision_enable_figures,
             runtime_page_count_provider=parser._parser_run_state.runtime_page_count,
             infer_headers_and_data_rows=parser._table_header.infer_headers_and_data_rows,
             drop_redundant_header_like_rows=parser._table_header.drop_redundant_header_like_rows,
@@ -240,25 +240,19 @@ class ParserInitializationRuntime:
             setattr(parser, attr_name, runtime_value)
 
     def _init_vision_transport_foundations(self, *, parser: Any) -> None:
-        from ...integrations.llm.provider import resolve_llm_native_api_url
 
         for attr_name, runtime_value in parser._parser_vision_transport_bootstrap_runtime.build_vision_transport_runtime_attrs(
             parser_vision_bundle_runtime=parser._parser_vision_bundle_runtime,
-            resolve_native_api_url=resolve_llm_native_api_url,
-            user_agent="smart-doc-flow-module2-parser/1.0",
-            default_model="qwen3-vl-plus",
             normalize_text=parser._normalize_text,
             normalize_token_for_compare=parser._normalize_token_for_compare,
-            gemini_vision_dpi=parser.gemini_vision_dpi,
-            gemini_vision_max_side_px=parser.gemini_vision_max_side_px,
-            gemini_vision_model=parser.gemini_vision_model,
-            gemini_vision_base_url=parser.gemini_vision_base_url,
-            gemini_vision_endpoint_style=parser.gemini_vision_endpoint_style,
-            gemini_vision_timeout_sec=parser.gemini_vision_timeout_sec,
-            gemini_vision_max_output_tokens=parser.gemini_vision_max_output_tokens,
-            gemini_native_fallback_enabled=parser.gemini_native_fallback_enabled,
-            resolve_api_key=parser._gemini_api_key,
-            resolve_native_api_key=parser._gemini_native_api_key,
+            vision_dpi=parser.vision_dpi,
+            vision_max_side_px=parser.vision_max_side_px,
+            vision_model=parser.vision_model,
+            vision_base_url=parser.vision_base_url,
+            vision_endpoint_style=parser.vision_endpoint_style,
+            vision_timeout_sec=parser.vision_timeout_sec,
+            vision_max_output_tokens=parser.vision_max_output_tokens,
+            resolve_api_key=parser._vision_api_key,
         ).items():
             setattr(parser, attr_name, runtime_value)
 
@@ -301,7 +295,7 @@ class ParserInitializationRuntime:
             enable_fitz_table=parser.enable_fitz_table,
             table_merge_enable=parser.table_merge_enable,
             visual_force_ocr_on_weak_native=parser.visual_force_ocr_on_weak_native,
-            gemini_vision_enable_figures=parser.gemini_vision_enable_figures,
+            vision_enable_figures=parser.vision_enable_figures,
             get_ocr_engine=parser._get_ocr_engine,
             set_runtime_page_count=parser._parser_run_state.set_runtime_page_count,
             normalize_text=parser._normalize_text,
@@ -316,7 +310,7 @@ class ParserInitializationRuntime:
             select_uncovered_table_like_pages=parser._ocr_table_utils.select_uncovered_table_like_pages,
             infer_figures_from_page_lines=parser._figure_inference.infer_figures_from_page_lines,
             get_last_figure_blocks=parser._parser_run_state.peek_last_figure_blocks,
-            enhance_low_quality_pages_with_gemini_vision=parser._enhance_low_quality_pages_with_gemini_vision,
+            enhance_low_quality_pages_with_vision=parser._enhance_low_quality_pages_with_vision,
             merge_figure_blocks=parser._figure_inference.merge_figure_blocks,
             prune_fragment_tables=parser._table_pruning_runtime.prune_fragment_tables,
             merge_same_page_tables=parser._table_merge_runtime.merge_same_page_tables,
@@ -333,12 +327,12 @@ class ParserInitializationRuntime:
         for attr_name, runtime_value in parser._parser_image_bootstrap_runtime.build_image_runtime_attrs(
             parser_image_bundle_runtime=parser._parser_image_bundle_runtime,
             max_pages_visual=parser.max_pages_visual,
-            enable_gemini_vision_enhance=parser.enable_gemini_vision_enhance,
-            gemini_vision_max_pages=parser.gemini_vision_max_pages,
-            gemini_vision_consecutive_fail_stop=parser.gemini_vision_consecutive_fail_stop,
+            vision_enhance_enabled=parser.vision_enhance_enabled,
+            vision_max_pages=parser.vision_max_pages,
+            vision_consecutive_fail_stop=parser.vision_consecutive_fail_stop,
             set_runtime_page_count=parser._parser_run_state.set_runtime_page_count,
             visual_backend_available=parser._visual_backend_available,
-            resolve_api_key=parser._gemini_api_key,
+            resolve_api_key=parser._vision_api_key,
             get_ocr_engine=parser._get_ocr_engine,
             normalize_text=parser._normalize_text,
             select_low_quality_pages_for_vision=parser._visual_page_signal_runtime.select_low_quality_pages_for_vision,
@@ -351,7 +345,7 @@ class ParserInitializationRuntime:
             infer_tables_from_ocr_cells=parser._ocr_table_inference.infer_tables_from_ocr_cells,
             infer_tables_from_page_lines=parser._ocr_table_inference.infer_tables_from_page_lines,
             infer_figures_from_page_lines=parser._figure_inference.infer_figures_from_page_lines,
-            enhance_low_quality_pages_with_gemini_vision=parser._enhance_low_quality_pages_with_gemini_vision,
+            enhance_low_quality_pages_with_vision=parser._enhance_low_quality_pages_with_vision,
             merge_figure_blocks=parser._figure_inference.merge_figure_blocks,
             augment_with_line_tables=parser._ocr_table_utils.augment_with_line_tables,
             prune_fragment_tables=parser._table_pruning_runtime.prune_fragment_tables,
@@ -359,7 +353,6 @@ class ParserInitializationRuntime:
             setattr(parser, attr_name, runtime_value)
 
     def _init_visual_pipeline_runtimes(self, *, parser: Any, image_extensions: Set[str]) -> None:
-        from ..visual.visual_planning_runtime import VisualTableCueRuntime
 
         for attr_name, runtime_value in parser._parser_visual_context_bootstrap_runtime.build_visual_context_runtime_attrs(
             parser_visual_context_bundle_runtime=parser._parser_visual_context_bundle_runtime,
@@ -493,7 +486,7 @@ class ParserInitializationRuntime:
             docx_media_probe_enable=parser.docx_media_probe_enable,
             docx_media_max_assets=parser.docx_media_max_assets,
             docx_media_vision_enable=parser.docx_media_vision_enable,
-            docx_media_nested_gemini_enhance_enable=parser.docx_media_nested_gemini_enhance_enable,
+            docx_media_nested_vision_enhance_enable=parser.docx_media_nested_vision_enhance_enable,
             docx_media_max_assets_unbounded=parser.docx_media_max_assets_unbounded,
             docx_media_vision_max_assets=parser.docx_media_vision_max_assets,
             docx_media_vision_max_assets_unbounded=parser.docx_media_vision_max_assets_unbounded,

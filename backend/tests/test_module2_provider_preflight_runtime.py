@@ -56,14 +56,14 @@ def test_provider_preflight_runtime_builds_config_snapshot() -> None:
     runtime = ProviderPreflightRuntime()
     snapshot = runtime.build_config_snapshot(
         timeout_sec=8.0,
-        build_provider=lambda timeout_sec: _ConfiguredProvider(base_url="https://native.example", model="gpt-5-mini"),
+        build_provider=lambda timeout_sec: _ConfiguredProvider(base_url="https://native.example", model="test-chat-model"),
     )
 
     assert snapshot == {
         "configured": True,
         "provider_type": "_ConfiguredProvider",
         "base_url": "https://native.example",
-        "model": "gpt-5-mini",
+        "model": "test-chat-model",
         "error": "",
     }
 

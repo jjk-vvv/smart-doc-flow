@@ -106,9 +106,9 @@ def test_image_ocr_runtime_emits_vision_probe_placeholder_without_visual_backend
 
     assert state["runtime_page_count"] == 1
     assert doc.closed is True
-    assert parts == ['<ref id="img_p1_vision_probe">[Image page 1] OCR backend unavailable, trying Gemini Vision.</ref>']
+    assert parts == ['<ref id="img_p1_vision_probe">[Image page 1] OCR backend unavailable, trying Vision.</ref>']
     assert bbox_map["img_p1_vision_probe"] == [1.0, 0.0, 0.0, 1.0, 1.0]
-    assert page_lines == {1: ["[Image page 1] OCR backend unavailable, trying Gemini Vision."]}
+    assert page_lines == {1: ["[Image page 1] OCR backend unavailable, trying Vision."]}
     assert page_cells == {}
 
 

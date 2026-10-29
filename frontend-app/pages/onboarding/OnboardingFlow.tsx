@@ -13,7 +13,6 @@ export interface OnboardingFlowProps {
   onOpenLogin: () => void;
 }
 
-// === OnboardingSlogan Component ===
 const OnboardingSlogan = () => (
   <motion.div 
     initial={{ opacity: 0, y: 30 }}
@@ -22,10 +21,7 @@ const OnboardingSlogan = () => (
     className="absolute left-0 right-0 flex flex-col items-center text-center w-full"
     style={{ top: 'calc(13vw + 10px)' }}
   >
-    {/* 背景 Logo 装饰 (Atmospheric Watermark) - 移除之前的背景暗纹方案 */}
     
-    {/* 大标题：错位排版设计 (Staggered Layout) */}
-    {/* 极限微调：使用 -translate-y 把整个文字块整体向上平移极其微小的距离 (例如 2px 或 0.5vw) */}
     <div className="relative z-10 flex flex-col justify-center items-center w-full -translate-y-[0.5vw]" style={{ height: '26vw' }}>
       <div 
         className="font-black tracking-[0.1em] text-slate-900 leading-[1.05] flex flex-col justify-between" 
@@ -38,28 +34,22 @@ const OnboardingSlogan = () => (
           paddingBottom: '3vw' // 稍微增大底部 padding，把第二行字往上托一点
         }}
       >
-        {/* 第一行：靠左对齐，增加孟菲斯风格纯色硬投影 */}
         <span className="self-start text-left block" style={{ marginTop: '-0.1em', textShadow: '3px 3px 0px #E8DCC4' }}>智阅文档</span>
-        {/* 第二行：靠右对齐，增加孟菲斯风格纯色硬投影 */}
         <span className="self-end text-right block" style={{ marginBottom: '-0.1em', textShadow: '3px 3px 0px #E8DCC4' }}>聚数成网</span>
       </div>
     </div>
     
-    {/* 副标题描述：将整个图文块居中，平衡视觉重心，同时内部保持左对齐 */}
     <div 
       className="relative z-10 flex items-start justify-center gap-1.5 leading-[1.6]" 
       style={{ 
         marginTop: 'clamp(10px, 3vw, 20px)',
-        // 增大副标题字号，提升整体阅读体验和排版协调性
         fontSize: 'clamp(13px, 3.5vw, 16px)', 
-        // 放开宽度限制，让 flex 的 justify-center 能够在整个屏幕宽度范围内完美居中
         width: '100%', 
         textAlign: 'left'
       }}
     >
       <ArrowDownRight size={18} strokeWidth={2.5} className="shrink-0 text-slate-900 mt-[0.15em]" />
       <div className="flex flex-col">
-        {/* Impeccable 级：第一行核心功能词流光效果，减弱对比度，更加内敛 */}
         <motion.span 
           className="font-bold bg-clip-text text-transparent"
           style={{ 
@@ -71,7 +61,6 @@ const OnboardingSlogan = () => (
         >
           编辑、抽取、融合、填表，
         </motion.span>
-        {/* Impeccable 级：第二行说明文字延迟流光效果，减弱对比度，更加内敛 */}
         <motion.span 
           className="font-medium bg-clip-text text-transparent"
           style={{ 
@@ -136,7 +125,6 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete, onOp
           className="absolute inset-0 bg-[#BCECFA]/20 bg-cover bg-no-repeat flex flex-col justify-between items-center dark:bg-slate-900"
           style={{ backgroundImage: `url(${splashBg})`, backgroundPosition: 'center calc(50% + 9vh)' }}
         >
-          {/* 顶部文字区域 */}
           <div className="absolute right-4 top-4 z-[60]">
             <button
               type="button"
@@ -148,7 +136,6 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete, onOp
           </div>
           <OnboardingSlogan />
 
-          {/* 中部气泡提示 - 保持完美的弹出延迟 */}
           <motion.div 
             className="absolute z-[50] flex flex-col items-center justify-center"
             style={{ 
@@ -187,7 +174,6 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete, onOp
             </div>
           </motion.div>
 
-          {/* 底部按钮区域 - 与气泡形成完美错峰连贯动画 */}
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}

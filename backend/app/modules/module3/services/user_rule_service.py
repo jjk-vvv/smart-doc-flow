@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from typing import Any, Callable
 
 from ..core.config import DEFAULT_PROMPT, read_structured_metric_profile
-from .llm_service import parse_model_json, request_chat_completions, request_text_responses
+from .llm_service import parse_model_json, request_chat_completions
 from .source_dispatcher import simple_match_excel_headers
 from .text_source_common import log_event
 
@@ -62,6 +62,11 @@ def has_effective_user_prompt(user_prompt: str) -> bool:
     prompt = (user_prompt or "").strip()
     default_prompt = DEFAULT_PROMPT.strip()
     return bool(prompt) and prompt != default_prompt
+
+
+def _is_generic_fill_prompt(prompt: str) -> bool:
+    compact = re.sub(r"[\s。.!！?？]+", "", prompt)
+    return compact in {"帮我智能填表", "请帮我智能填表", "智能填表", "帮我填表", "请帮我填表", "填表"}
 
 
 def _normalize_text(value: Any) -> str:
@@ -280,33 +285,16 @@ def _request_rule_plan(
     system_prompt: str,
     user_prompt: str,
 ) -> dict[str, Any]:
-    if settings["api_mode"] == "responses":
-        try:
-            raw_text = request_text_responses(
-                base_url=settings["base_url"],
-                api_key=settings["api_key"],
-                model=settings["model"],
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-        except Exception:
-            raw_text = request_chat_completions(
-                base_url=settings["base_url"],
-                api_key=settings["api_key"],
-                model=settings["model"],
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_inputs=None,
-            )
-    else:
-        raw_text = request_chat_completions(
-            base_url=settings["base_url"],
-            api_key=settings["api_key"],
-            model=settings["model"],
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            image_inputs=None,
-        )
+    if settings["api_mode"] != "chat":
+        raise ValueError("Module 3 only supports chat API mode.")
+    raw_text = request_chat_completions(
+        base_url=settings["base_url"],
+        api_key=settings["api_key"],
+        model=settings["model"],
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        image_inputs=None,
+    )
     parsed = parse_model_json(raw_text)
     if not isinstance(parsed, dict):
         raise ValueError("用户要求规划器没有返回 JSON 对象")
@@ -324,10 +312,14 @@ def _resolve_requirement_understanding(
     context_text: str = "",
 ) -> dict[str, Any]:
     raw_prompt = (user_prompt or "").strip()
-    if not has_effective_user_prompt(raw_prompt):
+    generic_fill_prompt = _is_generic_fill_prompt(raw_prompt)
+    if not has_effective_user_prompt(raw_prompt) or generic_fill_prompt:
+        ignore_reason = "generic fill prompt" if generic_fill_prompt else "empty or default prompt"
+        if generic_fill_prompt:
+            log_event(logger, "[user rules] ignored: generic fill prompt")
         return {
             "ignore": True,
-            "ignore_reason": "empty or default prompt",
+            "ignore_reason": ignore_reason,
             "task_goal": "",
             "global_requirements": [],
             "local_requirements": [],
@@ -744,11 +736,14 @@ def resolve_user_rule_bundle(
     sample_rows: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     raw_prompt = (user_prompt or "").strip()
-    if not has_effective_user_prompt(raw_prompt):
+    generic_fill_prompt = _is_generic_fill_prompt(raw_prompt)
+    if not has_effective_user_prompt(raw_prompt) or generic_fill_prompt:
+        if generic_fill_prompt:
+            log_event(logger, "[user rules] ignored: generic fill prompt")
         return {
             "enabled": False,
             "ignore": True,
-            "ignore_reason": "empty or default prompt",
+            "ignore_reason": "generic fill prompt" if generic_fill_prompt else "empty or default prompt",
             "standardized_requirements": [],
             "field_requirements": [],
             "sort": [],

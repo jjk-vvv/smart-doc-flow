@@ -56,7 +56,6 @@ export const DeepReadWelcomeScreen: React.FC<DeepReadWelcomeScreenProps> = ({
             {/* Center glow for dark mode to reduce overall darkness */}
             <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70%] h-[70%] bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.04)_0%,transparent_70%)] hidden dark:block rounded-full blur-[80px]" />
             
-            {/* Impeccable Dot Matrix Pattern - Very subtle and professional */}
             <div
                 className="pointer-events-none absolute inset-0 hidden dark:block bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08)_1px,transparent_1px)] bg-[size:24px_24px] opacity-100"
                 style={{
@@ -72,7 +71,6 @@ export const DeepReadWelcomeScreen: React.FC<DeepReadWelcomeScreenProps> = ({
                 }}
             />
 
-            {/* Impeccable Ambient Flowing Light - Soft, not blown out */}
             <div className="pointer-events-none absolute inset-0 overflow-hidden flex items-center justify-center">
                 <motion.div 
                     animate={{ scale: [1, 1.05, 1], x: [0, 20, 0], y: [0, 15, 0] }}
@@ -121,7 +119,6 @@ export const DeepReadWelcomeScreen: React.FC<DeepReadWelcomeScreenProps> = ({
                             : "hover:border-blue-400/60 hover:bg-white/60 hover:shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:hover:border-white/[0.15] dark:hover:bg-white/[0.06] dark:hover:shadow-[inset_0_1px_1px_rgba(255,255,255,0.12),0_8px_32px_rgba(0,0,0,0.5)]"
                     )}
                 >
-                    {/* Inner dotted/dashed border - Impeccable style */}
                     <div className={cn(
                         "absolute inset-3 rounded-[16px] border border-dashed pointer-events-none transition-colors duration-300",
                         isUploaderDragOver ? "border-blue-500/40 dark:border-blue-400/40" : "border-slate-300/60 group-hover:border-blue-400/40 dark:border-white/[0.15] dark:group-hover:border-white/[0.3]"
@@ -129,7 +126,6 @@ export const DeepReadWelcomeScreen: React.FC<DeepReadWelcomeScreenProps> = ({
 
                     <div className="relative z-10 mb-4 flex h-16 w-16 items-center justify-center rounded-full border border-white/80 bg-white/90 shadow-[0_4px_20px_rgba(0,0,0,0.04)] backdrop-blur-xl transition-all duration-400 group-hover:-translate-y-1 group-hover:scale-105 group-hover:border-blue-100 group-hover:shadow-[0_8px_30px_rgba(59,130,246,0.15)] dark:border-white/[0.15] dark:bg-white/[0.12] dark:shadow-[0_4px_24px_rgba(0,0,0,0.4)] dark:group-hover:border-white/[0.25] dark:group-hover:bg-white/[0.16] dark:group-hover:shadow-[0_8px_32px_rgba(255,255,255,0.05)]">
                         <UploadCloud strokeWidth={1.5} size={28} className="text-slate-500 transition-colors duration-300 group-hover:text-blue-500 dark:text-slate-200 dark:group-hover:text-white" />
-                        {/* Impeccable Icon Glow */}
                         <div className="absolute inset-0 rounded-full bg-blue-400/20 blur-xl opacity-0 transition-opacity duration-300 group-hover:opacity-100 dark:bg-white/10" />
                     </div>
 

@@ -26,8 +26,6 @@ ImageParseRuntime = image_parse_runtime_module.ImageParseRuntime
 
 
 def test_image_parse_runtime_builds_tables_figures_and_merges_vision() -> None:
-    state: dict[str, object] = {}
-
     runtime = ImageParseRuntime(
         infer_tables_from_ocr_cells=lambda page_cells: [],
         infer_tables_from_page_lines=lambda page_lines, parts, bbox_map, source: [
@@ -36,9 +34,9 @@ def test_image_parse_runtime_builds_tables_figures_and_merges_vision() -> None:
         infer_figures_from_page_lines=lambda page_lines, parts, bbox_map, source, last_figure_blocks: [
             {"figure_id": "image_caption_f1", "source": source}
         ],
-        enhance_low_quality_pages_with_gemini_vision=lambda **kwargs: (
-            kwargs["table_blocks"] + [{"table_id": "image_gemini_vision_t1", "source": kwargs["source_prefix"]}],
-            [{"figure_id": "image_gemini_vision_f1", "source": kwargs["source_prefix"]}],
+        enhance_low_quality_pages_with_vision=lambda **kwargs: (
+            kwargs["table_blocks"] + [{"table_id": "image_vision_t1", "source": kwargs["source_prefix"]}],
+            [{"figure_id": "image_vision_f1", "source": kwargs["source_prefix"]}],
         ),
         merge_figure_blocks=lambda left, right: left + right,
         prune_fragment_tables=lambda table_blocks: table_blocks + [{"table_id": "pruned_marker"}],
@@ -46,7 +44,7 @@ def test_image_parse_runtime_builds_tables_figures_and_merges_vision() -> None:
 
     tables, figures = runtime.build_parse_result(
         visual_backend_ready=True,
-        resolved_gemini_enhance=True,
+        resolved_vision_enhance=True,
         file_bytes=b"fake",
         filetype="png",
         page_lines={1: ["caption", "table row"]},
@@ -58,12 +56,12 @@ def test_image_parse_runtime_builds_tables_figures_and_merges_vision() -> None:
 
     assert [table["table_id"] for table in tables] == [
         "image_ocr_line_t1",
-        "image_gemini_vision_t1",
+        "image_vision_t1",
         "pruned_marker",
     ]
     assert [figure["figure_id"] for figure in figures] == [
         "image_caption_f1",
-        "image_gemini_vision_f1",
+        "image_vision_f1",
     ]
 
 
@@ -74,17 +72,17 @@ def test_image_parse_runtime_skips_ocr_tables_when_visual_backend_unavailable() 
         infer_figures_from_page_lines=lambda page_lines, parts, bbox_map, source, last_figure_blocks: [
             {"figure_id": "image_caption_f1", "source": source}
         ],
-        enhance_low_quality_pages_with_gemini_vision=lambda **kwargs: (kwargs["table_blocks"], []),
+        enhance_low_quality_pages_with_vision=lambda **kwargs: (kwargs["table_blocks"], []),
         merge_figure_blocks=lambda left, right: left + right,
         prune_fragment_tables=lambda table_blocks: table_blocks,
     )
 
     tables, figures = runtime.build_parse_result(
         visual_backend_ready=False,
-        resolved_gemini_enhance=False,
+        resolved_vision_enhance=False,
         file_bytes=b"fake",
         filetype="png",
-        page_lines={1: ["[Image page 1] OCR backend unavailable, trying Gemini Vision."]},
+        page_lines={1: ["[Image page 1] OCR backend unavailable, trying Vision."]},
         page_cells={},
         last_figure_blocks=[],
         parts=[],

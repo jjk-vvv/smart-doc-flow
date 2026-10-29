@@ -20,8 +20,8 @@ class Module2MainQualityBundle:
     table_source_counts: Callable[[List[Dict[str, Any]]], Dict[str, int]]
     figure_source_counts: Callable[[List[Dict[str, Any]]], Dict[str, int]]
     figure_pages: Callable[[List[Dict[str, Any]]], List[int]]
-    source_counts_have_gemini: Callable[[Dict[str, int]], bool]
-    source_counts_all_gemini: Callable[[Dict[str, int]], bool]
+    source_counts_have_vision: Callable[[Dict[str, int]], bool]
+    source_counts_all_vision: Callable[[Dict[str, int]], bool]
     build_visual_chain_contract: Callable[..., Dict[str, Any]]
 
 
@@ -138,12 +138,12 @@ def build_module2_main_quality_bundle(
                 pages.add(page_no)
         return sorted(pages)
 
-    def _source_counts_have_gemini(source_counts: Dict[str, int]) -> bool:
-        return any("gemini" in str(source or "").strip().lower() for source in source_counts.keys())
+    def _source_counts_have_vision(source_counts: Dict[str, int]) -> bool:
+        return any("vision" in str(source or "").strip().lower() for source in source_counts.keys())
 
-    def _source_counts_all_gemini(source_counts: Dict[str, int]) -> bool:
+    def _source_counts_all_vision(source_counts: Dict[str, int]) -> bool:
         non_empty = [str(source or "").strip().lower() for source in source_counts.keys() if str(source or "").strip()]
-        return bool(non_empty) and all("gemini" in source for source in non_empty)
+        return bool(non_empty) and all("vision" in source for source in non_empty)
 
     def _source_counts_have_keyword(source_counts: Dict[str, int], keyword: str) -> bool:
         target = str(keyword or "").strip().lower()
@@ -204,8 +204,8 @@ def build_module2_main_quality_bundle(
                     or _source_counts_have_keyword(figure_sources, "mineru")
                 )
                 and (
-                    _source_counts_have_gemini(table_sources)
-                    or _source_counts_have_gemini(figure_sources)
+                    _source_counts_have_vision(table_sources)
+                    or _source_counts_have_vision(figure_sources)
                 )
                 and (
                     file_ext == ".pdf"
@@ -311,7 +311,7 @@ def build_module2_main_quality_bundle(
         table_source_counts=_table_source_counts,
         figure_source_counts=_figure_source_counts,
         figure_pages=_figure_pages,
-        source_counts_have_gemini=_source_counts_have_gemini,
-        source_counts_all_gemini=_source_counts_all_gemini,
+        source_counts_have_vision=_source_counts_have_vision,
+        source_counts_all_vision=_source_counts_all_vision,
         build_visual_chain_contract=_build_visual_chain_contract,
     )

@@ -19,18 +19,15 @@ from app.core.ai_api_logging import (
     log_ai_api_response,
 )
 
-from ...integrations.llm.provider import resolve_llm_native_api_url
-from ..integration.gemini_native_transport_runtime import GeminiNativeTransportRuntime
 
 
-class GeminiVisionExtractor:
-    """Gemini Vision JSON extractor with prompt layering and disk cache."""
+class VisionExtractor:
+    """Vision JSON extractor with prompt layering and disk cache."""
 
     def __init__(
         self,
         *,
         api_key: str,
-        native_api_key: str = "",
         model: str = "qwen3-vl-plus",
         base_url: str = "",
         endpoint_style: str = "openai_chat_completions",
@@ -40,10 +37,8 @@ class GeminiVisionExtractor:
         cache_dir: str | None = None,
         enable_cache: bool = True,
         reasoning_effort: str = "minimal",
-        native_fallback_enabled: bool = False,
     ) -> None:
         self.api_key = (api_key or "").strip()
-        self.native_api_key = (native_api_key or "").strip()
         self.model = (model or "qwen3-vl-plus").strip() or "qwen3-vl-plus"
         self.base_url = (base_url or "").strip()
         self.endpoint_style = self._normalize_endpoint_style(endpoint_style)
@@ -62,14 +57,7 @@ class GeminiVisionExtractor:
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
         effort = str(reasoning_effort or "minimal").strip().lower()
         self.reasoning_effort = effort if effort in {"minimal", "low", "medium", "high"} else "minimal"
-        self.native_fallback_enabled = bool(native_fallback_enabled)
         self.prompt_version = f"v7_visual_full_chart_json_{self.endpoint_style}"
-        self._native_transport_runtime = GeminiNativeTransportRuntime(
-            resolve_native_api_url=resolve_llm_native_api_url,
-            user_agent="smart-doc-flow-module2-vision/1.0",
-            default_model="gemini-2.5-flash",
-            connection_close=True,
-        )
         self._state_lock = Lock()
         self._last_debug: Dict[str, Any] = {}
         self.reset_stats()
@@ -313,7 +301,7 @@ class GeminiVisionExtractor:
         request_source = ""
         last_exc_text = ""
         try:
-            response = self._request_native_multimodal(
+            response = self._request_multimodal(
                 prompt=prompt,
                 image_bytes=image_bytes,
                 mime_type=mime_type,
@@ -374,140 +362,9 @@ class GeminiVisionExtractor:
         )
         return None
 
-    def _request_native_multimodal(
-        self,
-        *,
-        prompt: str,
-        image_bytes: bytes,
-        mime_type: str,
-    ) -> Dict[str, str]:
-        if self.endpoint_style == "openai_chat_completions":
-            return self._request_openai_multimodal(
-                prompt=prompt,
-                image_bytes=image_bytes,
-                mime_type=mime_type,
-            )
-        raise RuntimeError("Native Gemini/Google vision endpoints are disabled; use openai_chat_completions.")
+    def _request_multimodal(self, *, prompt: str, image_bytes: bytes, mime_type: str) -> Dict[str, str]:
+        return self._request_openai_multimodal(prompt=prompt, image_bytes=image_bytes, mime_type=mime_type)
 
-        last_exc: Optional[Exception] = None
-        request_candidates: list[tuple[str, str, str]] = []
-        primary_url = self._resolve_primary_native_url()
-        primary_key = self._resolve_primary_api_key()
-        if primary_url and primary_key:
-            request_candidates.append((primary_url, primary_key, "gemini_native"))
-        if self._allow_google_native_fallback():
-            google_key = self.native_api_key.strip()
-            google_url = self._native_transport_runtime.build_google_native_url(self.model)
-            if google_key and google_url and all(url != google_url or key != google_key for url, key, _ in request_candidates):
-                request_candidates.append((google_url, google_key, "gemini_native_google_fallback"))
-        if not request_candidates:
-            raise RuntimeError("no_usable_vision_provider")
-
-        for url, api_key, source in request_candidates:
-            for attempt in range(1, self.request_retry_attempts + 1):
-                try:
-                    return self._post_native_multimodal(
-                        url=url,
-                        api_key=api_key,
-                        source=source,
-                        prompt=prompt,
-                        image_bytes=image_bytes,
-                        mime_type=mime_type,
-                    )
-                except Exception as exc:
-                    last_exc = exc
-                    if not self._should_retry_transport_exception(exc) or attempt >= self.request_retry_attempts:
-                        break
-                    self._bump_stat("request_retries")
-                    time.sleep(self._retry_sleep_seconds(attempt))
-        raise last_exc or RuntimeError("vision provider returned empty response")
-
-    def _post_native_multimodal(
-        self,
-        *,
-        url: str,
-        api_key: str,
-        source: str,
-        prompt: str,
-        image_bytes: bytes,
-        mime_type: str,
-    ) -> Dict[str, str]:
-        request_url = self._native_transport_runtime.apply_model_to_native_url(url, self.model)
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": mime_type or "image/png",
-                                "data": base64.b64encode(image_bytes).decode("ascii"),
-                            }
-                        },
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.0,
-                "maxOutputTokens": self.max_output_tokens,
-            },
-        }
-        try:
-            log_ai_api_request(
-                api_url=request_url,
-                request_body=payload,
-                model=self.model,
-                logger_name="app.modules.module2.vision.ai_api",
-                config_prefix="MODULE2",
-            )
-            resp = requests.post(
-                request_url,
-                json=payload,
-                headers=self._native_transport_runtime.build_headers(request_url, api_key),
-                timeout=self.timeout_sec,
-            )
-            log_ai_api_response(
-                response=resp,
-                logger_name="app.modules.module2.vision.ai_api",
-                config_prefix="MODULE2",
-            )
-            resp.raise_for_status()
-        except (HTTPError, RequestException) as exc:
-            log_ai_api_exception(
-                exc=exc,
-                close_call=not (isinstance(exc, HTTPError) and exc.response is not None),
-                logger_name="app.modules.module2.vision.ai_api",
-                config_prefix="MODULE2",
-            )
-            raise
-        raw = resp.text
-        try:
-            obj = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("vision provider returned invalid JSON") from exc
-        candidates = obj.get("candidates") if isinstance(obj.get("candidates"), list) else []
-        first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
-        texts = []
-        for candidate in candidates:
-            if not isinstance(candidate, dict):
-                continue
-            content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
-            parts = content.get("parts") if isinstance(content.get("parts"), list) else []
-            for part in parts:
-                if not isinstance(part, dict):
-                    continue
-                text = str(part.get("text", "") or "").strip()
-                if text:
-                    texts.append(text)
-        raw_content = "\n".join(texts).strip()
-        if not raw_content:
-            raise RuntimeError("vision provider returned empty content")
-        return {
-            "content": raw_content,
-            "finish_reason": self._normalize_finish_reason(first.get("finishReason")),
-            "model": str(obj.get("modelVersion", "") or self.model),
-            "request_source": source,
-        }
 
     def _request_openai_multimodal(
         self,
@@ -623,9 +480,8 @@ class GeminiVisionExtractor:
     def _resolve_openai_chat_url(self) -> str:
         raw = str(
             self.base_url
-            or os.getenv("MODULE2_GEMINI_VISION_BASE_URL", "")
+            or os.getenv("MODULE2_VISION_BASE_URL", "")
             or os.getenv("MODULE2_LLM_BASE_URL", "")
-            or os.getenv("MODULE2_LLM_API_BASE", "")
             or os.getenv("OPENAI_BASE_URL", "")
             or ""
         ).strip().rstrip("/")
@@ -642,16 +498,9 @@ class GeminiVisionExtractor:
             return f"{raw}/chat/completions"
         return f"{raw}/v1/chat/completions"
 
-    def _resolve_primary_native_url(self) -> str:
-        raw = self._native_transport_runtime.resolve_native_url(self.model)
-        if raw:
-            return raw
-        if self._allow_google_native_fallback():
-            return self._native_transport_runtime.build_google_native_url(self.model)
-        return ""
 
     def _resolve_primary_api_key(self) -> str:
-        return str(self.api_key or self.native_api_key or "").strip()
+        return self.api_key
 
     def _retry_sleep_seconds(self, attempt: int) -> float:
         attempt_value = max(1.0, float(attempt))
@@ -702,11 +551,7 @@ class GeminiVisionExtractor:
         raw = str(raw_style or "").strip().lower()
         if raw in {"openai", "openai_chat", "chat_completions", "openai_chat_completions"}:
             return "openai_chat_completions"
-        if raw in {"native", "google_native", "gemini_native"}:
-            raise RuntimeError(
-                "Native Gemini/Google vision endpoint style is disabled; use openai_chat_completions."
-            )
-        return "openai_chat_completions"
+        raise RuntimeError("Unsupported vision endpoint style; use openai_chat_completions.")
 
     @staticmethod
     def _coerce_openai_content(content: Any) -> str:
@@ -731,8 +576,6 @@ class GeminiVisionExtractor:
             return "".join(pieces)
         return ""
 
-    def _allow_google_native_fallback(self) -> bool:
-        return False
 
     @staticmethod
     def _unique_texts(values: Any, *, limit: int, max_len: int = 180) -> list[str]:

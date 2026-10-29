@@ -86,7 +86,7 @@ def _next_figure_index(figure_blocks: list[dict], prefix: str) -> int:
 
 def _build_runtime(*, figures_enabled: bool = True):
     return FigureInferenceRuntime(
-        gemini_vision_enable_figures=figures_enabled,
+        vision_enable_figures=figures_enabled,
         normalize_text=_normalize_text,
         normalize_token_for_compare=_normalize_token_for_compare,
         contains_figure_marker=_contains_figure_marker,

@@ -1,19 +1,18 @@
 import {
-    toAssistantActionPreview,
-    toAssistantCitations,
-    toAssistantObjectLock,
-    toAssistantPayloadRecord,
-    toAssistantToolEvents,
-    filterAssistantWarnings,
-    humanizeAssistantToolEvent,
+  toAssistantActionPreview,
+  toAssistantCitations,
+  toAssistantObjectLock,
+  toAssistantPayloadRecord,
+  toAssistantToolEvents,
+  filterAssistantWarnings,
+  humanizeAssistantToolEvent,
 } from './helpers';
 import type {
-    AssistantActionPreview,
-    AssistantCitation,
-    AssistantCompanionState,
-    AssistantObjectLock,
-    AssistantToolEvent,
-    Assistant1SseEnvelope,
+  AssistantActionPreview,
+  AssistantCitation,
+  AssistantCompanionState,
+  AssistantToolEvent,
+  Assistant1SseEnvelope,
 } from './types';
 
 export const toAssistant1Envelope = (value: unknown): Assistant1SseEnvelope | null => {

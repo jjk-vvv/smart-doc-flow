@@ -14,14 +14,13 @@
 
 ### 从仓库根目录启动全链路
 
-根目录的 `npm run dev` 现已默认启动：
+根目录的 `npm run dev` 现已默认只启动一个统一入口：
 
 - `frontend`：Vite 前端，端口 `3000`
-- `auth`：认证与聊天服务，端口 `3001`
-- `module2`：本文档对应服务，端口 `8010`
-- `module4`：知识图谱服务，端口 `8100`
+- `backend`：统一 FastAPI，端口 `3001`，模块一/二/三/四都挂载在这一个进程里
+- 模块二不再单独占用 `8010`；独立端口只用于专项调试
 
-如果只想跳过模块二或模块四，可在 PowerShell 中临时设置：
+如果只想跳过独立模块入口，可在 PowerShell 中临时设置：
 
 ```powershell
 $env:MODULE2_ENABLED="0"
@@ -40,14 +39,14 @@ npm run dev:module2
 `npm run dev:module2` 会固定优先使用仓库根目录下的 `.venv`。
 
 ```powershell
-$env:MODULE2_PYTHON="D:\smart_doc_flow\smart-doc-flow\.venv\Scripts\python.exe"
+$env:MODULE2_PYTHON="D:\smart_doc_flow\.venv\Scripts\python.exe"
 npm run dev:module2
 ```
 
 或直接执行：
 
 ```powershell
-D:\smart_doc_flow\smart-doc-flow\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload --reload-dir app
+D:\smart_doc_flow\.venv\Scripts\python.exe backend\run_service.py module2 --reload
 ```
 
 ## 环境准备
@@ -68,7 +67,6 @@ pip install -r backend/app/modules/module2/requirements.txt
 - `rapidocr-onnxruntime`
 - `mineru`
 - `langgraph`
-- `langchain-google-genai`
 
 参考依赖清单：`backend/app/modules/module2/requirements.txt`
 
@@ -93,7 +91,8 @@ Copy-Item backend/app/modules/module2/.env.example backend/app/modules/module2/.
 - `MODULE2_PIPELINE_MODE`
 - `MODULE2_ENABLE_MINERU_LAYOUT`
 - `MODULE2_DOC_TO_PDF_ENABLE`
-- `GEMINI_API_KEY`
+- `MODULE2_LLM_API_KEY` / `MODULE2_LLM_BASE_URL` / `MODULE2_LLM_MODEL`
+- `MODULE2_VISION_BASE_URL` / `MODULE2_VISION_MODEL`（默认 `qwen3-vl-plus`，base 与密钥缺省复用 LLM 配置）
 - `ASSISTANT1_CHAT_BASE_URL`
 - `ASSISTANT1_CHAT_API_KEY`
 - `ASSISTANT1_CHAT_MODEL`
@@ -135,21 +134,23 @@ postgresql://postgres@127.0.0.1:5432/a23
 
 如果数据库不可用，服务会自动降级为内存模式，但这只适合本地调试，不适合长期使用。
 
-### Gemini API Key（建议开启）
+### 模型配置（OpenAI 兼容协议）
 
-模块二有两类能力会使用 Gemini：
+模块二有两类能力会调用模型，二者都走 OpenAI 兼容接口：
 
-- 结构化字段抽取图中的 LLM 抽取
-- 视觉增强链路中的表格 / 图像理解
-
-至少配置其一：
+- 结构化字段抽取图中的 LLM 抽取：`MODULE2_LLM_API_KEY` / `MODULE2_LLM_BASE_URL` / `MODULE2_LLM_MODEL`
+- 视觉增强链路中的表格 / 图像理解：`MODULE2_VISION_BASE_URL` / `MODULE2_VISION_MODEL`，base 与密钥缺省复用 LLM 配置
 
 ```text
-GEMINI_API_KEY=
-GOOGLE_API_KEY=
+MODULE2_LLM_API_KEY=<OpenAI 兼容密钥>
+MODULE2_LLM_BASE_URL=https://<provider>/v1
+MODULE2_LLM_MODEL=qwen-max
+
+MODULE2_VISION_BASE_URL=https://<provider>/v1
+MODULE2_VISION_MODEL=qwen3-vl-plus
 ```
 
-若未配置，部分智能抽取能力会退化或关闭。
+若未配置，部分智能抽取能力会退化或关闭。原生 Gemini 传输已移除，不再接受 `GEMINI_API_KEY` / `GOOGLE_API_KEY` 或原生 endpoint 配置。
 
 ### MinerU（视觉优先链路）
 
@@ -382,9 +383,9 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 ## 常见联调端口
 
 - 前端：`http://localhost:3000`
-- 认证服务：`http://localhost:3001`
-- 模块二：`http://localhost:8010`
-- 模块四：`http://localhost:8100`
+- 统一后端（认证 + 模块一/二/三/四）：`http://localhost:3001`
+- 模块二独立调试：`http://localhost:8010`
+- 模块四独立调试：`http://localhost:8100`
 
 前端代理配置见：`frontend/vite.config.ts`
 
@@ -397,7 +398,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - 模块二依赖是否安装完成
 - `python` 是否可用
 - `backend/app/modules/module2/.env` 是否存在
-- `http://localhost:8010/healthz` 是否可访问
+- 后端是否已启动（统一入口 `http://localhost:3001/healthz`；独立调试入口为 `http://localhost:8010/healthz`）
 
 ### 2. Word 预览一直失败
 
@@ -412,7 +413,7 @@ MODULE2_SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 
 优先检查：
 
-- 是否配置 `GEMINI_API_KEY`
+- 是否配置 `MODULE2_LLM_API_KEY` 与 `MODULE2_LLM_BASE_URL`
 - 是否启用 MinerU 相关配置
 - 是否被回退到 `FastTrack`
 

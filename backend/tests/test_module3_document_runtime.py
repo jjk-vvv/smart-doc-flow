@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import os
 import sys
 from importlib import import_module
@@ -33,7 +32,7 @@ def _build_request(path: str) -> Request:
     return Request(scope)
 
 
-def test_parse_word_document_json_uses_cache_until_document_changes(monkeypatch, tmp_path: Path) -> None:
+def test_parse_word_document_json_reads_current_document_each_time(monkeypatch, tmp_path: Path) -> None:
     run_dir = (tmp_path / "run_1").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     output_path = (tmp_path / "result.docx").resolve()
@@ -60,33 +59,21 @@ def test_parse_word_document_json_uses_cache_until_document_changes(monkeypatch,
     first = fusion_routes.parse_word_document_json(request, payload)
     second = fusion_routes.parse_word_document_json(request, payload)
 
-    assert len(parse_calls) == 1
-    assert first["sections"] == second["sections"]
+    assert len(parse_calls) == 2
+    assert first["sections"] != second["sections"]
 
     output_path.write_bytes(b"second")
     os.utime(output_path, None)
 
     third = fusion_routes.parse_word_document_json(request, payload)
 
-    assert len(parse_calls) == 2
+    assert len(parse_calls) == 3
     assert third["sections"] != second["sections"]
 
 
-def test_save_run_output_file_invalidates_parse_cache(monkeypatch, tmp_path: Path) -> None:
+def test_save_run_output_file_replaces_document_bytes(monkeypatch, tmp_path: Path) -> None:
     run_dir = (tmp_path / "run_2").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = run_dir / "parse_cache_excel.json"
-    cache_path.write_text(
-        json.dumps(
-            {
-                "document_signature": "demo",
-                "parsed_payload": {"sheets": []},
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
     output_path = (tmp_path / "result.xlsx").resolve()
     output_path.write_bytes(b"before")
 
@@ -110,18 +97,16 @@ def test_save_run_output_file_invalidates_parse_cache(monkeypatch, tmp_path: Pat
 
     assert result["status"] == "ok"
     assert output_path.read_bytes() == b"after"
-    assert not cache_path.exists()
 
 
-def test_extract_rows_from_word_source_reuses_prepared_word_artifacts(monkeypatch, tmp_path: Path) -> None:
+def test_extract_rows_from_word_source_uses_chat_with_images(monkeypatch, tmp_path: Path) -> None:
     word_path = (tmp_path / "source.docx").resolve()
     word_path.write_bytes(b"demo")
 
     calls = {
         "images": 0,
         "text": 0,
-        "file_payload": 0,
-        "responses": 0,
+        "chat": 0,
     }
 
     def fake_extract_docx_images(path: Path, *, max_images: int, max_image_bytes: int) -> list[dict[str, str]]:
@@ -132,23 +117,17 @@ def test_extract_rows_from_word_source_reuses_prepared_word_artifacts(monkeypatc
         calls["text"] += 1
         return "Document body"
 
-    def fake_get_word_data_url(path: Path) -> tuple[str, str]:
-        calls["file_payload"] += 1
-        return ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "QUFBQQ==")
 
-    def fake_request_responses(**kwargs) -> str:
-        calls["responses"] += 1
-        assert kwargs["include_file"] is True
-        assert kwargs["prepared_file_data"] is not None
+    def fake_request_chat_completions(**kwargs) -> str:
+        calls["chat"] += 1
+        assert kwargs["image_inputs"][0]["data_url"].startswith("data:image/png")
         return '{"rows": [{"name": "Alice"}]}'
 
     monkeypatch.setattr(source_dispatcher, "extract_docx_images", fake_extract_docx_images)
     monkeypatch.setattr(source_dispatcher, "read_docx_content", fake_read_docx_content)
-    monkeypatch.setattr(source_dispatcher, "get_word_data_url", fake_get_word_data_url)
-    monkeypatch.setattr(source_dispatcher, "request_responses", fake_request_responses)
+    monkeypatch.setattr(source_dispatcher, "request_chat_completions", fake_request_chat_completions)
     monkeypatch.setattr(source_dispatcher, "_extract_rows_with_word_recall_pass", lambda **kwargs: [])
 
-    shared_cache: dict[tuple[str, str], object] = {}
 
     first = source_dispatcher.extract_rows_from_word_source(
         word_path=word_path,
@@ -157,10 +136,9 @@ def test_extract_rows_from_word_source_reuses_prepared_word_artifacts(monkeypatc
         base_url="https://example.com/v1",
         api_key="demo-key",
         model="demo-model",
-        api_mode="responses",
+        api_mode="chat",
         max_images=4,
         max_image_bytes=1024,
-        source_artifact_cache=shared_cache,
         logger=None,
     )
     second = source_dispatcher.extract_rows_from_word_source(
@@ -170,16 +148,14 @@ def test_extract_rows_from_word_source_reuses_prepared_word_artifacts(monkeypatc
         base_url="https://example.com/v1",
         api_key="demo-key",
         model="demo-model",
-        api_mode="responses",
+        api_mode="chat",
         max_images=4,
         max_image_bytes=1024,
-        source_artifact_cache=shared_cache,
         logger=None,
     )
 
     assert first == [{"name": "Alice"}]
     assert second == first
-    assert calls["images"] == 1
-    assert calls["text"] == 1
-    assert calls["file_payload"] == 1
-    assert calls["responses"] == 2
+    assert calls["images"] == 2
+    assert calls["text"] == 2
+    assert calls["chat"] == 2

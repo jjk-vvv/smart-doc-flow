@@ -4,13 +4,13 @@ import logging
 import smtplib
 from dataclasses import dataclass
 from email.header import Header
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, parseaddr
 
-import requests
-
 from app.core.auth_config import AuthSettings
-from app.core.auth_security import normalize_str
+from app.core.auth_email_template import SENDER_NAME, render_verification_email
+from app.core.auth_security import is_email, normalize_str
 
 logger = logging.getLogger(__name__)
 
@@ -27,60 +27,16 @@ class AuthNotifier:
         self.settings = settings
 
     def send_registration_code(self, contact: str, code: str) -> DeliveryResult:
-        if "@" in contact:
-            return self._send_email_code(contact, code, flow="register")
-        return self._send_sms_code(contact, code)
+        return self._send_email_code(contact, code, flow="register")
 
     def send_forgot_code(self, contact: str, code: str) -> DeliveryResult:
-        if "@" in contact:
-            return self._send_email_code(contact, code, flow="forgot")
-        return self._send_sms_code(contact, code)
-
-    def _send_sms_code(self, contact: str, code: str) -> DeliveryResult:
-        if self.settings.sms_provider != "ihuyi":
-            if not self.settings.is_prod:
-                logger.info("[DEV][SMS] %s verification code: %s", contact, code)
-                return DeliveryResult(ok=True)
-            return DeliveryResult(ok=False, error="SMS service is not configured.")
-
-        api_id = normalize_str(self.settings.ihuyi_api_id)
-        api_key = normalize_str(self.settings.ihuyi_api_key)
-        if not api_id or not api_key:
-            return DeliveryResult(ok=False, error="SMS credentials are incomplete.")
-
-        try:
-            response = requests.post(
-                "https://106.ihuyi.com/webservice/sms.php?method=Submit",
-                data={
-                    "method": "Submit",
-                    "account": api_id,
-                    "password": api_key,
-                    "mobile": contact,
-                    "content": f"Your verification code is {code}. Please do not share it with others.",
-                    "format": "json",
-                },
-                timeout=20,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
-            logger.exception("SMS API call failed: %s", exc)
-            return DeliveryResult(
-                ok=False,
-                error="SMS service is temporarily unavailable. Please retry later.",
-            )
-
-        if int(payload.get("code") or 0) == 2:
-            if not self.settings.is_prod:
-                logger.info("[IHUYI SMS Sent] %s verification code: %s", contact, code)
-            return DeliveryResult(ok=True, dev_code="" if self.settings.is_prod else code)
-
-        return DeliveryResult(
-            ok=False,
-            error=f"SMS send failed: {normalize_str(payload.get('msg')) or 'Please retry later'}",
-        )
+        return self._send_email_code(contact, code, flow="forgot")
 
     def _send_email_code(self, contact: str, code: str, *, flow: str) -> DeliveryResult:
+        contact = normalize_str(contact)
+        if not is_email(contact):
+            return DeliveryResult(ok=False, error="Please enter a valid email address.")
+
         host = normalize_str(self.settings.smtp_host)
         user = normalize_str(self.settings.smtp_user)
         password = normalize_str(self.settings.smtp_pass)
@@ -95,32 +51,13 @@ class AuthNotifier:
                 return DeliveryResult(ok=True, dev_code=code)
             return DeliveryResult(ok=False, error="Email service is not configured.")
 
-        subject = (
-            "[Platform] Registration verification code"
-            if flow == "register"
-            else "[Platform] Password reset verification code"
-        )
-        title = "Registration Code" if flow == "register" else "Password Reset Code"
-        context = (
-            "You are registering an account. Your verification code is:"
-            if flow == "register"
-            else "You are resetting your password. Your verification code is:"
-        )
-
-        html = f"""
-        <div style="max-width:480px;margin:0 auto;padding:32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-          <h2 style="color:#1e293b;margin-bottom:8px;">{title}</h2>
-          <p style="color:#64748b;font-size:14px;">{context}</p>
-          <div style="background:#f1f5f9;border-radius:12px;padding:20px;text-align:center;margin:24px 0;">
-            <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#2563eb;">{code}</span>
-          </div>
-          <p style="color:#64748b;font-size:13px;">The code is valid for 5 minutes. Please do not share it.</p>
-        </div>
-        """.strip()
+        content = render_verification_email(flow=flow, code=code, expires_ms=self.settings.verify_code_expires_ms)
 
         try:
-            message = MIMEText(html, "html", "utf-8")
-            message["Subject"] = subject
+            message = MIMEMultipart("alternative")
+            message.attach(MIMEText(content.text, "plain", "utf-8"))
+            message.attach(MIMEText(content.html, "html", "utf-8"))
+            message["Subject"] = content.subject
             message["From"] = sender_header
             message["To"] = contact
 
@@ -150,5 +87,5 @@ class AuthNotifier:
         if not email_address:
             return "", ""
         if not display_name:
-            return email_address, email_address
+            display_name = SENDER_NAME
         return formataddr((str(Header(display_name, "utf-8")), email_address)), email_address

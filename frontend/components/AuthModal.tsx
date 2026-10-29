@@ -18,16 +18,15 @@ interface AuthModalProps {
 }
 
 const AUTH_TEXT = {
-  devCodeAlert: '【本地开发调试】\n当前未配置真实',
-  devCodeServiceSuffix: '服务，已返回模拟验证码。\n验证码：',
+  devCodeAlert: '【本地开发调试】\n当前未配置真实邮件服务，以下为模拟邮箱验证码，不会发送邮件。\n验证码：',
   loginTitle: '欢迎回来',
   registerTitle: '创建账号',
   forgotTitle: '重置密码',
   loginSubtitle: '登录您的账号以继续使用平台。',
   registerSubtitle: '填写以下信息完成注册。',
   registerSuccess: '注册成功，正在登录您的账号。',
-  forgotHintSent: '验证码已发送至 ',
-  forgotHintSentSuffix: '，请完成验证后重置密码。',
+  forgotHintSent: '如该邮箱已注册，请查收 ',
+  forgotHintSentSuffix: ' 的邮箱验证码。',
   forgotHintInput: '验证码已发送，请输入验证码并设置新密码。',
   forgotHintDefault: '验证身份后即可重置密码。',
   accountLabel: '账号',
@@ -55,10 +54,10 @@ const AUTH_TEXT = {
   createAccount: '创建账号',
   hasAccount: '已有账号？',
   directLogin: '直接登录',
-  contactLabel: '联系方式',
-  contactPlaceholder: '注册邮箱 / 手机号',
-  codeLabel: '验证码',
-  codePlaceholder: '输入 6 位验证码',
+  contactLabel: '注册邮箱',
+  contactPlaceholder: '请输入注册时使用的邮箱',
+  codeLabel: '邮箱验证码',
+  codePlaceholder: '输入 6 位邮箱验证码',
   sendingCodeEllipsis: '发送中...',
   newPasswordLabel: '新密码',
   newPasswordPlaceholder: '设置新密码（至少 6 位）',
@@ -76,11 +75,13 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return fallback;
 };
 
-const showDevCodeAlert = (channel: '邮箱' | '短信', devCode?: string) => {
+const isEmailAddress = (value: string) => /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(value.trim());
+
+const showDevCodeAlert = (devCode?: string) => {
   if (!devCode) return;
 
   alert(
-    AUTH_TEXT.devCodeAlert + channel + AUTH_TEXT.devCodeServiceSuffix + devCode,
+    AUTH_TEXT.devCodeAlert + devCode,
   );
 };
 
@@ -232,7 +233,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setRegisterError('');
     setRegisterSuccess('');
 
-    if (!registerForm.email.trim() || !registerForm.email.includes('@')) {
+    if (!isEmailAddress(registerForm.email)) {
       setRegisterError('请输入有效的邮箱地址后再获取验证码。');
       return;
     }
@@ -242,8 +243,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const data = await sendRegisterCode(registerForm.email.trim());
       const nextMaskedContact = data.maskedContact || registerForm.email.trim();
       setCountdown(60);
-      setRegisterSuccess(`验证码已发送至 ${nextMaskedContact}，请检查收件箱和垃圾邮件。`);
-      showDevCodeAlert('邮箱', data.devCode);
+      setRegisterSuccess(data.devCode
+        ? '当前为本地模拟邮箱验证码，请查看提示窗口。'
+        : `验证码已发送至 ${nextMaskedContact}，请检查收件箱和垃圾邮件。`);
+      showDevCodeAlert(data.devCode);
     } catch (error) {
       const message = getErrorMessage(error, '验证码发送失败，请稍后重试。');
       if (message.toLowerCase().includes('already registered')) {
@@ -260,8 +263,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setForgotError('');
     setForgotSuccess('');
 
-    if (!forgotForm.contact.trim()) {
-      setForgotError('请输入注册时使用的手机号或邮箱。');
+    if (!isEmailAddress(forgotForm.contact)) {
+      setForgotError('请输入注册时使用的有效邮箱地址。');
       return;
     }
 
@@ -272,8 +275,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setVerificationSent(true);
       setCountdown(60);
       setMaskedContact(nextMaskedContact);
-      setForgotSuccess(`验证码已发送至 ${nextMaskedContact}，请查收。`);
-      showDevCodeAlert('短信', data.devCode);
+      setForgotSuccess(data.devCode
+        ? '当前为本地模拟邮箱验证码，请查看提示窗口。'
+        : `如该邮箱已注册，验证码将发送至 ${nextMaskedContact}，请查收。`);
+      showDevCodeAlert(data.devCode);
     } catch (error) {
       setForgotError(getErrorMessage(error, '验证码发送失败，请稍后重试。'));
     } finally {
@@ -285,6 +290,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     e.preventDefault();
     setForgotError('');
     setForgotSuccess('');
+
+    if (!isEmailAddress(forgotForm.contact)) {
+      setForgotError('请输入注册时使用的有效邮箱地址。');
+      return;
+    }
 
     if (!forgotForm.code.trim()) {
       setForgotError('请输入验证码。');
@@ -605,7 +615,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <div className="relative">
                   <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input
-                    type="text"
+                    type="email"
+                    autoComplete="email"
                     placeholder={AUTH_TEXT.contactPlaceholder}
                     value={forgotForm.contact}
                     onChange={(e) => setForgotForm({ ...forgotForm, contact: e.target.value })}

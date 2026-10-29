@@ -52,6 +52,7 @@ const main = async () => {
   const skipDesktopBuild = argSet.has('--skip-desktop-build');
 
   await runStep('desktop doctor', ['run', 'desktop:doctor']);
+  await runStep('frontend typecheck', ['run', 'typecheck']);
 
   if (!skipDesktopBuild) {
     await runStep('desktop frontend build', ['run', 'build:frontend']);

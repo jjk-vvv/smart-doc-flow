@@ -158,7 +158,7 @@ def test_visual_table_builder_runtime_builds_visual_first_table_block() -> None:
     bbox_map: dict[str, list[float]] = {}
 
     table, emitted_cells = runtime.build_table_from_visual_payload(
-        table_id="pdf_mineru_gemini_t2",
+        table_id="pdf_mineru_vision_t2",
         page_no=3,
         payload={
             "title": "季度营收表",
@@ -178,7 +178,7 @@ def test_visual_table_builder_runtime_builds_visual_first_table_block() -> None:
         bbox_map=bbox_map,
         page_dims={3: (1000.0, 800.0)},
         emitted_cells=0,
-        source="pdf_mineru_gemini",
+        source="pdf_mineru_vision",
     )
 
     assert table is not None
@@ -192,9 +192,9 @@ def test_visual_table_builder_runtime_builds_visual_first_table_block() -> None:
     assert table["image_path"] == "artifacts/table.png"
     assert table["rows"][0]["cells"][0]["header"] == "季度"
     assert table["rows"][0]["cells"][1]["numeric_value"] == 10.0
-    assert "pdf_mineru_gemini_t2_caption" in bbox_map
-    assert "pdf_mineru_gemini_t2_note1" in bbox_map
-    assert "pdf_mineru_gemini_t2_r1_c1" in bbox_map
+    assert "pdf_mineru_vision_t2_caption" in bbox_map
+    assert "pdf_mineru_vision_t2_note1" in bbox_map
+    assert "pdf_mineru_vision_t2_r1_c1" in bbox_map
     assert parts
 
 
@@ -204,7 +204,7 @@ def test_visual_table_builder_runtime_uses_html_fallback_when_rows_missing() -> 
     bbox_map: dict[str, list[float]] = {}
 
     table, emitted_cells = runtime.build_table_from_visual_payload(
-        table_id="pdf_mineru_gemini_t9",
+        table_id="pdf_mineru_vision_t9",
         page_no=1,
         payload={},
         item={
@@ -227,4 +227,4 @@ def test_visual_table_builder_runtime_uses_html_fallback_when_rows_missing() -> 
     assert table["rows"][0]["cells"][0]["text"] == "Q1"
     assert table["rows"][0]["cells"][1]["numeric_value"] == 10.0
     assert table["source_object_type"] == "table"
-    assert "pdf_mineru_gemini_t9_caption" in bbox_map
+    assert "pdf_mineru_vision_t9_caption" in bbox_map

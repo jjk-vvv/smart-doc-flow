@@ -17,8 +17,6 @@ from .llm_service import (
     normalize_rows_output,
     parse_model_json,
     request_chat_completions,
-    request_responses,
-    request_text_responses,
 )
 from .markdown_processor import extract_rows_from_markdown_source
 from .text_source_common import log_event
@@ -182,7 +180,7 @@ def _extract_cn_numeric_text(value: str, *, sum_all_numbers: bool = False) -> st
 
 
 def _extract_case_count_from_doc_text(doc_text: str, anchor_text: str) -> str:
-    context_text = _cell_text(doc_text)
+    context_text = str(doc_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     anchor = _cell_text(anchor_text)
     if not context_text or not anchor:
         return ""
@@ -222,6 +220,13 @@ def _extract_case_count_from_doc_text(doc_text: str, anchor_text: str) -> str:
     case_matches = re.findall(r"(\d+(?:\.\d+)?)\s*例([^，。；;\n]{0,24})", window)
     if not case_matches:
         return ""
+
+    qualified_matches = [
+        match for match in case_matches
+        if any(keyword and keyword in match[1] for keyword in _CASE_STRONG_KEYWORDS)
+    ]
+    if qualified_matches:
+        case_matches = qualified_matches
 
     total = 0.0
     matched = False
@@ -486,27 +491,25 @@ def _extract_rows_with_word_recall_pass(
     if not extracted_rows or not doc_text.strip():
         return []
 
+    if headers and len(extracted_rows) >= 50 and all(
+        _cell_text(row.get(header)) for row in extracted_rows for header in headers
+    ):
+        log_event(logger, "[recall skipped] high-confidence primary extraction")
+        return []
+
     system_prompt, user_prompt = _build_word_recall_messages(headers, prompt, doc_text, extracted_rows)
     try:
-        if api_mode == "responses":
-            log_event(logger, "[recall] running Word completeness pass via /v1/responses")
-            model_text = request_text_responses(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-        else:
-            log_event(logger, "[recall] running Word completeness pass via /v1/chat/completions")
-            model_text = request_chat_completions(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_inputs=None,
-            )
+        if api_mode != "chat":
+            raise ValueError("Module 3 only supports chat API mode.")
+        log_event(logger, "[recall] running Word completeness pass via /v1/chat/completions")
+        model_text = request_chat_completions(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            image_inputs=None,
+        )
 
         parsed = parse_model_json(model_text)
         rows = normalize_rows_output(headers, parsed)
@@ -752,36 +755,17 @@ def ai_match_excel_headers(
         return {}
 
     system_prompt, user_prompt = _build_excel_header_mapping_messages(source_headers, target_headers, prompt)
-    if settings["api_mode"] == "responses":
-        try:
-            log_event(logger, "[model] header mapping via /v1/responses")
-            model_text = request_text_responses(
-                base_url=settings["base_url"],
-                api_key=settings["api_key"],
-                model=settings["model"],
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-        except Exception as exc:
-            log_event(logger, f"[model fallback] header mapping responses failed, switching to chat. reason: {exc}")
-            model_text = request_chat_completions(
-                base_url=settings["base_url"],
-                api_key=settings["api_key"],
-                model=settings["model"],
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_inputs=None,
-            )
-    else:
-        log_event(logger, "[model] header mapping via /v1/chat/completions")
-        model_text = request_chat_completions(
-            base_url=settings["base_url"],
-            api_key=settings["api_key"],
-            model=settings["model"],
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            image_inputs=None,
-        )
+    if settings["api_mode"] != "chat":
+        raise ValueError("Module 3 only supports chat API mode.")
+    log_event(logger, "[model] header mapping via /v1/chat/completions")
+    model_text = request_chat_completions(
+        base_url=settings["base_url"],
+        api_key=settings["api_key"],
+        model=settings["model"],
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        image_inputs=None,
+    )
 
     parsed = parse_model_json(model_text)
     if isinstance(parsed, dict) and isinstance(parsed.get("mapping"), dict):
@@ -1337,100 +1321,31 @@ def extract_rows_from_word_source(
     )
     log_event(logger, "[step1.3] sending Word content to model")
 
-    if api_mode == "responses":
-        try:
-            log_event(logger, "[model] /v1/responses with Word file and images")
-            model_text = request_responses(
-                base_url=base_url,
-                api_key=api_key,
-                model=effective_vision_model if image_inputs else model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                word_path=word_path,
-                include_file=True,
-                image_inputs=image_inputs,
-            )
-        except Exception as exc:
-            log_event(logger, f"[model fallback] file upload failed, retrying without file. reason: {exc}")
-            try:
-                log_event(logger, "[model] /v1/responses with images only")
-                model_text = request_responses(
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=effective_vision_model if image_inputs else model,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    word_path=word_path,
-                    include_file=False,
-                    image_inputs=image_inputs,
-                )
-            except Exception as exc2:
-                try:
-                    if not image_inputs:
-                        raise exc2
-                    log_event(logger, f"[model fallback] image upload failed, retrying as text-only. reason: {exc2}")
-                    log_event(logger, "[model] /v1/responses text-only fallback")
-                    model_text = request_responses(
-                        base_url=base_url,
-                        api_key=api_key,
-                        model=model,
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        word_path=word_path,
-                        include_file=False,
-                        image_inputs=None,
-                    )
-                except Exception as exc3:
-                    log_event(logger, f"[model fallback] responses text-only failed, switching to chat. reason: {exc3}")
-                    try:
-                        if image_inputs:
-                            log_event(logger, "[model] /v1/chat/completions with images fallback")
-                            model_text = request_chat_completions(
-                                base_url=base_url,
-                                api_key=api_key,
-                                model=effective_vision_model,
-                                system_prompt=system_prompt,
-                                user_prompt=user_prompt,
-                                image_inputs=image_inputs,
-                            )
-                        else:
-                            raise RuntimeError("no image inputs available for chat image fallback")
-                    except Exception as exc4:
-                        if image_inputs:
-                            log_event(logger, f"[model fallback] chat image input failed, retrying text-only. reason: {exc4}")
-                        log_event(logger, "[model] /v1/chat/completions text-only fallback")
-                        model_text = request_chat_completions(
-                            base_url=base_url,
-                            api_key=api_key,
-                            model=model,
-                            system_prompt=system_prompt,
-                            user_prompt=user_prompt,
-                            image_inputs=None,
-                        )
-    else:
-        try:
-            log_event(logger, "[model] /v1/chat/completions with images")
-            model_text = request_chat_completions(
-                base_url=base_url,
-                api_key=api_key,
-                model=effective_vision_model if image_inputs else model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_inputs=image_inputs,
-            )
-        except Exception as exc:
-            if not image_inputs:
-                raise
-            log_event(logger, f"[model fallback] chat image input failed, retrying text-only. reason: {exc}")
-            log_event(logger, "[model] /v1/chat/completions text-only fallback")
-            model_text = request_chat_completions(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_inputs=None,
-            )
+    if api_mode != "chat":
+        raise ValueError("Module 3 only supports chat API mode.")
+    try:
+        log_event(logger, "[model] /v1/chat/completions with images")
+        model_text = request_chat_completions(
+            base_url=base_url,
+            api_key=api_key,
+            model=effective_vision_model if image_inputs else model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            image_inputs=image_inputs,
+        )
+    except Exception as exc:
+        if not image_inputs:
+            raise
+        log_event(logger, f"[model fallback] chat image input failed, retrying text-only. reason: {exc}")
+        log_event(logger, "[model] /v1/chat/completions text-only fallback")
+        model_text = request_chat_completions(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            image_inputs=None,
+        )
 
     log_event(logger, "[model output]\n" + model_text)
 
@@ -1439,28 +1354,17 @@ def extract_rows_from_word_source(
     except Exception as exc:
         log_event(logger, f"[json repair] initial parse failed, retrying with repair prompt. reason: {exc}")
         repair_system_prompt, repair_user_prompt = build_repair_messages(headers, model_text)
-        if api_mode == "responses":
-            log_event(logger, "[model] JSON repair via /v1/responses")
-            repair_text = request_responses(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                system_prompt=repair_system_prompt,
-                user_prompt=repair_user_prompt,
-                word_path=word_path,
-                include_file=False,
-                image_inputs=None,
-            )
-        else:
-            log_event(logger, "[model] JSON repair via /v1/chat/completions")
-            repair_text = request_chat_completions(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                system_prompt=repair_system_prompt,
-                user_prompt=repair_user_prompt,
-                image_inputs=None,
-            )
+        if api_mode != "chat":
+            raise ValueError("Module 3 only supports chat API mode.")
+        log_event(logger, "[model] JSON repair via /v1/chat/completions")
+        repair_text = request_chat_completions(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            system_prompt=repair_system_prompt,
+            user_prompt=repair_user_prompt,
+            image_inputs=None,
+        )
         log_event(logger, "[repair output]\n" + repair_text)
         parsed_data = parse_model_json(repair_text)
 

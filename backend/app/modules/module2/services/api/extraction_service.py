@@ -462,7 +462,7 @@ class ExtractionService:
             additional_headers=additional_headers,
         )
 
-    def get_assistant1_session(
+    async def get_assistant1_session_async(
         self,
         settings: Settings,
         request: Request,
@@ -487,15 +487,13 @@ class ExtractionService:
             session = inspect.iscoroutinefunction(getattr(persistence, "fetch_session", None))
             if not session:
                 raise HTTPException(status_code=503, detail="assistant session persistence unavailable")
-            session_payload = asyncio.run(
-                persistence.fetch_session(session_id, expected_tenant_id=expected_tenant_id)
+            session_payload = await persistence.fetch_session(
+                session_id, expected_tenant_id=expected_tenant_id
             )
-            messages = asyncio.run(
-                persistence.list_messages(
-                    session_id,
-                    limit=limit,
-                    expected_tenant_id=expected_tenant_id,
-                )
+            messages = await persistence.list_messages(
+                session_id,
+                limit=limit,
+                expected_tenant_id=expected_tenant_id,
             )
             if not isinstance(session_payload, dict) and not messages:
                 raise HTTPException(status_code=404, detail="assistant session not found")
@@ -525,6 +523,18 @@ class ExtractionService:
             session_id=session_id,
             limit=limit,
             additional_headers=additional_headers,
+        )
+
+    def get_assistant1_session(
+        self,
+        settings: Settings,
+        request: Request,
+        session_id: str,
+        *,
+        limit: int = 40,
+    ) -> Response:
+        return asyncio.run(
+            self.get_assistant1_session_async(settings, request, session_id, limit=limit)
         )
 
     def health_payload(self, settings: Settings) -> dict[str, Any]:

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ExternalLink, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 
 export type PdfViewMode = 'fit-width' | 'fit-page' | 'actual';
 

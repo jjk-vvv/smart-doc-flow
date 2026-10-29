@@ -173,7 +173,7 @@ class AssistantSettings:
             ),
             chat_base_url=_env(
                 *base_url_names,
-                default="https://jeniya.cn/v1",
+                default="https://quanzil.com/v1",
             ),
             chat_endpoint_path=endpoint_path,
             chat_endpoint_style=endpoint_style,

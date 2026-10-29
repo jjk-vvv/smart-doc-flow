@@ -322,7 +322,7 @@ def build_module2_main_nonpdf_bundle(
     def _is_recoverable_timeout_error(message: str) -> bool:
         text = str(message or "").lower()
         return ("timeout" in text) and (
-            "table_extract" in text or "field_extract" in text or "llm" in text or "gemini" in text
+            "table_extract" in text or "field_extract" in text or "llm" in text or "vision" in text
         )
 
     return Module2MainNonPdfBundle(

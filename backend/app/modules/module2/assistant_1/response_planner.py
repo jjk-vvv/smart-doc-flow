@@ -7,12 +7,9 @@ from .intent_router import (
     Assistant1IntentSignals,
     collect_intent_signals,
     contains_any,
-    is_broad_document_question,
     is_action_preview_request,
-    is_strict_minimal_request,
     looks_like_fact_lookup,
     prefers_active_document_grounding,
-    should_prefer_frontend_grounding,
 )
 from .task_policy import intent_requires_tool_call, prefers_tool_first_execution, primary_tool_for_intent
 

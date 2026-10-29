@@ -22,9 +22,9 @@ class FigureVisionPayloadRuntime:
     def __init__(
         self,
         *,
-        gemini_vision_enable_figures: bool,
-        gemini_vision_max_figures_per_page: int,
-        gemini_vision_min_figure_quality: float,
+        vision_enable_figures: bool,
+        vision_max_figures_per_page: int,
+        vision_min_figure_quality: float,
         normalize_text: NormalizeText,
         infer_figure_type_from_text: InferFigureType,
         safe_text_list: SafeTextList,
@@ -37,9 +37,9 @@ class FigureVisionPayloadRuntime:
         to_float_or_none: ToFloatOrNone,
         count_figure_markers_in_text: CountFigureMarkers,
     ) -> None:
-        self.gemini_vision_enable_figures = gemini_vision_enable_figures
-        self.gemini_vision_max_figures_per_page = gemini_vision_max_figures_per_page
-        self.gemini_vision_min_figure_quality = gemini_vision_min_figure_quality
+        self.vision_enable_figures = vision_enable_figures
+        self.vision_max_figures_per_page = vision_max_figures_per_page
+        self.vision_min_figure_quality = vision_min_figure_quality
         self._normalize_text = normalize_text
         self._infer_figure_type_from_text = infer_figure_type_from_text
         self._safe_text_list = safe_text_list
@@ -61,7 +61,7 @@ class FigureVisionPayloadRuntime:
         bbox_map: Dict[str, List[float]],
         source_prefix: str,
     ) -> Tuple[FigureBlocks, int]:
-        if not self.gemini_vision_enable_figures or self.gemini_vision_max_figures_per_page <= 0:
+        if not self.vision_enable_figures or self.vision_max_figures_per_page <= 0:
             return [], figure_idx
 
         figures_raw = payload.get("figures", [])
@@ -69,7 +69,7 @@ class FigureVisionPayloadRuntime:
             return [], figure_idx
 
         built: FigureBlocks = []
-        for figure_raw in figures_raw[: self.gemini_vision_max_figures_per_page]:
+        for figure_raw in figures_raw[: self.vision_max_figures_per_page]:
             if not isinstance(figure_raw, dict):
                 continue
 
@@ -162,7 +162,7 @@ class FigureVisionPayloadRuntime:
             if confidence is None:
                 confidence = 0.72
             confidence = max(0.1, min(1.0, float(confidence)))
-            if confidence < self.gemini_vision_min_figure_quality and not caption:
+            if confidence < self.vision_min_figure_quality and not caption:
                 continue
             if self._count_figure_markers_in_text(caption or title) > 1 and not df_rows and not key_values and not topo_nodes and not topo_edges:
                 continue

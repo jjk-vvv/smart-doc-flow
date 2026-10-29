@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any
 
 
 def _load_module(path_parts: list[str], module_name: str):
@@ -65,13 +64,13 @@ def test_visual_result_materializer_runtime_materializes_index_zero_table_job() 
         page_dims={1: (100.0, 100.0)},
         runtime_table_max_per_page=1,
         runtime_figure_max_per_page=1,
-        table_source="pdf_mineru_gemini",
-        figure_source="pdf_mineru_gemini",
+        table_source="pdf_mineru_vision",
+        figure_source="pdf_mineru_vision",
         vision_ready=True,
     )
 
     assert len(result["table_blocks"]) == 1
-    assert result["table_blocks"][0]["table_id"] == "pdf_mineru_gemini_t1"
+    assert result["table_blocks"][0]["table_id"] == "pdf_mineru_vision_t1"
     assert result["table_blocks"][0]["vision_status"] == "attempted_success"
     assert result["vision_attempted_count"] == 1
     assert result["vision_success_count"] == 1
@@ -148,14 +147,14 @@ def test_visual_result_materializer_runtime_tracks_retry_success_and_page_caps()
         page_dims={1: (100.0, 100.0), 2: (100.0, 100.0)},
         runtime_table_max_per_page=1,
         runtime_figure_max_per_page=1,
-        table_source="pdf_mineru_gemini",
-        figure_source="pdf_mineru_gemini",
+        table_source="pdf_mineru_vision",
+        figure_source="pdf_mineru_vision",
         vision_ready=True,
     )
 
     assert len(result["table_blocks"]) == 1
     assert len(result["figure_blocks"]) == 1
-    assert result["figure_blocks"][0]["figure_id"] == "pdf_mineru_gemini_f1"
+    assert result["figure_blocks"][0]["figure_id"] == "pdf_mineru_vision_f1"
     assert result["vision_attempted_count"] == 3
     assert result["vision_success_count"] == 2
     assert result["vision_serial_recovery_retry_count"] == 1
@@ -201,8 +200,8 @@ def test_visual_result_materializer_runtime_marks_empty_attempts() -> None:
         page_dims={1: (100.0, 100.0)},
         runtime_table_max_per_page=1,
         runtime_figure_max_per_page=1,
-        table_source="pdf_mineru_gemini",
-        figure_source="pdf_mineru_gemini",
+        table_source="pdf_mineru_vision",
+        figure_source="pdf_mineru_vision",
         vision_ready=True,
     )
 

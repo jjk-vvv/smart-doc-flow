@@ -37,7 +37,7 @@ load_module4_env(MODULE4_ROOT)
 logger = logging.getLogger("uvicorn.error")
 
 _composition_components = build_default_composition_components(
-    module4_database_dsn=os.getenv("MODULE4_DATABASE_DSN", "postgresql://postgres:postgres@localhost:5432/a23"),
+    module4_database_dsn=os.getenv("MODULE4_DATABASE_DSN", "postgresql://postgres@127.0.0.1:5433/Knowledge_Graph"),
     storage_factory=Module4Storage,
     workspace_builder_factory=GraphRAGWorkspaceBuilder,
     graphrag_indexer_factory=GraphRAGIndexer,
@@ -160,7 +160,7 @@ async def _submit_ingest_job(payload: IngestRequest, request: Request) -> Ingest
 
 def create_app() -> FastAPI:
     configure_app_logging()
-    app = FastAPI(title="A23 Module 4 - Global Knowledge Graph & Risk Intelligence", version="1.1.0", lifespan=lifespan)
+    app = FastAPI(title="Smart Doc Flow - Knowledge Graph", version="1.1.0", lifespan=lifespan)
     cors_origins_list, cors_allow_all = module4_app_runtime.cors_origins()
     app.add_middleware(
         CORSMiddleware,

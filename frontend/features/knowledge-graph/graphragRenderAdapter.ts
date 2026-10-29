@@ -84,7 +84,7 @@ const truncateText = (value: unknown, maxChars = 96) => {
 
 const NOISY_ENTITY_TERMS = [
   'assistant',
-  'gemini',
+  'vision',
   'payload',
   'markdown',
   'worksheet',

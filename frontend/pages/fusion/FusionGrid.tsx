@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import React, {
+import React, {
   useEffect,
   useMemo,
   useRef,
@@ -1233,7 +1233,6 @@ const SegmentedControl = ({
   >([]);
   const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 计算下拉菜单位置
 
   useEffect(() => {
     const positions = buttonRefs.current.map((btn) => {
@@ -1249,20 +1248,17 @@ const SegmentedControl = ({
     setDropdownPositions(positions);
   }, [openDropdownIndex, lockedDropdownIndex]);
 
-  // 清理 timeout
   useEffect(() => {
     return () => {
       if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
     };
   }, []);
 
-  // 点击外部关闭下拉菜单
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (lockedDropdownIndex !== null) {
         const btnRef = buttonRefs.current[lockedDropdownIndex];
         if (btnRef && !btnRef.contains(event.target as Node)) {
-          // 检查是否点击了下拉菜单内部
           const dropdownEl = document.querySelector(
             `[data-dropdown-index="${lockedDropdownIndex}"]`,
           );
@@ -1277,29 +1273,24 @@ const SegmentedControl = ({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [lockedDropdownIndex]);
 
-  // 处理按钮点击 - 切换下拉菜单锁定状态
   const handleButtonClick = (
     index: number,
     hasDropdown: boolean,
     onClick: () => void,
   ) => {
     if (hasDropdown) {
-      // 如果点击的是已锁定的下拉菜单，则关闭它
       if (lockedDropdownIndex === index) {
         setLockedDropdownIndex(null);
         setOpenDropdownIndex(null);
       } else {
-        // 否则锁定这个下拉菜单
         setLockedDropdownIndex(index);
         setOpenDropdownIndex(index);
       }
     } else {
-      // 没有下拉菜单的按钮，执行原有点击逻辑
       onClick();
     }
   };
 
-  // 处理鼠标进入 - 显示下拉菜单（但不锁定）
   const handleMouseEnter = (index: number, hasDropdown: boolean) => {
     if (closeTimeoutRef.current) {
       clearTimeout(closeTimeoutRef.current);
@@ -1310,9 +1301,7 @@ const SegmentedControl = ({
     }
   };
 
-  // 处理鼠标离开
   const handleMouseLeave = () => {
-    // 只有在没有锁定的情况下才延迟关闭下拉菜单，以便鼠标可以移动到下拉菜单上
     if (lockedDropdownIndex === null) {
       closeTimeoutRef.current = setTimeout(() => {
         setOpenDropdownIndex(null);
@@ -1320,7 +1309,6 @@ const SegmentedControl = ({
     }
   };
 
-  // 处理下拉菜单内部的鼠标进入
   const handleDropdownMouseEnter = () => {
     if (closeTimeoutRef.current) {
       clearTimeout(closeTimeoutRef.current);
@@ -1328,7 +1316,6 @@ const SegmentedControl = ({
     }
   };
 
-  // 确定当前应该显示哪个下拉菜单
   const currentOpenIndex =
     lockedDropdownIndex !== null ? lockedDropdownIndex : openDropdownIndex;
 
@@ -1471,7 +1458,6 @@ export const FusionGrid: React.FC = () => {
     );
   }, []);
 
-  // Resize handler
   const handleMouseMove = useCallback(
     (e: MouseEvent) => {
       if (!isResizingRef.current) return;
@@ -1480,7 +1466,6 @@ export const FusionGrid: React.FC = () => {
       const newWidth =
         ((e.clientX - dragOffsetRef.current) / getSplitLayoutWidth()) * 100;
 
-      // Constrain width between 15% and 50%
       if (newWidth >= 15 && newWidth <= 50) {
         setLeftPanelWidth(newWidth);
       }
@@ -2433,7 +2418,6 @@ export const FusionGrid: React.FC = () => {
     useUltraDenseTopBar ? "px-2 py-1.5" : "px-2.5 py-2",
   );
 
-  // 模板上传下拉内容
   const templateDropdownContent = (
     <div className={fusionDropdownPanelClass}>
       {templateItems.length === 0 ? (
@@ -2531,7 +2515,6 @@ export const FusionGrid: React.FC = () => {
     </div>
   );
 
-  // 文档集管理下拉内容
   const [isDraggingDocset, setIsDraggingDocset] = useState(false);
 
   const handleDocsetDragOver = (e: React.DragEvent) => {
@@ -3090,8 +3073,6 @@ export const FusionGrid: React.FC = () => {
                 e.preventDefault();
                 isResizingRef.current = true;
 
-                // 计算当前鼠标位置与侧边栏实际像素宽度的差值作为 offset
-                // 左侧面板的实际宽度 = 分栏容器宽度 * (leftPanelWidth / 100)
                 const currentPixelWidth =
                   getSplitLayoutWidth() * (leftPanelWidth / 100);
                 dragOffsetRef.current = e.clientX - currentPixelWidth;

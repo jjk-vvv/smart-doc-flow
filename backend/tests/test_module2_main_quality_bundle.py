@@ -34,12 +34,12 @@ def test_build_module2_main_quality_bundle_exposes_expected_quality_helpers() ->
 
     table_blocks = [
         {"rows": [{"cells": [{}, {}]}, {"cells": [{}]}], "quality": 0.8, "source": "pdf_native"},
-        {"rows": [{"cells": [{}, {}, {}]}], "quality": "0.6", "source": "gemini_table"},
+        {"rows": [{"cells": [{}, {}, {}]}], "quality": "0.6", "source": "vision_table"},
     ]
     figure_blocks = [
         {
             "page": 3,
-            "source": "gemini_vision",
+            "source": "vision",
             "dataframe": {
                 "headers": ["year", "value"],
                 "rows": [[2024, 100], [2025, 110]],
@@ -54,12 +54,12 @@ def test_build_module2_main_quality_bundle_exposes_expected_quality_helpers() ->
     assert bundle.has_meaningful_value(" n/a ") is False
     assert bundle.has_meaningful_value("ready") is True
     assert bundle.table_quality_avg(table_blocks) == 0.7
-    assert bundle.table_source_counts(table_blocks) == {"pdf_native": 1, "gemini_table": 1}
-    assert bundle.figure_source_counts(figure_blocks) == {"gemini_vision": 1, "mineru": 1}
+    assert bundle.table_source_counts(table_blocks) == {"pdf_native": 1, "vision_table": 1}
+    assert bundle.figure_source_counts(figure_blocks) == {"vision": 1, "mineru": 1}
     assert bundle.figure_pages(figure_blocks) == [1, 3]
-    assert bundle.source_counts_have_gemini({"gemini_table": 2, "mineru": 1}) is True
-    assert bundle.source_counts_all_gemini({"gemini_table": 2, "gemini_vision": 1}) is True
-    assert bundle.source_counts_all_gemini({"gemini_table": 2, "mineru": 1}) is False
+    assert bundle.source_counts_have_vision({"vision_table": 2, "mineru": 1}) is True
+    assert bundle.source_counts_all_vision({"vision_table": 2, "vision": 1}) is True
+    assert bundle.source_counts_all_vision({"vision_table": 2, "mineru": 1}) is False
 
 
 def test_module2_main_quality_bundle_builds_quality_snapshot() -> None:
@@ -111,7 +111,7 @@ def test_module2_main_quality_bundle_builds_visual_chain_contract_for_visual_wor
             "mineru_run": {"status": "ok"},
         },
         table_blocks=[{"source": "pdf_native"}],
-        figure_blocks=[{"source": "gemini_vision"}],
+        figure_blocks=[{"source": "vision"}],
     )
 
     assert contract["required"] is True
@@ -120,7 +120,7 @@ def test_module2_main_quality_bundle_builds_visual_chain_contract_for_visual_wor
     assert contract["requires_word_pdf"] is True
     assert contract["parse_input_is_pdf"] is True
     assert contract["table_source_counts"] == {"pdf_native": 1}
-    assert contract["figure_source_counts"] == {"gemini_vision": 1}
+    assert contract["figure_source_counts"] == {"vision": 1}
 
 
 def test_module2_main_quality_bundle_reports_visual_chain_break_reasons() -> None:
@@ -172,8 +172,8 @@ def test_module2_main_quality_bundle_infers_visual_contract_for_docx_pdf_visual_
         parse_stats={
             "mineru_run": {"status": "ok"},
         },
-        table_blocks=[{"source": "pdf_mineru_gemini"}],
-        figure_blocks=[{"source": "pdf_mineru_gemini"}],
+        table_blocks=[{"source": "pdf_mineru_vision"}],
+        figure_blocks=[{"source": "pdf_mineru_vision"}],
     )
 
     assert contract["required"] is True
@@ -202,8 +202,8 @@ def test_module2_main_quality_bundle_infers_visual_contract_for_direct_pdf_visua
         parse_stats={
             "mineru_run": {"status": "ok"},
         },
-        table_blocks=[{"source": "pdf_mineru_gemini"}],
-        figure_blocks=[{"source": "pdf_mineru_gemini"}],
+        table_blocks=[{"source": "pdf_mineru_vision"}],
+        figure_blocks=[{"source": "pdf_mineru_vision"}],
     )
 
     assert contract["required"] is True

@@ -23,7 +23,7 @@ GetOcrEngine = Callable[[], Any]
 InferTablesFromOcrCells = Callable[[PageCells], TableBlocks]
 InferTablesFromPageLines = Callable[[PageLines, Parts, BboxMap, str], TableBlocks]
 InferFiguresFromPageLines = Callable[[PageLines, Parts, BboxMap, str, FigureBlocks], FigureBlocks]
-EnhanceLowQualityPagesWithGeminiVision = Callable[..., Tuple[TableBlocks, FigureBlocks]]
+EnhanceLowQualityPagesWithVision = Callable[..., Tuple[TableBlocks, FigureBlocks]]
 MergeFigureBlocks = Callable[[FigureBlocks, FigureBlocks], FigureBlocks]
 PruneFragmentTables = Callable[[TableBlocks], TableBlocks]
 SelectLowQualityPages = Callable[[PageLines, TableBlocks], List[int]]
@@ -78,7 +78,7 @@ class ImageOcrRuntime:
                 page_no = page_idx + 1
                 page = doc.load_page(page_idx)
                 if not visual_backend_ready:
-                    placeholder = f"[Image page {page_no}] OCR backend unavailable, trying Gemini Vision."
+                    placeholder = f"[Image page {page_no}] OCR backend unavailable, trying Vision."
                     self._append_ref(
                         parts,
                         bbox_map,
@@ -146,14 +146,14 @@ class ImageOcrRuntime:
 
 
 class ImageVisionRuntime:
-    """Apply Gemini vision enhancement to low-quality image OCR pages."""
+    """Apply vision enhancement to low-quality image OCR pages."""
 
     def __init__(
         self,
         *,
         enabled: bool,
-        gemini_vision_max_pages: int,
-        gemini_vision_consecutive_fail_stop: int,
+        vision_max_pages: int,
+        vision_consecutive_fail_stop: int,
         resolve_api_key: ResolveApiKey,
         select_low_quality_pages_for_vision: SelectLowQualityPages,
         vision_focus_from_page_lines: VisionFocusFromPageLines,
@@ -169,8 +169,8 @@ class ImageVisionRuntime:
         next_figure_index: NextFigureIndex,
     ) -> None:
         self.enabled = bool(enabled)
-        self.gemini_vision_max_pages = max(0, int(gemini_vision_max_pages or 0))
-        self.gemini_vision_consecutive_fail_stop = max(1, int(gemini_vision_consecutive_fail_stop or 1))
+        self.vision_max_pages = max(0, int(vision_max_pages or 0))
+        self.vision_consecutive_fail_stop = max(1, int(vision_consecutive_fail_stop or 1))
         self._resolve_api_key = resolve_api_key
         self._select_low_quality_pages_for_vision = select_low_quality_pages_for_vision
         self._vision_focus_from_page_lines = vision_focus_from_page_lines
@@ -185,7 +185,7 @@ class ImageVisionRuntime:
         self._next_table_index = next_table_index
         self._next_figure_index = next_figure_index
 
-    def enhance_low_quality_pages_with_gemini_vision(
+    def enhance_low_quality_pages_with_vision(
         self,
         *,
         file_bytes: bytes,
@@ -197,7 +197,7 @@ class ImageVisionRuntime:
         bbox_map: BboxMap,
         source_prefix: str,
     ) -> Tuple[TableBlocks, FigureBlocks]:
-        if not self.enabled or self.gemini_vision_max_pages <= 0:
+        if not self.enabled or self.vision_max_pages <= 0:
             return table_blocks, []
 
         api_key = self._resolve_api_key()
@@ -242,7 +242,7 @@ class ImageVisionRuntime:
                 payload = self._extract_payload(image_png, focus)
                 if not payload:
                     consecutive_empty_payload += 1
-                    if consecutive_empty_payload >= self.gemini_vision_consecutive_fail_stop:
+                    if consecutive_empty_payload >= self.vision_consecutive_fail_stop:
                         break
                     continue
                 consecutive_empty_payload = 0
@@ -291,14 +291,14 @@ class ImageParseRuntime:
         infer_tables_from_ocr_cells: InferTablesFromOcrCells,
         infer_tables_from_page_lines: InferTablesFromPageLines,
         infer_figures_from_page_lines: InferFiguresFromPageLines,
-        enhance_low_quality_pages_with_gemini_vision: EnhanceLowQualityPagesWithGeminiVision,
+        enhance_low_quality_pages_with_vision: EnhanceLowQualityPagesWithVision,
         merge_figure_blocks: MergeFigureBlocks,
         prune_fragment_tables: PruneFragmentTables,
     ) -> None:
         self._infer_tables_from_ocr_cells = infer_tables_from_ocr_cells
         self._infer_tables_from_page_lines = infer_tables_from_page_lines
         self._infer_figures_from_page_lines = infer_figures_from_page_lines
-        self._enhance_low_quality_pages_with_gemini_vision = enhance_low_quality_pages_with_gemini_vision
+        self._enhance_low_quality_pages_with_vision = enhance_low_quality_pages_with_vision
         self._merge_figure_blocks = merge_figure_blocks
         self._prune_fragment_tables = prune_fragment_tables
 
@@ -306,7 +306,7 @@ class ImageParseRuntime:
         self,
         *,
         visual_backend_ready: bool,
-        resolved_gemini_enhance: bool,
+        resolved_vision_enhance: bool,
         file_bytes: bytes,
         filetype: str,
         page_lines: PageLines,
@@ -334,8 +334,8 @@ class ImageParseRuntime:
             last_figure_blocks,
         )
 
-        if resolved_gemini_enhance:
-            table_blocks, vision_figures = self._enhance_low_quality_pages_with_gemini_vision(
+        if resolved_vision_enhance:
+            table_blocks, vision_figures = self._enhance_low_quality_pages_with_vision(
                 file_bytes=file_bytes,
                 filetype=filetype,
                 page_lines=page_lines,
@@ -343,7 +343,7 @@ class ImageParseRuntime:
                 last_figure_blocks=last_figure_blocks,
                 parts=parts,
                 bbox_map=bbox_map,
-                source_prefix="image_gemini_vision",
+                source_prefix="image_vision",
             )
         else:
             vision_figures = []
@@ -360,14 +360,14 @@ class ImageDocumentRuntime:
     def __init__(
         self,
         *,
-        enable_gemini_vision_enhance: bool,
+        vision_enhance_enabled: bool,
         visual_backend_available: VisualBackendAvailable,
         resolve_api_key: ResolveApiKey,
         get_ocr_engine: GetOcrEngine,
         collect_page_ocr: CollectPageOcr,
         build_parse_result: BuildParseResult,
     ) -> None:
-        self.enable_gemini_vision_enhance = bool(enable_gemini_vision_enhance)
+        self.vision_enhance_enabled = bool(vision_enhance_enabled)
         self._visual_backend_available = visual_backend_available
         self._resolve_api_key = resolve_api_key
         self._get_ocr_engine = get_ocr_engine
@@ -380,13 +380,13 @@ class ImageDocumentRuntime:
         file_name: str,
         file_bytes: bytes,
         last_figure_blocks: FigureBlocks,
-        enable_gemini_enhance: Optional[bool] = None,
+        enable_vision_enhance: Optional[bool] = None,
     ) -> Dict[str, Any]:
         visual_backend_ready, visual_backend_missing = self._visual_backend_available()
-        resolved_gemini_enhance = (
-            self.enable_gemini_vision_enhance if enable_gemini_enhance is None else bool(enable_gemini_enhance)
+        resolved_vision_enhance = (
+            self.vision_enhance_enabled if enable_vision_enhance is None else bool(enable_vision_enhance)
         )
-        vision_api_ready = bool(self._resolve_api_key()) and resolved_gemini_enhance
+        vision_api_ready = bool(self._resolve_api_key()) and resolved_vision_enhance
         if not visual_backend_ready and not vision_api_ready:
             raise ValueError(
                 "Image OCR backend is unavailable. "
@@ -441,7 +441,7 @@ class ImageDocumentRuntime:
 
         table_blocks, figure_blocks = self._build_parse_result(
             visual_backend_ready=visual_backend_ready,
-            resolved_gemini_enhance=resolved_gemini_enhance,
+            resolved_vision_enhance=resolved_vision_enhance,
             file_bytes=file_bytes,
             filetype=ext or "png",
             page_lines=page_lines,

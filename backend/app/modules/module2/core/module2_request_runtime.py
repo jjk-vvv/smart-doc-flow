@@ -53,6 +53,15 @@ def forward_module2_context_headers(
         if normalized_key in blocked_headers:
             continue
         forwarded[key] = value
+    state_user = getattr(getattr(request, "state", None), "authenticated_user", None)
+    if state_user is not None:
+        to_forward_headers = getattr(state_user, "to_forward_headers", None)
+        if callable(to_forward_headers):
+            for key, value in (to_forward_headers() or {}).items():
+                normalized_key = str(key or "").lower().strip()
+                if not normalized_key or normalized_key in blocked_headers:
+                    continue
+                forwarded[key] = value
     for key, value in (additional_headers or {}).items():
         normalized_key = str(key or "").lower().strip()
         if not normalized_key or normalized_key in blocked_headers:

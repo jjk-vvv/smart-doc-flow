@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlignCenter, AlignJustify, AlignLeft, Check, RotateCcw, Sparkles, Wand2, Expand, ScissorsLineDashed, X } from 'lucide-react';
 
 import type { ReportQuickEditAction } from './lib/reportQuickEdit';
-import type { ReportSelectionRect } from './lib/reportSelection';
+import type { ReportSelectionRect, ReportToolbarPlacement } from './lib/reportSelection';
 import { computeToolbarPosition } from './lib/reportSelection';
 import {
   REPORT_BLOCK_TYPE_OPTIONS,
@@ -78,10 +78,14 @@ export const ReportSelectionToolbar: React.FC<ReportSelectionToolbarProps> = ({
   onTextAlignChange,
 }) => {
   const toolbarRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState(() => ({
+  const [position, setPosition] = useState<{
+    top: number;
+    left: number;
+    placement: ReportToolbarPlacement;
+  }>(() => ({
     top: Math.max(12, anchorRect.top - 120),
     left: Math.max(12, anchorRect.left),
-    placement: 'top' as const,
+    placement: 'top',
   }));
 
   useEffect(() => {

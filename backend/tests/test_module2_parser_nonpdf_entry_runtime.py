@@ -106,12 +106,12 @@ def test_parser_nonpdf_entry_runtime_parse_image_excludes_stats() -> None:
         last_figure_blocks=[{"figure_id": "f0"}],
         build_named_runtime_state=_build_named_runtime_state,
         apply_state_update=lambda state_update: state_update["result"],
-        enable_gemini_enhance=True,
+        enable_vision_enhance=True,
     )
 
     assert result == ("image", {"r1": [1, 2, 3, 4]}, [])
     assert captured["parse_kwargs"]["last_figure_blocks"] == [{"figure_id": "f0"}]
-    assert captured["parse_kwargs"]["enable_gemini_enhance"] is True
+    assert captured["parse_kwargs"]["enable_vision_enhance"] is True
     assert captured["build_kwargs"] == {"include_stats": False}
 
 

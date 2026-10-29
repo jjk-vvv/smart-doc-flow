@@ -1,5 +1,5 @@
 import type { Module4GraphEdge, Module4GraphNode, Module4GraphResponse } from '../../shared/api/knowledgeGraph';
-import { asRecord, clamp, normalizeTypeKey } from './utils';
+import { asRecord, normalizeTypeKey } from './utils';
 import type { GraphRenderCommunity, GraphRenderEdge, GraphRenderModel, GraphRenderNode } from './graphragViewModel';
 
 const COMMUNITY_TYPE = 'community';

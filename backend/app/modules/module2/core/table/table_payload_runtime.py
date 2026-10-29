@@ -11,7 +11,7 @@ HeadersNeedRecovery = Callable[[List[str]], bool]
 
 
 class TablePayloadRuntime:
-    """Normalize table payloads shared by visual-first and Gemini vision flows."""
+    """Normalize table payloads shared by visual-first and vision flows."""
 
     def __init__(
         self,

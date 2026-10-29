@@ -178,8 +178,8 @@ def load_managed_env_files(scopes: tuple[str, ...] | None = None) -> None:
         force=force_managed_data_paths,
     )
     _assign_env_value(
-        "MODULE2_GEMINI_CACHE_DIR",
-        str((data_root / "module2" / "cache" / "gemini").resolve()),
+        "MODULE2_VISION_CACHE_DIR",
+        str((data_root / "module2" / "cache" / "vision").resolve()),
         force=force_managed_data_paths,
     )
     _assign_env_value(

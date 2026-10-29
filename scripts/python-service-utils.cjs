@@ -156,9 +156,6 @@ const AUTH_CORE_FALLBACK_KEYS = [
   'AUTH_SEND_CODE_MAX_PER_CONTACT',
   'AUTH_SEND_CODE_MAX_PER_IP',
   'AUTH_SEND_CODE_COOLDOWN_MS',
-  'AUTH_SMS_PROVIDER',
-  'AUTH_IHUYI_API_ID',
-  'AUTH_IHUYI_API_KEY',
   'AUTH_SMTP_HOST',
   'AUTH_SMTP_PORT',
   'AUTH_SMTP_SECURE',
@@ -266,6 +263,12 @@ const buildManagedRuntimeEnv = ({ baseEnv = process.env, scopes = DEFAULT_MANAGE
   env.MODULE3_ENV_FILE = path.join(configRoot, 'backend', 'app', 'modules', 'module3', '.env');
   env.SMART_DOC_FLOW_MODULE4_ENV_FILE = path.join(configRoot, 'backend', 'app', 'modules', 'module4', '.env');
 
+  // Loopback calls must never go through a system HTTP proxy: requests/urllib
+  // pick up Windows WinINET settings, which otherwise breaks local module
+  // sync, health probes and artifact fetches with 502 responses.
+  ensureEnvValue(env, 'NO_PROXY', '127.0.0.1,localhost,::1');
+  ensureEnvValue(env, 'no_proxy', env.NO_PROXY);
+
   const forceManagedDataPaths = path.resolve(dataRoot) !== path.resolve(runtimeRoot);
 
   assignManagedDataPath(env, 'GATEWAY_FRONTEND_DIST_DIR', path.join(runtimeRoot, 'frontend', 'dist'));
@@ -278,7 +281,7 @@ const buildManagedRuntimeEnv = ({ baseEnv = process.env, scopes = DEFAULT_MANAGE
   assignManagedDataPath(env, 'MODULE2_MINERU_CACHE_DIR', path.join(dataRoot, 'module2', 'cache', 'mineru'), {
     force: forceManagedDataPaths,
   });
-  assignManagedDataPath(env, 'MODULE2_GEMINI_CACHE_DIR', path.join(dataRoot, 'module2', 'cache', 'gemini'), {
+  assignManagedDataPath(env, 'MODULE2_VISION_CACHE_DIR', path.join(dataRoot, 'module2', 'cache', 'vision'), {
     force: forceManagedDataPaths,
   });
   assignManagedDataPath(env, 'MODULE2_MINERU_WORK_ROOT_DIR', path.join(dataRoot, 'module2', 'work', 'mineru'), {

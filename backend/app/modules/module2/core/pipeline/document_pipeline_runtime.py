@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
 
-from .direct_semantic_extract_runtime import DirectSemanticExtractRuntime
+from app.modules.module2.core.pipeline.direct_semantic_extract_runtime import DirectSemanticExtractRuntime
 
 
 @dataclass(frozen=True)
@@ -191,7 +191,7 @@ class DocumentParseSessionRuntime:
         parse_source_file_bytes = file_bytes if parse_source_file_name else None
         progress_message = (
             f"正在执行视觉解析：{parse_input_name}"
-            "（MinerU 版面定位 -> ROI 裁剪 -> Gemini 图表理解）"
+            "（MinerU 版面定位 -> ROI 裁剪 -> Vision 图表理解）"
         )
         progress_extra = {
             "parse_input_name": str(parse_input_name or ""),

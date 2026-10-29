@@ -53,7 +53,7 @@ class _FakeHealthRuntime:
 
     def build_payload(self, **kwargs):
         self.calls.append(dict(kwargs))
-        return {"status": "ok", "llm_provider_model": "gpt-5-mini"}
+        return {"status": "ok", "llm_provider_model": "test-chat-model"}
 
 
 class _FakeBootstrapRuntime:
@@ -61,7 +61,7 @@ class _FakeBootstrapRuntime:
         self._events = events
 
     def provider_preflight_snapshot(self):
-        return {"ok": True, "model": "gpt-5-mini"}
+        return {"ok": True, "model": "test-chat-model"}
 
     def provider_config_snapshot(self, *, build_provider):
         provider = build_provider()

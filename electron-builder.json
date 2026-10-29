@@ -23,6 +23,7 @@
         "!**/*.pyo",
         "!**/.pytest_cache/**",
         "!**/.pytest_tmp/**",
+        "!**/.ruff_cache/**",
         "!**/.mcache/**",
         "!**/.runlogs/**",
         "!**/.runtime/**",
@@ -32,25 +33,11 @@
         "!**/trace_rois/**",
         "!**/tests/**",
         "!**/.codex-temp/**",
-        "!.env.example",
+        "!**/.env",
+        "!**/.env.*",
+        "!**/*.log",
         "!README.md",
-        "!ai-assistant/**",
-        "!auth/.env.example",
-        "!app/modules/**/.env.example",
-        "!auth/package-lock.json",
-        "!auth/README.md",
-        "!auth/auth.runtime.log",
-        "!module2/.env.example",
-        "!module2/README.md",
-        "!module2/check_db.py",
-        "!module2/tools/**",
-        "!module2/backend/**",
-        "!module4/.env.example",
-        "!module4/README.md",
-        "!backend/**",
-        "!tests/**",
-        "!requirements-dev.txt",
-        "!auth/users.json"
+        "!requirements-dev.txt"
       ]
     },
     {
@@ -68,8 +55,8 @@
       ]
     },
     {
-      "from": ".venv-module2-py311",
-      "to": "app-runtime/.venv-module2-py311",
+      "from": ".venv",
+      "to": "app-runtime/.venv",
       "filter": [
         "**/*",
         "!**/__pycache__/**",

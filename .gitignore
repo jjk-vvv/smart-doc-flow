@@ -180,3 +180,4 @@ datasets/PDF/**/*.pdf
 
 # Knowledge graph demo policy: keep curated 3 public sample graphs manifest
 !backend/app/modules/module4/resources/public_case_graphs.json
+electron-builder.generated.json

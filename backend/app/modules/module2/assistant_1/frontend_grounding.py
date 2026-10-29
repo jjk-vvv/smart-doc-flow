@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -8,11 +8,7 @@ from ..core.format.xlsx_artifact_io import (
     load_xlsx_sheet_rows_artifact,
     load_xlsx_workbook_manifest,
 )
-from .response_planner import (
-    is_broad_document_question,
-    is_strict_minimal_request,
-    should_prefer_frontend_grounding,
-)
+from .intent_router import is_broad_document_question, is_strict_minimal_request
 from .intent_router import (
     is_action_preview_request,
     is_document_risk_review_question,
@@ -1856,7 +1852,7 @@ def _derive_document_opening(
             return f"这份文档更像是一份围绕 {year_scope} 年度情况整理的统计公报汇总，主要在梳理{ '、'.join(topics) }等核心指标。"
         if topics:
             return f"这份文档是一份统计公报类材料，重点在梳理{ '、'.join(topics) }等核心指标。"
-        return f"这份文档是一份统计公报类材料，核心是在按年份汇总主要发展指标。"
+        return "这份文档是一份统计公报类材料，核心是在按年份汇总主要发展指标。"
 
     if topics:
         if normalized_file_name:

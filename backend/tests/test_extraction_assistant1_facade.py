@@ -64,7 +64,7 @@ def test_facade_health_payload_uses_legacy_when_native_is_not_ready(tmp_path: Pa
     legacy_runtime = SimpleNamespace(
         provider=SimpleNamespace(
             configured=True,
-            model="gpt-5-mini",
+            model="test-chat-model",
             base_url="https://legacy.example.test",
             endpoint_path="/v1/responses",
         ),
@@ -75,7 +75,7 @@ def test_facade_health_payload_uses_legacy_when_native_is_not_ready(tmp_path: Pa
             "ok": True,
             "configured": False,
             "runtime_ready": False,
-            "model": "gpt-5-mini",
+            "model": "test-chat-model",
             "base_url": "https://native.example.test",
             "endpoint_path": "/v1/responses",
         }

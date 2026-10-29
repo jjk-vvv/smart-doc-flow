@@ -7,10 +7,11 @@ from pathlib import Path
 
 
 MODULE2_ROOT = Path(__file__).resolve().parents[2]
-if str(MODULE2_ROOT) not in sys.path:
-    sys.path.insert(0, str(MODULE2_ROOT))
+BACKEND_ROOT = MODULE2_ROOT.parents[2]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.assistant_1.retrieval_pipeline import Assistant1RetrievalPipeline
+from app.modules.module2.assistant_1.retrieval_pipeline import Assistant1RetrievalPipeline
 
 
 def main() -> None:

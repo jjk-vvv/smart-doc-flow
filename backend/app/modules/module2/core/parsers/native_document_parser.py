@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 import os
@@ -69,11 +69,9 @@ class NativeDocumentParser:
         )
 
     @staticmethod
-    def _gemini_api_key() -> str:
+    def _vision_api_key() -> str:
         return resolve_llm_api_key()
 
-    def _gemini_native_api_key(self) -> str:
-        return self._parser_provider_bundle_runtime.resolve_native_api_key(getenv=os.getenv)
 
     def _visual_backend_available(self) -> Tuple[bool, str]:
         return self._parser_provider_bundle_runtime.visual_backend_available()
@@ -143,18 +141,16 @@ class NativeDocumentParser:
 
     def _visual_vision_extractor_kwargs(self) -> Dict[str, Any]:
         return self._parser_provider_bundle_runtime.build_visual_vision_kwargs(
-            api_key=self._gemini_api_key(),
-            native_api_key=self._gemini_native_api_key(),
-            model=self.gemini_vision_model,
-            base_url=self.gemini_vision_base_url,
-            endpoint_style=self.gemini_vision_endpoint_style,
-            timeout_sec=self.gemini_vision_timeout_sec,
-            max_output_tokens=self.gemini_vision_max_output_tokens,
+            api_key=self._vision_api_key(),
+            model=self.vision_model,
+            base_url=self.vision_base_url,
+            endpoint_style=self.vision_endpoint_style,
+            timeout_sec=self.vision_timeout_sec,
+            max_output_tokens=self.vision_max_output_tokens,
             retry_count=self.visual_vision_retry_count,
-            cache_dir=self.gemini_cache_dir,
-            enable_cache=self.gemini_cache_enable,
-            reasoning_effort=self.gemini_vision_reasoning_effort,
-            native_fallback_enabled=self.gemini_native_fallback_enabled,
+            cache_dir=self.vision_cache_dir,
+            enable_cache=self.vision_cache_enable,
+            reasoning_effort=self.vision_reasoning_effort,
         )
 
     def _parse_pdf(
@@ -284,7 +280,7 @@ class NativeDocumentParser:
         file_name: str,
         file_bytes: bytes,
         *,
-        enable_gemini_enhance: bool | None = None,
+        enable_vision_enhance: bool | None = None,
     ) -> Tuple[str, Dict[str, List[float]], TableBlocks]:
         return self._parser_nonpdf_entry_runtime.parse_image(
             image_document_runtime=self._image_document_runtime,
@@ -293,10 +289,10 @@ class NativeDocumentParser:
             last_figure_blocks=self._parser_run_state.peek_last_figure_blocks(),
             build_named_runtime_state=ParserStateRuntime.build_named_runtime_state,
             apply_state_update=self._parser_run_state.apply_state_update,
-            enable_gemini_enhance=enable_gemini_enhance,
+            enable_vision_enhance=enable_vision_enhance,
         )
 
-    def _enhance_low_quality_pages_with_gemini_vision(
+    def _enhance_low_quality_pages_with_vision(
         self,
         file_bytes: bytes,
         filetype: str,
@@ -306,7 +302,7 @@ class NativeDocumentParser:
         bbox_map: Dict[str, List[float]],
         source_prefix: str,
     ) -> Tuple[TableBlocks, FigureBlocks]:
-        return self._image_vision_runtime.enhance_low_quality_pages_with_gemini_vision(
+        return self._image_vision_runtime.enhance_low_quality_pages_with_vision(
             file_bytes=file_bytes,
             filetype=filetype,
             page_lines=page_lines,

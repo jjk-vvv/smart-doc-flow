@@ -42,7 +42,7 @@ def test_parser_docx_bootstrap_runtime_builds_expected_runtime_attrs() -> None:
         docx_media_probe_enable=True,
         docx_media_max_assets=8,
         docx_media_vision_enable=True,
-        docx_media_nested_gemini_enhance_enable=True,
+        docx_media_nested_vision_enhance_enable=True,
         docx_media_max_assets_unbounded=False,
         docx_media_vision_max_assets=6,
         docx_media_vision_max_assets_unbounded=False,
