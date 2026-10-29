@@ -5,7 +5,7 @@ React、TypeScript 和 Vite 构建的 Web 前端。完整环境准备见[项目�
 在仓库根目录执行：
 
 ```powershell
-npm --prefix frontend ci
+npm --prefix frontend ci --legacy-peer-deps
 npm run dev:frontend
 npm run build:frontend
 ```

@@ -24,8 +24,8 @@
 
 ```powershell
 npm ci
-npm --prefix frontend ci
-npm --prefix frontend-app ci
+npm --prefix frontend ci --legacy-peer-deps
+npm --prefix frontend-app ci --legacy-peer-deps
 ```
 
 统一 Python 环境位于根目录 `.venv/`，依赖基线为 `backend/requirements.txt`。MinerU 与 GraphRAG 的依赖元数据存在兼容约束，详见该文件的说明。已有种子环境时可使用 `npm run setup:backend:venv`；这个脚本依赖本地 `.venv-module2-py311/`，不是全新机器的一键安装器。
@@ -65,4 +65,4 @@ npm run build:frontend:app:web
 - 移动端同步：`npm run mobile:cap:sync`；Android 工程在 `frontend-app/android/`。
 - FRP 模板：`config/frp/frpc.example.toml`。复制到根目录 `frpc.toml` 后在本地填写，客户端需另行安装；真实配置和下载程序不上传。
 
-更多后端细节见 [backend/README.md](backend/README.md)，端侧打包见 [docs/前端打包落地手册_20260422.md](docs/前端打包落地手册_20260422.md)。
+更多后端细节见 [backend/README.md](backend/README.md)，端侧打包见 [docs/前端打包落地手册_20260422.md](docs/前端打包落地手册_20260422.md)，代码复核见[代码命名与模型配置维护](docs/operations/code-standards.md)。

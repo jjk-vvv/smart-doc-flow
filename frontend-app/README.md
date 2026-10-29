@@ -5,7 +5,7 @@
 在仓库根目录执行：
 
 ```powershell
-npm --prefix frontend-app ci
+npm --prefix frontend-app ci --legacy-peer-deps
 npm run dev:app
 npm run build:frontend:app:web
 npm run mobile:cap:doctor
